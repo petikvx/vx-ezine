@@ -1,3 +1,5 @@
+# 29A Issue # 4
+```
 Editorial:
 29A-4.101	Introduction						Darkman/29A
 29A-4.102	News							Darkman/29A
@@ -140,3 +142,4 @@ RISC OS and UNIX viruses:
 29A-4.804	Glaurung 2k						Mandragore/FS
 29A-4.805	Diesel							Paddingx
 29A-4.806	TLB							Stealthf0rk/SVAT
+```
