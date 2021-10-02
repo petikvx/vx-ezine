@@ -4,27 +4,27 @@ Editorial
 29A#2.1_1 Introduction				MrSandman
 29A#2.1_2 News since 29A#1			MrSandman
 29A#2.1_3 29A distro sites			MrSandman
-29A#2.1_4 Our greetings			MrSandman
+29A#2.1_4 Our greetings				MrSandman
 29A#2.1_5 Legal stuff				MrSandman
 29A#2.1_6 Interview with Qark			MrSandman
 29A#2.1_7 Words from Jacky Qwerty		Jacky Qwerty
 29A#2.1_8 What is happening in IR/G?		Rajaat
-29A#2.1_9 Envy makes dorks resuscitate	MrSandman
+29A#2.1_9 Envy makes dorks resuscitate		MrSandman
 29A#2.1_A Article separator			MrSandman
 
 
 Articles______	
-Playing "Hide and Seek"	"Q" the Misanthrope
-TBSCAN.SIG infection	Malware
-Macro virus trickz	Jacky Qwerty
-WM.CAP virus description	Jacky Qwerty
-Vecna's Random Boot Loader	Vecna
-The Necromantic Mutation Engine	Wintermute
-HMA Residency	"Q" the Misanthrope
-Compression engines	Super & Vecna
-Analysis on the decryptor generation	Lord Julus
-Strategic Alliances	Rajaat
-Stupid descriptions	Rajaat
+29A#2.2_1 Playing "Hide and Seek"		"Q" the Misanthrope
+29A#2.2_2 TBSCAN.SIG infection			Malware
+29A#2.2_3 Macro virus trickz			Jacky Qwerty
+29A#2.2_4 WM.CAP virus description		Jacky Qwerty
+29A#2.2_5 Vecna's Random Boot Loader		Vecna
+29A#2.2_6 The Necromantic Mutation Engine	Wintermute
+29A#2.2_7 HMA Residency				"Q" the Misanthrope
+29A#2.2_8 Compression engines			Super & Vecna
+29A#2.2_9 Analysis on the decryptor generation	Lord Julus
+29A#2.2_A Strategic Alliances			Rajaat
+29A#2.2_B Stupid descriptions			Rajaat
 
 
 Win32______	
@@ -72,3 +72,7 @@ Prion	Darkman
 Insert v 2.0	Darkman
 Animo	Rajaat
 ```
+![1](https://user-images.githubusercontent.com/2539129/135719546-6671bac8-f5eb-4ada-b0b5-57a753f83d50.png)
+![2](https://user-images.githubusercontent.com/2539129/135719548-49e8a69c-4522-4cd8-9144-14591ef99189.png)
+![3](https://user-images.githubusercontent.com/2539129/135719549-53b512dc-ed26-4e85-b74e-b8753063c658.png)
+
