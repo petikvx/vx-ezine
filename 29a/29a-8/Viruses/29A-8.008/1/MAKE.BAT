@@ -1,0 +1,1 @@
+nasm -fbin ftpd.asm -o ftpd.exe

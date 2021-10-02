@@ -1,0 +1,219 @@
+                             Thread Local Storage
+                            The hidden entry point
+                                64bit version
+                                   (Intel)
+                               roy g biv / 29A
+
+
+About the author:
+
+Former  DOS/Win16  virus writer, author of several virus  families,  including
+Ginger  (see Coderz #1 zine for terrible buggy example, contact me for  better
+sources  ;),  and Virus Bulletin 9/95 for a description of what   they  called
+Rainbow.   Co-author  of  world's first virus using circular  partition  trick
+(Orsam, coded with Prototype in 1993).  Designer of world's first XMS swapping
+virus  (John Galt, coded by RT Fishel in 1995, only 30 bytes stub, the rest is
+swapped  out).   Author of world's first virus using Thread Local Storage  for
+replication  (Shrug, see Virus Bulletin 6/02 for a description, but they  call
+it Chiton), world's first virus using Visual Basic 5/6 language extensions for
+replication  (OU812), world's first Native executable virus (Chthon),  world's
+first  virus  using process co-operation to prevent termination  (Gemini,  see
+Virus  Bulletin 9/02 for a description), world's first virus using polymorphic
+SMTP  headers (JunkMail, see Virus Bulletin 11/02 for a description),  world's
+first viruses that can convert any data files to infectable objects (Pretext),
+world's  first  32/64-bit  parasitic EPO .NET virus (Croissant),  and  world's
+first virus using self-executing HTML (JunkHTMaiL, see Virus Bulletin 7/03 for
+a description).  Author of various retrovirus articles (eg see Vlad #7 for the
+strings  that make your code invisible to TBScan).  Went to sleep for a number
+of  years.   This is my first virus for Win64.  It is the world's first  virus
+for Win64 on Intel Itanium.
+
+
+What is Thread Local Storage?
+
+This is what Microsoft has to say about it:
+"The  .tls  section  provides direct PE/COFF support for static  Thread  Local
+Storage  (TLS).   TLS is a special storage class supported by Windows NT.   To
+support  this  programming construct, the PE/COFF .tls section  specifies  the
+following  information: initialization data, callback routines for  per-thread
+initialization and termination, and the TLS index".
+
+So,  Thread Local Storage (TLS) is a Microsoft invention for applications that
+need  to  initialise  thread data before main execution begins.  To  do  this,
+there  are callback pointers.  These functions execute before the code at  the
+main  entry  point!   Clearly, this is a new way for viruses to run  and  even
+though  AVers know about it, they probably don't support PE+ files because  no
+viruses use it.
+
+One point now:
+We  can ignore the reference to .tls because there is a field in the PE header
+that  points to this structure anywhere in the file.
+
+The callback functions have the same parameters as a DLL entry-point function,
+except that nothing is returned.  The declaration looks like this:
+
+typedef VOID (NTAPI *PIMAGE_TLS_CALLBACK)
+             (PVOID DllHandle, DWORD Reason, PVOID Reserved);
+
+The Reason parameter can take the following values:
+
+Setting                 Value   Description
+DLL_PROCESS_ATTACH      1       New process has started
+DLL_THREAD_ATTACH       2       New thread has been created
+DLL_THREAD_DETACH       3       Thread is about to be terminated
+DLL_PROCESS_DETACH      0       Process is about to terminate
+
+The DLL_PROCESS_ATTACH and DLL_PROCESS_DETACH messages mean that we are called
+for  the  host startup (after CreateProcess() but before process entry  point)
+and  shutdown  (from  within  ExitProcess()), and  the  DLL_THREAD_ATTACH  and
+DLL_THREAD_DETACH   mean  that  we  are  called  for  thread  startup   (after
+CreateThread()  but  before  thread  entry point) and  shutdown  (from  within
+ExitThread()).   This  happens for EXEs and also DLLs (but only DLLs that  are
+not  loaded with LoadLibrary).  No need to hook ExitProcess() anymore  because
+we will be called by ExitProcess() automatically.
+
+It  is important to know that NTDLL.DLL (not KERNEL32.DLL!) calls the callback
+functions.   Thus,  if  you need to call kernel32.dll APIs, you need  to  call
+LdrGetDllHandle() to find kernel32.dll image base.  The good thing is that the
+import table is filled already, so you can use the host imports.
+
+
+What does TLS look like?
+
+At offset 0xD0 in the PE+ header is the pointer to the TLS directory.
+According to Microsoft documentation, the TLS directory has the format:
+
+Offset  Size    Field                   Description
+0x00    8       Raw Data Start VA       Starting address of the TLS template
+0x04    8       Raw Data End VA         Address of last byte of TLS template
+0x08    8       Address of Index        Location to receive the TLS index
+0x0C    8       Address of Callbacks    Pointer to array of TLS callbacks
+0x10    4       Size of Zero Fill       Size of unused data in TLS template
+0x14    4       Characteristics         (reserved but not checked)
+
+Notice  that the pointers are all virtual addresses (VA), not relative virtual
+addresses  (RVA).   This means that if we add a TLS directory, we should  also
+add  relocation items to the .reloc section, or simply remove all relocations.
+The reason for this is that if the file is loaded to a different base address,
+then  Windows  will  display  the  message  box  "The  application  failed  to
+initialize correctly" and the file will not execute anymore.
+
+
+What do the TLS fields mean?
+
+The  TLS template contains data that are copied whenever a thread is  created.
+These data can also be executable codes (after calling VirtualProtect(), since
+IA64 enforces the executable bit).  If the template exists (it is optional and
+so  the  fields can be null) then when the application  starts,  Windows  will
+allocate  an  array for the TLS pointers and store this pointer  at  r13:0x58.
+For  each  thread that is created, the size of the template is allocated  from
+the  local  heap, the data are copied to there, the pointer is stored  in  the
+array, and the array index is stored in the TLS index field.  A thread can get
+its pointer by this formula:
+qword at (qword at [r13:[0x58]] + (TLS index * 8))
+Or some code:
+add    r30 = 0x58, r13
+ld8    r30 = [r30]                      //get pointer to array of TLS pointers
+add    r31 = @ltoff(TLSIndex), gp
+ld8    r31 = [r31]                      //get TLS index pointer
+ld4    r31 = [r31]                      //get TLS index
+shladd r30 = r31, 3, r30                //get pointer to TLS data pointer
+ld8    r30 = [r30]                      //get pointer to TLS data
+then access data at [r30 + offset]
+
+The  Address  of  Callbacks  field contains the Virtual Address  of  an  null-
+terminated  array of functions that receive the ATTACH/DETACH messages.  It is
+valid  to have no entries in this array.  In that case, the field is  supposed
+to point to eight zero bytes, however the actual field can also be null.
+
+
+How to use TLS?
+
+There are a few simple ways to use TLS to infect a file:
+add a callback pointer to existing array (or create new array)
+alter one of the host callback pointers
+alter the code in one of the callbacks
+create a new TLS directory
+hijack the TLS template and alter some code somewhere in the file
+
+If  you  want to use the TLS method to infect a file, firstly check if  a  TLS
+directory  exists already.  If it does, then you can pick at random a callback
+routine  pointer and change it to point to your code.  If there is no existing
+TLS  directory,  then  add one by setting correctly the pointers in  your  own
+version.   The template addresses can be set to null and the index pointer can
+point to any writable dword (including the Characteristics field because it is
+not  used).  The callback pointer will point to the array of callback  routine
+pointers,  one of which will be the virus entry point.  When this entry  point
+receives control, the file is loaded fully into memory and the import table is
+fixed  up.  This means that we can do anything that we would do normally, like
+go  resident  or  call  API functions and spread to  other  files.   The  main
+difference  is  that  we are guaranteed to be called at least twice,  once  on
+startup  and  once on shutdown, and twice more for every thread that the  host
+uses.   This means that we must be careful to avoid recursion because we  will
+also be called if we use threads in our virus code.
+
+Hijacking  the TLS template is a technique that still has not been used.   The
+idea is to make a copy of the TLS template and add the virus code to it.  When
+the  process starts (or a thread is created), then the virus code is copied by
+Windows  into the heap.  This means that the code is automatically placed into
+a  writable memory space, without any call to malloc or memcopy.  The only two
+things  that are required after that are to mark the region as executable, and
+to  transfer  control to the code on the heap.  That is done by using the  TLS
+index to get the heap pointer.
+
+The transfer of control code would look something like this:
+this code is in the file:
+fib:
+alloc                   loc0 = 0, 4, 4, 0
+mov                     loc1 = rp
+mov                     loc2 = gp
+add                     out0 = 0x58, r13
+ld8                     out0 = [out0]
+add                     out1 = @ltoff(TLSIndex), gp
+ld8                     out1 = [out1]
+ld4                     out1 = [out1]
+shladd                  out0 = out1, 3, out0
+ld8                     out0 = [out0]
+mov                     out1 = 1
+mov                     out2 = PAGE_EXECUTE_READWRITE
+add                     out0 = size of original TLS template, out0
+mov                     out3 = sp
+mov                     loc3 = out0
+br.call.sptk.few        rp = VirtualProtect
+fie:
+mov                     b1 = loc3
+br.cond.sptk.many       b1
+
+this code is on the heap:
+mov                     r2 = rp			//get return address
+addl                    r2 = fib - fie, r2	//point to first byte of code in file
+//rest of code is here.  do not forget to restore host bytes
+mov                     ar.pfs = loc0		//restore important registers
+mov                     rp = loc1		//restore important registers
+mov                     gp = loc2		//restore important registers
+mov                     b1 = loc3		//store real return address
+br.cond.sptk.many       b1			//return to host
+
+
+Epilogue:
+
+Now  you  want to look at my example code and then to make your own  examples.
+There   are  many  possibilities  with  this  technique  that  make  it   very
+interesting.  It is easy when you know how.  Just use your imagination.
+
+TLSDemo3 has an inserted TLS directory and code that displays message box.
+This code runs before main entry point.
+
+TLSDemo4 has a hijacked TLS template and code that displays message box.
+This code jumps from main entry point to heap without malloc or memcopy.
+
+
+Greets to friendly people (A-Z):
+
+Active - Benny - Obleak - Prototype - Ratter - Ronin - RT Fishel -
+sars - The Gingerbread Man - Ultras - uNdErX - Vecna - VirusBuster -
+Whitehead
+
+
+rgb/29A may 2004
+iam_rgb@hotmail.com

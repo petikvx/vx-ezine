@@ -1,0 +1,196 @@
+
+/*
+   Examine the OLE 2.0 Structured Storage (aka OLE Docfile) property storage
+   name.
+   Copyright (c) 1999-2003  Slash Wu <slash@ms32.url.com.tw>
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published  by
+   the Free Software Foundation; either version 2 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+ */
+
+#include <stdio.h>
+void
+examine_pps_name (unsigned char *root, long pps)
+{
+  static int level = 0;
+  int i;
+  if (root[0x80 * pps + 0x42] == 2) {	/* if it is a stream */
+    for (i = 0; i < level; i++)
+      printf ("  ");
+    for (i = 0; *(short *) &root[0x80 * pps + i] != 0; i += 2)
+      putchar (*(short *) &root[0x80 * pps + i]);
+    putchar ('\n');
+  }
+  if (*(long *) &root[0x80 * pps + 0x44] != -1L)
+    examine_pps_name (root, *(long *) &root[0x80 * pps + 0x44]);
+  if (*(long *) &root[0x80 * pps + 0x48] != -1L)
+    examine_pps_name (root, *(long *) &root[0x80 * pps + 0x48]);
+  if (root[0x80 * pps + 0x42] != 2) {	/* if it is a storage or root */
+    for (i = 0; i < level; i++)
+      printf ("  ");
+    for (i = 0; *(short *) &root[0x80 * pps + i] != 0; i += 2)
+      putchar (*(short *) &root[0x80 * pps + i]);
+    putchar ('\n');
+  }
+  if (*(long *) &root[0x80 * pps + 0x4c] != -1L) {
+    level++;
+    examine_pps_name (root, *(long *) &root[0x80 * pps + 0x4c]);
+    level--;
+  }
+}
+
+
+main (int argc, char *argv[])
+{
+  FILE *fp;
+  long identifier;
+  unsigned char *header, *bbd, *sbd, *root;
+  long *sbd_list, *root_list;
+  int i;
+  int count;
+  if (argc != 2) {
+    fprintf (stderr, "usage: %s OLE2_Docfile\n", argv[0]);
+    exit (1);
+  }
+
+  /* ok, 1st we open the docfile, and check if it is an OLE Docfile */
+  if ((fp = fopen (argv[1], "rb")) == (FILE *) 0) {
+    perror (argv[1]);
+    exit (1);
+  }
+  fread (&identifier, 1, 4, fp);
+  if (identifier != 0xe011cfd0L) {
+    fprintf (stderr, "this is not an OLE Docfile.\n");
+    exit (1);
+  }
+  fread (&identifier, 1, 4, fp);
+  if (identifier != 0xe11ab1a1L) {
+    fprintf (stderr, "this is not an OLE Docfile.\n");
+    exit (1);
+  }
+  rewind (fp);
+
+  /* 2nd, we read in Docfile header (block -1) */
+  if ((header = (unsigned char *) calloc (1, 0x200)) == (unsigned char *) 0) {
+    printf ("not enough memory\n");
+    return;
+  }
+  fread (header, 1, 0x200, fp);
+
+  /* 3rd, we read in `big block depot' blocks */
+  if ((bbd =
+       (unsigned char *) calloc (0x200,
+				 *(long *) &header[0x2c])) ==
+      (unsigned char *) 0) {
+    printf ("not enough memory, maybe too many `bbd' blocks\n");
+    free (header);
+    return;
+  }
+
+  for (i = 0; i < *(long *) &header[0x2c]; i++) {
+    fseek (fp, 0x200 * (1 + ((long *) &header[0x4c])[i]), SEEK_SET);
+    fread (bbd + i * 0x200, 1, 0x200, fp);
+  }
+
+  /* 4th, we extract the `sbd_list' (this is for further use) */
+  if (*(long *) &header[0x3c] != -2L) {
+
+    /* we 1st count the number of sbd blocks */
+    long prev;
+    for (prev = *(long *) &header[0x3c], count = 1;
+	 (prev = ((long *) bbd)[prev]) != -2L; count++);
+
+    /* so we can allocate appropriate array to put the `sbd block numbers' */
+    if ((sbd_list = (long *) calloc (4, count)) == (long *) 0) {
+      printf ("not enough memory, maybe too many `sbd' blocks\n");
+      free (header);
+      free (bbd);
+      return;
+    }
+
+    for (sbd_list[0] = *(long *) &header[0x3c], i = 1;
+	 ((long *) bbd)[sbd_list[i - 1]] != -2L; i++)
+      sbd_list[i] = ((long *) bbd)[sbd_list[i - 1]];
+
+    /* now, we read in `small block depot' blocks */
+    if ((sbd = (unsigned char *) calloc (0x40, count)) == (unsigned char *) 0) {
+      printf ("not enough memory, maybe too many `sbd' blocks\n");
+      free (header);
+      free (bbd);
+      free (sbd_list);
+      return;
+    }
+
+    for (i = 0; i < count; i++) {
+      fseek (fp, 0x200 * (1 + sbd_list[i]), SEEK_SET);
+      fread (sbd + i * 0x40, 1, 0x40, fp);
+    }
+  }
+
+  /* 5th, we extract the `root_list' */
+  /* we 1st count the number of root blocks */
+  {
+    long prev;
+    for (prev = *(long *) &header[0x30], count = 1;
+	 (prev = ((long *) bbd)[prev]) != -2L; count++);
+  }
+
+  /* so we can allocate appropriate array to put the `root block numbers' */
+  if ((root_list = (long *) calloc (4, count)) == (long *) 0) {
+    printf ("not enough memory, maybe too many `root' blocks\n");
+    free (header);
+    free (bbd);
+    if (*(long *) (header + 0x3c) != -2L) {
+      free (sbd_list);
+      free (sbd);
+    }
+    return;
+  }
+
+  for (root_list[0] = *(long *) &header[0x30], i = 1;
+       ((long *) bbd)[root_list[i - 1]] != -2L; i++)
+    root_list[i] = ((long *) bbd)[root_list[i - 1]];
+
+  /* now, we read in `root' blocks */
+  if ((root = (unsigned char *) calloc (0x200, count)) == (unsigned char *) 0) {
+    printf ("not enough memory, maybe too many `root' blocks\n");
+    free (header);
+    free (bbd);
+    if (*(long *) (header + 0x3c) != -2L) {
+      free (sbd_list);
+      free (sbd);
+    }
+    free (root_list);
+    return;
+  }
+
+  for (i = 0; i < count; i++) {
+    fseek (fp, 0x200 * (1 + root_list[i]), SEEK_SET);
+    fread (root + i * 0x200, 1, 0x200, fp);
+  }
+
+  /* ok, what we want to do could be followed, now we want to examine each 
+     pps name */
+  examine_pps_name (root, 0L);	/* from pps 0 (Root Entry) */
+
+  /* free allocated memory */
+  free (header);
+  free (bbd);
+  if (*(long *) (header + 0x3c) != -2L) {
+    free (sbd_list);
+    free (sbd);
+  }
+  free (root_list);
+  free (root);
+}

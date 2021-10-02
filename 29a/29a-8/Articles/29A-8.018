@@ -1,0 +1,484 @@
+=============================================================
+Scanning for Wireless Networks
+By GriYo/29A
+=============================================================
+
+Introduction
+============
+
+Wireless networks spread over the city quickly... While walking from
+work to home with Kismet running on my laptop I found 235 different
+networks, most of them opened to anyone.
+
+I’m going to explain how you can add wireless network scanning to
+your application without having to write a driver. I don’t care
+if you write a worm which spread over detected networks, or if you
+write an application just to audit your wireless network. That’s
+your own problem and I take no responsibility for the way you use
+the following ideas and code.
+
+Advantages of the method I’m going to describe are:
+
+* Easy to implement, no need for writing a driver.
+
+* You don’t have to worry about different wireless cards, as this
+method will work with most of them.
+
+The trick I’m going to explain is known to work under XP and
+WINDOWS 2000, but may work in newer WINDOWS OS, although untested.
+
+The device
+==========
+
+In order to use your wireless adapter your application must know
+about it. Have a look at the following registry key:
+
+SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkCards
+
+You will find there entries for each card installed on your system,
+each one showing the following information:
+
+----------------------------------------------------------------------
+Description – REG_SZ
+ServiceName – REG_SZ
+----------------------------------------------------------------------
+
+The following code illustrates how you can iterate through the list of installed network adapters, eventually displaying each one to the user:
+
+----------------------------------------------------------------------
+BOOL get_device_info(   int Index,
+                        char *key_name,
+                        char *device_info,
+                        char *device_description)
+{
+        HKEY hkey ;
+        DWORD size ;
+        DWORD type ;
+        BOOL retval ;
+
+        retval = FALSE ;
+
+        memset( device_info, 0, SIZEOF_DEVICE_NAME) ;
+
+        if( RegOpenKeyEx(       HKEY_LOCAL_MACHINE,
+                                key_name,
+                                0,
+                                KEY_READ,
+                                &hkey) == ERROR_SUCCESS)
+        {
+                type = REG_SZ ;
+                size = SIZEOF_DEVICE_NAME ;
+
+                if( RegQueryValueEx(    hkey,
+                                        "ServiceName",
+                                        NULL,
+                                        &type,
+                                        ( BYTE *) device_info,
+                                        &size) == ERROR_SUCCESS)
+                {
+                        type = REG_SZ ;
+                        size = SIZEOF_DEVICE_NAME ;
+
+                        if( RegQueryValueEx(    hkey,
+                                                "Description",
+                                                NULL,
+                                                &type,
+                                                ( BYTE *) device_description,
+                                                &size) == ERROR_SUCCESS)
+                        {
+                                retval = TRUE ;
+                        }
+                }
+
+                RegCloseKey( hkey) ;
+        }
+
+        return retval ;
+}
+
+BOOL list_devices( void)
+{
+        char key_name[ SIZEOF_DEVICE_NAME] ;
+        char full_name[ SIZEOF_DEVICE_NAME] ;
+        char device_info[ SIZEOF_DEVICE_NAME] ;
+        char device_description[ SIZEOF_DEVICE_NAME] ;
+
+        FILETIME file_time ;
+
+        HKEY hkey ;
+        int index ;
+        DWORD size ;
+
+        index = 0 ;
+
+        if( RegOpenKeyEx(       HKEY_LOCAL_MACHINE,
+                                "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkCards",
+                                0,
+                                KEY_READ,
+                                &hkey) == ERROR_SUCCESS)
+        {
+                size = SIZEOF_DEVICE_NAME ;
+
+                while(  RegEnumKeyEx(   hkey,
+                                        index,
+                                        key_name,
+                                        &size,
+                                        NULL,
+                                        NULL,
+                                        NULL,
+                                        &file_time) == ERROR_SUCCESS)
+                {
+                        sprintf(        full_name,
+                                        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkCards\\%s",
+                                        key_name) ;
+
+                        get_device_info(        index,
+                                                full_name,
+                                                device_info,
+                                                device_description) ;
+
+                        printf( "Index= %d\nName= %s\nDesc=%s\nKey=%s\n\n",
+                                index + 1,
+                                device_info,
+                                device_description,
+                                full_name) ;
+
+                        index++ ;
+
+                        size = SIZEOF_DEVICE_NAME ;
+                }
+
+                RegCloseKey( hkey) ;
+        }
+
+        if( index == 0)
+        {
+                printf( "No devices found\n\n") ;
+        }
+
+        return TRUE ;
+}
+----------------------------------------------------------------------
+
+Open the device
+===============
+
+In order to use the wireless card we need the value of its
+ServiceName key. Let the user choose from the list generated by the
+above code, or automatically choose one.
+
+Using the value on ServiceName you can call CreateFile in order to
+open the device an access to its features. The following function
+takes the value of ServiceName key as input, and opens the device:
+
+----------------------------------------------------------------------
+void scan( char *device_name)
+{
+        HANDLE hdevice ;
+        char device_file[ SIZEOF_DEVICE_NAME] ;
+
+        sprintf( device_file, "\\\\.\\%s", device_name) ;
+
+        hdevice = CreateFile(   device_file,
+                                GENERIC_READ,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                NULL,
+                                OPEN_EXISTING,
+                                0,
+                                NULL) ;
+
+        if( hdevice == INVALID_HANDLE_VALUE)
+        {
+                printf( "Error: Device not available\n\n") ;
+        }
+        else
+        {
+                ...
+        }
+
+        CloseHandle( hdevice) ;
+}
+----------------------------------------------------------------------
+
+Notice the way we have to build the device name in order to be a
+suitable parameter for CreateFile ( \\.\device ).
+
+The IOCTL and its OID’s
+=======================
+
+Here comes the trick. We are going to use DeviceIoControl in order
+to force our wireless card to scan for available networks. After
+that, issuing another DeviceIoControl call, we will ask the card to
+give us a buffer with the scanning results.
+
+To achieve this we are going to use IOCTL_NDIS_QUERY_GLOBAL_STATS.
+This IOCTL was originally created for WIN32 applications to have
+limited access to a NDIS MAC driver without needing the support of
+a companion NDIS protocol driver.
+
+The Windows NT 4.0 DDK includes a sample application called MACADDR
+which uses this IOCTL. The MACADDR sample illustrated the use of
+Win32 DeviceIoControl calls to access NDIS MAC drivers using
+IOCTL_NDIS_QUERY_GLOBAL_STATS.
+
+For this IOCTL there are several OID’s which may result interesting.
+The following list has been extracted from NtDDNdis.h file include
+in the DDK:
+
+----------------------------------------------------------------------
+//
+// IEEE 802.11 OIDs
+//
+#define OID_802_11_BSSID                        0x0D010101
+#define OID_802_11_SSID                         0x0D010102
+#define OID_802_11_NETWORK_TYPES_SUPPORTED      0x0D010203
+#define OID_802_11_NETWORK_TYPE_IN_USE          0x0D010204
+#define OID_802_11_TX_POWER_LEVEL               0x0D010205
+#define OID_802_11_RSSI                         0x0D010206
+#define OID_802_11_RSSI_TRIGGER                 0x0D010207
+#define OID_802_11_INFRASTRUCTURE_MODE          0x0D010108
+#define OID_802_11_FRAGMENTATION_THRESHOLD      0x0D010209
+#define OID_802_11_RTS_THRESHOLD                0x0D01020A
+#define OID_802_11_NUMBER_OF_ANTENNAS           0x0D01020B
+#define OID_802_11_RX_ANTENNA_SELECTED          0x0D01020C
+#define OID_802_11_TX_ANTENNA_SELECTED          0x0D01020D
+#define OID_802_11_SUPPORTED_RATES              0x0D01020E
+#define OID_802_11_DESIRED_RATES                0x0D010210
+#define OID_802_11_CONFIGURATION                0x0D010211
+#define OID_802_11_STATISTICS                   0x0D020212
+#define OID_802_11_ADD_WEP                      0x0D010113
+#define OID_802_11_REMOVE_WEP                   0x0D010114
+#define OID_802_11_DISASSOCIATE                 0x0D010115
+#define OID_802_11_POWER_MODE                   0x0D010216
+#define OID_802_11_BSSID_LIST                   0x0D010217
+#define OID_802_11_AUTHENTICATION_MODE          0x0D010118
+#define OID_802_11_PRIVACY_FILTER               0x0D010119
+#define OID_802_11_BSSID_LIST_SCAN              0x0D01011A
+#define OID_802_11_WEP_STATUS                   0x0D01011B
+#define OID_802_11_RELOAD_DEFAULTS              0x0D01011C
+----------------------------------------------------------------------
+
+As you can see there are OID’s for almost everything you need to
+write an application able to scan for wireless networks and display
+information about the found ones.
+
+The following code shows how to use IOCTL_NDIS_QUERY_GLOBAL_STATS
+with OID_802_11_BSSID_LIST_SCAN and OID_802_11_BSSID_LIST in order
+to obtain a list of active wireless networks in range:
+
+----------------------------------------------------------------------
+ULONG oidcode ;
+ULONG bytesreturned ;
+NDIS_802_11_BSSID_LIST *pBSSIDList ;
+
+pBSSIDList = ( NDIS_802_11_BSSID_LIST *) VirtualAlloc(  NULL,
+                                                        sizeof( NDIS_802_11_BSSID_LIST) * NUMBEROF_BSSIDS,
+                                                        MEM_RESERVE | MEM_COMMIT,
+                                                        PAGE_READWRITE) ;
+
+if( pBSSIDList == NULL)
+{
+        // Error: Unable to allocate memory for the list
+}
+else
+{
+        memset( pBSSIDList, 0, sizeof( NDIS_802_11_BSSID_LIST) * NUMBEROF_BSSIDS) ;
+        oidcode = OID_802_11_BSSID_LIST_SCAN ;
+
+        DeviceIoControl(        hdevice,
+                                IOCTL_NDIS_QUERY_GLOBAL_STATS,
+                                &oidcode,
+                                sizeof( oidcode),
+                                ( ULONG *) NULL,
+                                0,
+                                &bytesreturned,
+                                NULL) ;
+
+        Sleep( 2000) ;
+
+        memset( pBSSIDList, 0, sizeof( NDIS_802_11_BSSID_LIST) * NUMBEROF_BSSIDS) ;
+        oidcode = OID_802_11_BSSID_LIST ;
+
+        if( DeviceIoControl(    hdevice,
+                                IOCTL_NDIS_QUERY_GLOBAL_STATS,
+                                &oidcode,
+                                sizeof( oidcode),
+                                ( ULONG *) pBSSIDList,
+                                sizeof( NDIS_802_11_BSSID_LIST) * NUMBEROF_BSSIDS,
+                                &bytesreturned,
+                                NULL) == 0)
+        {
+                // List failed
+        }
+        else
+        {
+                ...
+        }
+----------------------------------------------------------------------
+
+>From OID_802_11_BSSID_LIST_SCAN documentation:
+
+The OID_802_11_BSSID_LIST_SCAN OID requests the miniport driver to
+direct the 802.11 NIC to request a survey of BSSs. No data is
+associated with this OID. The NIC will use the following parameters,
+set as defined in the 802.11 specifications, in its request:
+
+* BSSType indicates that both the infrastructure BSS and independent
+BSS are used.
+
+* BSSID indicates that the BSSID is broadcast.
+
+* SSID indicates that the SSID is broadcast.
+
+* ScanType indicates active, passive, or a combination of both
+passive and active scanning approaches.
+
+* ChannelList indicates all permitted frequency channels.
+
+The NIC use active or passive scanning methods or a combination of
+both passive and active scanning methods to perform a scan. It might
+also refresh the list of BSSIDs in its database.
+
+The NIC should minimize the response time for this OID. Active
+scanning is preferred, when possible.
+
+The NIC's database includes BSSIDs for all BSS's responding on
+frequency channels that are permitted in the region in which the NIC
+is operating.
+
+Note  If the NIC is associated with a particular BSSID and SSID that
+are not contained in the list of BSSIDs generated by this scan, the
+BSSID description of the currently associated BSSID and SSID should
+be appended to the list of BSSIDs in the NIC's database.
+
+Note  This OID might be called very frequently (for example, every
+five seconds). Miniport drivers should minimize the performance
+impact of servicing this OID. A query of this OID should not cause
+the NIC to associate with a different access point.
+
+And from OID_802_11_BSSID_LIST documentation:
+
+The OID_802_11_BSSID_LIST OID requests the miniport driver to return
+a list containing all BSSIDs and their attributes, as listed in the
+801.11 NIC's database. This list contains all the BSSs that the NIC
+detected during its most recent survey of BSSs. The miniport driver
+should respond immediately to this OID.
+
+Note  If this OID is called while the NIC is active without a
+preceding OID_802_11_BSSID_LIST_SCAN, it might return a list of
+BSSIDs limited to those IDs included in the NIC's current
+configuration. However, if this OID is called at least six seconds
+after OID_802_11_BSSID_LIST_SCAN, the list of BSSIDs should contain
+all the BSSIDs found during the OID_802_11_BSSID_LIST_SCAN.
+
+This OID uses the NDIS_802_11_BSSID_LIST structure, which is defined
+as follows:
+
+----------------------------------------------------------------------
+typedef_struct _NDIS_802_11_BSSID_LIST
+{
+ULONG  NumberOfItems;
+NDIS_WLAN_BSSID  Bssid[1];
+} NDIS_802_11_BSSID_LIST, *PNDIS_802_11_BSSID_LIST;
+----------------------------------------------------------------------
+
+The members of this structure contain the following information:
+
+* NumberOfItems
+Specifies the number of items contained in the Bssid array. This
+array must contain at least one item.
+
+* Bssid
+Specifies an array of NDIS_WLAN_BSSID structures. An NDIS_WLAN_BSSID
+structure is defined as follows:
+
+----------------------------------------------------------------------
+struct _NDIS_WLAN_BSSID
+{
+ULONG  Length;
+NDIS_802_11_MAC_ADDRESS  MacAddress;
+Uchar  Reserved[2];
+NDIS_802_11_SSID  Ssid;
+ULONG  Privacy;
+NDIS_802_11_RSSI  Rssi;
+NDIS_802_11_NETWORK_TYPE  NetworkTypeInUse;
+NDIS_802_11_CONFIGURATION  Configuration;
+NDIS_802_11_NETWORK_INFRASTRUCTURE  InfrastructureMode;
+NDIS_802_11_RATES  SupportedRates;
+} NDIS_WLAN_BSSID, *PNDIS_WLAN_BSSID;
+----------------------------------------------------------------------
+
+The members of this structure contain the following information:
+
+* Length
+Specifies the length of the NDIS_WLAN_BSSID structure in bytes.
+
+* MacAddress.
+Specifies a media access control (MAC) address. Each access point
+has a unique MAC address that is the same as the BSSID.
+
+* Reserved
+Reserved. Do not use. This member maintains the DWORD alignment of
+the structure.
+
+* Ssid
+Specifies an SSID as defined in the NDIS_802_11_SSID structure. For
+more information about this structure, see OID_802_11_SSID.
+
+* Privacy
+Specifies a WEP encryption requirement.
+
+* Rssi
+Specifies the Received Signal Strength Indication (RSSI) in dBm.
+
+* NetworkTypeInUse
+Specifies the network type as defined in the NDIS_802_11_NETWORK_TYPE
+enumeration. For more information about this enumeration, see
+OID_802_11_NETWORK_TYPE_IN_USE.
+
+* Configuration
+Specifies the radio parameter configuration as defined in the
+NDIS_802_11_CONFIGURATION structure. For more information about this
+structure, see OID_802_11_CONFIGURATION.
+
+* InfrastructureMode
+Specifies the infrastructure mode as defined in the
+NDIS_802_11_NETWORK_INFRASTRUCTURE enumeration. For more information
+about this enumeration, see OID_802_11_INFRASTRUCTURE_MODE.
+
+* SupportedRates
+Specifies a set of supported rates defined in an
+NDIS_802_11_RATES array. For more information about this array,
+see OID_802_11_SUPPORTED_RATES.
+
+As you can see the above IOCTL will return a lot of interesting
+information about every network in range. Using such information we
+can take lots of actions. The most direct one is to write some kind
+of wardriving application, which may show information about every
+wireless network found in the way.
+
+You may want to experiment using other OID’s... There are several
+ones, which return statistical information, ecryption status and
+more...
+
+Using wireless networks for viral attacks
+=========================================
+
+Viruses and worms which spread through the exploitation of buffer
+overflow vulnerabilities has been successful over the INTERNET in
+the recent years.
+
+This kind of viruses and worms has to spread quickly in order to
+have a chance in the wild. Those specimens have to reach the most
+targets they can in a short period of time, before countermeasures
+are in place (updates and fixes for the corresponding
+vulnerabilities, alerts from security companies...).
+
+This also causes a side effect: Network slowdown, tons of suspicious
+activity and such.
+
+Lets imagine some virus which uses the above mentioned BoF exploits
+in an environment where there is less security than on INTERNET:
+Inside a LAN. Such virus may travel from network to network inside
+laptops, for instance. Such virus may spread slowly from LAN to LAN,
+without causing any noticeable side effect

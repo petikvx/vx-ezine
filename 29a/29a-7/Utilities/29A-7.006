@@ -1,0 +1,391 @@
+
+                                 HaX0R'Z KiT
+                                 ===========
+                                    v1.05
+
+  CONTENTS
+  ~~~~~~~~
+
+  0. About & Credits
+  1. Process manager
+  1.1. System process list
+  1.2. Process inheritance
+  1.3. Module list
+  1.4. SFP enabling & disabling
+  1.5. Dumping process's memory contents
+  1.6. Dumping physical memory
+  1.7. Kill & patch process
+  2. Service manager
+  3. Packet-related (crcpkt & spoofer)
+  4. Sniffer
+  5. ICMP Pinger/Scanner/Spoofer/Flooder
+  6. Registry
+  7. Disassembler/trojanizer (previously REVERT tool, MISTFALL-based)
+  8. Binary --> source/echo conversion
+  9. FakeExec
+  10. API<-->CRC conversion
+  11. Other shit
+
+  0. About & Credits
+
+  HaX0R'Z KiT is just an all-in-one collection of some tiny security-related
+  programs... just because its hard to publish all that stuff separately... ;-)
+
+  Since we all hate scr1pt kiddi3z, this is not a trojan nor rootkit,
+  and there is no autorun or stealth features here.
+
+  HKIT were designed for 2K/XP systems, it doesnt uses own driver(s),
+  all network io is performed using raw-sockets, and mostly all
+  features requires system/admin privileges.
+
+  I should thank Ratter/29A for writing Insider and FakeExec,
+  since these great tools were (maybe partially) used in this project.
+
+  Also, greets goes to unknown author(s) of the PasswordReminder tool
+  (www.smidgeonsoft.com ?), because its source were used here.
+
+  The following text shows some aspects of hkit usage.
+  Detailed information can be obtained from sources, for sure.
+
+  1. Process manager
+
+  1.1. System process list
+
+  In the Win2K/XP systems, process list can be obtained by means of
+  NTDLL::NtQuerySystemInformation.
+  More information can be found in the 2K INTERNALS book.
+
+  Each process is described by the SYSTEM_PROCESS_INFORMATION structure,
+  which contains many interesting entries, including:
+
+  - ImageName (ptr to wide-char string -- main exe's full name),
+  - UniqueProcessId (PID),
+  - InheritedFromUniqueProcessId (PPID).
+
+  Using these three entries, process inheritance tree can be built.
+
+  Use "hkit /process /list" to show system process list.
+
+  1.2. Process inheritance
+
+  Each process has been executed by another process.
+  As such, for each process there exists process id (PID),
+  and parent process id (PPID).
+
+  So, if your process spawns another process, relation can be found.
+
+  Lets do the following:
+  - run cmd.exe
+  - in the command line, type 'calc' and watch how calc is executed
+  - go to task manager (taskmgr), right-click on just-executed cmd.exe,
+    and run 'End Process Tree'
+  - calc is died
+
+  Now, lets do the following:
+  - run cmd.exe
+  - type 'cmd' to run another cmd
+  - type 'calc'
+  - type 'exit
+  - now, go to task manager, choose cmd and kill process tree
+  - calc is NOT died
+
+  This means, that you can hide that fact, that your process is
+  parent of another process(es),
+  by means of executing temporary processes.
+
+  And here exists lil feature.
+  What if parent process already died,
+  but some new process got the same pid as parent's ?
+
+  This problem can be solved by means of SYSTEM_PROCESS_INFORMATION::CreateTime,
+  i.e. if parent process has been executed after the child process,
+  this is not the real parent, but just a process with equal pid.
+
+  Use "hkit /process /tree" to show system process tree.
+
+  1.3. Module list
+
+  Module list can be obtained using PSAPI, even in 9X systems having psapi.dll.
+
+  This is useful if you want to find out which modules (DLL's)
+  are used by some process,
+  including ones absent within imports but loaded using LoadLibrary.
+
+  Use "hkit /process /mod" to show all processes and used modules.
+  Use "hkit /process /mod far.exe" to show all modules for process specified
+  by pid or name.
+
+  1.4. SFP enabling & disabling
+
+  Here are two sets of instructions, which corresponds to enabled (original)
+  and disabled (patched) SFP states.
+  This code is located in the 2K::SFC.DLL or XP::SFC_OS.DLL
+
+   --- ENABLED ---                    --- DISABLED ---
+
+ re:
+   xx xx xx xx xx                     68E8030000    push 1000
+   xx xx xx xx xx                     B800000000    mov eax, offset k32.Sleep()
+   xx xx                              FFD0          call eax
+ waitcycle:
+   6A 00              push 0          9090          nop's
+   6A 01              push 1          9090          nop's
+   6A 01              push 1          9090          nop's
+   FF 33              push [ebx]      9090          nop's
+   FF 73 04           push [ebx+4]    909090        nop's
+   FF 15 xx xx xx xx  call NtWaitForMultipleObjects nop's
+   xx xx                              EBE1          jmp re
+
+  As you can see, patch is written in such way that SFP can be enabled or
+  disabled at any moment w/o risk of breaking normal sfc code execution.
+
+  Use "hkit /process /sfpdisable" to disable sfp.
+  Use "hkit /process /sfpenable" to enable sfp.
+
+  1.5. Dumping process's memory contents
+
+  Use "hkit /process /dump process.exe process.dmp" to
+  dump all process's memory into file.
+  Process can be specified by pid or by name.
+
+  Process dump file format consists of HEADER entrie(s),
+  possibly followed by DATA entrie(s).
+
+  Header block has the following format:
+
+  DWORD            0x11111111                    ; id
+  DWORD            0x1C                          ; sizeof(mb)
+  BYTE*sizeof(mb)  MEMORY_BASIC_INFORMATION mb   ; see WIN32.HLP for details
+
+  Data block has the following format:
+
+  DWORD            0x22222222                    ; id
+  DWORD            va                            ; 4k-aligned
+  DWORD            datasize                      ; 4k-aligned, max=64k
+  BYTE*datasize    data                          ; dumped data
+
+  1.6. Dumping physical memory
+
+  Physical memory size can be found using GlobalMemoryStatus() api.
+  Physical memory can be mapped into virtual addresses using
+  NtMapViewOfSection() native function.
+
+  Use "hkit /process /physmem memory.dmp" to dump physical memory into file.
+
+  Physical memory dump file format is just a plain binary file
+  containing physical pages.
+
+  Here (probably) is a bug, or feature, in cases when physical memory
+  could not fit into virtual addresses. This should be fixed in future.
+
+  1.7. Kill & patch process
+
+  Use "hkit /process /kill process.exe" to terminate some process, specified
+  by pid or by name.
+
+  Use "hkit /process /patch process.exe 00401234 CC C3" to
+  insert some code at the specified address into some process,
+  specified by pid or by name.
+  This can help in cases when s-ice doesnt worx properly.
+
+  2. Service manager
+
+  Use for example "hkit /service /create Fuck c:\winnt\system32\fuck.sys /auto"
+  to register service.
+  Use "/createkd" instead to register kernel driver.
+  Use "hkit /service /start|stop|pause|continue|delete ServiceName" to control
+  the service.
+  Use "hkit /service /boottype ServiceName /auto|demand|boot|system|disabled"
+  to change service boot type.
+
+  3. Packet-related (crcpkt & spoofer)
+
+  Use "hkit /crcpkt packetfile" to recalculate IP/ICMP/UDP/TCP csum(s) of
+  the specified file, containing IP packet.
+  Use "hkit /spoofer packetfile [ntimes|0=infinite] [dst_ip]" to send that
+  packetfile to some IP.
+  If <dst_ip> is not specified, address is taken from
+  the IP_header.Dst_IP field.
+
+  4. Sniffer
+
+  Use "hkit /sniffer outfile|basepath|NULL [option(s)]" to invoke
+  the raw-socket sniffer.
+
+  If "NULL" is specified as an output file name, no output file(s)
+  are generated.
+  If "/1" is specified within options, single file is written.
+  Otherwise directory with some sub-directories are created,
+  containing many files inside.
+
+  You can specify "/input=<infile>" to tell sniffer that input packets
+  should be taken from file, not from network.
+  This can be previously sniffed file, or SNORT'ed file (then use "/insnort").
+  Broken snort'ed files are repaired.
+
+  If "/1" is NOT specified, you can use "/r" to write tcp sessions
+  as a single files, instead of writing multiple files per each packet.
+  Also here "/s" can be specified, to skip IP header's.
+  Each TCP session is written as two files: input and output data.
+
+  When processing (reading/writing) files,
+  use "/rt", "/wt", "/rl", "/wl" to read/write packet Timestamp and/or Length.
+  NOTE: if you have specified "/wt" and/or "/wl" when sniffing,
+  you should specify the same "/rt" and/or "/rl" combination
+  when reading corresponding file.
+
+  Use "/tcp|udp|icmp+|-" to include/exclude protocols.
+  For example, "/tcp-" will exclude tcp from being sniffed,
+  while using "/udp+ /icmp+" will sniff ONLY udp and icmp.
+
+  Use "/ip+|-<ip_mask>" to specify IP mask to be sniffed.
+  For example, "/ip-192.168.*.*" will exclude lan from being sniffed,
+  while "/ip+123.*.*.*" will sniff ONLY the specified range.
+  Up to 1024 IP masks/addresses can be specified.
+
+  Use "/v" to verbosely dump sniffed packets (line per packet).
+  Use "/ip=<ip>,alias" to rename IP within dump.
+  4ex: "/ip=192.168.0.1,gateway"
+
+  Use "/http" and/or "/dns" to dump http/dns requests/reply details.
+  Use "/log=logfile" to write dump into log file.
+  Use "/f" to flush files after each write operation.
+
+  Options can be also specified in the following locations:
+  - current_directory\hkit.cfg
+  - path:\<argv0>.cfg
+  - command line
+
+  To sniff & see packet info in the console:
+  "hkit /sniffer null /v /http /dns"
+  To sniff into single file, use:
+  "hkit /sniffer sniffed.bin /1 /wl /wt"
+  To re-process sniffed file, use:
+  "hkit /sniffer /input=sniffed.bin /rl /rt sniffed2.bin /v"
+  To sniff in 1packet-->1file mode, use:
+  "hkit /sniffer sniffed /v"
+  To sniff in 1packet-->1file mode, but merge tcp sessions:
+  "hkit /sniffer sniffed /v /r /s"
+
+  5. ICMP Pinger/Scanner/Spoofer/Flooder
+
+  Use "hkit /ping <ip|host> -n count" to ping host count times.
+  Specified IP is a destination IP written into sending packet.
+  Use "-pktsrc addr" to specify source IP written into packet.
+  Use "-intsrc addr" to specify source interface IP.
+  Use "-intdst addr" to specify destination interface IP.
+  Use "-l size" to specify ping's payload size.
+  Use "-nw" to force flood mode -- i.e. dont wait for replies.
+  Use "-w timeout" to specify pong wait timeout, in milliseconds.
+  Use "-scan -n count" to scan count hosts, starting from specified IP.
+  Use "-fastscan" instead of "-scan" to use parallel scanner
+  (two threads - sending and receiving).
+
+  Pinger: "hkit /ping www.microsoft.com"
+  Scanner: "hkit /ping www.microsoft.com -fastscan -n 256 -w 10000"
+  Spoofer/Flooder: "hkit /ping www.microsoft.com -pktsrc fuck.org -nw -n 0"
+
+  6. Registry
+
+  Use "hkit /reg /dumpall" to save all accessible data into
+  regedit-compatible file.
+  Use "hkit /reg keyword(s)" to search for at least one keyword
+  within each processed key/value/data set.
+  Use "hkit /reg /all keyword(s)" to search for ALL keywords
+  within each processed key/value/data set.
+
+  Options:
+
+  Use "/key-", "/data-", "/value-" to disable searching within key/data/value.
+  Use "/c" to enable case-sensitive search.
+  Use "/findascii" to search ONLY within ascii data format.
+  Use "/findunicode" to search ONLY within unicode data format.
+  Use "/outfile=filename" to change output file from hkit.reg to filename.
+  Use "/outunicode" to force REGEDIT5-compatible output format.
+  (default is asciim, REGEDIT4-compatible)
+  Use "/text-" to disable ascii commentaries corresponding to hex data dump.
+  Use "/fillout" to fill output data with X'es or 0's.
+  This is useful to wipe specified registry keys.
+
+  Example: "hkit /reg /outfile=con icq"
+
+  7. Disassembler/trojanizer (previously REVERT tool, MISTFALL-based)
+
+  Use "hkit /revert explorer.exe explorer2.exe --mode=virus:abc
+      --virus-va:00401234"
+  example says: disassemble explorer.exe, insert binary file 'abc'
+  at address 401234, and link it all into new file explorer2.exe.
+
+  8. Binary --> source/echo conversion
+
+  Use "hkit /bin2src /asm|pas|cpp 123.bin" to produce 123.inc containing
+  "DB 55,66,77,..."-like commands.
+  Use "hkit /bin2src /bin|asm|pas|cpp 123.bin /S=$START$ /E=$END$ @txt"
+  to search for '$START$'/'$END$' signatures within 123.bin,
+  and write everything between them as an array named 'txt'
+  into 123.bin|ash|inc|cpp-file.
+
+  Use "hkit /bin2bat somefile.exe batfile.bat targetfile.exe"
+  to produce batfile.bat from somefile.exe,
+  which, when executed, constructs targetfile.exe.
+  Source file will be split into 64k-blocks, each of them will be
+  packed and converted into self-extracting ascii .com-file.
+  Resulting .bat file will ECHO and RUN these .com-files,
+  and then append resulting 64k-blocks to targetfile.exe using 'copy /b'.
+
+  9. FakeExec
+
+  This is new (and EXPERIMENTAL !!!) technology allowing you
+  to fake [existing] process' file name or pid.
+
+  As a result, ntquerysysteminformation (taskmgr) & psapi (module list)
+  returns something like svchost.exe, while real executed process were
+  kind of trojan.exe.
+
+  It is very complex stuff, which consists of patching PEB
+  in the corresponding process' context, and patching system structures
+  through PhysicalMemory device, and except that, ring0 entering were used,
+  and this all were complicated by internal structures mismatch
+  in the 2K/XP systems.
+  So you should understand, that in some cases it doesnt work,
+  and in other cases it can crash system ;-)
+
+  It should be executed as the following:
+
+  "hkit /fakeexec notepad.exe calc.exe" -- exec notepad and change name to calc
+  "hkit /fakeexec bsodomon.exe 31337"   -- exec process and change pid to 31337
+  "hkit /fakeexec 666 31337"  -- find process with pid=666 and set pid to 31337
+  "hkit /fakeexec 666 svchost.exe" -- find process with pid=666 and change name
+
+  WARNING!
+  When process's pid is changed, on that process exit system will
+  (in most cases) do BSOD.
+
+  10. API<-->CRC conversion
+
+  Use "hkit /crc /dll2crc kernel32.dll" to dump crc for each exported api.
+  Use "hkit /crc /dll2api kernel32.dll View" to find all exported functions
+  containing word "View" and corresponding crcs.
+  Use "hkit /crc /api2crc CreateFileA" to calculate crc32 for "CreateFileA".
+  Use "hkit /crc /crc2api kernel32.dll A89B382F" to find exported function with
+  specified crc32.
+
+  11. Other shit
+
+  Use "hkit /showpass" to show cached password on NT/2K systems,
+  (used PasswordReminder sources)
+  Use "hkit /md5 file" to calculate file's md5 checksum.
+  NOTE: file is threated as BINARY, not an ASCII file.
+  Use 'hkit /md5 "phrase"' to calculate phrase's md5 checksum.
+  Use "hkit /http ip port 10 20 req" to send file req to ip:port,
+  and then dump reply; waiting 10 seconds for connect(),
+  and 20 seconds for recv().
+  Use "hkit /iislog" to clean IIS logs, even if IIS is running now.
+  Use "hkit /savehkcu hkcu.reg" to save HKEY_CURRENT_USER into hkcu.reg file in
+  binary form.
+  Use "hkit /error 187" to show error code's description.
+  Use "hkit /nterror c0000001" to show nt error's description.
+  Use "hkit /telnetd ip port" to listen on ip:port for incoming connections,
+  giving cmd shell. If ip is 0, listens on all addresses.
+
+                                      * * *

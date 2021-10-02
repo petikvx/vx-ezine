@@ -1,0 +1,606 @@
+
+                                HOOKLIB & SDE
+                                ~~~~~~~~~~~~~
+
+                                  ABSTRACT
+
+ Two  engines  described:  HOOKLIB  splicing library, allowing you to hook any
+ function   by  address,  including  functions  in  the  remote processes; and
+ SDE,  or   Subroutine   Displacement   Engine  --  an  engine allowing you to
+ make  your  C/C++ subroutines program- and/or offset-independend, for example
+ to inject and execute them in the remote processes.
+
+ To   use  these  engines, no special knowledge/coding is required; everything
+ can be understood from the examples.
+
+                                  CONTENTS
+
+ 1. HookLib intro
+ 2. HookLib
+ 3. SDE intro
+ 4. SDE
+ 5. Conclusion
+
+                              1. HOOKLIB INTRO
+                              ~~~~~~~~~~~~~~~~
+
+ I'd  like to tell ya 'bout some gamez using length disassemblers. One of such
+ games  is  so  called  splicing, cool vx technology known and used for years.
+ Different stupid scriptkiddiez are so lazy so they hook iat, and other fuckin
+ dwords  pointing  to  other  dwords, and they think that it is cool. But real
+ machos  never  hook  dwords, they deal with only the real code. I'll tell you
+ why.  Because  one  day  such  a scriptkiddie encounter situation where there
+ is no dword  pointing  to  another  dword.  And  then  he  suck big red dick.
+ Moreover,  since  function is hooked indirectly, changing some reference, you
+ have  no guarantee that it will never be called directly, so you can not hook
+ all  target  function  calls. While  we   always  know how to hook mostly any
+ function  in  any case. So i'll tell  you  how.   Imagine,  somewhere  exists
+ subroutine    you    want  to  hook.  It  consists  of   instructions,   isnt
+ it?    And    you    can   change  these  instructions.  For example,   since
+ you  insert     into   the   prolog   of   the  target  subroutine  something
+ like  JMP,    it  is  hooked. You may think, that subroutine  will  not  work
+ after  such   a    modification.  No  fucking way, it  will.  You  only  need
+ to   take original    instructions     and    correctly  place    'em    into
+ another  location.     Somewhere   into   the   place,  pointed  to   by  the
+ inserted  jmp, where  these     moved     instructions    will   be executed.
+ So   it  all looks like the following:
+
+ before modification:        after modification:
+
+ target: push    ebp         target: jmp     hook_stub \ (1)
+         mov     ebp, esp            nop               /
+         sub     esp, 8              push    esi
+         push    esi                 ...
+         ...              hook_stub: call    hook
+                                     push    ebp
+                                     mov     ebp, esp
+                                     sub     esp, 8
+                                     jmp     target+6
+                               hook: ...
+
+ The  only  question  you  can  ask is how to find out how many original bytes
+ should  we  copy.  Amount of bytes is calculated using simple algorithm: copy
+ instruction   by   instruction,   until   summary   size  of the copied bytes
+ is  enough  to   insert  there (instead of them) something like jmp hook_stub
+ (1).    So    this    can     be     5  or  more  original  bytes,  depending
+ on  instructions forming target  subroutine  prolog.   Copying   instructions
+ one      by     one    requires  such   thing  as  length  disassembler:   it
+ is  just    a    subroutine    that    returns    instruction    length    by
+ given instruction  pointer.  Once again, scriptkiddie will  insert  something
+ like push    offset hook_stub   &   retn,   instead of a  relative jmp, while
+ real  machos   always   know    how   relative   arguments   are  calculated,
+ so   in  situation    where    5   bytes     is      okey    but  6  is  not,
+ scriptkiddiez  will   suck.   Moral  of this story is simple: leave easy ways
+ for suckers, and live your own original life.
+
+ Sometimes  people  torment  themselfs using the following algo: copy original
+ bytes   from  the target  subroutine into some temp buffer, and insert jmp to
+ hook     subroutine     instead      of     original  prolog  bytes;   later,
+ when  hook  is called,     restore    original      bytes,     call  original
+ subroutine,     wait    until      it    returns,   and   hook it once again.
+ Except   redundant    complexity,   such    method    is   unreliable: first,
+ you  can  lose  your    hook   if   subroutine  doesnt  returns;  second, the
+ more    frequently   you    modify     executable     code   without   thread
+ locking,  the  more  chances you have to fuckup your unhappy program.
+
+                                  2. HOOKLIB
+                                  ~~~~~~~~~~
+
+ Here is a brief description of the HOOKLIB splicing library, which allows you
+ to hook mostly any subroutine, including subroutines in the remote processes,
+ any  number of times (multiple hooks), including unhook operation. Note, that
+ if  you  install  hooks  1,  then 2, then 3 (for the same target subroutine),
+ an  then  remove  hook  2, only hook 1 will be available, since hooks are not
+ linked into chains.
+
+void* InstallHook(void* Target,             /* subroutine to hook            */
+                  void* Hook,               /* hook handler                  */
+                  unsigned long flags,      /* flags, HF_xxx                 */
+                  unsigned long nArgs,      /* used if HF_REPUSH_ARGS        */
+                  void* stubAddr,           /* if NULL, do malloc/free       */
+                  unsigned long stubSize,   /* unused if stubAddr is defined */
+                  void* hProcess );         /* process handle                */
+
+ Target -- is a pointer to the subroutine you want to hook.
+           This can be virtual address in the remote process.
+
+ Hook -- is a pointer to the hook handler subroutine.
+         This also can be virtual address in the remote process.
+
+ Flags -- is a bitset of the following values:
+
+    HF_REPUSH_ARGS    -- if specified, arguments are re-pushed before calling
+                         Hook(), and you must specify also nArgs parameter.
+                         if not specified, arguments are left on the stack
+                         unchanged.
+
+    HF_VAARG          -- used only if HF_REPUSH_ARGS flag is specified;
+                         if used, in addition to nArgs arguments there is
+                         last argument called va_arg,
+                         or "variable argument list"; in C/C++ it looks
+                         like "...", like in printf.
+
+    HF_DISABLE_UNHOOK -- normally, hook stub contains information used in
+                         unhook operation (see UninstallHook());
+                         if this flag is specified, such information is
+                         not generated, and standard unhook
+                         will be not available.
+
+    HF_NOMALLOC       -- if this flag is specified, stubAddr parameter
+                         specifies virtual address of the hook stub;
+                         possibly in the remote context.
+                         otherwise, malloc/free alike functions will be
+                         used to allocate/free hook stub memory.
+
+    HF_RETTOCALLER    -- used only if HF_REPUSH_ARGS is NOT specified;
+                         if this flag is specified, Hook() handler
+                         is called using JMP command, otherwise with CALL.
+                         In 1st case, control is returned to caller,
+                         bypassing target subroutine;
+                         in 2nd case, control is passed to hooked subroutine.
+
+    HF_OWN_CALL       -- used only if HF_RETTOCALLER is NOT specified;
+                         if this flag is specified, Target() is called from
+                         Hook(), and 1st argument passed to Hook() is
+                         pointer to copied original bytes, linked with
+                         jmp to (Target + orig_len)
+
+                         if HF_TARGET_IS_CDECL is also specified,
+                         nArgs is ignored, otherwise nArgs should be specified
+                         to build 'RET n' instruction after
+                           call Hook & add esp, n
+
+    HF_TARGET_IS_CDECL -- used only if HF_OWN_CALL,
+                          means that Target() subroutine uses __cdecl
+                          calling convention.
+
+    HF_REGISTERS       -- do PUSHAD before Hook() call &&
+                          do POPAD on return from Hook(),
+                          as such Hook() can modify registers,
+                          useful in combination with HF_RETTOCALLER flag,
+                          when instead of target address you specify
+                          not a subroutine but some instruction address, and
+                          wanna inspect/change register values at that point.
+
+ nArgs -- used only if HF_REPUSH_ARGS and/or (HF_OWN_CALL&&!HF_TARGET_IS_CDECL)
+          flags are specified;
+          specifies number of arguments, not counting va_arg (if present)
+
+ stubAddr -- used only if HF_NOMALLOC flag is specified;
+             specifies virtual address of the hook stub
+             (possibly in the remote process).
+
+ stubSize -- used only if stubAddr is defined (!=NULL),
+             specifies max size of hook stub
+
+ hProcess -- is a handle of the process we are working with;
+             this handle is passed into Virtual<Alloc|Free|Protect>Ex
+             and/or <Read/Write>ProcessMemory functions;
+             if you hook subroutine in the current process,
+             specify here GetCurrentProcess();
+             if you use HOOKLIB on the unix machine,
+             and/or using standard C functions like malloc/free/memcpy,
+             this parameter is completely ignored.
+
+ Return values:
+
+   InstallHook() returns "hook handle", i.e. pointer to the hook stub
+   (possibly in the remote process), or NULL if error.
+
+ Stub format/Hook arguments:
+
+  HF_REPUSH_ARGS     = 0
+  HF_RETTOCALLER     = 0
+  HF_OWN_CALL        = 0
+  HF_TARGET_IS_CDECL = unused
+
+     target:     jmp stub
+
+     stub:       (if HF_DISABLE_UNHOOK==0) <unhook_data>
+                 call hook
+     orig_bytes: <orig_bytes>
+                 jmp (target + <orig_len>)
+
+     ; void __cdecl hook(hkRET, arg1, arg2, argX)
+     hook:       ...
+                 retn
+
+  HF_REPUSH_ARGS     = 0
+  HF_RETTOCALLER     = 0
+  HF_OWN_CALL        = 1
+  HF_TARGET_IS_CDECL = 0
+
+     target:     jmp stub
+
+     stub:       (if HF_DISABLE_UNHOOK==0) <unhook_data>
+                 push offset orig_bytes
+                 (HF_REGISTERS ? PUSHAD)
+                 call hook
+                 (HF_REGISTERS ? POPAD)
+                 add esp, 4
+                 retn (nArgs * 4)
+     orig_bytes: <orig_bytes>
+                 jmp (target + <orig_len>)
+
+     ; sometype __cdecl hook(target, hkRET, arg1, arg2, argN)
+     hook:       ...
+                 call target
+                 mov eax, retcode
+                 retn
+
+  HF_REPUSH_ARGS     = 0
+  HF_RETTOCALLER     = 0
+  HF_OWN_CALL        = 1
+  HF_TARGET_IS_CDECL = 1
+
+     target:     jmp stub
+
+     stub:       (if HF_DISABLE_UNHOOK==0) <unhook_data>
+                 push offset orig_bytes
+                 call hook
+                 add esp, 4
+                 retn
+     orig_bytes: <orig_bytes>
+                 jmp (target + <orig_len>)
+
+     ; sometype __cdecl hook(target, hkRET, arg1, arg2, argX)
+     hook:       ...
+                 call target
+                 add esp, (nArgs * 4)
+                 mov eax, retcode
+                 retn
+
+  HF_REPUSH_ARGS     = 0
+  HF_RETTOCALLER     = 1
+  HF_OWN_CALL        = unused
+  HF_TARGET_IS_CDECL = unused
+
+     target:     jmp stub
+
+     stub:       (if HF_DISABLE_UNHOOK==0) <unhook_data>
+                 jmp hook
+     orig_bytes: <orig_bytes>
+                 jmp (target + <orig_len>)
+
+     ; void __whatever hook(arg1, arg2, argX)
+     hook:       ...
+                 retn <whatever>
+
+  HF_REPUSH_ARGS     = 1
+  HF_RETTOCALLER     = unused
+  HF_OWN_CALL        = 0
+  HF_TARGET_IS_CDECL = unused
+
+     target:     jmp stub
+
+     stub:       (if HF_DISABLE_UNHOOK==0) <unhook_data>
+                 (if HF_VAARG) push esp; add dword [esp], 4+nArgs*4
+                 push argN
+                 push arg1
+                 call hook
+                 add esp, (nArgs * 4 + HF_VAARG?4:0)
+     orig_bytes: <orig_bytes>
+                 jmp (target + <orig_len>)
+
+     ; void __cdecl hook(arg1, arg2, argN)
+     hook:       ...
+                 retn
+
+  HF_REPUSH_ARGS     = 1
+  HF_RETTOCALLER     = unused
+  HF_OWN_CALL        = 1
+  HF_TARGET_IS_CDECL = 0
+
+     target:     jmp stub
+
+     stub:       (if HF_DISABLE_UNHOOK==0) <unhook_data>
+                 (if HF_VAARG) push esp; add dword [esp], 4+nArgs*4
+                 push argN
+                 push arg1
+                 push offset orig_bytes
+                 call hook
+                 add esp, (nArgs * 4 + 4 + HF_VAARG?4:0)
+                 retn (nArgs * 4)
+     orig_bytes: <orig_bytes>
+                 jmp (target + <orig_len>)
+
+     ; sometype __cdecl hook(target, arg1, arg2, argN)
+     hook:       ...
+                 call target
+                 mov eax, retcode
+                 retn
+
+  HF_REPUSH_ARGS     = 1
+  HF_RETTOCALLER     = unused
+  HF_OWN_CALL        = 1
+  HF_TARGET_IS_CDECL = 1
+
+     target:     jmp stub
+
+     stub:       (if HF_DISABLE_UNHOOK==0) <unhook_data>
+                 (if HF_VAARG) push esp; add dword [esp], 4+nArgs*4
+                 push argN
+                 push arg1
+                 push offset orig_bytes
+                 call hook
+                 add esp, (4 + nArgs * 4 + HF_VAARG?4:0)
+                 retn
+     orig_bytes: <orig_bytes>
+                 jmp (target + <orig_len>)
+
+     ; sometype __cdecl hook(target, arg1, arg2, argN)
+     hook:       ...
+                 call target
+                 add esp, (nArgs * 4)
+                 mov eax, retcode
+                 retn
+
+  UninstallHook() is only available if HF_DISABLE_UNHOOK flag were NOT
+  specified while calling InstallHook subroutine.
+
+int UninstallHook(void* hookHandle,         /* returned by InstallHook()  */
+                  void* hProcess );         /* process handle, -1=current */
+
+  hookHandle -- is a ponter to the hook stub,
+                returned by InstallHook subroutine.
+
+  hProcess -- same as in InstallHook()
+
+ Return values:
+
+   UninstallHook() returns 1 if hook is removed, and 0 if error.
+
+                                3. SDE INTRO
+                                ~~~~~~~~~~~~
+
+ In some cases, we need to execute own code in the remote process.
+ There are two common ways of doing such a bad thing:
+
+ 1. remotely load code from the external dll file,
+    by means of calling CreateRemoteThread() two times:
+    1st time remotely call LoadLibrary to load own dll,
+    2nd time remotely call own dll's function.
+
+ 2. inject some special code snippet into remote process.
+
+ I'd like to tell ya how to do it in C/C++, without any problems.
+
+ Imagine, that you have some C/C++ subroutines, and you want to inject'em
+ into the remote context, at different virtual address.
+ What will happen in such case?
+
+ 1st, your subroutines use text strings.
+
+ This can be solved by copying all the text strings
+ into single string array (char**), and copying that array into the
+ remote context together with the executable code;
+ then, each subroutine will receive pointer to that string table as an
+ argument, and use text strings as StringTable[n].
+
+ 2nd, your subroutines use binary data structures.
+
+ This can be solved by means of collecting all these structures into
+ some binary array and pass that array into the remote context,
+ the same as string table; then subroutines will receive pointer to that
+ structure as well as its size, and use it as a workspace.
+
+ 3rd, your subroutines use external API calls.
+
+ This can be solved by means of disassembling all the subroutines
+ instruction by instruction, and replacing external calls with
+ fixed calls, in such way that when subroutines are copied into the
+ remote context, all external calls will point to the same api functions,
+ as in original subroutines location.
+ This is based on assumption, that main system dll's in different
+ contexts are loaded at the same base addresses.
+ If you want to use some specific dll, which can be loaded at
+ variable image base addresses, you can load its api dynamically.
+
+ 4th, i can miss something else, so you should know how your c/c++ source
+ is compiled into assembly code, how each line of code looks in both
+ high and low level representation.
+
+ 5th, you cant use c++ classes, since method tables should then be also
+ copied/modified into other location; but this probably could be solved.
+
+ So, how it all looks like?
+
+               step 1                      step 2         step 3
+                 ^                           ^              ^
+                / \                         / \            / \
+ <functions>    --> reassembled, copied     --> +--------+
+ <string table> --> reassembled, copied     --> |        |
+ <binary data>  --> unchanged, just copied  --> |  temp  |     temp buffer is
+                    startup code, generated --> | buffer | --> injected into
+                    call table, generated   --> |        |     remote process
+                    call table init code    --> |        |     and/or executed
+                    reloc table, generated  --> +--------+
+
+
+ step 1
+
+   you pass pointers to
+     a) specially written (in c/c++) functions,
+     b) string table (optionally, if specified)
+     c) binary data (--//--)
+   to the SDE engine;
+
+   it reassembles all the stuff into given temp buffer,
+   optionally (if VA == NULL) generates relocation table and call table,
+   and optionally (if SDE_RELOAD_FUNCTIONS flag is specified),
+   builds call table initialization code.
+
+ step 2
+
+   temp buffer is (optionally) injected into the remote process,
+   you can do it for example using VirtualProtectEx, VirtualAllocEx
+   and WriteProcessMemory functions
+
+ step 3
+
+   remote thread is created using CreateRemoteThread function,
+   and/or some remote hook (maybe using HOOKLIB engine) is installed
+
+                                  4. SDE
+                                  ~~~~~~
+
+ Here is a description of the SDE, or Subroutine Displacement Engine,
+ which allows you to do step 1 of the stuff described above with a single
+ function call.
+
+int Reassemble(void* xStart,             /* 1st subroutine to reassemble     */
+               void* xEntry,             /* "main" subroutine                */
+               void* xEnd,               /* last subroutine to reassemble    */
+               char** xStrTab,           /* string table                     */
+               void* binData,            /* user data                        */
+               unsigned long binSize,    /* user data size                   */
+               void* buf,                /* buffer to reassemble into        */
+               unsigned long maxbufsize, /* max buffer size                  */
+               unsigned long *bufsize,   /* on output, used buffer size      */
+               unsigned long VA,         /* VA of new location, 0=reloc code */
+               unsigned long *entry,     /* on output, entry point va/rva    */
+               unsigned long flags);     /* flags, SDE_xxx                   */
+
+  xStart -- is an empty subroutine in your code, used to define start address
+            of the set of "remote" subroutines.
+            We assume that C/C++ compiler places subroutines in memory
+            in exact order as if they were located in source file.
+
+  xEntry -- is an "entrypoint" subroutine, which is called in the remote
+            context.
+
+               void __cdecl xEntry(unsigned long VA,
+                                   unsigned long injected_size,
+                                   char** xStrTab,
+                                   unsigned char* binData,
+                                   unsigned long binSize)
+
+               xEntry is __cdecl subroutine;
+
+               xEntry arguments are:
+
+                 VA, xStrTab,
+                 binData, binSize -- pointers to the same stuff
+                                     as passed to Reassemble(),
+                                     but, for sure, relocated according
+                                     to given VA, where all this stuff
+                                     will be placed.
+
+                 injected_size    -- size of the injected temp_buffer
+
+               If xEntry is executed using CreateRemoteThread,
+               return is equal to ExitThread,
+               other cases depends on your fantasy.
+
+  xEnd   -- is an empty subroutine, used to define end address of the
+            set of "remote" functions.
+
+  xStrTab -- string table, used by your functions.
+             can be NULL, if it is not required.
+
+             string table is in 'char* []' format,
+
+               if SDE_SKIP_LOADLIBRARY flag is NOT specified, then
+
+                 1st entry of the string table is DLL list,
+                 each dll name (including last one) ends with ';' character,
+                 which is replaced with \0 in the remote context; these
+                 DLL's will be LoadLibrar'ied by the generated startup code;
+
+               last string table entry is NULL;
+
+               other string table entries are use-defined text strings.
+
+  binData -- pointer to some user-defined data, can be NULL if not required
+  binSize -- size of the user-defined data, can be 0
+
+ buf        -- temporary buffer, to place generated stuff into
+ maxbufsize -- max size of the temporary buffer
+ bufsize    -- on return, is filled with size of generated stuff in the buffer
+
+  VA      -- virtual address in the remote context,
+             at which temp buffer will be placed.
+
+             xStart address in the current context equals to VA in the
+             remote context.
+
+             NOTE:
+             We should know VA _before_ generation of the temp buffer;
+             this means that obtaining virtual address in the remote process
+             for the future temp buffer placement begins not after,
+             but BEFORE temp buffer generation.
+
+             if VA == NULL, base-independend code will be generated,
+             i.e. code including relocation table and call table;
+             see also SDE_RELOAD_FUNCTIONS flag
+
+  entry   -- pointer to variable, which receives remote va/rva of the generated
+             startup code;
+             if VA == NULL, entry is relative;
+             if VA != NULL, entry is VA-based
+
+               starup code does the following:
+               1. if VA == NULL, initializes relocations
+               2. if SDE_SKIP_LOADLIBRARY flag is NOT specified,
+                    loads DLL's specified in the StringTable[0]
+               3. passes control to xEntry subroutine.
+
+  flags   -- bitset of the SDE_xxx values
+
+     SDE_SKIP_LOADLIBRARY  -- ignore StringTable[0],
+                              i.e. do not load libraries specified there
+
+     SDE_RELOAD_FUNCTIONS  -- used only if VA == 0,
+                              makes independend code,
+                              i.e. each called api name will be replaced with
+                              its checksum, to be loaded on startup
+
+ Comments:
+
+  except that all, after buffer is generated,
+  the following magic dword's are replaced with corresponding values:
+
+    SDE_MAGIC_VA
+    SDE_MAGIC_XSTRTAB
+    SDE_MAGIC_BINDATA
+    SDE_MAGIC_BINSIZE
+
+  i.e. if you write in your "remote" subroutine something like
+
+    unsigned long va = SDE_MAGIC_VA;
+
+  then in the remote context this dword will be replaced with VA value.
+
+  !!! Make sure you're not doing something like
+  !!!  char foo = ((char*)SDE_MAGIC_BINDATA)[123];
+  !!! - its incorrect! Magic values should be used in such way that
+  !!! they appear in the assembly instructions unchanged.
+
+ Return values:
+
+   Reassemble() returns 1 if buffer is assembled, and 0 if an error occured.
+
+                              5. CONCLUSION
+                              ~~~~~~~~~~~~~
+
+  Using these engines you can hook subroutines in the remote contexts
+  (on NT boxes) with your own C/C++ functions, in run-time,
+  without external files.
+
+  See examples for some things can be done using engines.
+
+  This can be (and is) used in memory residency and fw/av bypassing techniques.
+
+  However, this is not good enough, since there are drivers and ring0 api,
+  which can be used for such purposes much more effectively.
+
+  Supporting 9x/me systems:
+
+  since you can not do Virtual<Alloc|Free>Ex on the 9x boxes,
+  you should use known remote addresses there.
+
+  Such addresses can be found by means of analyzing PE structure
+  of the executable image file, or using known stack, heap and other
+  addresses where exists some unused mapped memory.
+
+                                  * * *

