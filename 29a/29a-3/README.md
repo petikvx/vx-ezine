@@ -12,7 +12,6 @@
 29A#3.1_A Mister Sandman's resignation			MrSandman
 29A#3.1_B Rajaat's resignation				Rajaat
 
-
 Articles
 29A#3.2_1 Archive32					CD13
 29A#3.2_2 Billy Belcebu virus writing guide		Billy Belcebu
@@ -31,21 +30,19 @@ Articles
 29A#3.2_F JQwerty's compression/encryption engine	Jacky Qwerty
 29A#3.2_G TbMem exploit					Darkman
 
-
 Utilities
-29A#3.3_1 $UPD v2.2	$pirit
-29A#3.3_2 Error Correction Code (ECC)	Kala-Marai
-29A#3.3_3 Adinf/AVP Inspector CRC	Zhengxi
-29A#3.3_4 AVP Add-on	Z0MBiE
-29A#3.3_5 AVPX v1.01	Z0MBiE
-29A#3.3_6 AZCME v0.04	Z0MBiE
-29A#3.3_7 AZCME32 v0.04	Z0MBiE
-29A#3.3_8 STRC v1.0	Super
-29A#3.3_9 JQCODING v1.0	Jacky Qwerty
-29A#3.3_A Tiny engines	Dark Cobra & Rajaat
-29A#3.3_B APME v1.04b disassembled	Darkman
-29A#3.3_C RDAE v1.0	Darkman
-
+29A#3.3_1 $UPD v2.2	        			$pirit
+29A#3.3_2 Error Correction Code (ECC)			Kala-Marai
+29A#3.3_3 Adinf/AVP Inspector CRC			Zhengxi
+29A#3.3_4 AVP Add-on					Z0MBiE
+29A#3.3_5 AVPX v1.01					Z0MBiE
+29A#3.3_6 AZCME v0.04					Z0MBiE
+29A#3.3_7 AZCME32 v0.04					Z0MBiE
+29A#3.3_8 STRC v1.0					Super
+29A#3.3_9 JQCODING v1.0					Jacky Qwerty
+29A#3.3_A Tiny engines					Dark Cobra & Rajaat
+29A#3.3_B APME v1.04b disassembled			Darkman
+29A#3.3_C RDAE v1.0					Darkman
 
 Windows
 Win.Bonk	Vecna
@@ -62,7 +59,6 @@ Win32.Apparition	LordAsd
 Win32.Borges	Int13h
 Win32.REDemption	Jacky Qwerty
 VxD infector	Z0MBiE
-
 
 Viruses
 Califax	SVAT
@@ -81,7 +77,6 @@ Squatter v1.2	Mental Driller
 Claudia.8772 disassembled	Darkman & MrSandman
 Pusher.374 disassembled v 2.0	Darkman
 
-
 More viruses
 007JB v1.01.2b	Z0MBiE
 FIRE v1.00b	Z0MBiE
@@ -99,7 +94,6 @@ Nutmeg2	Vecna
 Ithaqua	Wintermute
 Tiny viruses	Vecna, Super & Darkman
 Ida.1490 disassembled	Darkman
-
 ```
 ![1](1.png)
 ![2](2.png)
