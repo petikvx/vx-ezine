@@ -1,4 +1,4 @@
-Introduction______	
+Introduction
 29A#1.1_1 Here we are :)	MrSandman
 29A#1.1_2 Distributors	MrSandman
 29A#1.1_3 Greetings	MrSandman
@@ -7,7 +7,7 @@ Introduction______
 29A#1.1_6 Life in Saturn!	MrSandman
 
 
-Tutorials______	
+Tutorials
 29A#1.2_1 Encryption: theory	VirusBuster
 29A#1.2_2 Encryption: practice	Blade Runner
 29A#1.2_3 Polymorphism	An¡bal Lecter
@@ -15,7 +15,7 @@ Tutorials______
 29A#1.2_5 VBA Viruses and trojans	Leugim San
 
 
-Klingon tech______	
+Klingon tech
 29A#1.3_1 Deactivations	Blade Runner
 29A#1.3_2 Antiheuristics	AVV
 29A#1.3_3 TBAV: keys	Plof
@@ -26,7 +26,7 @@ Klingon tech______
 29A#1.3_8 Chilling Fridrik	Blade Runner
 
 
-Virus store______	
+Virus store
 29A#1.4_1 Virus index	MrSandman
 29A#1.4_2 Zhengxi.7313 original source code	Zhengxi
 29A#1.4_3 V.6000 disassembled	Tcp
@@ -34,7 +34,7 @@ Virus store______
 29A#1.4_5 Remolino.968	Trumpet WinCock
 
 
-29A Viruses______	
+29A Viruses
 29A#1.5_1 Torero	MrSandman
 29A#1.5_2 Internal Overlay	Tcp
 29A#1.5_3 Cricri	GriYo
