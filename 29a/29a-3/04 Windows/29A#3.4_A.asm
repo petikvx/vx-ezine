@@ -1,4 +1,4 @@
-
+comment #
                                 Win95/98.Yabram
 
 
@@ -116,6 +116,7 @@ NOTE:
 
 BEGUIN NOW!!!!
 -------------------------------------CUT--------------------------------------
+#
 ;Compile: ml  /coff /c YABRAM.ASM
 ;Linking: link -subsystem:WINDOWS -entry:_WinMain -out:YABRAM.exe YABRAM.obj
 ;               kernel32.lib
