@@ -72,7 +72,7 @@ Prion	Darkman
 Insert v 2.0	Darkman
 Animo	Rajaat
 ```
-![1](https://user-images.githubusercontent.com/2539129/135719546-6671bac8-f5eb-4ada-b0b5-57a753f83d50.png)
-![2](https://user-images.githubusercontent.com/2539129/135719548-49e8a69c-4522-4cd8-9144-14591ef99189.png)
-![3](https://user-images.githubusercontent.com/2539129/135719549-53b512dc-ed26-4e85-b74e-b8753063c658.png)
+![1](1.png)
+![2](2.png)
+![3](3.png)
 
