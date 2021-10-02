@@ -1,11 +1,11 @@
 
 COMMENT#
-                       	ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
-                       	³    Win2k.Stream    ³
-                       	ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
-                      ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
-                      ³ by Benny/29A and Ratter ³
-                      ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+                       	ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+                       	Â³    Win2k.Stream    Â³
+                       	Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
+                      ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+                      Â³ by Benny/29A and Ratter Â³
+                      Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 
 
 Let us introduce very small and simple infector presenting how to use features
@@ -16,9 +16,9 @@ How the virus worx? It uses streamz, the newest feature of NTFS filesystem
 and file compression, already implemented in old NTFS fs.
 
 
- ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
- ³ Basic principles of NTFS streamz ³
- ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+ ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+ Â³ Basic principles of NTFS streamz Â³
+ Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 
 How the file loox? Ya know that the file contains exactly the same what you can
 see when you will open it (e.g. in WinCommander). NTFS, implemented by
@@ -44,26 +44,26 @@ the primary stream with virus code.
 
 File (calc.exe) before infection:
 
-  ÉÍCalc.exeÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ»
-  ºÚÄPrimary stream (visible part)Ä¿º
-  º³         Calculator            ³º
-  ºÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙº
-  ÈÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ¼
+  Ã‰ÃCalc.exeÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÂ»
+  ÂºÃšÃ„Primary stream (visible part)Ã„Â¿Âº
+  ÂºÂ³         Calculator            Â³Âº
+  ÂºÃ€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™Âº
+  ÃˆÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÂ¼
 
 File (calc.exe) after infection:
 
-  ÉÍCalc.exeÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ»
-  ºÚÄPrimary stream (calc.exe)Ä¿ÚÄNext stream (calc.exe:STR)Ä¿ º
-  º³         Virus             ³³         Calculator         ³ º
-  ºÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ º
-  ÈÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ¼
+  Ã‰ÃCalc.exeÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÂ»
+  ÂºÃšÃ„Primary stream (calc.exe)Ã„Â¿ÃšÃ„Next stream (calc.exe:STR)Ã„Â¿ Âº
+  ÂºÂ³         Virus             Â³Â³         Calculator         Â³ Âº
+  ÂºÃ€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™ Âº
+  ÃˆÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÃÂ¼
 
 Simple and efficent, ain't it?
 
 
- ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
- ³ Details of virus ³
- ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+ ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+ Â³ Details of virus Â³
+ Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 
 *	The virus infects all EXE files in actual directory.
 
@@ -95,13 +95,13 @@ Simple and efficent, ain't it?
 	The fame is also yourz, friend!
 
 
- ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
- ³ In the media ³
- ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+ ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+ Â³ In the media Â³
+ Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 
 
  AVP's description:
- ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„
 
 This is the first known Windows virus using the "stream companion" infection
 method. That method is based on an NTFS feature that allows to create multiple
@@ -157,12 +157,12 @@ system version and runs only under Win2000.
  
 
  AVP's press release:
- ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„
 
 *A New Generation of Windows 2000 Viruses is Streaming Towards PC Users*
 ------------------------------------------------------------------------
 
-Moscow, Russia, September 4, 2000 – Kaspersky Lab announces the discovery of
+Moscow, Russia, September 4, 2000 â€“ Kaspersky Lab announces the discovery of
 W2K.Stream virus, which represents a new generation of malicious programs for
 Windows 2000. This virus uses a new breakthrough technology based on the
 "Stream Companion" method for self-embedding into the NTFS file system.
@@ -174,15 +174,15 @@ however, its working capacity and ability for existence "in-the-wild" are
 unchallenged.
 
 "Certainly, this virus begins a new era in computer virus creation," said
-Eugene Kaspersky, Head of Anti-Virus Research at Kaspersky Lab. "The ’Stream
-Companion’ technology the virus uses to plant itself into files makes its
-detection and disinfection extremely difficult to complete.”
+Eugene Kaspersky, Head of Anti-Virus Research at Kaspersky Lab. "The â€™Stream
+Companionâ€™ technology the virus uses to plant itself into files makes its
+detection and disinfection extremely difficult to complete.â€
 
 Unlike previously known methods of file infection (adding the virus body at
 beginning, ending or any other part of a host file), the "Stream" virus
 exploits the NTFS file system (Windows NT/2000) feature, which allows multiple
 data streams. For instance, in Windows 95/98 (FAT) files, there is only one
-data stream – the program code itself. Windows NT/2000 (NTFS) enables users
+data stream â€“ the program code itself. Windows NT/2000 (NTFS) enables users
 to create any number of data streams within the file: independent executable
 program modules, as well as various service streams (file access rights,
 encryption data, processing time etc.). This makes NTFS files very flexible,
@@ -202,21 +202,21 @@ passes control to the host program.
 
 File before infection              File after infection
 
-ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿              ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
-³°°°°°°°°°°°°°°°°°°°³              ³°°°°°°°°°°°°°°°°°°°³
-³°°°°°°°°°°°°°°°°°°°³              ³°°° main stream°°°°³
-³°°°°°°°°°°°°°°°°°°°³              ³°°° virus body°°°°°³
-³°°°°main stream°°°°³              ³°°°°°°°°°°°°°°°°°°°³
-³°°°°°°°°°°°°°°°°°°°³              ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
-³°°°°program body°°°³              ³°°°°°°°°°°°°°°°°°°°³
-³°°°°°°°°°°°°°°°°°°°³              ³°additional stream°³
-³°°°°°°°°°°°°°°°°°°°³              ³°°°program body°°°°³
-³°°°°°°°°°°°°°°°°°°°³              ³°°°°°°°°°°°°°°°°°°°³
-ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´              ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
-³±±±±±±±±±±±±±±±±±±±³              ³±±±±±±±±±±±±±±±±±±±³
-³±±service streams±±³              ³±±service streams±±³
-³±±±±±±±±±±±±±±±±±±±³              ³±±±±±±±±±±±±±±±±±±±³
-ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ              ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿              ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+Â³Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â³              Â³Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â³
+Â³Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â³              Â³Â°Â°Â° main streamÂ°Â°Â°Â°Â³
+Â³Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â³              Â³Â°Â°Â° virus bodyÂ°Â°Â°Â°Â°Â³
+Â³Â°Â°Â°Â°main streamÂ°Â°Â°Â°Â³              Â³Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â³
+Â³Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â³              ÃƒÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â´
+Â³Â°Â°Â°Â°program bodyÂ°Â°Â°Â³              Â³Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â³
+Â³Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â³              Â³Â°additional streamÂ°Â³
+Â³Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â³              Â³Â°Â°Â°program bodyÂ°Â°Â°Â°Â³
+Â³Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â³              Â³Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â°Â³
+ÃƒÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â´              ÃƒÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â´
+Â³Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â³              Â³Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â³
+Â³Â±Â±service streamsÂ±Â±Â³              Â³Â±Â±service streamsÂ±Â±Â³
+Â³Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â³              Â³Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â±Â³
+Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™              Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 
 "By default, anti-virus programs check only the main data stream. There will be
 no problems protecting users from this particular virus," Eugene Kaspersky
@@ -226,44 +226,44 @@ forced to urgently redesign their anti-virus engines."
 
 
  In MSNBC's news:
- ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„
 
 *New trick can hide computer viruses*
-*But experts question danger posed by ‘Stream’ technology*
+*But experts question danger posed by â€˜Streamâ€™ technology*
 -----------------------------------------------------------
 
-Sept. 6 — A new kind of computer virus has been released, but security experts
+Sept. 6 â€” A new kind of computer virus has been released, but security experts
 are in disagreement over just how menacing it is. The virus demonstrates a
 technique that future writers can use to hide their malicious software from
 most current antivirus scanners. But some antivirus companies are playing down
 the threat.
 
-THE VIRUS, CALLED W2K.STREAM, poses little threat — it was written as a
-relatively benign “proof of concept.” But, according to a source who requested
+THE VIRUS, CALLED W2K.STREAM, poses little threat â€” it was written as a
+relatively benign â€œproof of concept.â€ But, according to a source who requested
 anonymity, it was posted on several virus writer Web sites over Labor Day
-weekend — making copycats possible.
+weekend â€” making copycats possible.
 
 The virus takes advantage of a little-used feature included in Windows 2000 and
 older Windows NT systems that allows programs to be split into pieces called
 streams. Generally, the body of a program resides in the main stream. But other
-streams can be created to store information related to what’s in the main
-stream. Joel Scambray, author of “Hacking Exposed,” described these additional
-streams as “Post-it notes” attached to the main file.
+streams can be created to store information related to whatâ€™s in the main
+stream. Joel Scambray, author of â€œHacking Exposed,â€ described these additional
+streams as â€œPost-it notesâ€ attached to the main file.
 
 The problem is that antivirus programs only examine the main stream. W2K.Stream
-demonstrates a programmer’s ability to create an additional stream and hide
+demonstrates a programmerâ€™s ability to create an additional stream and hide
 malicious code there.
 
-“Certainly, this virus begins a new era in computer virus creation,” said
+â€œCertainly, this virus begins a new era in computer virus creation,â€ said
 Eugene Kaspersky, Head of Anti-Virus Research at Kaspersky Lab, in a press
-release. “The ‘Stream Companion’ technology the virus uses to plant itself into
-files makes its detection and disinfection extremely difficult to complete.”
+release. â€œThe â€˜Stream Companionâ€™ technology the virus uses to plant itself into
+files makes its detection and disinfection extremely difficult to complete.â€
        
-*THIS BUG ISN’T DANGEROUS*
+*THIS BUG ISNâ€™T DANGEROUS*
 ---------------------------
 
-No W2K.stream infections have been reported, and experts don’t believe the
-virus is “in the wild” — circulating on the Internet — yet. At any rate, this
+No W2K.stream infections have been reported, and experts donâ€™t believe the
+virus is â€œin the wildâ€ â€” circulating on the Internet â€” yet. At any rate, this
 virus actually makes things easy for antivirus companies. If a user is
 infected, the program creates an alternate stream and places the legitimate
 file in this alternate location; the virus replaces it as the main stream. That
@@ -271,48 +271,48 @@ makes detection by current antivirus products easy. But future viruses could
 do just the opposite, evading current antivirus products.
 
 One antivirus researcher who requested anonymity called release of the bug
-“somewhat akin to the first macro virus.” He added that reengineering antivirus
+â€œsomewhat akin to the first macro virus.â€ He added that reengineering antivirus
 software to scan for multiple streams would be a complicated effort.
-“In this case, many anti-virus products will become obsolete, and their vendors
-will be forced to urgently redesign their anti-virus engines,” Kaspersky said.
+â€œIn this case, many anti-virus products will become obsolete, and their vendors
+will be forced to urgently redesign their anti-virus engines,â€ Kaspersky said.
        
 *AN OLD ISSUE*
 ---------------
 
 There is nothing new about the potential of exploiting the multiple stream
-issue; Scambray hints at the problem in the book “Hacking Exposed,” and
+issue; Scambray hints at the problem in the book â€œHacking Exposed,â€ and
 described it even more explicitly in a 1998 Infoworld.com article.
 
-The SANS Institute, a group of security researchers, issued an “alert”
+The SANS Institute, a group of security researchers, issued an â€œalertâ€
 criticizing antivirus companies for not updating their products to scan the
 contents of any file stream earlier.
 
-“We found that the scanners were incapable of identifying viruses stored within
-an alternate data stream,” the report said. “For example if you create the file
+â€œWe found that the scanners were incapable of identifying viruses stored within
+an alternate data stream,â€ the report said. â€œFor example if you create the file
 MyResume.doc:ILOVEYOU.vbs and store the contents of the I Love You virus within
 the alternate data stream file, none of the tested virus scanners were capable
-of finding the virus during a complete disk scan.”
+of finding the virus during a complete disk scan.â€
 
 But some antivirus companies described the threat as minimal because the
-alternate stream trick only hides the bug while it’s stored on a victim’s
+alternate stream trick only hides the bug while itâ€™s stored on a victimâ€™s
 computer. Pirkka Palomaki, Director of Product Marketing for F-Secure Corp.,
 said for the virus to actually run, it has to come out of hiding and load into
 main memory.
 
-“It would be detected as it tried to activate,” Palomaki said. “But this
-signifies importance of real-time protection.” He added the virus would still
-have to find its way onto a victim’s computer; and that victim would have to
+â€œIt would be detected as it tried to activate,â€ Palomaki said. â€œBut this
+signifies importance of real-time protection.â€ He added the virus would still
+have to find its way onto a victimâ€™s computer; and that victim would have to
 be tricked into installing the virus using one of the traditional methods,
 such as clicking on an infected e-mail attachment.
 
-“It could increase the ability to for scanners to miss something,” said Pat
-Nolan, virus researcher at McAfee Corp. “But we’re on top of it. If there is
-a vulnerability, it will be short-lived.”
+â€œIt could increase the ability to for scanners to miss something,â€ said Pat
+Nolan, virus researcher at McAfee Corp. â€œBut weâ€™re on top of it. If there is
+a vulnerability, it will be short-lived.â€
 
 
- ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
- ³ How to compile it? ³
- ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+ ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+ Â³ How to compile it? Â³
+ Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 
 Use Petite version 2.1 (http://www.icl.ndirect.co.uk/petite/).
 
