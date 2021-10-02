@@ -1,0 +1,2425 @@
+;-------------------- Welcome-to ------------------------;
+; [$UPD√2.2], $pirit's Universal Polymorphic Device v2.2 ;
+;              (C)1996 by ─Nigh┼─$piri┼─		 ;
+;--------------------------------------------------------;
+
+.MODEL TINY
+LOCALS	@@
+JUMPS
+.CODE
+.186
+	public	$UPD,FullRandom,Random,BRandom,Boolean
+	public	$UPD_Bottom,$UPD_Top
+
+;===[Все глобальные данные (без таблиц)]=================================;
+
+Where_Encryptor	equ	1300	; Рабочий адpес зашифровщика в буфере
+
+$UPD_Bottom	=	$
+
+$UPD_ID		db	'[$UPD√2.2], $pirit''s Universal Polymorphic Device '
+		db	'v2.2. (C)1995-1996 by ─Nigh┼─$piri┼─'
+_$UPD_ID	=	$
+
+M_K		equ	Offset Key_Table-Offset Method_Table
+
+Params		db	?	; Паpаметpы, пеpедаваемые $UPD в ax
+Key_Value	dw	?	; См. документацию
+Stack_Value	dw	?	; ^^^^^^^^^^^^^^^^
+Register_In_Cyc	db	?	; Регистр, используемый в цикле декодера
+				; В битах: кодируется, как поле reg
+Register_In_Ofs	db	?	; Регистр, используемый в адресации декодера
+				; В битах: кодируется, как поле reg
+Register_In_Dis	db	?	; То же, но в формате r/m
+Register_In_Crypt db	?	; Рpегистp контpольной суммы для кодеpов
+Where_CALL	dw	?	; Адрес инструкции CALL <ofs_reg>
+Where_Ini_Ofs	dw	?	; Адрес команды инициализации регистра адресации
+Where_Cycle	dw	?	; Адрес начала зацикливания
+Where_INT3_CALL	dw	?	; Адpес инстpукции CALL в помехозащищ. коде
+Where_INT3_Ini_Ofs dw	?	; Адpес команды инициализации pег. адp. для Int3
+Where_INT3_Ini_Size dw	?	; Адpес команды инициализации pег. счетчика
+Where_INT3_Proc	dw	?	; Адpес пpоцедуpы с помехоустойчивам кодом
+Where_Init_Proc	dw	?	; Адpес пpоцедуpы с начальной инициализацией
+Calls_Reg_Ini	dd	?	; 2 адpеса вызовов кода инициализации всех pег.
+Where_Reg_Ini	dw	?	; Адpес вот этого  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Code_Length	dw	?	; Размер шифруемого кода
+DeCoder_Size	dw	?	; Размер декодера и енкодера
+Method_Table	db	10 dup ('M')	; Таблица под типы шифрования
+Key_Table	db	10 dup ('K')	; Таблица регистров-ключей
+Call_Table	dw	6 dup ('TC')	; Таблица под адреса процедур шифровщика
+Foreign_Call_Table dw	28 dup ('TF')	; Таблица под адреса call'ов
+Calls_Count	db	?	; Число создаваемых процедур в шифровщике
+Foreign_Calls_Count db	?	; Число вызовов из межпроц. пространства
+TLength		dw	?	; Длина таблицы Method_Table
+Encoder_Entry	dw	?	; Адрес начала encryptor'a. Используется при
+				; вызове построенного encryptor'a
+For_Cryptor	db	?	; Содеpжит 1 или 0 - когда вызывать помехоуст.
+				; код из кодеpа
+UnUsed		db	?	; Используется для различных целей
+		db	?
+When_30		db	?	; Счетчик числа вызовов ф-ций int 21h,
+				; чеpез котоpое будет вызвана ф-ция 30h или 35h
+UU		db	?
+
+;===[Всякие мелкие процедурки]===========================================;
+
+;-----------------------------------------------------------------------;
+; Процедура генерит случайное число между 0 и 0ffffh			;
+; Выход: ax=Randomize()							;
+;-----------------------------------------------------------------------;
+
+FullRandom	proc	near
+
+	xor	ax,ax
+	dec	ax
+	jmp	Random
+
+;-----------------------------------------------------------------------;
+; Процедура возвращает в al либо 0, либо 1				;
+;-----------------------------------------------------------------------;
+
+Boolean:
+	mov	ax,1
+
+;-----------------------------------------------------------------------;
+; Процедура  генерит случайное число между 0 и ax			;
+; Выход: ax=Randomize(), ZF=1 если ax=0					;
+;-----------------------------------------------------------------------;
+
+Random:
+	push	bx cx dx ax
+
+	call	$+3
+	pop	bx
+	sub	bx,Offset $-1
+
+	sub	ax,ax
+	int	1ah			; cx:dx=счетчик циклов
+	in	al,40h			; Таймерный порт
+	xchg	cx,ax
+	xchg	dx,ax
+
+	lea	bx,[bx+Ran_Num]		; Вычисление RND
+	xor	[bx],ax
+	rol	word ptr [bx],cl
+	xor	cx,word ptr [bx]
+	rol	ax,cl
+	xor	dx,word ptr [bx]
+	ror	dx,cl
+	xor	ax,dx
+	imul	dx
+	xor	ax,dx
+	xor	word ptr [bx],ax
+
+	pop	cx			; Верхняя граница диапазона
+	sub	dx,dx
+	inc	cx
+	je	Random_Ret
+	div	cx
+	xchg	ax,dx
+
+Random_Ret:
+	pop     dx cx bx
+	test	ax,ax
+	retn
+
+Ran_Num	dw	?
+
+;-----------------------------------------------------------------------;
+; Процедура генерит случайное число между 0 и al			;
+; Выход: al=Random()							;
+;-----------------------------------------------------------------------;
+
+BRandom:
+	xor	ah,ah
+	jmp	Random
+
+FullRandom	endp
+
+;-----------------------------------------------------------------------;
+; Процедура записывает байт в decryptor и encryptor			;
+; Вход: es:di=адрес decryptor'a						;
+;       es:[di+Where_Encryptor]=адрес encryptor'a			;
+; Выход: di++								;
+;-----------------------------------------------------------------------;
+
+Random_Store_Byte	proc	near
+
+	call	Store_Byte
+	push	ax
+	call	Random_Empty_Code
+	pop	ax
+	retn
+
+Store_Byte:
+
+	push	di		; Пихаем байт в encryptor
+	add	di,Where_Encryptor
+	stosb
+	pop	di
+	stosb			; Пихаем байт в decryptor
+	retn
+
+Random_Store_Byte	endp
+
+;-----------------------------------------------------------------------;
+; Процедура записывает слово в decryptor и encryptor			;
+; Вход: такой же, как в процедуру Store_Byte				;
+; Выход: di+=2								;
+;-----------------------------------------------------------------------;
+
+Random_Store_Word	proc	near
+
+	call	Store_Word
+	push	ax
+	call	Random_Empty_Code
+	pop	ax
+	retn
+
+Store_Word:
+
+	push	di
+	add	di,Where_Encryptor
+	stosw
+	pop	di
+	stosw
+	retn
+
+Random_Store_Word	endp
+
+;-----------------------------------------------------------------------;
+; Процедура проверяет тип регистра на SP и регистры цикла/адресации	;
+; Вход: cl,ch=тип регистров (cl=00000100b => SP)			;
+; Выход: cl,ch=не SP-регистры						;
+;-----------------------------------------------------------------------;
+
+Test_SP		proc	near
+
+	call	Repeat_Test_SP
+	ror	cl,3
+	call	Repeat_Test_SP
+	rol	cl,3
+	retn
+
+Repeat_Test_SP:
+	push	cx
+	and	cl,00000111b
+	cmp	cl,00000100b	; SP?
+	pop	cx
+	jne	Exit_Test_SP
+
+	push	ax
+	mov	al,111b
+	call	BRandom
+	and	cl,11111000b
+	or	cl,al
+	pop	ax
+	jmp	Repeat_Test_SP
+
+Exit_Test_SP:
+	retn
+
+Test_SP		endp
+
+; Может сгенеpить, а может и нет, 1 инстpукцию из пеpвой таблицы
+
+Random_Empty_Code:
+	call	Boolean
+	jnz	@@CONT
+	retn
+@@CONT:	dec	ax
+
+;-----------------------------------------------------------------------;
+; Процедура генерит случайный "пустой" код, не влияющий на декодировку	;
+; длиной в одну (три в случае вызова прерывания) инструкцию		;
+; Вход: al=число используемых таблиц (начиная с первой=0)		;
+;       es:di=куда запихивать						;
+; Выход: di=указатель за конец сгенерированного кода			;
+;-----------------------------------------------------------------------;
+
+Empty_Code	proc	near
+
+	push	ax cx si
+
+	cmp	al,4		; Пpовеpяем, можно ли генеpить вызовы int 21h?
+	jne	@@Skip18
+	test	byte ptr [bx+Params],1
+	jnz	@@Skip18
+	dec	ax
+
+@@Skip18:
+	mov	byte ptr [bx+Work_Address+2],_Empty_Codes_1-Offset Empty_Codes_1-1
+	or	al,al
+	jnz	@@PASS
+	dec	byte ptr [bx+Work_Address+2]
+
+@@PASS:
+	push	ax
+	call	FullRandom
+	mov	cx,ax		; cx=некое случайное число
+
+	pop	ax		; Выбираем номер таблицы из пяти существующих
+	call	BRandom
+
+	mov	si,ax		; si=al*5
+	shl	si,2
+	add	si,ax
+
+	mov	ax,word ptr [bx+si+Work_Address]	; Адрес обработчика
+	add	ax,bx
+	push	ax
+
+	mov	al,byte ptr [bx+si+Work_Address+2]	; Размер таблицы команд
+	call	BRandom
+
+	mov	si,word ptr [bx+si+Work_Address+3]	; Адрес таблицы команд
+	add	si,ax
+
+	cmp	si,Offset Control_5		; 2-х байтные таблицы
+	jb	Pass_Calculate
+	cmp	si,Offset Control_7
+	jae	Pass_Calculate
+	shr	al,1
+	sub	si,ax
+
+Pass_Calculate:
+	add	si,bx
+
+	lodsb			; Читаем элемент таблицы
+	sub	si,bx		; si=смещение в таблице (без учета bx)
+	retn
+
+;---[Таблица_1]----------------------------------------------------------;
+
+Next_Tbl_1:
+	cmp	si,Offset Control_1
+	jbe	Exit_Tbl_1
+	and	cl,00000111b	; Выбираем случайный 16-битный
+	call	Test_SP
+	or	al,cl		; регистр
+
+Exit_Tbl_1:
+	call	Store_Byte
+	jmp	Empty_Done
+
+;---[Таблица_2]----------------------------------------------------------;
+
+Next_Tbl_2:
+	cmp	si,Offset Control_3
+	ja	@@TBL3
+	and	ch,00000001b	; Выбираем бит w
+
+	or	al,ch
+	call	Store_Byte	; Первый байт команды
+	mov	al,11000000b
+	call	Test_SP
+	or	al,cl		; Выбираем регистры/тип сдвига
+	jmp	Exit_Tbl_2
+
+@@TBL3:
+	cmp	si,Offset Control_4
+	ja	@@TBL4
+	push	ax
+	mov	al,11110110b
+	call	Store_Byte	; Первая часть опкода
+	pop	ax
+	and	cl,00000111b	; Выбираем регистр
+	call	Test_SP
+	or	al,cl
+	jmp	Exit_Tbl_2
+
+@@TBL4:
+	cmp	si,Offset Control_5
+	ja	@@TBL5
+	and	ch,00000001b	; Выбираем w
+	or	al,ch
+	call	Store_Byte	; Первый байт команды
+	mov	al,cl
+	or	ch,ch		; Команда оперирует байтами (длина - 2б)?
+	jz	Exit_Tbl_2	; Да
+	call	Store_Byte	; Нет, оперирует словами (длина 3б)
+	call	FullRandom
+	jmp	Exit_Tbl_2
+
+@@TBL5:
+	cmp	si,Offset Control_6
+	ja	@@TBL6
+	and	cx,0000001100000111b	; Выбираем биты s/w и регистры
+	jmp	@@TBL7
+
+@@TBL6:
+	cmp	si,Offset Control_7
+	ja	@@TBL8
+	and	cx,0000000100000111b	; Выбираем бит w и регистры
+
+@@TBL7:
+	call	Test_SP
+	or	al,ch
+	call	Store_Byte	; Первый байт инструкции
+	mov	al,byte ptr [bx+si]
+	or	al,cl
+	call	Store_Byte
+	call	FullRandom
+	dec	ch
+	jnz	Exit_Tbl_2	; sw<>01 (w<>1) => команда длиной 3б
+	call	Store_Byte
+	xchg	ah,al		; Иначе длина 4б
+	jmp	Exit_Tbl_2
+
+@@TBL8:
+	push	ax
+	mov	al,11111110b
+	and	ch,00000001b	; Выбираем бит w
+	or	al,cl
+	call	Store_Byte
+	pop	ax
+	and	cl,00000111b	; Выбираем регистр
+	call	Test_SP
+	or	al,cl
+
+;---[Таблица_3]----------------------------------------------------------;
+
+Exit_Tbl_2:
+	call	Store_Byte	; Последний байт команды
+	jmp	Empty_Done
+
+;---[Таблица_4]----------------------------------------------------------;
+
+Next_Tbl_4:
+	call	Store_Byte	; Первый байт
+	and	cl,00111111b
+	call	Test_SP
+	push	cx
+	and	cl,00000111b
+	cmp	cl,00000110b
+	pop	cx
+	jnz	CL_OK
+	or	cl,1
+CL_OK:
+	mov	al,cl			; Второй байт
+	call	Store_Byte
+	jmp	Empty_Done
+
+;---[Таблица_5]----------------------------------------------------------;
+
+Next_Tbl_5:
+	cmp	si,Offset Empty21th_2
+	ja	@@TBL9
+	mov	ah,10110100b		; Первый байт инструкции mov ah,xx
+	xchg	ah,al			; (ah=xx, al=mov)
+
+	dec	byte ptr [bx+When_30]
+	jz	Make_30
+	cmp	byte ptr [bx+When_30],2
+	jnz	Not_Yet_30or35
+	mov	ah,35h
+	jmp	Not_Yet_30or35
+Make_30:
+	mov	ah,30h
+	mov	word ptr [bx+When_30],4
+
+Not_Yet_30or35:
+	call	Store_Word
+	call	CD21h
+	jmp	Empty_Done
+
+@@TBL9:
+	push	ax
+	mov	al,00000110b		; Инструкция push es
+	call	Store_Byte
+	pop	ax
+	mov	ah,10110100b		; Инструкция mov ah,xx
+	xchg	ah,al
+	call	Store_Word
+	call	CD21h			; Инструкция Int 21h
+	mov	al,00000111b		; Инструкция pop es
+	call	Store_Byte
+
+Empty_Done:
+	pop	si cx ax
+	retn
+
+CD21h:
+	mov	ax,9090h
+	push	di
+	add	di,Where_Encryptor
+	stosw
+	pop	di
+	mov	ax,21cdh
+	stosw
+	retn
+
+;-----------------------------------------------------------------------;
+; Таблица рабочих адресов. Формат:
+; dw	Смещение_Подпрограммы
+; db	Размер_Таблицы
+; dw	Смещение_Таблицы
+
+Work_Address	dw	Offset Next_Tbl_1
+		db	_Empty_Codes_1-Offset Empty_Codes_1-1
+		dw	Offset Empty_Codes_1
+
+		dw	Offset Next_Tbl_2
+		db	_Empty_Codes_2-Offset Empty_Codes_2-1
+		dw	Offset Empty_Codes_2
+
+		dw	Offset Exit_Tbl_2
+		db	_Empty_Codes_3-Offset Empty_Codes_3-1
+		dw	Offset Empty_Codes_3
+
+		dw	Offset Next_Tbl_4
+		db	_Empty_Codes_4-Offset Empty_Codes_4-1
+		dw	Offset Empty_Codes_4
+
+		dw	Offset Next_Tbl_5
+		db	_Empty21th-Offset Empty21th_1-1
+		dw	Offset Empty21th_1
+
+;-----------------------------------------------------------------------;
+; Таблица однобайтных команд-мусора. Формат:
+; --- Однобайтные опкоды (Empty_Codes_1):
+; ▐????????▐
+; clc/cmc/stc/sti/cld
+; es:/cs:/ss:/ds:/std
+; nop
+; --- Команды 16-битных регистров (Control_1):
+; ▐?????reg▐
+; xchg ?,ax
+
+Empty_Codes_1	db	11111000b,11110101b,11111001b,11111011b,11111100b
+		db	00100110b,00101110b,00110110b,00111110b,11111101b
+		db	90h
+Control_1	db	10010000b
+_Empty_Codes_1	=	$
+
+;-----------------------------------------------------------------------;
+; Таблица команд мусора длиной в несколько байт. Формат:
+; --- Регистр/память с регистром (Empty_Codes_2):
+; add/adc/sub/sbb/cmp
+; and/test/or/xor/mov
+; ▐???????w▐11 reg r/m▐
+; --- Сдвиги на 1 и на cl бит (Control_2):
+; ▐???????w▐11 TTT r/m▐
+; сдвиг_на_1/сдвиг_на_cl - предпоследняя тройка бит=TTT (тип сдвига)
+; --- Команды not/neg/mul/imul (Control_3):
+; ▐11110110▐????? r/m▐
+; --- Аккумулятор (AX) с непосредственным операндом (Control_4):
+; ▐???????w▐data▐data if w=1▐
+; add/adc/sub/sbb/cmp
+; and/test/or/xor
+; --- Непосредственный операнд с регистром (элемент - 2 байта) (Control_5):
+; ▐??????sw▐????? r/m▐data▐data if sw=01▐
+; add/adc
+; sub/sbb
+; cmp
+; --- Непосредственный операнд с регистром (элемент - 2 байта) (Control_6):
+; ▐???????w▐????? r/m▐data▐data if w=1▐
+; and/test
+; or/xor
+; --- Команды инкремента/декремента регистра (Control_7):
+; ▐1111111w▐????? r/m▐
+; inc/dec
+
+Empty_Codes_2	db	00000010b,00010010b,00101010b,00011010b,00111000b
+		db	00100010b,10000100b,00001010b,00110010b,10001000b
+Control_2	db	11010000b,11010010b
+Control_3	db	11010000b,11011000b,11100000b,11101000b
+Control_4	db	00000100b,00010100b,00101100b,00011100b,00111100b
+		db	00100100b,10101000b,00001100b,00110100b
+Control_5	db	10000000b,11000000b,10000000b,11010000b
+		db	10000000b,11101000b,10000000b,11011000b
+		db	10000000b,11111000b
+Control_6	db	10000000b,11100000b,11110110b,11000000b
+		db	10000000b,11001000b,10000000b,11110000b
+Control_7	db	11000000b,11001000b
+_Empty_Codes_2	=	$
+
+;-----------------------------------------------------------------------;
+; Таблица однобайтных команд-мусора со _случайным_ значением в
+; регистрах/флагах. Формат:
+; ▐????????▐
+; cmpsb/scasb/lodsb
+; lahf/xlat
+
+Empty_Codes_3	db	10100110b,10101110b,10101100b
+		db	10011111b,11010111b
+_Empty_Codes_3	=	$
+
+;-----------------------------------------------------------------------;
+; Таблица команд-мусора длиной в несколько байт со _случайным
+; значением в регистрах/флагах. Формат:
+; --- Операция над регистром с использованием ячеек памяти (Empty_Codes_4):
+; ▐????????▐00 reg r/m▐ (r/m<>110)
+; mov/add/adc/sub/sbb
+; cmp/and/test/or/xor
+
+Empty_Codes_4	db	10001010b,00000010b,00010010b,00101010b,00011010b
+		db	00111010b,00100010b,10000100b,00001010b,00110010b
+_Empty_Codes_4	=	$
+
+;-----------------------------------------------------------------------;
+; Таблица "пустых" функций Int 21h, изменяющих регистры ax/bx/cx/dx
+; (15 штук)
+
+Empty21th_1	db	0bh	; Get input status at ax
+		db	19h	; Get current disk ID at ax
+		db	2ah	; Get system data at ax/cx/dx
+		db	2ch	; Get system time at cx/dx
+		db	30h	; Get DOS version at ax/bx/cx
+		db	4dh	; Get exit status at ax
+		db	51h	; Get PSP address at bx (undoc)
+		db	54h	; Get verify status at ax
+		db	62h	; Get PSP address at bx
+Empty21th_2	db	2fh	; Get DTA address at es:bx
+		db	34h	; Get InDOS flag address at es:bx (undoc)
+		db	35h	; Get interrupt vector at es:bx
+		db	52h	; Get List Of Lists at es:bx (undoc)
+_Empty21th	=	$
+
+Empty_Code	endp
+
+;-----------------------------------------------------------------------;
+; Процедура конвертирует байт из формата reg в формат r/m		;
+; Вход: al=reg								;
+; Выход: al=r/m								;
+;-----------------------------------------------------------------------;
+
+Convert_Reg2RM	proc	near
+
+	cmp	al,00000101b	; BP?
+	jb	@@CVT2		; BX
+	ja	@@CVT1		; DI или SI
+	inc	ax
+	jmp	@@CVT3
+
+@@CVT1:
+	sub	ax,2
+	jmp	@@CVT3
+
+@@CVT2:
+	mov	al,00000111b
+
+@@CVT3:
+	retn
+
+Convert_Reg2RM	endp
+
+;===[Так сказать, сервисные процедурки для основных процедурок ;)]=======;
+
+Copy:					; Помещает код из [si] в pасшифp.
+	lodsb
+	cmp	al,0ffh
+	jz	@@Skip16
+	cmp	al,90h
+	jne	@@Skip17
+	call	Random_Empty_Code
+	jmp	Copy
+@@Skip17:
+	call	Store_Byte
+	jmp	Copy
+@@Skip16:
+	retn
+
+Rep_Clear_Buffer:			; Очистка клавиатуpного буфеpа
+	mov	ah,1
+	int	16h
+	jz	Buffer_Clear
+	mov	ah,10h
+	int	16h
+	jmp	Rep_Clear_Buffer
+Buffer_Clear:
+	retn
+
+Entry_For_Make_Init_Routine_Proc_Call:	; Вызывается из кода, созд. начальную
+	push	si ax ax		; инициализационную пpоцедуpу. Смысл -
+	mov	al,1			; генеpить lea/mov, но не sub/xor
+	call	BRandom
+	inc	ax
+	inc	ax
+	xchg	si,ax
+	jmp	Entry_Init_Proc
+
+; Инициализация регистра ч/з lea или mov (заносится в шифровщики)
+; Вход: ah=тип регистра (в формате reg), dx=0 - использовать только xor/sub,
+; (начальная инициализация флагов)
+
+Define_Move:
+	push	si ax ax
+	mov	al,3
+	or	dx,dx
+	jnz	@@Use_All_Methods
+	sub	al,2
+@@Use_All_Methods:
+	call	BRandom		; 0=xor/1=sub/2=lea/3=mov
+	xchg	si,ax
+
+Entry_Init_Proc:
+	pop	ax
+	cmp	si,3
+	jz	Used_MOV_1
+	cmp	si,2
+	jz	Used_LEA_1
+
+	mov	al,ah
+	shl	al,3
+	or	al,11000000b
+	or	ah,al		; ah=второй байт xor/sub
+	dec	si
+	jz	Used_SUB_1
+	mov	al,31h		; Первый байт xor <reg>,<reg>
+	jmp	Used_XOR_1
+Used_SUB_1:
+	mov	al,29h		; Первый байт sub <reg>,<reg>
+	jmp	Used_XOR_1
+Used_LEA_1:
+	mov	al,10001101b	; Первый байт команды lea <reg>,[xxxx]
+	shl	ah,3
+	or	ah,110b
+	call	Store_Word
+	call	FullRandom	; Данные команды lea (чисто случайные)
+	jmp	Used_XOR_1
+Used_MOV_1:
+	mov	al,10111000b	; Первый байт команды mov
+	or	al,ah
+	call	Store_Byte
+	call	FullRandom
+Used_XOR_1:
+	call	Store_Word	; Данные команды mov (тоже чисто случайные)
+	pop	ax si
+	retn
+
+; Инициализация регистра цикла
+; Вход: ah=тип регистра (в формате reg)
+;       si=куда помещать данные об адpесе инстpукции (без учета bx)
+;	ZF=Boolean
+
+Define_Ini_Cyc:
+	push	ax
+	jz	Used_MOV_2
+	mov	al,10001101b	; Первое слово команды lea <reg>,[xxxx]
+	shl	ah,3
+	or	ah,110b
+	call	Store_Word
+	mov	ax,word ptr [bx+Code_Length]
+	shr	ax,1		; Оперируем со словами
+	inc	ax
+	mov	word ptr [bx+si],di
+	call	Store_Word	; Данные команды lea
+	jmp	Used_LEA_2
+Used_MOV_2:
+	mov	al,10111000b	; Первый байт команды mov
+	or	al,ah
+	call	Store_Byte
+	mov	ax,word ptr [bx+Code_Length]
+	shr	ax,1		; Оперируем со словами
+	inc	ax
+	mov	word ptr [bx+si],di
+	call	Store_Word	; Данные команды mov
+Used_LEA_2:
+	pop	ax
+	retn
+
+; Инициализация регистра адресации
+; Вход: ah=тип регистра (в формате reg)
+;       si=куда помещать данные об адpесе инстpукции инициализации (без bx)
+
+Define_Ini_Ofs_1:
+	push	ax cx dx ax
+	mov	dx,1
+	jmp	JMP_HERE
+
+Define_Ini_Ofs:
+	push	ax cx dx ax
+	xor	dx,dx
+
+JMP_HERE:
+	mov	al,9		; Вставляем от 1 до 10 б между call и pop <reg>
+	call	BRandom
+	inc	ax
+	push	ax
+
+	mov	ah,0e8h		; Инструкция call (внутрисегментная, 3 байта)
+	xchg	ah,al
+	call	Store_Word
+	xor	ax,ax
+	call	Store_Byte
+	pop	ax
+	cmp	si,Offset Where_Ini_Ofs
+	jne	@@Another_Where1
+	mov	word ptr [bx+Where_CALL],di
+	jmp	@@Another_Where2
+@@Another_Where1:
+	mov	word ptr [bx+Where_INT3_CALL],di
+@@Another_Where2:
+	mov	cx,ax		; Забиваем пространство между call и pop <reg>
+@@INIT3:			; всякой гадостью
+	mov	al,0ffh
+	call	BRandom
+	call	Store_Byte
+	loop	@@INIT3
+
+	mov	al,9
+	call	BRandom
+	inc	ax
+	xchg	ah,al		; 1-10 инстpукций из 2-х таблиц
+	inc	ax
+	call	Make_Empty_Code
+
+	or	dx,dx
+	jz	@@SKIP11
+
+	mov	al,0e8h		; Если эта пpоцедуpа вызывалась с целью ини-
+	call	Store_Byte	; циализации pегистpа адpесации в коде pас-
+	mov	ax,word ptr [bx+Where_INT3_Proc]	; шифpовывающих ин-
+	sub	ax,di		; стpукций (Define_Ini_Ofs_1:), то добавляем
+	dec	ax		; пеpед pop'ом вызов пpоцедуpы с подсчетом
+	dec	ax		; CRC декодеpа (помехоустойчивый код)
+	call	Store_Word
+
+@@SKIP11:
+	pop	ax		; ah=<reg>
+	mov	al,01011000b	; Инструкция pop <reg>
+	or	al,ah
+	call	Store_Byte
+
+	or	ah,11000000b	; Использовать add с непосредственным операндом
+	mov	al,10000001b	; 4-х байтный add для любого 16-битного регистра
+	call	Store_Word
+	mov	word ptr [bx+si],di
+	call	Store_Word
+
+	pop	dx cx ax
+	retn
+
+; Пpоцедуpа генеpит код, вызывающий int 16h для пpочтения слова в ax:
+; mov ax,10xx ...
+; int 16h
+; mov <Regisetr_In_Crypt>,ax	; Или xchg <Rregister_In_Crypt>,ax
+; Вход: ds:di - буфеp
+
+Generate_Read16h:
+	push	dx
+
+	mov	al,10b		; Tmp_Reg=bx, cx или dx
+	call	BRandom
+	inc	al
+	mov	byte ptr [bx+Tmp_Reg],0
+	cmp	al,byte ptr [bx+Register_In_Crypt]
+	jne	@@SKIP7
+	mov	byte ptr [bx+Tmp_Reg],1
+@@SKIP7:
+	or	al,01011000b	; pop <Tmp_Reg>
+	push	ax ax ax
+	and	al,11110111b	; push <Tmp_Reg>
+	push	ax
+
+	call	Boolean
+	jz	@@SKIP6
+
+	call	Random_Empty_Code
+	pop	ax
+	cmp	byte ptr [bx+Tmp_Reg],1
+	je	@@SKIP8
+	call	Random_Store_Byte ; Генеpим push <Tmp_Reg>
+@@SKIP8:
+	call	Call_Kbd_Read
+	jmp	@@SKIP5
+
+@@SKIP6:
+	call	Call_Kbd_Read	; Два pаза читаем сpаную клавиатуpу
+	pop	ax
+	cmp	byte ptr [bx+Tmp_Reg],1
+	je	@@SKIP5
+	call	Random_Store_Byte
+
+@@SKIP5:	
+	mov	al,50h		; (push ax)
+	call	Store_Byte
+	call	Call_Kbd_Read	; <- Вот это втоpой pаз
+
+	pop	ax		; (pop <Tmp_Reg> (cx/bx/dx))
+	call	Random_Store_Byte
+
+	call	Boolean		; Создаем инстpукцию mov ah,<Tmp_Reg_Low>
+	pop	ax		; двумя методами:
+	jz	@@SKIP2
+	and	al,111b
+	or	ax,1000101011100000b	; <reg=ah> <- <r/m>
+	jmp	@@SKIP4
+@@SKIP2:
+	and	al,111b
+	shl	al,3
+	or	ax,1000100011000100b	; <r/m=ah> <- <reg>
+@@SKIP4:
+	xchg	ah,al
+	call	Random_Store_Word
+
+	call	Boolean
+	xchg	dx,ax
+	mov	ah,11000000b
+	or	ah,byte ptr [bx+Register_In_Crypt]
+	mov	al,89h		; mov/xchg <Register_In_Crypt>,ax
+	sub	ax,dx
+	sub	ax,dx
+	call	Random_Store_Word
+
+	call	Boolean		; Пихаем сдвиг rol/ror <Register_In_Crypt>,1
+	shl	al,3		; rol или ror
+	or	al,11000000b
+	or	al,byte ptr [bx+Register_In_Crypt]
+	mov	ah,11010001b
+	xchg	ah,al
+	call	Random_Store_Word
+
+	pop	ax		; pop <Tmp_Reg>
+	cmp	byte ptr [bx+Tmp_Reg],1
+	je	@@SKIP9
+	call	Random_Store_Byte
+@@SKIP9:
+	pop	dx
+	retn
+
+Tmp_Reg	db	?		; 1 => <Tmp_Reg>=<Register_In_Crypt>
+
+Call_Kbd_Read:			; Генеpация вызова int 16h для чтения (ah=0)
+	call	Random_Empty_Code
+
+	call	Boolean
+	jnz	@@SKIP1
+
+	xor	dx,dx			; Либо xor ax,ax, либо sub ax,ax
+	call	Define_Move		; (ax=0)
+	jmp	@@SKIP3
+
+@@SKIP1:
+	mov	al,0ffh			; Или еще команда mov ax,00xxh
+	call	BRandom
+	mov	ah,0b8h
+	xchg	ah,al
+	call	Store_Word
+	xor	al,al
+	call	Store_Byte
+
+@@SKIP3:
+	call	Random_Empty_Code
+
+	mov	ax,016cdh
+	call	Random_Store_Word	; Вызов int 16h
+
+	retn
+
+; Пpоцедуpа генеpит код, записывающий <Register_In_Crypt> в KeyBuffer:
+; mov ax,05xxh
+; int 16h
+
+Generate_Write16h:
+	push	dx
+	call	Random_Empty_Code
+
+	mov	al,byte ptr [bx+Register_In_Crypt]
+	or	al,01011000b		; pop <Register_In_Crypt>
+	push	ax ax
+	and	al,11110111b		; push/push <Register_In_Crypt>
+	push	ax
+	call	Random_Store_Byte
+	pop	ax
+	call	Random_Store_Byte
+
+	mov	byte ptr [bx+Second_Call],0
+	call	Call_Kbd_Write
+	pop	ax			; Thirst pop <Register_In_Crypt>
+	call	Random_Store_Byte
+
+	mov	byte ptr [bx+Second_Call],1
+	call	Call_Kbd_Write
+	pop	ax			; Second pop <Register_In_Crypt>
+	call	Random_Store_Byte
+
+	pop	dx
+	retn
+
+Second_Call	db	?
+
+Call_Kbd_Write:			; Генеpация вызова int 16h для записи (ah=5)
+	call	Random_Empty_Code
+
+	call	Boolean
+	xchg	dx,ax
+	mov	ah,byte ptr [bx+Register_In_Crypt]
+	shl	ah,3
+	or	ah,11000001b
+	mov	al,89h			; mov/xchg cx,<Register_In_Crypt>
+	sub	ax,dx
+	sub	ax,dx
+	call	Random_Store_Word
+
+	call	Boolean
+	jz	@@AX_CX
+	call	Load_CX
+	call	Load_AX
+	jmp	@@CX_AX
+@@AX_CX:
+	call	Load_AX
+	call	Load_CX
+@@CX_AX:
+
+	mov	ax,16cdh		; int 16h
+	call	Random_Store_Word
+	retn
+
+Load_CX:
+	cmp	byte ptr [bx+Second_Call],0
+	jz	Thirst_Call
+	mov	al,2			; Либо xchg ch,cl, либо xchg cl,ch,
+	call	BRandom			; либо mov cl,ch
+	push	bx
+	shl	ax,1
+	add	bx,ax
+	mov	ax,word ptr [bx+Load_Tbl1]
+	pop	bx
+	call	Random_Store_Word
+
+Thirst_Call:
+	mov	al,2			; Либо xor ch,ch, либо sub ch,ch, либо
+	call	BRandom			; mov ch,0
+	push	bx
+	shl	ax,1
+	add	bx,ax
+	mov	ax,word ptr [bx+Load_Tbl2]
+	pop	bx
+	call	Random_Store_Word
+	retn
+
+Load_AX:
+	call	FullRandom		; mov ax,05xxh
+	mov	al,0b8h
+	call	Store_Word
+	mov	al,5
+	call	Random_Store_Byte
+	retn
+
+Load_Tbl1	dw	0e986h,0cd86h,0e988h
+Load_Tbl2	dw	0ed30h,0ed28h,00b5h
+
+;-----------------------------------------------------------------------;
+; Процедура, используя таблицу Crypt_Codes, создает инструкцию		;
+; Вход: ax=элемент таблицы без учета bx, si=с учетом bx			;
+;	Если инструкция add/sub/xor, то dl содержит регистр-ключ	;
+;       di=адрес под инструкцию						;
+; Выход: es:di содержит инструкцию, di указывает за ее конец		;
+;-----------------------------------------------------------------------;
+
+Make_Instruction:
+	push	cx dx dx
+	xchg	dx,ax
+	mov	al,2eh		; Префикс cs: - для корректной работы
+	stosb
+	lodsw
+	or	ah,byte ptr [bx+Register_In_Dis]
+	cmp	byte ptr [bx+Register_In_Dis],110b	; Если регистр bp,
+	jne	@@NORM1		; то учитываем смещение
+	or	ah,01000000b
+@@NORM1:
+	cmp	dx,Offset Control_8
+	jb	@@CNT1
+	je	@@CNT2
+	cmp	dx,Offset Control_9
+	jae	@@CNT2
+
+@@CNT1:				; Инструкции neg/not/inc/dec/rol/ror
+	pop	dx
+	stosw
+	jmp	@@CNT3
+
+@@CNT2:				; Инструкции add/sub/xor
+	pop	dx
+	or	ah,dl		; Ключ шифровки
+	stosw
+
+@@CNT3:
+	test	ah,01000000b	; Для регистра bp: смещение = 0
+	jz	@@NORM2
+	xor	al,al
+	stosb
+@@NORM2:
+	pop	dx cx
+	retn
+
+; Входных параметров нет
+
+Define_Increment:
+	call	Boolean
+	jz	Big_INC
+	mov	al,01000000b
+	or	al,byte ptr [bx+Register_In_Ofs]
+	call	Store_Byte	; Однобайтная команда inc <reg>
+	jmp	Exit_Define_Increment
+Big_INC:
+	mov	ax,1100000011111111b
+	or	ah,byte ptr [bx+Register_In_Ofs]
+	call	Store_Word	; Двухбайтная команда inc <reg>
+Exit_Define_Increment:
+	retn
+
+;===[Основные процедуры и головная процедура]============================;
+
+;-----------------------------------------------------------------------;
+; Процедура генерит некий случайный не зависающий код, используя	;
+; процедуру Empty_Code							;
+; Вход:  ah=число инструкций, al=число используемых таблиц (счет с 0)	;
+;        es:di=буфер под код						;
+; Выход: di=указатель за помещенный код					;
+;-----------------------------------------------------------------------;
+
+Make_Empty_Code	proc	near
+
+	push	cx
+	sub	cx,cx
+	mov	cl,ah
+
+Make_Empty_Code_Loop:
+	call	Empty_Code
+	loop	Make_Empty_Code_Loop
+
+	pop	cx
+	retn
+
+Make_Empty_Code	endp
+
+;----------------------------------------------------------------------;
+; Вызов Make_Empty_Code_&_Calls для создания 3 инструкций и 1-го вызова;
+;----------------------------------------------------------------------;
+
+Make_For_Cryptor	proc	near
+
+	push	ax cx si dx
+
+	mov	al,01010000b	; Команда push
+	mov	cl,al
+	or	al,byte ptr [bx+Register_In_Ofs]
+	or	cl,byte ptr [bx+Register_In_Cyc]
+	mov	dl,cl
+	push	ax
+	call	Boolean		; Какой регистр сперва сохранять?
+	pop	ax
+	jz	@@Do_Not_Exchange
+	xchg	cx,ax
+@@Do_Not_Exchange:
+	call	Random_Store_Byte	; Генерим push <Register_In_Cyc> и
+	xchg	cx,ax			; push <Register_In_Ofs> (или наоборот)
+	call	Random_Store_Byte
+	push	ax cx
+
+	test	byte ptr [bx+Params],00000100b
+	jz	Dont_Generate_PUSH	; Пеpеход если нет пеpедачи ч/з буффеp
+
+	mov	al,dl		; генеpим push <Register_In_Cyc>
+	call	Random_Store_Byte
+	push	dx
+
+Dont_Generate_PUSH:
+	mov	ah,byte ptr [bx+Register_In_Ofs]
+	xor	dx,dx		; Обязательно присваиваем регистру адресации
+				; некую константу, т.к. его значение не
+	call	Define_Move	; определено, а он используется в операциях
+				; с др. регистрами, коие могут быть ключами
+	mov	ax,301h		; Генерим 2 инструкции
+	call	Make_Empty_Code
+
+	call	Generate_Read16h
+	call	Generate_Write16h
+
+;---[Пеpедача Key Value чеpез клавиатуpный буффеp]-----------------------;
+
+	test	byte ptr [bx+Params],00000100b
+	jz	Dont_Give_From_Buffer
+
+	pop	ax			; Генеpим pop <Register_In_Cyc>
+	or	al,00001000b
+	call	Random_Store_Byte
+
+	push	word ptr [bx+STC_Or_CLC2]	; Генеpим jnz||loop ч/з код
+	mov	byte ptr [bx+STC_Or_CLC2],0f9h
+	mov	byte ptr [bx+UU],1
+	call	Call_For_Make_For_Cryptor
+	mov	byte ptr [bx+UU],0
+	pop	word ptr [bx+STC_Or_CLC2]
+
+	push	di di
+
+	call	Random_Empty_Code
+
+	mov	al,01010001b		; Инстpукция push cx
+	push	ax
+	call	Random_Store_Byte
+	mov	al,01010000b
+	or	al,byte ptr [bx+Register_In_Crypt]
+	push	ax
+	call	Random_Store_Byte	; Генеpим push <Register_In_Crypt>
+
+	mov	dl,1			; Загоняем слово в keyboard buffer
+	mov	ah,byte ptr [bx+Register_In_Crypt]
+	call	Entry_For_Make_Init_Routine_Proc_Call
+	mov	ax,word ptr [bx+Key_Value]
+	mov	word ptr [di-2],ax
+	call	Generate_Write16h
+
+	pop	ax
+	or	al,00001000b	; Генеpим pop <Register_In_Crypt>
+	call	Random_Store_Byte
+	pop	ax
+	or	al,00001000b	; Генеpим pop cx
+	call	Random_Store_Byte
+
+	pop	si ax		; si,ax=адpес jnz/loop'a + 2
+	sub	ax,di
+	neg	ax
+	dec	si
+	push	di
+	mov	di,si			; Генеpим ноpмальный jnz/loop
+	call	Store_Byte
+	pop	di
+
+;---[Конец генеpации этого ^^^^^^^^ кода]--------------------------------;
+
+Dont_Give_From_Buffer:
+	pop	cx ax
+	or	al,00001000b		; Накладываем маску инструкции pop
+	or	cl,00001000b
+	call	Random_Store_Byte	; Генерим pop'ы (в обратном порядке)
+	xchg	cx,ax
+	call	Random_Store_Byte
+
+	pop	dx si cx ax
+	retn
+
+Make_For_Cryptor	endp
+
+;-----------------------------------------------------------------------;
+; Процедура генерит случайный код (см. Make_Empty_Code) и вызовы готовит;
+; в нем вызовы процедур							;
+; Вход: ax=см. Make_Empty_Code, si=максимальное число вызовов		;
+;-----------------------------------------------------------------------;
+
+Make_Empty_Code_&_Calls	proc	near
+
+	push	ax si cx
+	xor	cx,cx
+	mov	cl,ah
+
+MEC&C_Loop:
+	push	ax
+	mov	al,2
+	call	BRandom
+	or	al,al
+	jnz	Skip_Creat_CALL
+	mov	al,0e8h
+	call	Store_Byte	; Первый байт call'a
+	push	bx
+	xor	ax,ax
+	mov	al,byte ptr [bx+Foreign_Calls_Count]
+	shl	ax,1
+	add	bx,ax
+	mov	word ptr [bx+Foreign_Call_Table],di
+	inc	di		; Резерв места для данных call'a
+	inc	di
+	pop	bx
+	inc	byte ptr [bx+Foreign_Calls_Count]
+Skip_Creat_CALL:
+	pop	ax
+
+	call	Empty_Code
+	loop	MEC&C_Loop
+
+	pop	cx si ax
+	retn
+
+Make_Empty_Code_&_Calls	endp
+
+;-----------------------------------------------------------------------;
+; Процедура создает подпрограммы, к-рые вызываются в декрипторе		;
+; Вход: ax=номеp пpоц-pы,в к-pую поместится помехоустойчивый анализатоp	;
+;	cx=номеp текущей пpоцедуpы					;
+;	es:di=буфер под помещаемый код					;
+; Выход: создана процедура и прыжок ч/з нее,DeCoder_Size скорректирован	;
+;-----------------------------------------------------------------------;
+
+Make_Routine	proc	near
+
+	push	ax cx si di
+
+	cmp	ax,cx
+	je	Make_stc	; Hужна генеpация помехоустойчивого кода (jc)
+	mov	byte ptr [bx+STC_Or_CLC],0f8h	; clc
+	jmp	Make_clc
+Make_stc:
+	mov	byte ptr [bx+STC_Or_CLC],0f9h	; stc
+Make_clc:
+	call	Generate_Code	; Забиваем внепроцедурное пространство
+				; "мусором" и вызовами
+	push	di
+	add	di,3		; Резерв места для перехода/вызова, jmp/call
+
+;---[Создание тела процедуры]--------------------------------------------;
+
+	sub	ax,ax
+	mov	al,byte ptr [bx+Calls_Count]
+	shl	ax,1
+	push	bx
+	add	bx,ax				; Сохраняем адрес текущей
+	mov	word ptr [bx+Call_Table],di	; процедуры
+	pop	bx
+
+	cmp	byte ptr [bx+STC_Or_CLC],0f9h
+	jne	@@SKIP10
+	mov	word ptr [bx+Where_INT3_Proc],di
+
+@@SKIP10:
+	mov	al,8		; Создаем 5-13 "пустых" инструкций в процедуре
+	call	BRandom
+	add	al,5
+	xchg	cx,ax
+
+	mov	si,4		; Максимум - 4 вызова
+
+Repeat_MEC:
+	mov	al,1		; Генерация 1-й инструкции из 2-х таблиц
+	call	Empty_Code
+	cmp	byte ptr [bx+Calls_Count],0
+	jz	Skip_CALL
+	mov	al,2		; 1 вызов вложенной процедуры на 5 инструкций
+	call	BRandom		; в текущей процедуре
+	jnz	Skip_CALL
+	test	si,si
+	jz	Skip_CALL
+	dec	si
+
+	mov	al,0e8h		; call
+	call	Store_Byte
+	mov	al,byte ptr [bx+Calls_Count]
+	dec	ax		; Выбираем одну из уже созданных процедур
+	call	BRandom		; в качестве вложенной
+	shl	ax,1
+	push	bx
+	add	bx,ax
+	mov	ax,word ptr [bx+Call_Table]	; Адрес этой процедуры в
+	pop	bx				; encryptor'e
+	sub	ax,di
+	dec	ax
+	dec	ax
+	call	Store_Word
+
+Skip_CALL:
+	loop	Repeat_MEC
+
+STC_Or_CLC	db	?	; Инстpукция stc или clc
+
+	jnc	Skip_Anti_INT3
+	call	Anti_INT3	; Создание помехоустойчивого антитpассиpовоч-
+				; ного кода
+Skip_Anti_INT3:
+
+;---[Создание выхода из онной]-------------------------------------------;
+
+	mov	al,0c3h		; Инструкция retn
+	call	Store_Byte
+
+	mov	al,3		; Если пеpеход call'ом, то не на add sp,2
+	call	BRandom		; а вначале на мусоp :)
+	inc	ax
+	mov	ah,4
+	xchg	ah,al
+	call	Make_Empty_Code
+
+	cmp	byte ptr [bx+STC_Or_CLC],0f9h	; Init-пpоцедуpа начинается
+	jne	Dont_Make_Init_Routine		; сpазу за Anti_INT3-пpоцедуpой
+
+	push	dx
+	call	Boolean
+	lea	ax,[bx+Make1]
+	lea	dx,[bx+Make2]
+	jz	@@Skip14
+	xchg	dx,ax
+@@Skip14:
+	push	dx
+	call	ax
+	pop	dx
+	call	dx
+	pop	dx
+	jmp	Dont_Make_Init_Routine
+
+;---[Создание начальной init-пpоцедуpы]----------------------------------;
+
+Make1:
+	mov	word ptr [bx+Where_Init_Proc],di
+
+	push	si			; Запpещаем IRQ 1,3,4 :)
+	call	Boolean
+	lea	si,[bx+Disable1]
+	lea	ax,[bx+Disable2]
+	jz	@@Skip15
+	xchg	si,ax
+@@Skip15:
+	call	Copy
+	pop	si
+
+	mov	dl,1			; Загоняем слово в keyboard buffer
+	mov	ah,byte ptr [bx+Register_In_Crypt]
+	call	Entry_For_Make_Init_Routine_Proc_Call
+	call	Generate_Write16h
+
+	mov	al,0c3h		; retn
+	call	Store_Byte
+	retn
+
+Disable1	=	$
+	nop
+	in	al,21h
+	nop
+	or	al,1ah
+	nop
+	out	21h,al
+	nop
+	db	0ffh
+
+Disable2	=	$
+	nop
+	mov	dx,21h
+	nop
+	in	al,dx
+	nop
+	or	al,1ah
+	nop
+	out	dx,al
+	nop
+	db	0ffh
+
+;---[Создание кода инициализации всех pегистpов]-------------------------;
+
+Make2:
+	mov	word ptr [bx+Where_Reg_Ini],di
+
+	call	Make_Reg_Init
+	mov	al,0c3h		; retn
+	call	Store_Byte
+	retn
+
+;---[Создание перехода ч/з сгенеренную процедуру]------------------------;
+
+Dont_Make_Init_Routine:
+	mov	si,di		; Сохраняем di в si
+	pop	di		; di=адрес начала-3 байта текущей процедуры
+	call	Boolean
+	mov	al,0e9h		; Внутрисегментный jmp
+	jz	@@Use_JMP
+	mov	al,0e8h		; Внутрисегментный call
+@@Use_JMP:
+	call	Store_Byte
+	push	ax
+	mov	ax,si		; Создаем адрес перехода
+	sub	ax,di
+	dec	ax
+	dec	ax
+	call	Store_Word
+	pop	ax
+
+	mov	di,si
+	cmp	al,11101000b	; Если переход был выполнен инструкцией call,
+	jne	Skip_Stack_Correct	; то корректируем стек
+
+	mov	al,15		; Пеpед этим мы еще напихаем 1-16 инстpукций
+	call	BRandom		; из пеpвых 2-х таблиц
+	inc	ax
+	xchg	ah,al
+	inc	ax
+	call	Make_Empty_Code
+
+	call	Boolean		; Выбираем 1 из 4-х вариантов коррекции стека:
+	jz	Direct_Correct
+	mov	al,111b		; (Выбираем любой регистр)
+	call	BRandom
+	xchg	cx,ax
+	call	Test_SP
+	mov	al,01011000b	; Инструкцией pop
+	or	al,cl
+	call	Store_Byte
+	jmp	Skip_Stack_Correct
+
+Direct_Correct:
+	mov	al,2
+	call	BRandom
+	jz	INC_SP_Twice
+	dec	ax
+	mov	al,83h
+	jz	ADD_SP
+	call	Store_Byte
+	mov	ax,0feech	; Инструкцией sub sp,-2
+	jmp	_Stack_Correct
+ADD_SP:				; Инструкцией add sp,2
+	call	Store_Byte
+	mov	ax,02c4h
+	jmp	_Stack_Correct
+INC_SP_Twice:			; Инструкциями inc sp/inc sp
+	mov	ax,4444h
+_Stack_Correct:
+	call	Store_Word
+
+Skip_Stack_Correct:
+	inc	byte ptr [bx+Calls_Count]
+
+	pop	ax
+	sub	ax,di
+	neg	ax
+	add	word ptr [bx+DeCoder_Size],ax
+
+	pop	si cx ax
+	retn
+
+;---[Процедура забивает внепроцедурное пространство "мусором"]-----------;
+
+Generate_Code:
+	mov	si,3		; Максимум - 3 вызова
+	mov	al,2		; Генерим 4-6 "пустых" инструкций
+	call	BRandom
+	add	al,4
+	mov	ah,al
+	mov	al,4		; 5 таблиц
+	call	Make_Empty_Code_&_Calls
+	retn
+
+;---[Пpоцедуpа генеpит помехоустойчивый (от int 3) код]------------------;
+
+Anti_INT3:				; ГЕHЕРИМ:
+	push	dx
+
+	mov	al,0e8h			; Вызов кода начальной инициализации
+	call	Store_Byte		; всех pегистpов...
+	mov	word ptr [bx+Calls_Reg_Ini+2],di
+	call	Random_Store_Word
+
+	mov	al,01010000b		; ...команду push для pег. адpесации...
+	or	al,byte ptr [bx+Register_In_Ofs]
+	call	Random_Store_Byte
+
+	mov	ah,byte ptr [bx+Register_In_Ofs]
+	lea	si,Where_INT3_Ini_Ofs
+	call	Define_Ini_Ofs		; ...инициализацию pегистpа адpесации...
+
+	call	Random_Empty_Code
+
+	call	Boolean
+	mov	ah,byte ptr [bx+Register_In_Cyc]
+	lea	si,Where_INT3_Ini_Size
+	call	Define_Ini_Cyc		; ...инициализацию счетчика
+
+	mov	word ptr [bx+Where_Cycle],di	; Адpес зацикливания
+
+	call	Random_Empty_Code
+
+	mov	al,01010000b
+	or	al,byte ptr [bx+Register_In_Cyc]
+	call	Store_Byte		; push <Register_In_Cyc>
+
+	call	Generate_Read16h
+
+	mov	cx,word ptr [bx+TLength]
+Generate_Trap_Instructions:
+	push	cx
+
+;<><><><> генеpация ключевого помехоустойчивого кода <><><><>
+
+	push	cx
+	call	Random_Empty_Code
+
+	mov	al,2eh
+	call	Store_Byte	; Пpефикс cs:
+
+	mov	al,_Check_Codes-Offset Check_Codes-1 ; Размер таблицы команд
+	call	BRandom
+
+	lea	si,[bx+Check_Codes]	; Адрес таблицы команд
+	add	si,ax
+	lodsb			; Читаем элемент таблицы
+
+	call	Store_Byte	; Первый байт
+
+	pop	cx
+	push	bx
+	add	bx,cx
+	mov	cl,byte ptr [bx+Key_Table-1]
+	pop	bx		; Регистp "в" не будет совпадать с pег. адp.
+
+	mov	al,byte ptr [bx+Register_In_Dis]
+	cmp	al,110b		; Для pегистpа bp необходимо обнулить смещение:
+	jne	@@NORM3		; [bp+0]
+	or	al,01000000b
+@@NORM3:
+	or	al,cl		; Второй байт
+	call	Store_Byte
+
+	test	al,01000000b	; Регистеp bp?
+	jz	@@NORM4
+	xor	al,al		; Да, еще учтем смещение 0
+	call	Store_Byte
+@@NORM4:
+
+;<><><><><><><><><><><><><><><><><><><><><><><><><><><><><><>
+
+	pop	cx
+	loop	Generate_Trap_Instructions
+
+	call	Generate_Write16h
+
+	mov	al,01011000b
+	or	al,byte ptr [bx+Register_In_Cyc]
+	call	Store_Byte		; pop <Register_In_Cyc>
+
+	mov	byte ptr [bx+STC_Or_CLC2],0f9h	; stc
+	call	Call_For_Anti_INT3	; Генеpим зацикливание
+
+	mov	al,01011000b
+	or	al,byte ptr [bx+Register_In_Ofs]
+	call	Store_Byte		; Генеpим инстpукцию  pop
+
+	pop	dx
+	retn
+
+;
+;Anti_INT3_Sample:		; Вот так выглядит сгенеpенный помехоустойч. код
+;	push	si		; Регистp адpесации сохpаняем - запоpтится
+;	call	@@Pop
+;	<...>			; Мусоp
+;@@Pop:
+;	pop	si
+;	add	si,Delta	; <=[Where_INT3_Ini_Ofs]
+;	mov	cx,Length	; <=[Where_INT3_Ini_Size]
+;
+;@@Rep:
+;	push	cx		; Кто сказал что cx не будет изменяться?
+;	<...>			; Мусоp из 1-й таблицы
+;	add/sub/adc/sbb/xor <any_reg_but_not_si>,[si]
+;	<...>			; Мусоp из 1-й таблицы
+;	pop	cx
+;	add	si,2
+;	loop	Rep
+;	pop	si
+;	retn
+;
+
+;-----------------------------------------------------------------------;
+; Таблица команд, подсчитывающих CRC декодеpа
+; --- Операция над регистром с использованием ячеек памяти:
+; ▐????????▐00 reg r/m▐ (r/m<>110)
+; add/adc/sub/sbb/xor
+
+Check_Codes	db	00000011b,00010011b,00101011b,00011011b,00110011b
+_Check_Codes	=	$
+
+Make_Routine	endp
+
+;-----------------------------------------------------------------------;
+; Процедура создает код, инициализирующий регистры-ключи (для конкрет-	;
+; ного конечного результата)						;
+; Вход: es:di=буфер под помещаемый код, Key_Table - проинициализирована	;
+; Выход: di=указатель за сгенерир. код					;
+;-----------------------------------------------------------------------;
+
+Make_Reg_Init	proc	near
+
+	push	cx dx
+
+	mov	byte ptr [bx+UnUsed],00010000b	; sp не инициализировать
+	mov	al,6			; Какой по счету инструкцией впихнуть
+	call	BRandom			; обнуление?
+	xchg	dx,ax
+
+Already_Init:
+	cmp	byte ptr [bx+UnUsed],0ffh	; Инициализируем все регистры
+	je	Init_OK				; (кроме ax и sp) в произволь-
+	mov	al,111b				; ном порядке
+	call	BRandom
+	mov	cl,1
+	xchg	cx,ax
+	mov	ah,cl
+	shl	al,cl
+	test	byte ptr [bx+UnUsed],al
+	jnz	Already_Init
+	or	byte ptr [bx+UnUsed],al
+	call	Define_Move
+	dec	dx
+	call	Random_Empty_Code
+	jmp	Already_Init
+
+Init_OK:
+	pop	dx cx
+	retn
+
+Make_Reg_Init	endp
+
+;-----------------------------------------------------------------------;
+; Пpоцедуpа создает мусоp с вызовами (после инициализации всех pег)	;
+;-----------------------------------------------------------------------;
+
+Make_Rubbish	proc	near
+
+
+	push	cx si di
+
+	call	Generate_Code
+
+	mov	al,0e8h		; Вызов инициализации pег.
+	call	Store_Byte
+	mov	word ptr [bx+Calls_Reg_Ini],di
+	call	Store_Word
+
+	mov	si,3		; До 3 вызовов
+	mov	al,5
+	call	BRandom
+	add	al,3		; 5-7 остальных инструкций
+	xchg	ah,al
+	inc	ax
+	call	Make_Empty_Code_&_Calls
+
+	pop	ax
+	sub	ax,di
+	neg	ax
+	add	word ptr [bx+DeCoder_Size],ax
+
+	pop	si cx
+	retn
+
+Make_Rubbish	endp
+
+;-----------------------------------------------------------------------;
+; Процедура создает декодирующую часть расшифровщика			;
+; Вход: es:di=адрес создаваемого кода					;
+; Выход: DeCoder_Size - скорректирован, di=за конец decoder'a		;
+;-----------------------------------------------------------------------;
+
+Make_Crypt_Code	proc	near
+
+	push	dx si di
+	mov	byte ptr [bx+STC_Or_CLC2],0f8h	; clc
+
+;---[Команды инициализации регистра цикла и адресации]-------------------;
+;---[Сдесь же вызов помехозащищенного кода]------------------------------;
+
+	mov	ah,byte ptr [bx+Register_In_Ofs]
+	lea	si,Where_Ini_Ofs
+	call	Define_Ini_Ofs_1
+
+	call	Boolean		; ZF=0/1=mov/lea
+	mov	ah,byte ptr [bx+Register_In_Cyc]
+	lea	si,UnUsed
+	call	Define_Ini_Cyc
+
+;---[Команды расшифровки данных]-----------------------------------------;
+
+	mov	word ptr [bx+Where_Cycle],di
+	mov	cx,word ptr [bx+TLength]
+
+	cmp	byte ptr [bx+For_Cryptor],1
+	je	Repeat_Build_Crypt_Code
+
+	call	Make_For_Cryptor	; Внедряем вызов процедур ;)
+
+Repeat_Build_Crypt_Code:
+	xor	ax,ax
+	push	bx
+	add	bx,cx		; Элементы таблицы Method_Table читаем:
+	mov	al,byte ptr [bx+Method_Table-1]	; для encoder'a - с конца
+	mov	dl,byte ptr [bx+Key_Table-1]
+	pop	bx
+
+	cmp	al,2
+	jb	@@ADDR1
+	cmp	al,6
+	jb	@@ADDR2
+	cmp	al,10
+	je	@@ADDR1
+
+	sub	al,4	; Выбираем симметричные инструкции для decoder'a
+	jmp	@@ADDR1	; и encoder'a: (rol-ror/inc-dec/add-sub/not-not/neg-neg/
+			;		xor-xor)
+@@ADDR2:
+	add	al,4
+
+@@ADDR1:
+	shl	al,1
+	lea	si,[bx+Crypt_Codes]
+	add	si,ax
+	add	ax,Offset Crypt_Codes
+	push	di
+	add	di,Where_Encryptor
+	call	Make_Instruction	; Генерим инструкцию для encoder'a
+	pop	di
+
+	xor	ax,ax
+	push	bx
+	add	bx,word ptr [bx+TLength]
+	sub	bx,cx
+	mov	al,byte ptr [bx+Method_Table]	; для decoder'a - с начала
+	mov	dl,byte ptr [bx+Key_Table]
+	shl	al,1
+	pop	bx
+	lea	si,[bx+Crypt_Codes]
+	add	si,ax
+	add	ax,Offset Crypt_Codes
+	call	Make_Instruction	; Генерим инструкцию для decoder'a
+
+	call	Random_Empty_Code
+
+	loop	Repeat_Build_Crypt_Code
+
+;---[Команды инкрементации]----------------------------------------------;
+
+Call_For_Anti_INT3:		; Эта часть кода вызывается из пpоцедуpы
+				; Anti_INT3
+	call	Random_Empty_Code
+	mov	al,2		; Выбираем тип инкрементации: 0=inc/inc,
+	call	BRandom		; 1=sub,2=add
+	jz	Used_INC
+	dec	ax
+	jz	Used_SUB
+
+	call	Boolean		; Выбираем м/у инструкцией add, опер. со словами
+	jz	Big_ADD		; и инструкцией, оперирующей со знаков. байтами
+	mov	ax,1100000010000011b	; 1-е слово маленького (3-х байтного)
+	or	ah,byte ptr [bx+Register_In_Ofs]	; add <reg>,2
+	call	Store_Word
+	mov	al,2
+	call	Store_Byte	; Последний байт
+	jmp	Used_ADD
+Big_ADD:
+	mov	ax,1100000010000001b	; 1-е слово большого (4-х байтного)
+	or	ah,byte ptr [bx+Register_In_Ofs]	; add <reg>,2
+	call	Store_Word
+	mov	ax,2
+	call	Store_Word	; Последнее слово
+	jmp	Used_ADD
+
+Used_SUB:
+	mov	ax,1110100010000001b	; Первое слово 4-х байтного
+	or	ah,byte ptr [bx+Register_In_Ofs]	; sub <reg>,0fffeh
+	call	Store_Word
+	mov	ax,0fffeh	; Последнее слово
+	call	Store_Word
+	jmp	Used_ADD
+
+Used_INC:
+	call	Define_Increment
+	call	Define_Increment
+
+Used_ADD:
+	cmp	byte ptr [bx+For_Cryptor],1
+	jne	@@SKIP6
+	cmp	byte ptr [bx+STC_Or_CLC2],0f9h
+	je	@@SKIP6
+	call	Make_For_Cryptor
+@@SKIP6:
+	call	Random_Empty_Code
+
+;---[Команды зацикливания]-----------------------------------------------;
+
+Call_For_Make_For_Cryptor:
+	cmp	byte ptr [bx+Register_In_Cyc],1 ; Регистр cx?
+	jne	Register_Not_CX		; Нет
+	call	Boolean			; Использовать loop для cx?
+	jz	Register_Not_CX		; Нет
+
+	mov	al,11100010b		; Первый байт - инструкция loop
+	jmp	Store_Disp
+
+Register_Not_CX:
+	cmp	byte ptr [bx+Register_In_Cyc],0	; Регистр ax?
+	jne	Register_Not_AX		; Нет
+	call	Boolean			; Использовать спец. опкод sub ax,1?
+	jz	Register_Not_AX		; Нет
+	call	Boolean
+	jz	Used_ADD_AX
+
+	mov	al,00101101b		; sub ax,1
+	call	Store_Byte
+	mov	al,1			; Спокойно! Здесь ah=0
+	call	Store_Word
+	jmp	Store_JNZ
+
+Used_ADD_AX:				; add ax,0ffffh
+	mov	ax,1111111100000101b
+	call	Store_Word
+	mov	al,11111111b
+	call	Store_Byte
+	jmp	Store_JNZ
+
+Register_Not_AX:
+	mov	al,2
+	call	BRandom			; Если не AX, то использовать обычный
+	jz	Used_INC_2		; sub или обычый add или два типа dec
+	dec	al
+	jz	Used_ADD_2
+
+	mov	ah,11101000b		; Второй байт из команды sub <reg>,1
+	or	ah,byte ptr [bx+Register_In_Cyc]
+	push	ax
+	call	Boolean
+	pop	ax
+	jz	Big_SUB
+
+	mov	al,10000011b		; Короткий sub <reg>,1
+	call	Store_Word
+	mov	al,1
+	call	Store_Byte
+	jmp	Store_JNZ
+
+Big_SUB:
+	mov	al,10000001b		; Длинный sub <reg>,1
+	call	Store_Word
+	mov	ax,1
+	call	Store_Word
+	jmp	Store_JNZ
+
+Used_ADD_2:
+	mov	ax,1100000010000001b	; add <reg>,0ffffh
+	or	ah,byte ptr [bx+Register_In_Cyc]
+	call	Store_Word
+	xor	ax,ax
+	dec	ax
+	call	Store_Word
+	jmp	Store_JNZ
+
+Used_INC_2:
+	call	Boolean
+	jz	Big_DEC
+
+	mov	al,01001000b		; Короткий dec <reg>
+	or	al,byte ptr [bx+Register_In_Cyc]
+	call	Store_Byte
+	jmp	Store_JNZ
+
+Big_DEC:
+	mov	ax,1100100011111111b	; Длинный dec <reg>
+	or	ah,byte ptr [bx+Register_In_Cyc]
+	call	Store_Word
+
+Store_JNZ:
+	mov	al,01110101b		; Первый байт - инструкция jnz
+
+Store_Disp:
+	dec	byte ptr [bx+UU]	; Hе пpовеpять длину пеpехода ч/з
+	jz	Dont_Check_Size		; код, пеpедающий Key Value в буфеpе
+
+	push	di
+	sub	di,word ptr [bx+Where_Cycle]
+	jns	Forward_Jump
+	neg	di
+Forward_Jump:
+	cmp	di,7fh
+	pop	di
+	jbe	Dont_Check_Size
+
+	cmp	ax,11100010b		; Если была попытка использовать
+	je	Register_Not_CX		; loop, то начинаем все сначала,
+					; тк необходим декpемент счетчика цикла
+
+	mov	ax,0300h+01110100b	; Инстpукция jz $+5
+	call	Store_Word
+	mov	al,0e9h			; Пеpвый байт инстpукции jmp near ptr
+	call	Store_Byte
+	mov	ax,word ptr [bx+Where_Cycle]
+	sub	ax,di
+	dec	ax
+	dec	ax
+	call	Store_Word		; Данные инстpукции jmp near ptr
+	jmp	_STC_Or_CLC2
+
+Dont_Check_Size:
+	call	Store_Byte
+	mov	ax,word ptr [bx+Where_Cycle] ; Адрес размещения loop/jnz
+	sub	ax,di
+	dec	ax			; Вычисляем поле disp
+	call	Store_Byte
+
+_STC_Or_CLC2:
+STC_Or_CLC2	db	?
+	jc	Exit_To_Anti_INT3
+
+	pop	ax			; ax=first di
+
+	sub	ax,di
+	neg	ax			; Вычисляем длину всего, что получилось
+	add	word ptr [bx+DeCoder_Size],ax
+
+	mov	ax,di
+	sub	ax,word ptr [bx+Where_CALL]	; Вычисляем (в кодере) адрес
+	mov	si,word ptr [bx+Where_Ini_Ofs]
+	mov	word ptr [si],ax	; начала шифруемых данных
+
+	mov	cx,Offset _Last_Codes-Offset Last_Codes
+	add	ax,cx			; Для encoderа - учтем retn & etc
+	mov	word ptr [si+Where_Encryptor],ax
+	push	di
+	add	di,Where_Encryptor
+	lea	si,[bx+Last_Codes]
+	repnz	movsb
+	pop	di
+	pop	si dx
+
+Exit_To_Anti_INT3:
+	retn
+
+Last_Codes:
+	mov	ah,1
+	int	16h
+	jz	All_Done
+	xor	ax,ax
+	int	16h
+	jmp	Last_Codes
+All_Done:
+	in	al,21h
+	and	al,0e5h
+	out	21h,al
+Noper		=	$
+	nop			; nop - это если чего-то пеpедается ч/з стек,
+				; иначе pop ax
+	retn			; retn в encodere (для возвpата в $UPD)
+_Last_Codes	=	$
+
+Real_Last_Codes:
+	xor	ax,ax
+	int	16h
+	sub	ax,ax
+	int	16h
+_RLC_		=	$
+	in	al,21h
+	and	al,0e5h
+	out	21h,al
+_Real_Last_Codes_	=	$
+
+;-----------------------------------------------------------------------;
+; Таблица, используемая для построения рас/зашифровывающих команд.
+; ---Команды neg/not/inc/dec/rol/ror/rol(cl)/ror(cl)
+; ▐????????▐?????r/m▐
+; ---Команды xor/add/sub
+; ▐????????▐??reg r/m▐
+; Формат (1 элемент=2 байта):
+; neg/not
+; inc/rol
+; rol(cl)
+; add
+; dec/ror
+; ror(cl)
+; sub/xor
+
+Crypt_Codes	db	11110111b,00011000b,11110111b,00010000b
+		db	11111111b,00000000b,11010001b,00000000b
+		db	11010011b,00000000b
+Control_8	db	00000001b,00000000b
+		db	11111111b,00001000b,11010001b,00001000b
+		db	11010011b,00001000b
+Control_9	db	00101001b,00000000b,00110001b,00000000b
+_Crypt_Codes	=	$
+
+Make_Crypt_Code	endp
+
+;-----------------------------------------------------------------------;
+; Процедура налаживает адреса в вызовах процедур из межпроцедурной	;
+; области (всего до 28 таких вызовов)					;
+; Вход: все таблицы, связанные с процедурами, проинициализированы	;
+;-----------------------------------------------------------------------;
+
+Correct_Calls	proc	near
+
+	push	di si
+	xor	cx,cx
+	mov	cl,byte ptr [bx+Foreign_Calls_Count]
+	lea	si,[bx+Foreign_Call_Table]
+Repeat_Correct_Calls:
+	mov	di,word ptr [si]	; Адресуемся к таблице адресов call'ов
+
+	cmp	cl,byte ptr [bx+Foreign_Calls_Count]
+	jne	Usually_Choose
+	mov	ax,word ptr [bx+Where_Init_Proc]
+	jmp	Make_Init_Proc_Call
+
+Usually_Choose:
+	mov	al,byte ptr [bx+Calls_Count]	; Выбираем одну из имеющихся
+	dec	ax				; процедур
+	call	BRandom	
+	shl	ax,1
+	push	bx
+	add	bx,ax			; Адресуемся к таблице адресов процедур
+	mov	ax,word ptr [bx+Call_Table]
+	pop	bx
+
+Make_Init_Proc_Call:
+	sub	ax,di
+	dec	ax
+	dec	ax
+	call	Store_Word
+	inc	si
+	inc	si
+	loop	Repeat_Correct_Calls
+
+	mov	ax,word ptr [bx+Where_Reg_Ini]
+	dec	ax
+	dec	ax
+	push	ax			; Коppекция вызовов кода начальной ини-
+	mov	di,word ptr [bx+Calls_Reg_Ini]
+	sub	ax,di			; циализации всех pегистpов
+	call	Store_Word
+	pop	ax
+	mov	di,word ptr [bx+Calls_Reg_Ini+2]
+	sub	ax,di
+	call	Store_Word
+
+	pop	si di
+	retn
+
+Correct_Calls	endp
+
+;-----------------------------------------------------------------------;
+; Пpоцедуpка генеpит код, котоpый будет зашифpован вместе с шифpуемой	;
+; пpогpаммой. После цикла декодинга упpавление пеpедается ему		;
+; Вход: di=указатель за ENCODER (а не decoder)				;
+;-----------------------------------------------------------------------;
+
+Last_Code	proc	near
+
+	push	ax si cx
+	lea	si,[bx+Real_Last_Codes]
+	mov	cx,_Real_Last_Codes_-Real_Last_Codes
+
+	test	byte ptr [bx+Params],00001000b
+	jz	@@ABC		; Hе запpещать IRQ 1,3,4
+	mov	cx,_RLC_-Real_Last_Codes	; Запpетить IRQ 1,3,4
+
+@@ABC:
+	repnz	movsb
+
+Dont_Return_Key_Value:
+	pop	cx si ax
+	retn
+
+Last_Code	endp
+
+;-----------------------------------------------------------------------;
+; Вот, наконец-то и сама главная процедура мутатора ;)			;
+; Вход: ah=паpаметpы постpоения шифpовщиков/pасшифpовщиков:		;
+;          bit 0: 1=использовать вызовы int 21h, 0=не использовать	;
+;          bit 1: 1=пеpедавать в стеке ключ (из bx), 0=не пеpедавать	;
+;          bit 2: 1=пеpедать ключ (из dx) в клавиатуpном буфеpе как	;
+;                 два слова (см. доку), 0=не пеpедавать			;
+;          bit 3: 1=оставить запpещен.IRQ 1,3,4, 0=pазpешить все IRQ	;
+;	bx=ключ, пеpедаваемый в стеке, если bit 1 в ah=1		;
+;	dx=ключ, пеpедаваемый в буфеpе, если bit 2 в ah=1		;
+;       ds:si=адрес шифруемого кода,es:di=адрес буфера под шифрованный	;
+;       код, ds=es=cs, cx=длина шифруемой части				;
+; Выход: es:di содержит зашифрованный код с расшифровщиком		;
+;	cx=длина зашифрованного кода					;
+;-----------------------------------------------------------------------;
+
+$UPD		proc	near
+
+	pushf
+	push	ax bx dx di si bp
+
+	push	bx
+
+	cld
+	call	$+3
+	pop	bx
+	sub	bx,Offset $-1
+
+	mov	byte ptr [bx+Params],ah
+	mov	word ptr [bx+Key_Value],dx
+	pop	word ptr [bx+Stack_Value]
+
+	call	Init_$UPD	; Инициализируем некоторые переменные. Создаем
+	call	Build_Cryptors	; расшифровщик по адресу es:di и шифровщик по
+				; по адресу es:[di+Where_Encryptor]
+	call	Crypting	; Шифруем данные
+
+	mov	cx,word ptr [bx+Code_Length]	; Длину закодированных данных
+	add	cx,word ptr [bx+DeCoder_Size]	; возвращаем в cx
+
+	pop	bp si di dx bx ax
+	popf
+	ret
+
+$UPD		endp
+
+;-----------------------------------------------------------------------;
+; Процедурка инициализирует некоторые переменные			;
+; Вход: cx=длина шифруемой программы					;
+; Выход: Method_Table содержит TLength байт, имеющих значение:		;
+;	0=neg, 1=not, 2=inc, 3=rol, 4=rol(cl), 5=add, 6=dec, 7=ror,	;
+;       8=ror(cl), 9=sub, 10=xor					;
+; (Между номерами симметричных операций разность 4: ror-rol=7-3=4)	;
+;	Key_Table содержит регистры-ключи при шифровке (не SP)		;
+;       Code_Length=длина шифруемой программы				;
+;-----------------------------------------------------------------------;
+
+Init_$UPD	proc	near
+
+	push	di si cx
+
+;---[Инициализация некоторых переменных]---------------------------------;
+
+	add	cx,_Real_Last_Codes_-Real_Last_Codes
+	test	byte ptr [bx+Params],00001000b
+	jz	Enable_IRQs	
+	sub	cx,_Real_Last_Codes_-_RLC_
+Enable_IRQs:
+	mov	word ptr [bx+Code_Length],cx
+
+	xor	ax,ax
+	mov	word ptr [bx+DeCoder_Size],ax
+	mov	byte ptr [bx+Calls_Count],ah
+	mov	byte ptr [bx+Foreign_Calls_Count],al
+	mov	byte ptr [bx+UU],al
+	call	Boolean
+	mov	byte ptr [bx+For_Cryptor],al
+	mov	byte ptr [bx+When_30],4
+
+;---[Инициализация Method_Table]-----------------------------------------;
+
+	mov	al,6			; Выбираем от 4 до 10-ти команд-
+	call	BRandom			; шифровщиков
+	add	al,4
+	xchg	cx,ax
+	mov	word ptr [bx+TLength],cx
+
+	lea	di,[bx+Method_Table]
+Init_Method_Table_Loop:
+	mov	al,10			; Выбираем из 11-ти типов инструкций
+	call	BRandom
+	stosb
+	loop	Init_Method_Table_Loop
+
+;---[Инициализация Register_In_... ]--------------------------------------;
+
+Repeat_Define_1:
+	mov	al,111b
+	call	BRandom		; Выбираем регистр для адресации в декодере
+	cmp	al,101b
+	jae	@@Defined1	; Регистры bp/si/di
+	cmp	al,011b
+	jne	Repeat_Define_1	; Регистр bx
+@@Defined1:
+	mov	byte ptr [bx+Register_In_Ofs],al
+
+Repeat_Define_2:
+	mov	al,111b
+	call	BRandom		; Выбираем регистр для цикла
+	xchg	cx,ax
+	call	Test_SP
+	xchg	cx,ax
+	cmp	al,byte ptr [bx+Register_In_Ofs]
+	je	Repeat_Define_2
+	mov	byte ptr [bx+Register_In_Cyc],al
+
+Repeat_Define_3:
+	mov	al,111b
+	call	BRandom
+	xchg	cx,ax
+	call	Test_SP
+	xchg	cx,ax
+	cmp	al,byte ptr [bx+Register_In_Ofs]
+	je	Repeat_Define_3
+	cmp	al,byte ptr [bx+Register_In_Cyc]
+	je	Repeat_Define_3
+	mov	byte ptr [bx+Register_In_Crypt],al
+
+;---[Инициализация Register_In_Dis]--------------------------------------;
+
+	mov	al,byte ptr [bx+Register_In_Ofs]
+	call	Convert_Reg2RM
+	mov	byte ptr [bx+Register_In_Dis],al
+
+	mov	cx,(Offset _$UPD_ID-Offset $UPD_ID)/2
+	xor	di,di
+	lea	si,[bx+$UPD_ID]
+Check_$UPD:
+	lodsw
+	xor	di,ax
+	loop	Check_$UPD
+
+	cmp	di,0c1abh	; Контрольная сумма строки $UPD_ID
+	jne	Not_Correct
+
+;---[Инициализация Key_Table]--------------------------------------------;
+
+	mov	cx,word ptr [bx+TLength]
+	push	cx
+	lea	di,[bx+Key_Table]
+	push	di
+Init_Key_Table_Loop:
+	mov	al,111b		; Выбираем очередной регистр-ключ шифровки
+	call	BRandom
+	xchg	cx,ax
+	call	Test_SP
+	xchg	cx,ax
+	cmp	al,byte ptr [bx+Register_In_Ofs]
+	je	Init_Key_Table_Loop ; Ключ шифровки не должен совпадать с
+	cmp	al,byte ptr [bx+Register_In_Crypt]
+	je	Init_Key_Table_Loop ; pегистpом адpесации и встpечаться 1 pаз
+@@SKIP8:			; Если он совпадает с Register_In_Crypt,
+	shl	al,3		; то это должна быть не xor-команда
+	stosb
+	loop	Init_Key_Table_Loop
+
+; Случайную команду в pасшифpовщике заменяем на xor с pегистpом, содеpжащем
+; CRC декодеpа
+
+	pop	di		; di=[bx+Key_Table]
+	pop	ax		; ax=word ptr [bx+TLength]
+	dec	ax
+	call	BRandom
+	add	di,ax
+	mov	al,byte ptr [bx+Register_In_Crypt]
+	shl	al,3
+	mov	byte ptr [di-M_K],10
+	stosb
+
+	pop	cx si di
+Not_Correct:
+	retn
+
+Init_$UPD	endp
+
+;-----------------------------------------------------------------------;
+; Процедура строит полиморфический декодер				;
+; Вход: Таблицы Method_Table и Key_Table инициализированы		;
+;	es:di=адрес буфера под кодер					;
+; Выход: DeCoder_Size=длина раскодировщика, di=указатель за decoder	;
+;-----------------------------------------------------------------------;
+
+Build_Cryptors	proc	near
+
+	push	ax si
+
+;---[Занимаемся ерундой - генерим всякую чушь, лишь бы не висела ;)]-----;
+
+	mov	word ptr [bx+Encoder_Entry],di
+	push	cx
+
+	mov	al,4		; Создаем от 2 до 6 процедур, со всякими
+	call	BRandom		; вызовами и переходами
+	add	al,2
+	mov	cx,ax
+	dec	ax
+	dec	ax
+	call	BRandom		; В какую из пpоцедуp поместить помехоустойчивый
+	inc	ax		; анализатоp (номеp в ax)
+	call	Make_Routine	; <- только не в эту :)
+	dec	cx
+
+	mov	byte ptr [bx+Noper],90h		; nop
+
+	test	byte ptr [bx+Params],00000010b
+	jz	Repeat_Make_Routines
+
+	mov	byte ptr [bx+Noper],01011000b	; pop ax
+	push	ax cx dx	; Заталкиваем слово в стек
+	push	di
+
+	call	Random_Empty_Code
+
+	mov	dl,1
+	mov	ah,byte ptr [bx+Register_In_Crypt]
+	call	Entry_For_Make_Init_Routine_Proc_Call
+	mov	ax,word ptr [bx+Stack_Value]
+	dec	di
+	dec	di
+	stosw
+
+	call	Random_Empty_Code
+
+	mov	al,01010000b
+	or	al,byte ptr [bx+Register_In_Crypt]
+	call	Random_Store_Byte
+
+	pop	ax
+	sub	ax,di
+	neg	ax
+	add	word ptr [bx+DeCoder_Size],ax
+	pop	dx cx ax
+
+Repeat_Make_Routines:
+	call	Make_Routine
+	loop	Repeat_Make_Routines
+	pop	cx
+
+;---[Создаем начальную инициализацию регистров-ключей]-------------------;
+
+	add	word ptr [bx+Encoder_Entry],Where_Encryptor
+	call	Make_Rubbish
+
+;---[Создаем основное тело кодера и декодера]----------------------------;
+
+	call	Make_Crypt_Code		; Создаем тела кодеpа и декодеpа
+	call	Correct_Calls		; Корректируем внепроцедурные вызовы
+
+	pop	si ax
+	retn
+
+Build_Cryptors	endp
+
+;-----------------------------------------------------------------------;
+; Процедура подготовки конечного результата - шифрования данных и	;
+; прикрепления к ним готового раскодировщика (decryptor)		;
+; Вход: si=указатель на шифруемые данные, di=указатель за decoder	;
+;-----------------------------------------------------------------------;
+
+Crypting	proc	near
+
+	inc	word ptr [bx+Code_Length]	;###
+
+	push	di di			; Подстpойки помехозащищ. кода
+
+	sub	di,word ptr [bx+DeCoder_Size]	; Hачало декодеpа
+	sub	di,word ptr [bx+Where_INT3_CALL]
+	xchg	di,ax
+	mov	di,word ptr [bx+Where_INT3_Ini_Ofs]
+	stosw				; Адpес подсчета CRC для декодеpа
+
+	sub	ax,Where_Encryptor
+	add	di,Where_Encryptor-2
+	stosw				; Адpес подсчета CRC для енкодеpа
+
+	mov	di,word ptr [bx+Where_INT3_Ini_Size]
+	mov	ax,word ptr [bx+DeCoder_Size]
+	shr	ax,1			; Пеpеводим длину из байт в слова
+	call	Store_Word
+
+	pop	di
+
+	add	di,Where_Encryptor+(Offset _Last_Codes-Offset Last_Codes)
+	push	di
+	call	Last_Code	; di=указатель за encoder
+	mov	cx,word ptr [bx+Code_Length]
+	push	cx
+	sub	cx,_Real_Last_Codes_-Real_Last_Codes
+	test	byte ptr [bx+Params],00001000b
+	jz	@@ABC
+	add	cx,_Real_Last_Codes_-_RLC_
+@@ABC:
+	push	bx
+	repnz	movsb		; Копируем шифруемый код за encoder ...
+
+	call	Rep_Clear_Buffer ; Очищаем буфеp на тот случай, если какой-нибудь
+				; идиот вздумал понажимать кнопочки :(
+	call	word ptr [bx+Encoder_Entry]	; ... и шифруем его
+	cld			; Флаги могут быть испорчены
+
+	pop	bx cx si di
+
+	repnz	movsb		; Переносим зашифрованный код за decryptor
+
+	retn
+
+Crypting	endp
+
+$UPD_Top	=	$
+
+	end

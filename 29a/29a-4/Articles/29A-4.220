@@ -1,0 +1,471 @@
+
+Make your own CheckSumMappedFile
+by Bumblebee/29a
+
+        Contents:
+                . Dissasm of CheckSumMappedFile
+                . Our CheckSumMappedFile func
+
+
+ Each PE file has a 32-bit-checksum ('CheckSum'). This checksum is, for
+current versions of NT, only checked if the image is a NT driver or some
+system DLL. For other files the cheksum usually is zero... but microshit
+says: "It is recommended that all images have valid checksums". Don't
+care of the checksum if your virus cannot work under NT. But if you want
+to manage it in your infection, there is the article you're looking for ;)
+
+ First comes a dissasm of a function that does the CheckSum of a mapped file
+found into 'imagehlp.dll'. After understand this i include a routine and
+the way to call it to do the CheckSum in your virus.
+
+ I did this article when i was coding AOC.
+
+
+Dissasm of CheckSumMappedFile
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Addr into dll: 7D6B2439h
+      Ordinal:     0003h
+         Name: CheckSumMappedFile
+
+push    offset [cheksum]    -> var ptr computed check sum
+push    offset [headersum]  -> var ptr original check sum
+push    dword [filelength]  -> file length
+push    dword [baseaddr]    -> base address of mapped file
+call    CheckSumMappedFile
+
+return eax -> pointer to NT header or zero if error
+
+;
+; This piece of code is a shit... look at func0. It's the interesting code.
+; It's included here 'cause this is a dissasm. Notice: al numbers in hex.
+; After func0 call begins the interesting code.
+;
+CheckSumMappedFile:
+        mov   eax, dword fs:[00000000]
+        push  ebp
+        mov   ebp, esp
+        push  -00000001
+        push  7D6C61C0
+        push  7D6C4598
+        push  eax
+        mov   eax, dword[ebp+10]
+        mov   dword fs:[00000000], esp
+        sub   esp, 00000010
+        push  ebx
+        push  esi
+        push  edi
+        xor   esi, esi
+        mov   dword[ebp-18], esp
+        mov   dword[eax], esi
+        mov   eax, dword[ebp+0C]                ; file size
+        inc   eax                               ; add 1
+        shr   eax, 1                            ; shr 1
+        push  eax                               ; 1st arg
+        push  dword[ebp+08]                     ; 2nd mapped file
+        push  esi                               ; 0 ?
+        call  func0                             ; this does the partial
+                                                ; checksum
+
+        mov   word[ebp-1A], ax                  ; ax contains the partial
+        mov   dword[ebp-04], esi                ; checksum
+        push  dword[ebp+08]                     ; the mapped file
+        call  ImageNtHeader                     ; this loads the NT header
+        mov   dword[ebp-20], eax                ; and test if it's a PE
+        jmp   saltito0                          ; returns the pointer to
+        mov   eax, 00000001                     ; header
+        ret
+
+        mov   esp, dword[ebp-18]
+        mov   dword[ebp-20], 00000000
+
+saltito0:                                       ; ends checksum calc
+        mov   dword[ebp-04], FFFFFFFF
+        cmp   dword[ebp-20], 00000000           ; ImageNtHeader failed?
+        je    saltito1
+        mov   eax, dword[ebp+08]
+        cmp   dword[ebp-20], eax                ; ImageNtHeader failed?
+        je    saltito1
+        mov   esi, dword[ebp-20]                ; esi = addr nt header
+        mov   ecx, dword[ebp+10]                ; ecx = offst var header sum
+        add   esi, 00000058                     ; esi = addr check sum
+        mov   edx, 00000001
+        mov   eax, dword[esi]                   ; eax = check sum
+        mov   dword[ecx], eax                   ; move check sum to var (old)
+        mov   ecx, edx                          ; ecx = 1
+        mov   ax, word[esi]                     ; get word addr by esi
+        cmp   word[ebp-1A], ax                  ; cmp with our partial chcks
+        adc   ecx, -00000001                    ; if carry...
+        sub   word[ebp-1A], cx                  ; sub word res to partial...
+        sub   word[ebp-1A], ax                  ; sub word (check sum)
+        mov   ax, word[esi+02]                  ; and get 2nd word of chcks
+        cmp   word[ebp-1A], ax                  ; cmp with our value
+        adc   edx, -00000001                    ; if carry...
+        sub   word[ebp-1A], dx                  ; sub res to partial
+        sub   word[ebp-1A], ax                  ; sub the word
+
+saltito1:
+        movzx ecx, word[ebp-1A]                 ; get our partial chcks
+        add   ecx, dword[ebp+0C]                ; add file size
+        mov   eax, dword[ebp+14]
+        pop   edi
+        pop   esi
+        pop   ebx
+        mov   dword[eax], ecx                   ; this is the check sum!!
+        mov   eax, dword[ebp-20]
+        mov   ecx, dword[ebp-10]
+        mov   dword fs:[00000000], ecx
+        mov   esp, ebp
+        pop   ebp
+        ret   0010
+
+;
+;  This is the func that does the partial check sum of the file...
+;
+;     push      (fileSize+1)/2
+;     push      offset mappedFile
+;     push      0
+;     call      func0
+;
+func0:
+        push    esi
+        mov     ecx, dword[esp+10]              ; ecx = (file size+1) shr 1
+        mov     esi, dword[esp+0C]              ; esi = offset of mapped file
+        mov     eax, dword[esp+08]              ; eax = 0 (?)
+        shl     ecx, 1
+        je      func0_saltito0
+        test    esi, 00000002
+        je      func0_saltito1
+        sub     edx, edx
+        mov     dx, word[esi]
+        add     eax, edx
+        adc     eax, 00000000
+        add     esi, 00000002
+        sub     ecx, 00000002
+
+func0_saltito1:
+        mov     edx, ecx
+        and     edx, 00000007
+        sub     ecx, edx
+        je      func0_saltito2
+        test    ecx, 00000008
+        je      func0_saltito3
+        add     eax, dword[esi]
+        adc     eax, dword[esi+04]
+        adc     eax, 00000000
+        add     esi, 00000008
+        sub     ecx, 00000008
+        je      func0_saltito2
+
+func0_saltito3:
+        test    ecx, 00000010
+        je      func0_saltito4
+        add     eax, dword[esi]
+        adc     eax, dword[esi+04]
+        adc     eax, dword[esi+08]
+        adc     eax, dword[esi+0C]
+        adc     eax, 00000000
+        add     esi, 00000010
+        sub     ecx, 00000010
+        je      func0_saltito2
+
+func0_saltito4:
+        test    ecx, 00000020
+        je      func0_saltito5
+        add     eax, dword[esi]
+
+        adc     eax, dword[esi+04]
+        adc     eax, dword[esi+08]
+        adc     eax, dword[esi+0C]
+        adc     eax, dword[esi+10]
+        adc     eax, dword[esi+14]
+        adc     eax, dword[esi+18]
+        adc     eax, dword[esi+1C]
+        adc     eax, 00000000
+        add     esi, 00000020
+        sub     ecx, 00000020
+        je      func0_saltito2
+
+func0_saltito5:
+        test    ecx, 00000040
+        je      func0_saltito6
+        add     eax, dword[esi]
+
+        adc     eax, dword[esi+04]
+        adc     eax, dword[esi+08]
+        adc     eax, dword[esi+0C]
+        adc     eax, dword[esi+10]
+        adc     eax, dword[esi+14]
+        adc     eax, dword[esi+18]
+        adc     eax, dword[esi+1C]
+        adc     eax, dword[esi+20]
+        adc     eax, dword[esi+24]
+        adc     eax, dword[esi+28]
+        adc     eax, dword[esi+2C]
+        adc     eax, dword[esi+30]
+        adc     eax, dword[esi+34]
+        adc     eax, dword[esi+38]
+        adc     eax, dword[esi+3C]
+        adc     eax, 00000000
+        add     esi, 00000040
+        sub     ecx, 00000040
+        je      func0_saltito2
+
+func0_saltito6:
+        add     eax, dword[esi]
+
+        adc     eax, dword[esi+04]
+        adc     eax, dword[esi+08]
+        adc     eax, dword[esi+0C]
+        adc     eax, dword[esi+10]
+        adc     eax, dword[esi+14]
+        adc     eax, dword[esi+18]
+        adc     eax, dword[esi+1C]
+        adc     eax, dword[esi+20]
+        adc     eax, dword[esi+24]
+        adc     eax, dword[esi+28]
+        adc     eax, dword[esi+2C]
+        adc     eax, dword[esi+30]
+        adc     eax, dword[esi+34]
+        adc     eax, dword[esi+38]
+        adc     eax, dword[esi+3C]
+        adc     eax, dword[esi+40]
+        adc     eax, dword[esi+44]
+        adc     eax, dword[esi+48]
+        adc     eax, dword[esi+4C]
+        adc     eax, dword[esi+50]
+        adc     eax, dword[esi+54]
+        adc     eax, dword[esi+58]
+        adc     eax, dword[esi+5C]
+        adc     eax, dword[esi+60]
+        adc     eax, dword[esi+64]
+        adc     eax, dword[esi+68]
+        adc     eax, dword[esi+6C]
+        adc     eax, dword[esi+70]
+        adc     eax, dword[esi+74]
+        adc     eax, dword[esi+78]
+        adc     eax, dword[esi+7C]
+        adc     eax, 00000000
+        add     esi, 00000080
+        sub     ecx, 00000080
+        jne     func0_saltito6
+
+func0_saltito2:
+        test    edx, edx
+        je      func0_saltito0
+
+func0_saltito7:
+        sub     ecx, ecx
+        mov     cx, word[esi]
+        add     eax, ecx
+        adc     eax, 00000000
+        add     esi, 00000002
+        sub     edx, 00000002
+        jne     func0_saltito7
+
+func0_saltito0:
+        mov     edx, eax
+        shr     edx, 10
+        and     eax, 0000FFFF
+        add     eax, edx
+        mov     edx, eax
+        shr     edx, 10
+        add     eax, edx
+        and     eax, 0000FFFF
+        pop     esi
+        ret     000C                            ; return eax = check sum
+
+
+Our CheckSumMappedFile func
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+ How to call the func? Remember our CheckSum func makes partial checksum
+and you must end the work. This is due we want to update the old check sum
+so this code works using old check sum...
+
+        mov     ecx,fileSize                    ; calc the new check sum
+        inc     ecx
+        shr     ecx,1
+                                                ; esi contains pointer to
+                                                ; the mapped file
+
+        call    CheckSumMappedFile              ; calc partial check sum
+                                                ; eax contains the p chcks
+        add     esi,dword ptr [esi+3ch]         ; goto begin of nt header
+        mov     word ptr [pchcks+ebp],ax
+        mov     edx,1                           ; complete the check sum
+        mov     ecx,edx
+        mov     ax,word ptr [esi+58h]
+        cmp     word ptr [pchcks+ebp],ax
+        adc     ecx,-1
+        sub     word ptr [pchcks+ebp],cx
+        sub     word ptr [pchcks+ebp],ax
+        mov     ax,word ptr [esi+5ah]
+        cmp     word ptr [pchcks+ebp],ax
+        adc     edx,-1
+        sub     word ptr [pchcks+ebp],dx
+        sub     word ptr [pchcks+ebp],ax
+        movzx   ecx,word ptr [pchcks+ebp]
+        add     ecx,dword ptr [pad+ebp]
+        mov     dword ptr [esi+58h],ecx         ; set new check sum
+
+;
+;  This is our func that does the partial check sum of the file.
+;
+;   in: ecx (fileSize+1) shr 2
+;       esi offset mappedFile
+;
+;  out: eax checksum of file
+;
+CheckSumMappedFile:
+        push    esi
+        xor     eax, eax
+        shl     ecx, 1
+        je      func0_saltito0
+        test    esi, 00000002h
+        je      func0_saltito1
+        sub     edx, edx
+        mov     dx, word ptr [esi]
+        add     eax, edx
+        adc     eax, 00000000h
+        add     esi, 00000002h
+        sub     ecx, 00000002h
+
+func0_saltito1:
+        mov     edx, ecx
+        and     edx, 00000007h
+        sub     ecx, edx
+        je      func0_saltito2
+        test    ecx, 00000008h
+        je      func0_saltito3
+        add     eax, dword ptr [esi]
+        adc     eax, dword ptr [esi+04h]
+        adc     eax, 00000000h
+        add     esi, 00000008h
+        sub     ecx, 00000008h
+        je      func0_saltito2
+
+func0_saltito3:
+        test    ecx, 00000010h
+        je      func0_saltito4
+        add     eax, dword ptr [esi]
+        adc     eax, dword ptr [esi+04h]
+        adc     eax, dword ptr [esi+08h]
+        adc     eax, dword ptr [esi+0Ch]
+        adc     eax, 00000000h
+        add     esi, 00000010h
+        sub     ecx, 00000010h
+        je      func0_saltito2
+
+func0_saltito4:
+        test    ecx, 00000020h
+        je      func0_saltito5
+        add     eax, dword ptr [esi]
+
+        adc     eax, dword ptr [esi+04h]
+        adc     eax, dword ptr [esi+08h]
+        adc     eax, dword ptr [esi+0Ch]
+        adc     eax, dword ptr [esi+10h]
+        adc     eax, dword ptr [esi+14h]
+        adc     eax, dword ptr [esi+18h]
+        adc     eax, dword ptr [esi+1Ch]
+        adc     eax, 00000000h
+        add     esi, 00000020h
+        sub     ecx, 00000020h
+        je      func0_saltito2
+
+func0_saltito5:
+        test    ecx, 00000040h
+        je      func0_saltito6
+        add     eax, dword ptr [esi]
+
+        adc     eax, dword ptr [esi+04h]
+        adc     eax, dword ptr [esi+08h]
+        adc     eax, dword ptr [esi+0Ch]
+        adc     eax, dword ptr [esi+10h]
+        adc     eax, dword ptr [esi+14h]
+        adc     eax, dword ptr [esi+18h]
+        adc     eax, dword ptr [esi+1Ch]
+        adc     eax, dword ptr [esi+20h]
+        adc     eax, dword ptr [esi+24h]
+        adc     eax, dword ptr [esi+28h]
+        adc     eax, dword ptr [esi+2Ch]
+        adc     eax, dword ptr [esi+30h]
+        adc     eax, dword ptr [esi+34h]
+        adc     eax, dword ptr [esi+38h]
+        adc     eax, dword ptr [esi+3Ch]
+        adc     eax, 00000000h
+        add     esi, 00000040h
+        sub     ecx, 00000040h
+        je      func0_saltito2
+
+func0_saltito6:
+        add     eax, dword ptr [esi]
+
+        adc     eax, dword ptr [esi+04h]
+        adc     eax, dword ptr [esi+08h]
+        adc     eax, dword ptr [esi+0Ch]
+        adc     eax, dword ptr [esi+10h]
+        adc     eax, dword ptr [esi+14h]
+        adc     eax, dword ptr [esi+18h]
+        adc     eax, dword ptr [esi+1Ch]
+        adc     eax, dword ptr [esi+20h]
+        adc     eax, dword ptr [esi+24h]
+        adc     eax, dword ptr [esi+28h]
+        adc     eax, dword ptr [esi+2Ch]
+        adc     eax, dword ptr [esi+30h]
+        adc     eax, dword ptr [esi+34h]
+        adc     eax, dword ptr [esi+38h]
+        adc     eax, dword ptr [esi+3Ch]
+        adc     eax, dword ptr [esi+40h]
+        adc     eax, dword ptr [esi+44h]
+        adc     eax, dword ptr [esi+48h]
+        adc     eax, dword ptr [esi+4Ch]
+        adc     eax, dword ptr [esi+50h]
+        adc     eax, dword ptr [esi+54h]
+        adc     eax, dword ptr [esi+58h]
+        adc     eax, dword ptr [esi+5Ch]
+        adc     eax, dword ptr [esi+60h]
+        adc     eax, dword ptr [esi+64h]
+        adc     eax, dword ptr [esi+68h]
+        adc     eax, dword ptr [esi+6Ch]
+        adc     eax, dword ptr [esi+70h]
+        adc     eax, dword ptr [esi+74h]
+        adc     eax, dword ptr [esi+78h]
+        adc     eax, dword ptr [esi+7Ch]
+        adc     eax, 00000000h
+        add     esi, 00000080h
+        sub     ecx, 00000080h
+        jne     func0_saltito6
+
+func0_saltito2:
+        test    edx, edx
+        je      func0_saltito0
+
+func0_saltito7:
+        sub     ecx, ecx
+        mov     cx, word ptr [esi]
+        add     eax, ecx
+        adc     eax, 00000000h
+        add     esi, 00000002h
+        sub     edx, 00000002h
+        jne     func0_saltito7
+
+func0_saltito0:
+        mov     edx, eax
+        shr     edx, 10h
+        and     eax, 0000FFFFh
+        add     eax, edx
+        mov     edx, eax
+        shr     edx, 10h
+        add     eax, edx
+        and     eax, 0000FFFFh
+        pop     esi
+        ret
+
+
+ That's all! Enjoy it. Notice that this is an example routine. You can
+do a lot of changes... Good luck!
+
+                                                      The way of the bee
+

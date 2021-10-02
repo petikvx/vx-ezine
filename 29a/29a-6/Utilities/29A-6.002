@@ -1,0 +1,603 @@
+
+                           KME 5.52 USER'S MANUAL
+                           ======================
+
+                                  ABSTRACT
+                                  --------
+
+      KME  is  easy  to  use,  highly  configurable, and compatible with any
+  x86-based  platform  (Win9X/WinNT, ring0/ring3) 32-bit  polymorphic engine
+  with stack algorithm, in some cases allowing data compression.
+      By-passing KME encryption layers requires full decryptor emulation, in
+  some cases including FPU.
+
+                                  CONTENTS
+                                  --------
+
+     [1] Calling KME engine
+     [2] Return values
+     [3] Engine parameters
+     [3.1] flags
+     [3.2] cmdavail
+     [3.3] cmdavail2
+     [3.4] regavail
+     [3.5] jmp_prob
+     [3.6] po_entry
+     [3.7] po_size
+     [3.8] o_fillchar
+     [3.9] o_max
+     [3.10] o_offs
+     [3.11] i_entry
+     [3.12] i_size
+     [3.13] i_offs
+     [3.14] initregptr
+     [3.15] exitregptr
+     [3.16] vir_rva
+     [3.17] original_rva
+     [3.18] regsave
+     [3.19] randseed
+     [3.20] nlayer
+     [3.21] tempbufptr
+     [4] Multilayer support
+     [5] Integration with other engines
+     [6] Engine internals
+
+
+     [1] Calling KME engine:
+     ~~~~~~~~~~~~~~~~~~~~~~
+
+       KME engine has single public subroutine, which has cdecl calling
+       convention. Example of engine call:
+
+                        push    arg1
+                        ...
+                        push    argN
+                        call    kme_main
+                        add     esp, 4*KME_N_ARGS
+                        cmp     eax, KME_ERROR_XXX
+                        je      ...
+
+     [2] Return values:
+     ~~~~~~~~~~~~~~~~~
+
+       Engine result is returned in EAX.
+
+       1=KME_ERROR_SUCCESS  -- decryptor generated OK
+      -1=KME_ERROR_ASSERT   -- internal error (please report to V or Z)
+      -2=KME_ERROR_NOMEMORY -- no free space in output buffer
+      -3=KME_ERROR_BADARG   -- invalid parameter passed to engine
+
+     [3] Engine parameters:
+     ~~~~~~~~~~~~~~~~~~~~~
+
+       Here are described KME_N_ARGS parameters, in order of PUSH.
+
+     [3.1] flags
+     ~~~~~~~~~~~
+
+         Bitset of FLAG_XXX (see KME.INC for values)
+
+         FLAG_DEBUG           Used for debug purposes.
+                              Inserts INT3 before and after
+                              main decryptor body.
+
+         FLAG_NOLOGIC         Disable "logic" instructions, leave only
+                              XOR to generate values and then PUSH regs.
+
+         FLAG_NOJMPS          Build continuous decryptor w/o JMPs, i.e.
+                              disable "islands" of code, linked with JMPs,
+
+                              When FLAG_NOJMPS is NOT set (by default),
+                              "islands" are mixed within output buffer,
+                              and o_filler char is between them.
+                              In this case, *po_size returned is equal
+                              to o_max.
+
+                              When FLAG_NOJMPS is SET, continuous decryptor
+                              is generated, and *po_size returned will be
+                              less than o_max given; rest of buffer is
+                              filled with o_filler char.
+
+                              In case when MULTILAYER decryptor is to
+                              be generated, and FLAG_NOJMPS is NOT set,
+                              'interleave' parameter is used to determine
+                              which layer is "islands" and which one is
+                              continous.
+
+         FLAG_EIP0            When FLAG_NOJMPS is SET, or po_entry is NULL,
+                              this flag is ignored.
+                              When FLAG_NOJMPS is NOT set, and po_entry is
+                              not NULL, this flag forces decryptor entrypoint
+                              to be equal to start of output buffer.
+                              Otherwise random entrypoint is selected.
+
+         FLAG_NOSHORT         Disable short-instructions usage for EAX
+                              register. (CMP,ADD,SUB,XOR,etc.)
+
+                                35 34 12     XOR AX,1234
+                                81 F3 78 56  XOR BX,5678
+
+         FLAG_NOSHORT_C       Disable short-const usage for some
+                              instructions.
+
+                                81 C3 34 12  ADD BX,1234
+                                83 C1 56     ADD CX,+56
+
+         FLAG_NOSWAP          Disable randomly select of
+                              different opcodes for
+                              some instructions.
+
+                                01 D8        ADD AX,BX
+                                03 C3        ADD AX,BX
+
+         FLAG_ONLY386         Allow only 80386 opcodes,
+                              i.e. disable BSWAP & XADD.
+                              But FPU remains enabled.
+
+         FLAG_X_NORET         do NOT build epilog code at all.
+
+                              when SET:            when NOT set:
+
+                              push ...             push ...
+                              push ...             push ...
+                              <end-of-decryptor>   <see-below>
+
+         FLAG_X_CALLESP       Used if FLAG_X_NORET is NOT set.
+
+                              when SET:            when NOT set:
+
+                              push ...             push ...
+                              push ...             push ...
+                              call (esp+i_entry)   jmp  (esp+i_entry)
+                              add  esp, #          <end-of-decryptor>
+                              <see-below>
+
+                              # = total number of BYTES pushed
+
+         FLAG_X_RETBYJMP      Used if FLAG_X_NORET is NOT set,
+                              and FLAG_X_CALLESP is SET.
+
+                              when SET:            when NOT set:
+
+                              push ...             push ...
+                              push ...             push ...
+                              call (esp+i_entry)   call (esp+i_entry)
+                              add esp, #           add  esp, #
+                              jmp OrigEntry        <see-below>
+                           $: <end-of-decryptor>
+
+                              E9-JMP's argument,
+                              OrigEntry = original_rva - vir_rva - $
+
+                              In case of MULTILAYER decryptor,
+                              FLAG_X_RETBYJMP is applied for OUTER layer only,
+                              for other layers RETN is used.
+
+         FLAG_X_RET0C         Used if FLAG_X_NORET is NOT set,
+                              and FLAG_X_CALLESP is SET,
+                              and FLAG_X_RETBYJMP is NOT set.
+
+                              when SET:          when NOT set:
+
+                              push ...           push ...
+                              push ...           push ...
+                              call (esp+i_entry) call (esp+i_entry)
+                              add  esp, #        add  esp, #
+                              mov  eax, 1        retn
+                              retn 0Ch           <end-of-decryptor>
+                              <end-of-decryptor>
+
+                              In case of MULTILAYER decryptor,
+                              FLAG_X_RET0C is applied for OUTER layer only,
+                              for other layers RETN is used.
+
+         FLAG_RANDOMSTRATEGY  Randomly select set of commands and registers
+                              used in the decryptor.
+
+                              When this flag is SET,
+                              cmdavail, cmdavail2 and regavail are IGNORED.
+
+         FLAG_NOREPEATPUSH    Disable repeatable PUSH's.
+
+                              when SET:          when NOT set:
+
+                              calc eax=C1        calc eax=C1
+                              calc ebx=C2        push eax
+                              push eax           calc ebx=C2
+                              calc ecx=C1        push ebx
+                              push ebx           push eax
+                              push ecx
+
+         FLAG_FAILIFNOMEMORY  Fail (KME_ERROR_NOMEMORY) if
+                              there is no free space in output
+                              buffer to create exactly nlayer layers.
+                              Used only when nlayer > 1, otherwise ignored.
+
+     [3.2] cmdavail
+     ~~~~~~~~~~~~~~
+
+         This bitset of CMD_XXX (see KME.INC for values) defines
+         OPCODES that are available in instruction generation.
+         Used only when FLAG_NOLOGIC is NOT set,
+         and FLAG_RANDOMSTRATEGY is NOT set.
+         If FLAG_NOLOGIC is NOT set, but FLAG_RANDOMSTRATEGY is SET,
+         cmdavail is selected randomly.
+         See KME.INC for values.
+
+         CMD_ALL -- use all available CMD_XXX.
+
+         Register initialization:
+
+           MOV(by default),
+           CMD_PUSHPOP, CMD_XOR,CMD_SUB, CMD_INC,CMD_DEC
+
+         Specified value generation:
+
+           CMD_XOR, CMD_ADD,CMD_SUB, CMD_AND,CMD_OR
+
+         Logic:
+
+           CMD_XCHG, CMD_XOR, CMD_ADD,CMD_SUB, CMD_INC,CMD_DEC,
+           CMD_AND,CMD_OR, CMD_SHL,CMD_SHR, CMD_ROL,CMD_ROR, CMD_SAR,
+           CMD_NOT,CMD_NEG, CMD_IMUL_EX, CMD_SHLD,CMD_SHRD,
+           CMD_BTC,CMD_BTR,CMD_BTS, CMD_BSWAP,CMD_XADD, CMD_MOVSXZX,
+           CMD_BSR,CMD_BSF, CMD_MUL,CMD_IMUL, CMD_DIV,CMD_IDIV, CMD_PUSHPOP
+
+     [3.3] cmdavail2
+     ~~~~~~~~~~~~~~~
+
+         This bitset of CMD2_XXX (see KME.INC for values) defines
+         CODE BLOCKS that are available in instruction generation.
+         Used only when FLAG_NOLOGIC is NOT set,
+         and FLAG_RANDOMSTRATEGY is NOT set.
+         If FLAG_NOLOGIC is NOT set, but FLAG_RANDOMSTRATEGY is SET,
+         cmdavail2 is selected randomly.
+         See KME.INC for values.
+
+         CMD2_ALL -- use all available CMD2_XXX.
+
+         Logic:
+
+           CMD2_PUSHPOPR       push reg;   cmd; pop reg
+           CMD2_PUSHPOPC       push const; cmd; pop reg
+           CMD2_IFOLLOW        cmp reg, const; jxx
+           CMD2_INOFOLLOW      cmp reg, const; jxx fake
+           CMD2_RFOLLOW        cmp reg, reg; jxx
+           CMD2_RNOFOLLOW      cmp reg, reg; jxx fake
+           CMD2_SUBROUTINE     subroutine or CALL
+           CMD2_CYCLE          cycle
+           CMD2_FPU            FSIN,FCOS,FSQRT,FADD,FSUB,
+                               FMUL,FDIV,FSUBR,FDIVR
+
+     [3.4] regavail
+     ~~~~~~~~~~~~~~
+
+         Used only when FLAG_RANDOMSTRATEGY is NOT set.
+         If FLAG_RANDOMSTRATEGY is SET, regavail is selected randomly.
+
+         Use REG_ALL to use all available registers in the decryptor.
+         If no registers specified (regavail=0), REG_EAX is used.
+
+         NOTE: REG_ESP is ignored.
+
+     [3.5] jmp_prob
+     ~~~~~~~~~~~~~~
+
+         Used only if FLAG_NOJMPS is NOT set, otherwise ignored.
+         I.e. jmp_prob is used to specify "islands".
+         Before each new instruction is generated,
+         there're checked free space at code output pointer,
+         and if current "island" is about to fuckup another "island",
+         JMP to random location is generated.
+         Otherwise JMP will be generated only if rnd(jmp_prob)==0.
+         So, the more jmp_prob is, the bigger islands are.
+
+         jmp_prob == 0          -- select randomly, 10..20
+         jmp_prob == 1          -- add JMP after EACH instruction (ugly)
+         jmp_prob == 2          -- add JMP approximately after each 2 cmds
+         jmp_prob == N          -- average "island" length is N instructions
+
+     [3.6] po_entry
+     ~~~~~~~~~~~~~~
+
+         If po_entry is NULL, decryptor entrypoint will be zero,
+         i.e. equal to the start of output buffer.
+         If po_entry is NOT null (i.e. points to some DWORD),
+         then decryptor entrypoint will be selected randomly,
+         (FLAG_NOJMPS doesnt matter),
+         and on return placed into DWORD, pointed by po_entry.
+         EntryPoint is relative to the start to output buffer.
+
+     [3.7] po_size
+     ~~~~~~~~~~~~~
+
+         If NULL, this parameter is ignored.
+         If NOT null, decryptor size is placed into DWORD,
+         pointer by po_size.
+
+         When FLAG_NOJMPS is NOT set, generated decryptor size
+         will be exactly the same as maximal output buffer size,
+         and you can set po_size to NULL.
+         When FLAG_NOJMPS is SET, generated decryptor size will be
+         less than maximal output buffer size (o_max), and then
+         DWORD pointer by po_size on return will contain size
+         of generated decryptor.
+
+     [3.8] o_fillchar
+     ~~~~~~~~~~~~~~~~
+
+         Character to fill output buffer.
+         If o_fillchar == -1, it will be selected randomly.
+
+     [3.9] o_max
+     ~~~~~~~~~~~
+
+         Maximal available size of the output buffer.
+         If FLAG_NOJMPS is SET, generated decryptor will be less than o_max.
+         If FLAG_NOJMPS is NOT set, generated decryptor will be exactly
+         the same as o_max.
+
+     [3.10] o_offs
+     ~~~~~~~~~~~~~
+
+         Pointer to output buffer.
+
+         Ranges [o_offs..o_offs+o_max] and [i_offs..i_offs+i_size]
+         may not intersect with each other.
+
+         On error, output buffer is filled with 0xCC-byte.
+
+     [3.11] i_entry
+     ~~~~~~~~~~~~~~
+
+         Virus entrypoint, relative to input buffer.
+         After decryptor is executed, i.e. virus is decrypted,
+         control is passed to (esp+i_entry).
+
+     [3.12] i_size
+     ~~~~~~~~~~~~~
+
+         Size of input buffer, i.e. current virus size.
+         Will be DWORD-aligned before encryption.
+
+     [3.13] i_offs
+     ~~~~~~~~~~~~~
+
+         Input buffer, i.e. current virus offset in memory.
+
+     [3.14] initregptr
+     ~~~~~~~~~~~~~~~~~
+
+         If initregptr is NULL, this parameter is ignored,
+         and all initial register values (before decryptor)
+         are unknown to engine.
+
+         Otherwise, initregptr points to structure, containing 8 DWORD's,
+         one DWORD for each register:
+
+         in_eax dd ?
+         in_ecx dd ?
+         in_edx dd ?
+         in_ebx dd ?
+         unused dd ?
+         in_ebp dd ?
+         in_esi dd ?
+         in_edi dd ?
+
+         If some field is -1, it is IGNORED.
+         Otherwise, this field defines value of the correspodning
+         register, BEFORE decryptor execution.
+
+         Note, that decryptor will be build depending
+         on initial register values, and will work right only if they match
+         values given in this structure.
+         If they doesnt, decryptor will produce shit, instead of virus.
+
+         In case of MULTILAYER decryptor,
+         initregptr used for OUTER layer only.
+
+     [3.15] exitregptr
+     ~~~~~~~~~~~~~~~~~
+
+         If exitregptr is NULL, this parameter is ignored,
+         and all register values after decryptor passes
+         control to a virus, are undefined.
+
+         Otherwise, exitregptr points to structure, containing 8 DWORD's,
+         one DWORD for each register:
+
+         out_eax dd ?
+         out_ecx dd ?
+         out_edx dd ?
+         out_ebx dd ?
+         unused  dd ?
+         out_ebp dd ?
+         out_esi dd ?
+         out_edi dd ?
+
+         If some field is -1, it is IGNORED.
+         Otherwise, this field defines value of the correspodning
+         register, AFTER decryptor execution.
+
+         After decryptor execution, all registers, specified
+         in exitregptr structure will match correspoding values,
+         otherwise something is wrong and decrypted code is broken.
+
+         In case of MULTILAYER decryptor,
+         initregptr used for INNER layer only.
+
+     [3.16] vir_rva
+     ~~~~~~~~~~~~~~
+
+         Used only if FLAG_X_NORET is NOT set,
+         and FLAG_X_CALLESP is SET,
+         and FLAG_X_RETBYJMP is SET.
+         Otherwise it is ignored.
+
+         Specifies virus in-file RVA, i.e. RVA of virus decryptor
+         (output block) in the infected file.
+
+     [3.17] original_rva
+     ~~~~~~~~~~~~~~~~~~~
+
+         Used only if FLAG_X_NORET is NOT set,
+         and FLAG_X_CALLESP is SET,
+         and FLAG_X_RETBYJMP is SET.
+         Otherwise it is ignored.
+
+         Specifies original EntryPoint RVA.
+
+     [3.18] regsave
+     ~~~~~~~~~~~~~~
+
+         This field specifies registers (bitset of REG_XXX),
+         which must be preserved while decryptor and virus execution.
+
+         push r1
+         push r2
+         push ...
+         push ...
+         call esp
+         add esp, <#-of-pushed-bytes>
+         pop r2
+         pop r1
+         retn/retn0C/jmp_entry/nothing
+
+         Specified registers will be saved by means of PUSH,
+         before decryptor execution.
+
+         Specified registers will be restored by means of POP,
+         in the OUTER layer decryptor,
+         but only after <ADD ESP, #-of-pushed-bytes> command.
+         So, restoring registers requires
+         FLAG_X_NORET to be set to 0, and
+         FLAG_X_CALLESP to be set to 1.
+
+     [3.19] randseed
+     ~~~~~~~~~~~~~~~
+
+         This field specifies randseed for KME's internal randomer.
+         Pass GetTickCount() here.
+         Additional randomness will be obtained from crc of input code,
+         so, if you virus has some enough random variables inside,
+         you can just ignore this value.
+
+     [3.20] nlayer
+     ~~~~~~~~~~~~~
+
+         This field specifies number of polymorphic layers,
+         to be produced by KME engine.
+
+         Used mostly when FLAG_NOJMPS is SET.
+         Otherwise, it is in most cases impossible to create next "island"
+         layer from previous "island" one, because expansion coefficient
+         is more than 1.
+
+         Values of -1 and 0 are reserved.
+
+         If negative nlayer value is passed,
+         nlayer is calculated as nlayer = 1+rnd(-nlayer)
+
+         nlayer == -N   -- generate 1..N layers (choose randomly)
+         nlayer == -2   -- generate 1..2 layers (choose randomly)
+         nlayer == -1   -- KME_ERROR_BADARG
+         nlayer == 0    -- KME_ERROR_BADARG
+         nlayer == 1    -- generate 1 layer
+         nlayer == N    -- generate N layers
+
+         If nlayer is < -1, and there is no free space for layers 2,3,N,
+         engine will return successfully.
+
+         If nlayer is > 1, and FLAG_FAILIFNOMEMORY is NOT set,
+         produced number of layers may be less than specified,
+         because of no free space in output buffer.
+
+         If nlayer is > 1, and FLAG_FAILIFNOMEMORY is SET,
+         produced number of layers will be exactly as specified,
+         or engine will fail with KME_ERROR_NOMEMORY error.
+
+     [3.21] tempbufptr
+     ~~~~~~~~~~~~~~~~~
+
+         Used only if nlayer != 1.
+         If nlayer == 1, tempbufptr is ignored.
+
+         Size of temporary buffer is o_max,
+         the same as maximal size of output buffer.
+
+         Temporary buffer is used to store previous polymorphic
+         layer, while generating next one.
+
+         Temporary buffer can be equal to input buffer,
+         if you dont need input buffer after returning from KME engine.
+
+         On exit, tempbuf is filled with 0xCC-byte.
+
+     [4] Multilayer support
+     ~~~~~~~~~~~~~~~~~~~~~~
+
+        To create multilayer decryptors, you should use FLAG_NOJMPS
+        and specify nlayer and tempbufptr parameters.
+
+        Multilayer decryptor looks as this:
+
+      OUTER layer (#3)
+      ~~~~~~~~~~~
+                                 MIDDLE layer (#2)
+    regs<--initregptr[]          ~~~~~~~~~~~~~~~       INNER layer (#1)
+    push [regsave]                                     ~~~~~~~~~~~
+    modify [regavail]
+    push layer2[dword # N]     /modify [regavail]   /modify [regavail]
+    ...                       / push layer1[M]     / push input[K]
+    push layer2[0]           /  ...               /  ...
+    call esp----------------<   push layer1[0]   /   push input[0]
+    add esp, N*4             \  call esp--------<    regs<--exitregptr[]
+    pop [regsave]             \ add esp, M*4     \   call (esp+i_entry)
+    jmp OrigEntry/RET0C/RETN   \retn              \  add esp, K*4
+                                                   \ retn
+
+     [5] Integration with other engines
+     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+        Integration with other engines is allowed by means
+        of FLAG_X_NORET+FLAG_NOJMPS, in single-layer mode,
+        which will generate continous block of code
+        with specified command/register set, just PUSH'ing
+        data you want. After such code is produced,
+        you can just add you own prolog/epilog stuff.
+
+     [6] Engine internals
+     ~~~~~~~~~~~~~~~~~~~~
+
+        General variables inside of engine:
+
+   regavail  -- set of registers, AVAILable to use.
+   reginit   -- INITialized registers, i.e. AVAILable registers with values
+                KNOWN at current step.
+   regused   -- USED registers, i.e. AVAILable and INITialized registers,
+                but containing values for future use.
+
+   reg   reg  reg                                                  access
+   avail init used                                                  R W
+    0     0    0   --> reg is never used in engine                  - -
+    1     0    0   --> reg is available, value is unknown           - +
+    1     1    0   --> reg is initialized, value is known           + +
+    1     1    1   --> reg is used, i.e. contains value to PUSH     + -
+
+      code                action
+      ------              ------
+      reginit[i] <-- 0    uninitialize register (init-->uninit)
+      reginit[i] <-- 1    initialize register (uninit-->init)
+      regused[i] <-- 0    free register (used-->init(free))
+      regused[i] <-- 1    use register (init->used)
+
+   em_reg[8] -- current value of each register
+   regbuf[8] -- reg #s to be PUSHEd to form corect data sequence on the stack
+
+   In all the engine, EDI contains current output pointer.
+   In main engine cycle, ECX contains number of elements in regbuf[].
+
+                                   * * *
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[Editor]컴�
+Due the complexity of the source, it has been placed in Binaries folder.
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[Editor]컴�

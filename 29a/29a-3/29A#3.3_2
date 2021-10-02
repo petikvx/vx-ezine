@@ -1,0 +1,557 @@
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴[readme.txt]컴
+Reed-Solomon error correction code for virus
+
+Error correction code (ECC) is a code used often in telecommunications, to
+recover data loss in noisy connections. Several ways to do this are know,
+and here i shown one of these way, specialy tailored for virus coding. The
+routine presented here is a implementation of the Reed-Solomon algorithm,
+that is able to correct till to 4 bytes in a 249 bytes long buffer (1.6%).
+Dont seens good, but keep in mind that this code can correct bytes overwrited
+from your virus code! This mean that AVs cant patch anymore your code with
+a simple jump to disinfect it in mem. If your ECC routine code hooked, lets
+said, int8, it will correct the patched code 1/18 secs after! You can hook
+also int1c or even int9, correcting the virus code each time that the user
+touch the keyboard.
+
+The given routine encode a 249 buffer in a 256 code lenght, and vice-versa.
+This mean that each 249 bytes of virus code need 256 of memory space. You
+can do this by careful programming, putting a jmp $+8 / db 6 dup (0) after
+each 247 bytes of code, or can store the in memory or even unused spaces of
+the harddrive. In this case, each time the ECC is called, it read 256 bytes
+from memory or disk, and correct 249 bytes of virus code.
+
+The best way, anyway, is only store the 6 correction bytes in a buffer, and
+have a routine to calculate the range of the requested offset in the ECC
+table. Something like this:
+
+  int GetECCTablePosition(c,t)
+  {
+	 return (((c/249)*6)+t);
+  }
+
+Where c is the code offset what we want to access the ECC value, and t is the
+offset of the ECC table.
+
+Of course, in the virus code, you need add some lines like these ones:
+
+  extrn rsencode : near
+  extrn rsdecode : near
+
+To compile the C routines, i used Turbo C++ 3.0, a good'n'old C compiler. The
+code is, more or less, ANSI based, so, you will have not problem using other
+compiler, like DJGPP or Watcom. I use this params to compile:
+
+  tcc -Z -d -mt -2 -O -a -c -p gflib.c
+  tcc -Z -d -mt -2 -O -a -c -p rslib.c
+
+These option means model tiny, 286 opcodes, compile without link, optimize
+jumps and registers reload, and, specialy, Pascal callings. I use Pascal
+callings because they make the routine smaller, make easier to call from
+assembler, and clean the stack. Fell free to modify this is you want.
+
+In the virus code, to call the encode routine, make something like this:
+
+   push offset BufferToProcess
+   push offset DestinationBuffer
+   call rsencode
+
+The return buffer should contain the reversed entry buffer and the 6 ECC
+codes. You can save all it, of just the ECC codes. To fix a block, the code
+is the following:
+
+   push offset BufferAndECCCode
+   push offset DestinationBuffer
+   push offset NumberOfBytesChanged
+   call rsencode
+
+The first buffer is the reversed virus code together with the 6 ECC codes.
+The destination buffer will have the corrected virus code, and the memory
+word pointed for the last parameter is the number of errors detected. Remember
+that is this word is above 4, the code wasnt corrected, because too much
+errors where detected. Take the apropriated action them, like format the HD
+or, more likely, reboot. Users will blame the AV for this. :->
+
+Thanks to the Pascal calling convention, the ECC routines clean the stack, so
+the pushed params dont mess the virus. If you want the ASM code of the C
+routines, just add a -S command switch to the compiler. The code produced
+can be optimized by hand, saving much bytes (well, at least in my old compiler
+that dont have a good optimization).
+
+To finish this article, the most common approach will be a virus using these
+routines. I'm very new in virus community, and cant code a real good virus to
+show these technics. So,i put a little command line utility to test these
+routines. But you can see these technics in real virus, as they're present
+in some virus, like Yankee Doddle, XPEH and RDA.Fighter, altought the routines
+present in RDA are only a hack of the Yankee Doddle code.
+
+The utility have 3 possible parameters. For encoding, use /e. For decoding,
+use /d. And to show the version of the prog, use /v. Get a text file, lets
+said, readme.txt, and do the following
+
+  ecc -e <readme.txt >encode.ecc
+
+The result file will look as the input file with some garbage inserted. These
+garbage are the ECC codes. Get a text editor and change some bytes. Make a
+'A' to 'Z', this kind of stuff, but dont change too much bytes together. Then
+run the utility to decode:
+
+  ecc -d <encode.ecc >result.ecc
+
+As you will see, all the errors introduced where corrected!!!
+
+I wish to thanks Vecna, for translating this stuff from portuguese to english,
+and (try) to teach me how code a virus, and for all 29A, for accepting this
+contribution. The 29A zines are the best ones ever!
+
+						    Kala-Marai
+
+PS: Do you dont know what a Kala-Marai is?? Ask Q, or watch the StartTrek
+"Deja Q" episody. :->
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴[readme.txt]컴
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[rslib.c]컴
+/* rslib.c
+	Library of Reed - Solomon Routines
+
+	This file contains the actual routines to implement a Reed - Solomon
+	(255,249,7) code.  The encoder uses a feedback shift register
+	generator, which systematically encodes 249 bytes into a 255 byte
+	block.	The decoder is a classic Peterson algorithm.
+*/
+
+#include "ecc.h"
+
+
+/* Reed - Solomon Encoder.  The Encoder uses a shift register algorithm,
+   as detailed in _Applied Modern Algebra_ by Dornhoff and Hohn (p.446).
+   Note that the message is reversed in the code array; this was done to
+   allow for (emergency) recovery of the message directly from the
+   data stream.
+*/
+
+rsencode (m, c)
+
+     unsigned char m[249], c[255];
+
+{
+
+  unsigned char r[6], rtmp;
+
+  int i, j;
+
+  for (i = 0; i < 6; i++)
+    r[i] = 0;
+
+  for (i = 0; i < 249; i++)
+    {
+      c[254 - i] = m[i];
+      rtmp = gfadd (m[i], r[5]);
+      for (j = 5; j > 0; j--)
+	{
+	  r[j] = gfadd (gfmul (rtmp, g[j]), r[j - 1]);
+	}
+      r[0] = gfmul (rtmp, g[0]);
+    }
+  for (i = 0; i < 6; i++)
+    {
+      c[i] = r[i];
+    }
+}
+
+
+/* Polynomial Evaluator, used to determine the Syndrome Vector.  This is
+   relatively straightforward, and there are faster algorithms.
+*/
+
+unsigned char
+evalpoly (p, x)
+
+     unsigned char p[255], x;
+
+{
+
+  unsigned char y;
+  int i;
+  y = 0;
+
+  for (i = 0; i < 255; i++)
+    {
+      y = gfadd (y, gfmul (p[i], gfexp (x, i)));
+    }
+  return (y);
+
+}
+
+
+/* Determine the Syndrome Vector.  Note that in s[0] we return the OR of
+   all of the syndromes; this allows for an easy check for the no - error
+   condition.
+*/
+
+syndrome (c, s)
+
+     unsigned char c[255], s[7];
+{
+
+  extern unsigned char e2v[256];
+  int i;
+  s[0] = 0;
+  for (i = 1; i < 7; i++)
+    {
+      s[i] = evalpoly (c, e2v[i]);
+      s[0] = s[0] | s[i];
+    }
+
+}
+
+
+/* Determine the number of errors in a block.  Since we have to find the
+   determinant of the S[] matrix in order to determine singularity, we
+   also return the determinant to be used by the Cramer's Rule correction
+   algorithm.
+*/
+
+errnum (s, det, errs)
+
+     unsigned char s[7], *det;
+     int *errs;
+
+{
+
+
+  *det = gfmul (s[2], gfmul (s[4], s[6]));
+  *det = gfadd (*det, gfmul (s[2], gfmul (s[5], s[5])));
+  *det = gfadd (*det, gfmul (s[6], gfmul (s[3], s[3])));
+  *det = gfadd (*det, gfmul (s[4], gfmul (s[4], s[4])));
+  *errs = 3;
+
+  if (*det != 0)
+    return;
+
+  *det = gfadd (gfmul (s[2], s[4]), gfexp (s[3], 2));
+  *errs = 2;
+  if (*det != 0)
+    return;
+
+  *det = s[1];
+  *errs = 1;
+  if (*det != 0)
+    return;
+
+  *errs = 4;
+
+}
+
+
+/* Full impementation of the three error correcting Peterson decoder.  For
+   t<6, it is faster than Massey - Berlekamp.  It is also somewhat more
+   intuitive.
+*/
+
+rsdecode (code, mesg, errcode)
+
+     unsigned char code[255], mesg[249];
+     int *errcode;
+{
+
+  extern unsigned char v2e[256];
+  unsigned char syn[7], deter, z[4], e0, e1, e2, n0, n1, n2, w0, w1, w2,
+    x0, x[3];
+  int i, sols;
+
+  *errcode = 0;
+
+  /* First, get the message out of the code, so that even if we can't correct
+	   it, we return an estimate.
+	*/
+
+  for (i = 0; i < 249; i++)
+    mesg[i] = code[254 - i];
+
+  syndrome (code, syn);
+
+  if (syn[0] == 0)
+    return;
+
+  /* We now know we have at least one error.  If there are no errors detected,
+	   we assume that something funny is going on, and so return with errcode 4,
+	   else pass the number of errors back via errcode.
+	*/
+
+  errnum (syn, &deter, errcode);
+
+  if (*errcode == 4)
+    return;
+
+  /* Having obtained the syndrome, the number of errors, and the determinant,
+	   we now proceed to correct the block.  If we do not find exactly the
+	   number of solutions equal to the number of errors, we have exceeded our
+	   error capacity, and return with the block uncorrected, and errcode 4.
+	*/
+
+  switch (*errcode)
+    {
+
+    case 1:
+
+      x0 = gfmul (syn[2], gfinv (syn[1]));
+      w0 = gfmul (gfexp (syn[1], 2), gfinv (syn[2]));
+      if (v2e[x0] > 5)
+	mesg[254 - v2e[x0]] = gfadd (mesg[254 - v2e[x0]], w0);
+      return;
+
+    case 2:
+
+      z[0] = gfmul (gfadd (gfmul (syn[1], syn[3]), gfexp (syn[2], 2)), gfinv (deter));
+      z[1] = gfmul (gfadd (gfmul (syn[2], syn[3]), gfmul (syn[1], syn[4])), gfinv (deter));
+      z[2] = 1;
+      z[3] = 0;
+
+      polysolve (z, x, &sols);
+      if (sols != 2)
+	{
+	  *errcode = 4;
+	  return;
+	}
+
+      w0 = gfmul (z[0], syn[1]);
+      w1 = gfadd (gfmul (z[0], syn[2]), gfmul (z[1], syn[1]));
+      n0 = 254 - v2e[gfinv (x[0])];
+      n1 = 254 - v2e[gfinv (x[1])];
+      e0 = gfmul (gfadd (w0, gfmul (w1, x[0])), gfinv (z[1]));
+      e1 = gfmul (gfadd (w0, gfmul (w1, x[1])), gfinv (z[1]));
+
+      if (n0 < 249)
+	mesg[n0] = gfadd (mesg[n0], e0);
+      if (n1 < 249)
+	mesg[n1] = gfadd (mesg[n1], e1);
+      return;
+
+    case 3:
+
+      z[3] = 1;
+      z[2] = gfmul (syn[1], gfmul (syn[4], syn[6]));
+      z[2] = gfadd (z[2], gfmul (syn[1], gfmul (syn[5], syn[5])));
+      z[2] = gfadd (z[2], gfmul (syn[5], gfmul (syn[3], syn[3])));
+      z[2] = gfadd (z[2], gfmul (syn[3], gfmul (syn[4], syn[4])));
+      z[2] = gfadd (z[2], gfmul (syn[2], gfmul (syn[5], syn[4])));
+      z[2] = gfadd (z[2], gfmul (syn[2], gfmul (syn[3], syn[6])));
+      z[2] = gfmul (z[2], gfinv (deter));
+
+      z[1] = gfmul (syn[1], gfmul (syn[3], syn[6]));
+      z[1] = gfadd (z[1], gfmul (syn[1], gfmul (syn[5], syn[4])));
+      z[1] = gfadd (z[1], gfmul (syn[4], gfmul (syn[3], syn[3])));
+      z[1] = gfadd (z[1], gfmul (syn[2], gfmul (syn[4], syn[4])));
+      z[1] = gfadd (z[1], gfmul (syn[2], gfmul (syn[3], syn[5])));
+      z[1] = gfadd (z[1], gfmul (syn[2], gfmul (syn[2], syn[6])));
+      z[1] = gfmul (z[1], gfinv (deter));
+
+      z[0] = gfmul (syn[2], gfmul (syn[3], syn[4]));
+      z[0] = gfadd (z[0], gfmul (syn[3], gfmul (syn[2], syn[4])));
+      z[0] = gfadd (z[0], gfmul (syn[3], gfmul (syn[5], syn[1])));
+      z[0] = gfadd (z[0], gfmul (syn[4], gfmul (syn[4], syn[1])));
+      z[0] = gfadd (z[0], gfmul (syn[3], gfmul (syn[3], syn[3])));
+      z[0] = gfadd (z[0], gfmul (syn[2], gfmul (syn[2], syn[5])));
+      z[0] = gfmul (z[0], gfinv (deter));
+
+      polysolve (z, x, &sols);
+      if (sols != 3)
+	{
+	  *errcode = 4;
+	  return;
+	}
+
+      w0 = gfmul (z[0], syn[1]);
+      w1 = gfadd (gfmul (z[0], syn[2]), gfmul (z[1], syn[1]));
+      w2 = gfadd (gfmul (z[0], syn[3]), gfadd (gfmul (z[1], syn[2]), gfmul (z[2], syn[1])));
+
+      n0 = 254 - v2e[gfinv (x[0])];
+      n1 = 254 - v2e[gfinv (x[1])];
+      n2 = 254 - v2e[gfinv (x[2])];
+
+      e0 = gfadd (w0, gfadd (gfmul (w1, x[0]), gfmul (w2, gfexp (x[0], 2))));
+      e0 = gfmul (e0, gfinv (gfadd (z[1], gfexp (x[0], 2))));
+      e1 = gfadd (w0, gfadd (gfmul (w1, x[1]), gfmul (w2, gfexp (x[1], 2))));
+      e1 = gfmul (e1, gfinv (gfadd (z[1], gfexp (x[1], 2))));
+      e2 = gfadd (w0, gfadd (gfmul (w1, x[2]), gfmul (w2, gfexp (x[2], 2))));
+      e2 = gfmul (e2, gfinv (gfadd (z[1], gfexp (x[2], 2))));
+
+      if (n0 < 249)
+	mesg[n0] = gfadd (mesg[n0], e0);
+      if (n1 < 249)
+	mesg[n1] = gfadd (mesg[n1], e1);
+      if (n2 < 249)
+	mesg[n2] = gfadd (mesg[n2], e2);
+
+      return;
+
+    default:
+
+      *errcode = 4;
+      return;
+
+    }
+
+}
+
+
+/* Polynomial Solver.  Simple exhaustive search, as solving polynomials is
+   generally NP - Complete anyway.
+*/
+
+polysolve (polynom, roots, numsol)
+
+     unsigned char polynom[4], roots[3];
+     int *numsol;
+
+{
+  extern unsigned char e2v[256];
+  int i, j;
+  unsigned char y;
+
+  *numsol = 0;
+
+  for (i = 0; i < 255; i++)
+    {
+      y = 0;
+      for (j = 0; j < 4; j++)
+	y = gfadd (y, gfmul (polynom[j], gfexp (e2v[i], j)));
+      if (y == 0)
+	{
+	  roots[*numsol] = e2v[i];
+	  *numsol = *numsol + 1;
+	}
+    }
+}
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[rslib.c]컴
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[ecc.h]컴
+/* ecc.h
+	Generator Polynomial Coefficients
+
+	This header file contains an array which defines the generator
+	polynomial for the Reed - Solomon Code (255,249,7).  The polynomial
+	was hand generated, using a set of calculator programs.
+*/
+
+static unsigned char g[6] =
+{
+  117, 49, 58, 158, 4, 126};
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[ecc.h]컴
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[gflib.c]컴
+/* gflib.c
+	Math Library for GF[256]
+
+	This file contains a number of mathematical functions for GF[256].
+	Entry and result are always assumed to be in vector notation, since
+	said notation allows for the zero element.  Attempting to reciprocate
+	the zero element results in process exit 42.
+*/
+
+#include "gf.h"
+
+
+/* Multiply two field elements */
+
+unsigned char
+gfmul (mul1, mul2)
+
+     unsigned char mul1, mul2;
+{
+  unsigned char mul3;
+  if (mul1 == 0 || mul2 == 0)
+    mul3 = 0;
+  else
+    mul3 = e2v[(v2e[mul1] + v2e[mul2]) % 255];
+  return (mul3);
+}
+
+
+/* Add two field elements.  Subtraction and addition are equivalent */
+
+unsigned char
+gfadd (add1, add2)
+
+     unsigned char add1, add2;
+{
+  unsigned char add3;
+  add3 = add1 ^ add2;
+  return (add3);
+}
+
+
+/* Invert a field element, for division */
+
+unsigned char
+gfinv (ivt)
+
+     unsigned char ivt;
+{
+  unsigned char ivtd;
+/*  if (ivt == 0)
+    exit (42);*/
+  ivtd = e2v[255 - v2e[ivt]];
+  return (ivtd);
+}
+
+
+/* Exponentiation.  Convert to exponential notation, mod 255 */
+
+unsigned char
+gfexp (mant, powr)
+
+     unsigned char mant, powr;
+{
+  unsigned char expt;
+  if (mant == 0)
+    expt = 0;
+  else
+    expt = e2v[(v2e[mant] * powr) % 255];
+  return (expt);
+}
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[gflib.c]컴
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴[gf.h]컴
+/*  gf.h
+	Galois Field [256] Elements
+
+	This header file contains two arrays which transform field elements
+	from exponential notation to vector (e2v) and vice versa (v2e).
+	Note that there is no exponential notation for the zero vector,
+	and that a^255 = a^0 = 1.
+*/
+
+unsigned char e2v[256] =
+{
+  1, 2, 4, 8, 16, 32, 64, 128, 29, 58, 116, 232, 205, 135, 19, 38,
+  76, 152, 45, 90, 180, 117, 234, 201, 143, 3, 6, 12, 24, 48, 96, 192,
+  157, 39, 78, 156, 37, 74, 148, 53, 106, 212, 181, 119, 238, 193, 159, 35,
+  70, 140, 5, 10, 20, 40, 80, 160, 93, 186, 105, 210, 185, 111, 222, 161,
+  95, 190, 97, 194, 153, 47, 94, 188, 101, 202, 137, 15, 30, 60, 120, 240,
+  253, 231, 211, 187, 107, 214, 177, 127, 254, 225, 223, 163, 91, 182, 113, 226,
+  217, 175, 67, 134, 17, 34, 68, 136, 13, 26, 52, 104, 208, 189, 103, 206,
+  129, 31, 62, 124, 248, 237, 199, 147, 59, 118, 236, 197, 151, 51, 102, 204,
+  133, 23, 46, 92, 184, 109, 218, 169, 79, 158, 33, 66, 132, 21, 42, 84,
+  168, 77, 154, 41, 82, 164, 85, 170, 73, 146, 57, 114, 228, 213, 183, 115,
+230, 209, 191, 99, 198, 145, 63, 126, 252, 229, 215, 179, 123, 246, 241, 255,
+  227, 219, 171, 75, 150, 49, 98, 196, 149, 55, 110, 220, 165, 87, 174, 65,
+  130, 25, 50, 100, 200, 141, 7, 14, 28, 56, 112, 224, 221, 167, 83, 166,
+  81, 162, 89, 178, 121, 242, 249, 239, 195, 155, 43, 86, 172, 69, 138, 9,
+  18, 36, 72, 144, 61, 122, 244, 245, 247, 243, 251, 235, 203, 139, 11, 22,
+  44, 88, 176, 125, 250, 233, 207, 131, 27, 54, 108, 216, 173, 71, 142, 1};
+unsigned char v2e[256] =
+{
+  255, 0, 1, 25, 2, 50, 26, 198, 3, 223, 51, 238, 27, 104, 199, 75,
+  4, 100, 224, 14, 52, 141, 239, 129, 28, 193, 105, 248, 200, 8, 76, 113,
+  5, 138, 101, 47, 225, 36, 15, 33, 53, 147, 142, 218, 240, 18, 130, 69,
+  29, 181, 194, 125, 106, 39, 249, 185, 201, 154, 9, 120, 77, 228, 114, 166,
+  6, 191, 139, 98, 102, 221, 48, 253, 226, 152, 37, 179, 16, 145, 34, 136,
+  54, 208, 148, 206, 143, 150, 219, 189, 241, 210, 19, 92, 131, 56, 70, 64,
+  30, 66, 182, 163, 195, 72, 126, 110, 107, 58, 40, 84, 250, 133, 186, 61,
+  202, 94, 155, 159, 10, 21, 121, 43, 78, 212, 229, 172, 115, 243, 167, 87,
+  7, 112, 192, 247, 140, 128, 99, 13, 103, 74, 222, 237, 49, 197, 254, 24,
+  227, 165, 153, 119, 38, 184, 180, 124, 17, 68, 146, 217, 35, 32, 137, 46,
+  55, 63, 209, 91, 149, 188, 207, 205, 144, 135, 151, 178, 220, 252, 190, 97,
+  242, 86, 211, 171, 20, 42, 93, 158, 132, 60, 57, 83, 71, 109, 65, 162,
+  31, 45, 67, 216, 183, 123, 164, 118, 196, 23, 73, 236, 127, 12, 111, 246,
+  108, 161, 59, 82, 41, 157, 85, 170, 251, 96, 134, 177, 187, 204, 62, 90,
+  203, 89, 95, 176, 156, 169, 160, 81, 11, 245, 22, 235, 122, 117, 44, 215,
+79, 174, 213, 233, 230, 231, 173, 232, 116, 214, 244, 234, 168, 80, 88, 175};
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴[gf.h]컴

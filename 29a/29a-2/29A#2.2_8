@@ -1,0 +1,796 @@
+ Compression engines
+ 컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�>
+                                                     Super/29A and Vecna/29A
+
+ Words from Super...
+
+ Nowadays, more and  more people  need and  ask for a compression engine for
+ their viruses. Thinking about the matter, it really seems  to be a good (at
+ least useful) idea to include one of those compression engines inside a vi-
+ rus... of course it's not interesting if the engine itself is about 7k long
+ for instance :) But if we're talking about a tiny engine (about 500-600 by-
+ tes), it's worth to spend a little amount of time thinking  on the new ways
+ it opens for us, such as...
+
+ - Including compressed images in graphic format for a cool payload
+ - Carrying a VxD dropper compressed inside our code, thus not mattering its
+   size, and then being able to implement many more things in it
+ - Compressing the files we infect, resulting in some times (especially with
+   Windows 3.1 NE files) in a  size decrease after  infection... now  go and
+   tell many AVers to change their description on what a virus is :)
+ - Compressing disk sectors! so free disk space won't be a problem anymore
+ - And so on... everything depends on your imagination :)
+
+ These all reasons drove me to write STCE (Super Tiny Compression Engine), a
+ program whose  name  is self-explanatory... i did not use any Huffman-alike
+ rule, as STCE is based just on repeated byte sequences. It's pretty optimi-
+ zed (413 bytes only!!!), so you  can include it in any virus you want with-
+ out experiencing any notorious increase in its size.
+
+ Now let's explain how it works.
+
+
+ To compress code
+ 컴컴컴컴컴컴컴컴
+ - Input:
+
+   AX    -> holds the number of bits to encode not-repeated bytes with (when
+            the repeated sequence is not two-byte, but  maybe one-byte long,
+            so we can't compress anything - just store).
+   BX    -> holds the maximum number of bits dedicated to encode the relati-
+            ve  offset of  the repeated sequence. With "maximum" i mean that
+            STCE will not accept  relative  offsets  with a higher number of
+            bits (it wouldn't help in order to compress!).
+   CX    -> holds the length of the data we want to compress.
+   DX    -> holds the number of bits to encode the value which indicates us
+            how many repeated bytes there are in the code we're compressing.
+   DS:SI -> holds the address of the data we want to compress.
+   ES:DI -> holds the address where we want STCE to put the compressed data.
+            Take special  care  on having  enough  space for this, otherwise
+            your virus may hang after having overwritten certain data!
+   BP    -> holds the minimum number of bits dedicated to encode the relati-
+            ve offset of a repeated sequence. And with "minimum" i mean that
+            if the number of  bits to  encode the offset is  below the value
+            held in BP, then the number of bits which  will be  used will be
+            this last one (BP), instead of the one in BX, which is larger.
+
+
+ I suggest the following values:
+
+     AX=0000h  CX=****h  DS:SI=****h  BP=0006h
+     BX=0009h  DX=0204h  ES:DI=****h
+
+ At least they're ok in order to compress sectors.
+
+
+ - Output:
+
+   CX    -> holds the length of compressed code.
+
+
+ To decompress code
+ 컴컴컴컴컴컴컴컴컴
+ - Input:
+
+   CX    -> holds the *decompressed* size of the data we want to decompress.
+            (so, if u compress with cx=200h, to decompress must use cx=200h)
+   DS:SI -> holds the address of the data we want to decompress.
+   ES:DI -> here's where we want STCE to put the decompressed data.
+
+   Note! AX, BX, DX and BP *MUST* hold the same values which were previously
+   used when having called the "compress" routine.
+
+
+ - Output:
+
+   ES:DI -> address of what you asked STCE to put there ;)
+
+
+ Structure of AX, BX, DX and BP
+ 컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+ When we want to encode a value in  one of  this registers, we  may  use two
+ different ways: either by picking a fix number of  bits or by means of this
+ little table, for low values:
+
+
+                   Bits       Number which represent
+                   컴컴       컴컴컴컴컴컴컴컴컴컴컴
+                     0                   1
+                    10                   2
+                   110                   3
+                  [...]                [...]
+
+
+ AH and DH hold variable values (depending on if this value is less than 3),
+ while AL and DL hold fix ones, which, being added to the previous ones, ha-
+ ve to be as result the value we  want to use in the compression routine. A-
+ bout BX and BP, just note that their high part MUST be zero (otherwise STCE
+ won't work ok), while  the  low  one is used to  encode the relative offset
+ where the repeated-byte sequence is found.
+
+ Anyway, the best thing is  to do some  tests with several values until STCE
+ satisfies your needs or viral instincts!!! ;)
+
+ And now, here you have the code for STCE itself...
+
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ->8
+
+       ;*********************************************************;
+       ;*********************************************************;
+       ;**                                                     **;
+       ;**       =======================================       **;
+       ;**        Super Tiny Compression Engine  (STCE)        **;
+       ;**       =======================================       **;
+       ;**                  Made by Super/29A                  **;
+       ;**                                                     **;
+       ;*********************************************************;
+       ;*********************************************************;
+
+                   .model tiny
+                   .code
+                   public compress
+                   public decompress
+
+       ;=========================================================;
+       ;=========================================================;
+
+start:
+
+save_regs:
+
+; [BP-14] = not repeated-bytes counter
+; [BP-12] = max address
+; [BP-10] = min address
+; [BP-0e] = max number of bytes of rerpetitions
+; [BP-0c] = max number of bytes of not repetitions
+; [BP-0a] = CX
+; [BP-8]  = bit counter
+; [BP-6]  = where to write bits
+; [BP-4]  = where to write bits
+; [BP-2]  = ES = output buffer segment
+; [BP+0]  = BX = 0x0x
+; [BP+2]  = BP = 0x0x
+; [BP+4]  = DX = 0x0x
+; [BP+6]  = AX = 0x0x
+; [BP+8]  = DI = output buffer offset
+; [BP+0a] = CX = length of data to compress
+; [bp+0c] = SI = input buffer offset
+
+         push si
+         push cx
+         push di
+         push ax
+         push dx
+         push bp
+         cld
+         test al,05bh ;
+         push bx      ;
+         push sp      ; executable text: '[STCE]'
+         inc bx       ;
+         inc bp       ;
+         pop bp       ;
+         push es
+         push di
+         inc di
+         push di
+         mov di,08h
+         push di
+         push cx
+j1:
+         mov al,[bp+di-2]
+         cbw
+         cwd
+         xchg cx,ax
+         jcxz j2
+         inc dx
+         rol dx,cl
+j2:
+         mov cl,[bp+di-1]
+         add dx,cx
+         push dx ;push this value on the stack
+         dec di
+         dec di
+         jnz j1
+         push di
+         jmp [bp+0eh]
+
+decompress:
+         call save_regs
+         mov bl,1 ;indicate the bit we are reading
+         mov di,[bp+08h]
+decompress0:
+         call read_bit
+         jb decompress1  ;if bit=1, that means a repeated sequence of bytes
+         mov ax,[bp+06h] ;else read the number of bytes stored
+         call read
+         push cx
+         rep   ; 
+         movsb ;write these bytes
+         jmp decompress4
+decompress1:
+         mov cx,[bp+02h]
+         jcxz decompress2 ;jump if we only use one fixed number of bits
+         call read_bit    ;else read one bit
+         jb decompress3
+ 
+;if that bit=1, then we use a number of bits specified in "bx" parameter
+;else we use the number of bits specified in "bp" parameter"
+
+decompress2:
+         mov cx,[bp+00h]
+decompress3:
+         xchg cx,ax
+         call read ;read these bits
+         push cx   ;this value will be the rel.offs. of repeated sequence
+         mov ax,[bp+04h]
+         call read ;now, read the number of bytes that do repeat
+         inc cx
+         pop ax
+         push cx
+         push si
+         mov si,di
+         sub si,ax
+         rep    ;
+         db 26h ; copy repeated sequence from es:si to es:di
+         movsb  ;
+         pop si
+decompress4:
+         pop ax
+         sub [bp-0ah],ax ;have we finished?
+         jnz decompress0 ;jump if not
+load_regs:
+         mov sp,bp
+         pop bx
+         pop bp
+         pop dx
+         pop ax
+         pop di
+         pop cx
+         pop si
+         inc sp
+         inc sp
+         ret
+
+read_bit:
+         dec bl
+         jnz read_bit1
+         mov bh,[si]
+         mov bl,8
+         inc si
+read_bit1:
+         shr bh,1
+         ret
+
+read:
+         cwd
+         sub cx,cx
+read1:
+         inc cx
+         dec ah
+         js read3
+         call read_bit
+         jnb read1
+read2:
+         add cx,dx
+         ret
+read3:
+         sub al,1
+         js read2
+         call read_bit
+         rcl dx,1
+         jmp read3
+
+compress:
+         call save_regs
+find_more:
+         push ds
+         pop es
+         sub bx,bx
+         mov [bp-14h],bx
+find_more0:
+         inc si
+         mov cx,si
+         sub cx,[bp+0ch]
+         cmp cx,[bp-12h]
+         jb ok1
+         mov cx,[bp-12h]
+ok1:
+         mov di,si
+         sub di,cx
+find_more1:
+         jcxz compress1
+         mov ax,[si-1]
+find_more2:
+         repnz
+         scasb
+         jcxz compress1 ;jump if not found
+         cmp [di],ah
+         jnz find_more2
+         xchg cx,ax
+         mov cx,[bp-0eh]
+         inc cx
+         repz  ;
+         cmpsb ; compare to see who many bytes are equal
+         dec cx
+         xchg cx,ax
+         sub ax,[bp-0eh]
+         neg ax
+         sub si,ax
+         sub di,ax
+         cmp ax,bx     ;have we got more bytes than previous times?
+         jb find_more1 ;jump if negative
+         mov bx,[bp+0ah]
+         cmp ax,bx
+         ja too_far
+         xchg bx,ax
+too_far:
+         mov dx,si
+         sub dx,di ;store the relative offset
+         jmp short find_more1 ;try to find larger sequences of rep.bytes
+compress1:
+         neg bx
+         jb compress3 ;jump if number of bytes repeted>2
+         inc word ptr [bp-14h] ;increase the counter of non-repeated bytes
+         dec word ptr [bp+0ah] 
+         jz compress2 ;jump if last byte
+         mov ax,[bp-14h]
+         cmp ax,[bp-0ch]
+         jb find_more0 ;jump if we can put altogether more non-repeated bytes
+compress2:
+         inc si
+compress3:
+         call store_data ;just do it
+         cmp [bp+0ah],ax
+         jnz find_more ;jump if there remains any byte
+         mov ax,[bp-06h]
+         sub ax,[bp+08h]
+         mov [bp+0ah],ax ;calculate size of compressed data
+align_bits:
+         call write_bit ;align bits, so as to be able to decompress
+         jns align_bits
+         jmp load_regs
+
+write_bit:
+         dec byte ptr [bp-08h]
+         jns write_bit1
+         mov byte ptr [bp-08h],7
+         push word ptr [bp-06h]
+         pushf
+         inc word ptr [bp-06h]
+         popf
+         pop word ptr [bp-04h]
+write_bit1:
+         les di,[bp-04h]
+         rcr byte ptr es:[di],1
+         ret
+
+store_data:
+         dec si
+         mov cx,[bp-14h]
+         jcxz store_data1 ;jump if there r no stored bytes
+         call write_bit ;write bit=0, because cf=0
+         push cx
+         xchg cx,ax
+         mov cx,[bp+06h]
+         call write ;write number of bytes stored
+         pop cx
+         sub si,cx
+         mov di,[bp-06h]
+         rep   ;
+         movsb ; store those bytes
+         mov [bp-06h],di
+store_data1:
+         neg bx
+         jnb write3 ;jump if no repeated bytes
+         call write_bit ;write bit=1
+         lea si,[bx+si]
+         sub [bp+0ah],bx
+         cmp [bp+02h],cx ;cx=0
+         xchg dx,ax
+         mov cx,[bp+00h]
+         jz store_data3
+         cmp ax,[bp-10h]
+         jnb store_data2
+         mov cx,[bp+02h]
+store_data2:
+         call write_bit ;write bit to select from "bp"/"bx" number of bytes
+store_data3:
+         call write ;write relative offset of repeated secuence of bytes
+         dec bx
+         xchg bx,ax
+         mov cx,[bp+04h] ;and now, write the number of bytes repeated
+write:
+         dec ax
+         dec ch
+         js write1
+         sub ax,1
+         inc ax
+         jb write_bit
+         call write_bit
+         jmp write
+write1:
+         mov ch,0
+         jcxz write3
+         ror ax,cl
+write2:
+         shl ax,1
+         call write_bit
+         loop write2
+write3:
+         ret
+
+       ;=========================================================;
+       ;=========================================================;
+
+                   end start
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ->8
+
+
+ And now words from Vecna...
+
+ It's a casuality. When I joined 29A, I was working in a compression routine
+ for my Win32 virus, so here's this little extension for Super's article, in
+ which I will show two other engines. They're generally worse than STCE, ex-
+ cept in some files. Objects are  less compressed, but they are smaller. The
+ first engine, CRUNCH/UNCRUNCH, is 321 bytes long, while  the other one, the
+ PACK/UNPACK routine, is 67 bytes only!!!
+
+ CRUNCH/UNCRUNCH works better  with  text files, because they  use a reduced
+ set of ASCII codes, and  the PACK/UNPACK routine  works nice with  VxD code
+ and other stuff with lots of zeros.
+
+
+ PACK/UNPACK
+ 컴컴컴컴컴�
+ This engine consists  on a  simple zero-repeat  compression. It copies code
+ from the source buffer to a destination buffer, checking for zeros. When it
+ finds one, it starts counting the number of zeros which follow that initial
+ zero, and then stores that value. So, all the zeros will be followed by the
+ number of times we need to repeat them. Pretty simple, as you see.
+
+
+ CRUNCH/UNCRUNCH
+ 컴컴컴컴컴컴컴�
+ This routine is based on the  premise that not all possible ASCII codes are
+ used in  a given text. Some letters, for instance in portuguese or spanish,
+ like a, s, c, or e are more used  than  others, like k, y, w, t, etc. Other
+ codes, such as  the high ASCII ones, are almost never used! So this routine
+ works in  two steps. First  it scans for the most  used codes, creating two
+ tables, each of them with the 15  most used characters. Then it starts com-
+ pressing the file. If the character in the source  buffer is present in the
+ first  table, the engine will  put its offset  in the  table. Else, it will
+ look for  that character in the second table, and if it's there, will put a
+ zero to mark a table change and put the offset of the character in that se-
+ cond table. Finally, if the character is not present in any table, then the
+ engine  will put a zero and the  plain ASCII code. The 15 characters, which
+ are the max number in  our table, can be represented in a nibble, so we may
+ gain space. So, it will work this way:
+
+
+     * Codes in 1st table           -> 1 nibble
+     * Codes in 2nd table           -> 2 nibbles (one 0 and the offset)
+     * Codes not found in any table -> 4 nibbles (two 0 and the ASCII code)
+
+
+ This compression engine is especially useful in order to compress, for ins-
+ tance, the text of  a payload  in a virus, the names of the  APIs used in a
+ Win32 PE infector... in general, any plain text you would like to compress.
+
+ Note: these engines were written based on a idea of Reptile/29A.
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ->8
+
+; CRUNCH compression engine, by Vecna/29A
+;   Entry:
+;     CX = number of bytes to compress
+;     SI = points to the code to compress
+;     DI = buffer where to put the compressed code
+;   Exit:
+;     CX = number of bytes to save
+;     DX = buffer to save
+
+public CRUNCH
+CRUNCH proc
+       cld
+       call init
+       push di
+       pusha
+       push cx
+       mov di, offset dictionary
+       mov cx, 15+256
+       xor ax, ax
+       rep stosw
+       pop cx
+       mov di, offset frequency_table
+count_loop:
+       lodsb
+       mov bx, ax
+       shl bx, 1
+       cmp word ptr cs:[di+bx], -1
+       je overflow
+       inc word ptr ds:[di+bx]
+overflow:
+       loop count_loop
+       mov di, offset dictionary
+       mov cx, 15*2
+next_char:
+       push cx
+       xor bx, bx
+       mov si, offset frequency_table
+       mov cx, 256
+scan_table:
+       lodsw
+       cmp ax, bx
+       jb lower
+       mov bx, ax
+       mov bp, si
+       sub bp, 2
+lower:
+       loop scan_table
+       mov word ptr [bp], 0
+       sub bp, offset frequency_table
+       mov ax, bp
+       shr ax, 1
+       stosb
+       pop cx
+       loop next_char
+       popa
+       push si
+       mov si, offset dictionary
+       call copy30
+       pop si
+       push di
+       cld
+next_byte:
+       push cx
+       xor ax, ax
+       lodsb
+       push di
+       mov di, offset first_table
+       mov cx, 15
+       repne scasb
+       pop di
+       jne try_table_2
+calculate:
+       mov ax, 15
+       sub ax, cx
+       jmp found_in_table
+try_table_2:
+       push di
+       mov di, offset second_table
+       mov cx, 15
+       repne scasb
+       pop di
+       jne no_table
+       mov al, 0
+       call add_nibble
+       jmp calculate
+no_table:
+       push ax
+       xor ax, ax
+       call add_nibble
+       call add_nibble
+       pop ax
+       push ax
+       and al, 11110000b
+       shr al, 4
+       call add_nibble
+       pop ax
+       and al, 00001111b
+found_in_table:
+       call add_nibble
+do_next:
+       pop cx
+       loop next_byte
+       pop bx
+       mov cx, di
+       sub cx, bx
+       add cx, 30
+       pop dx
+       ret
+endp   CRUNCH
+
+; Init variables
+
+init   proc
+       mov byte ptr [up_down], 0
+       mov byte ptr [compressed], 0
+       ret
+endp   init
+
+; Add nibble in chain
+;   Entry:
+;     AL = nibble to add
+
+add_nibble proc
+       cmp byte ptr [up_down], 0
+       jne down_byte
+       shl al, 4
+       mov byte ptr [compressed], al
+       inc byte ptr [up_down]
+       ret
+down_byte:
+       or al, byte ptr [compressed]
+       stosb
+       dec byte ptr [up_down]
+       ret
+endp   add_nibble
+
+; Read nibble
+;   Exit:
+;     AL = nibble
+
+read_nibble proc
+       cmp byte ptr [up_down], 0
+       jne low_nibble
+       lodsb
+       mov byte ptr [compressed], al
+       and al, 11110000b
+       shr al, 4
+       inc byte ptr [up_down]
+       ret
+low_nibble:
+       mov al, byte ptr [compressed]
+       and al, 00001111b
+       dec byte ptr [up_down]
+       dec cx
+       ret
+endp   read_nibble
+
+; Copy 30 bytes
+
+copy30:
+       push cx
+       mov cx, 30
+       rep movsb
+       pop cx
+       ret
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ->8
+
+; UNCRUNCH decompression engine, by Vecna/29A
+;   Entry:
+;     CX = number of bytes to expand
+;     SI = buffer to expand
+;     DI = buffer for expanded code
+;   Exit:
+;     CX = number of expanded bytes
+;     DX = buffer of expanded bytes
+
+public UNCRUNCH
+UNCRUNCH proc
+       call init
+       push di
+       mov di, offset dictionary
+       call copy30
+       pop di
+       push di
+       sub cx, 30
+unpack_loop:
+       xor ax, ax
+       call read_nibble
+       cmp al, 0
+       je maybe_second_table
+       mov bx, offset first_table
+       jmp do_calc
+maybe_second_table:
+       call read_nibble
+       cmp al, 0
+       je store_full
+       mov bx, offset second_table
+do_calc:
+       add bx, ax
+       mov al, byte ptr [bx-1]
+       jmp store_this
+store_full:
+       call read_nibble
+       push ax
+       call read_nibble
+       pop bx
+       shl bl, 4
+       or al, bl
+store_this:
+       stosb
+       or cx, cx
+       jnz unpack_loop
+       pop dx
+       mov cx, di
+       sub cx, dx
+       ret
+endp   UNCRUNCH
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ->8
+
+; PACK compression engine, by Vecna/29A
+;   Entry:
+;     CX = number of bytes to compress
+;     SI = offset of code to compress
+;     DI = buffer to put compressed code in
+;   Exit:
+;     CX = number of bytes to save
+;     DX = buffer to save
+
+public PACK
+PACK   proc
+       mov dx, di
+       xor bx, bx
+nextta:
+       lodsb
+       or al, al
+       jnz nextbyte
+       inc bx
+       loop nextta
+nextbyte:
+       or bx, bx
+       jz nada
+       push ax
+       mov al, 0
+       stosb
+       mov ax, bx
+       stosw
+       xor bx, bx
+       pop ax
+       jcxz quit
+nada:
+       stosb
+       loop nextta
+quit:
+       mov cx, di
+       sub cx, dx
+       ret
+endp   PACK
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ->8
+
+; UNPACK decompression engine, by Vecna/29A
+;   Entry:
+;     CX = number of bytes to expand
+;     SI = buffer to expand
+;     DI = buffer for expanded code
+;   Exit:
+;     CX = size of expanded code
+;     DX = buffer of expanded code
+
+public UNPACK
+UNPACK proc
+       mov dx, di
+nexttat:
+       lodsb
+       or al, al
+       jnz nextbit
+       sub cx, 2
+       push cx
+       lodsw
+       mov cx, ax
+       xor ax, ax
+       rep stosb
+       pop cx
+       loop nexttat
+       jcxz quitta
+nextbit:
+       stosb
+       loop nexttat
+quitta:
+       mov cx, di
+       sub cx, dx
+       ret
+endp   UNPACK
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ->8
+
+; Variables for the engines
+
+up_down    db ?
+compressed db ?
+
+dictionary label
+   first_table label
+       db 15 dup (?)
+   second_table label
+       db 15 dup (?)
+
+frequency_table label
+       dw 256 dup (?)
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ->8
+
+
+ Super/29A & Vecna/29A

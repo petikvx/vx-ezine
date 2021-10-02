@@ -1,0 +1,214 @@
+ 
+;=====================================;
+;            S  T  R  C               ;
+;-------------------------------------;
+;     Super Tiny Reloc Compressor     ;
+;=====================================;
+;          Made by Super/29A          ;
+;=====================================;
+
+Pushd      equ 4
+Pushad_edi equ 00h
+Pushad_esi equ 04h
+Pushad_ebp equ 08h
+Pushad_esp equ 0ch
+Pushad_ebx equ 10h
+Pushad_edx equ 14h
+Pushad_ecx equ 18h
+Pushad_eax equ 1ch
+
+
+;-----------------------------------------------------------;
+; Routine "STRC_max_compress"
+;
+; Tries different methods and compresses with the best ratio.
+;
+; INPUT:
+;   ESI = offset of start of reloc section
+;   EDI = buffer to store the compressed reloc data
+;   ECX = number of *bytes* of reloc section (not aligned)
+;
+; OUTPUT:
+;   BL  = selected method of compression
+;         (number of bits to encode relative offset)
+;   ECX = number of *bits* of compressed reloc data
+;-----------------------------------------------------------;
+
+STRC_max_compress proc near
+ push eax
+ stc
+ sbb eax,eax ;eax=-1
+ mov bl,0eh ;try with 14 bits
+@@1:
+ inc ebx
+ push ecx
+ call STRC_compress ;compress it
+ cmp ecx,eax ;this method better?
+ jnb @@2 ;jump if not
+ xchg ecx,eax
+ dec ebx
+ dec ebx ;go for next method
+@@2:
+ pop ecx
+ jnz @@1 ;try again if we havent found the perfect method
+ xchg ecx,eax
+ pop eax
+ ret
+STRC_max_compress endp
+
+
+;-----------------------------------------------------------;
+; Routine "STRC_compress"
+;
+; Compresses the reloc section.
+;
+; INPUT:
+;   BL  = method of compression
+;         (number of bits to encode relative offset)
+;   ESI = offset of start of reloc section
+;   EDI = buffer to store the compressed reloc data
+;   ECX = number of *bytes* of reloc section (not aligned)
+;
+; OUTPUT:
+;   ECX = number of *bits* of compressed reloc data
+;-----------------------------------------------------------;
+
+STRC_compress proc near
+ add ecx,esi ;ecx=end of input buffer
+ pushad
+ xor ebp,ebp
+ xor ebx,ebx ;bit count
+@@1:
+ lodsd
+ xchg edx,eax ;edx=virtual address
+ lodsd
+ lea ecx,[eax-8] ;ecx=size of this block
+@@2:
+ push ecx
+ push edx
+ lodsw
+ sub ah,40h
+ jnb @@6 ;jump if invalid relocation
+ add ah,10h
+ jnb @@6 ;jump if invalid relocation
+ cwde
+ add eax,edx ;add the virtual address of actual page
+ sub eax,ebp ;calculate relative address
+ add ebp,eax ;update last virtual address
+ push ebx
+ db 0fh,0bdh,0d8h ; bsr ebx,eax ;calculate number of bits taken
+ movzx ecx,byte ptr [esp+(Pushd*3)+Pushad_ebx] ;cl=bits chosen for this method
+ cmp bl,cl ;we need more bits to store it?
+ jb @@3 ;nope
+ shld edx,eax,cl           ;
+ shl eax,cl                ;
+ shr ebx,3                 ;
+ or al,bl                  ; insert number of bytes needed to store it
+ lea ecx,[ecx+(ebx*8)+8]   ;
+@@3:
+ pop ebx
+@@4:
+ btr [edi],ebx  ;
+ shr edx,1      ;
+ rcr eax,1      ;
+ jnb @@5        ;
+ bts [edi],ebx  ; store information bit by bit
+@@5:            ;
+ inc ebx        ;
+ loop @@4       ;
+@@6:
+ pop edx
+ pop ecx
+ dec ecx
+ loop @@2 ;next word of actual block
+ cmp esi,[esp+Pushad_ecx] ;have we processed all blocks?
+ jb @@1 ;nope
+STRC_exit:
+ mov [esp+Pushad_ecx],ebx ;return number of bits of compressed data
+ popad
+ ret
+STRC_compress endp
+
+
+;-----------------------------------------------------------;
+; Routine "STRC_decompress"
+;
+; Decompresses the reloc section.
+;
+; INPUT:
+;   BL  = method of compression
+;         (number of bits to encode relative offset)
+;   ESI = offset of compressed reloc data
+;   EDI = buffer to store the reloc section
+;   ECX = number of *bits* of compressed reloc data
+;
+; OUTPUT:
+;   ECX = number of *bytes* of decompressed reloc section
+;-----------------------------------------------------------;
+
+STRC_decompress proc near
+ pushad
+ xor ebp,ebp
+ xor ebx,ebx
+@@1:
+ cmp ebx,ecx ;have we finished?
+ jnb @@7 ;nope
+ push ecx
+ movzx ecx,byte ptr [esp+(Pushd*1)+Pushad_ebx] ;cl=bits chosen for this method
+@@2:
+ xor eax,eax
+ push ecx
+@@3:
+ bt [esi],ebx ;
+ rcr eax,1    ;
+ inc ebx      ; get relative offset
+ loop @@3     ;
+ pop ecx      ;
+ rol eax,cl   ;
+ lea ecx,[(eax*8)+8] ;ax=0--> 8 bits
+                     ;ax=1--> 16 bits
+                     ;ax=2--> 24 bits
+                     ;ax=3--> 32 bits
+ cmp eax,4 ;do we need to read more bits to get the whole relative offset
+ jb @@2 ;yes
+ pop ecx
+ add eax,ebp
+ dec ebp
+ mov ebp,eax ;update last virtual address
+ jns @@5 ;jump if this is not the first time
+@@4:
+ mov eax,ebp
+ and eax,-1000h
+ stosd ;store start virtual address of this page
+ xor eax,eax
+ mov al,8
+ mov edx,edi
+ stosd ;store size of this block
+@@5:
+ mov eax,ebp
+ sub eax,[edx-4]
+ cmp eax,1000h
+ jnb @@7 ;jump if we are in next page
+ sub ah,-30h ;make it of type 3       :-)
+@@6:
+ stosw ;store relocation
+ inc dword ptr [edx] ;
+ inc dword ptr [edx] ; increment block size by two
+ jb @@1
+@@7:
+ xor eax,eax
+ test byte ptr [edx],2
+ jnz @@6 ;align this block if necesary
+ cmp ebx,ecx ;finished?
+ jb @@4 ;nope
+ mov ebx,edi
+ sub ebx,[esp] ;calculate size of decompressed data
+ jmp STRC_exit
+STRC_decompress endp
+
+;-------------------------------------------------------------------
+
+
+ends
+end start
+

@@ -1,0 +1,334 @@
+
+   Micro$oft Windows Sockets Guide
+   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   by Bumblebee/29a
+
+
+   Index
+   ~~~~~
+        1.Overview
+        2.What is windows sockets?
+        3.Micro$oft extensions
+        4.Step by step: make a connection
+        5.Read and Write
+        Apendix: wsocks.inc
+
+
+   1.Overview
+   ~~~~~~~~~~
+  This is not a  'viral-specific'  guide.  I walk through win32 sockets
+ implementation of  BSD  socket standards.  This can help you to make a
+ remote  connection  with  your  virus to send  an e-mail,  as example.
+  It's simply a description of a pieze of code from i-worm.Anaphylaxis.
+
+
+   2.What is windows sockets?
+   ~~~~~~~~~~~~~~~~~~~~~~~~~~
+  The Windows Sockets  specification  defines a network programming in-
+ terface for Microsoft Windows which  is based on the "socket" paradigm
+ popularized in the Berkeley Software Distribution (BSD).It encompasses
+ both familiar Berkeley socket style routines and a set of Windows-spe-
+ cific extensions  designed to allow the programmer to take "advantage"
+ of the message-driven nature of Windows.
+
+  But, what  the hell is a socket? The idea of BSD was a file to remote
+ machine.  Sokects are used in  BDS like simple files.  You can use the
+ common  'write' and  'read' to write and read from the socket.  But M$
+ changes this level of  abstraction and gives you spezial  functions to
+ make you remember you're using their damn API.
+
+
+   3.Micro$oft extensions
+   ~~~~~~~~~~~~~~~~~~~~~~
+  These are  the functions  provided by  M$ that  are not  avaliable in
+ Berkeley:
+	         WSAAsyncGetHostByAddr()
+		 WSAAsyncGetHostByName()
+		 WSAAsyncGetProtoByName()
+		 WSAAsyncGetProtoByNumber()
+		 WSAAsyncGetServByName()
+		 WSAAsyncGetServByPort()
+		 WSAAsyncSelect()
+		 WSACancelAsyncRequest()
+		 WSACancelBlockingCall()
+		*WSACleanup()
+		 WSAGetLastError()
+		 WSAIsBlocking()
+		 WSASetBlockingHook()
+		 WSASetLastError()
+		*WSAStartup()
+		 WSAUnhookBlockingHook()
+
+  M$  provides  this  shit  due to  its way to  do  multitasking.  What
+ happens if an App waits for a connection?  The connection requires the
+ App looks in a constant way if the connection is ok. So the App cannot
+ get the messages that is  sending windows.  The functions showed after
+ provide a nonblocking work.
+  We  are  only  interested in the  funcs with a '*'. The other are not
+ needed due to i'm going  to use socks in the  BSD way  (BSD=UNIX=LUNUX
+ rulez!).
+
+
+   4.Step by step: make a connection
+   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  The first step  is to  do a check of the wsocks  installation in  the
+ comp.
+ We are going to use  wsocks 1.1, so we make a  check with  WSAStartup.
+
+        push    offset wsadata			; WSADATA struct
+        push    VERSION1_1			; we want version 1.1
+        call    WSAStartup                      ; check wsocks installation
+        cmp     eax,0				; on error:
+        jne     qApp				;  exit app
+
+        mov     ax,VERSION1_1			; WSAStartup returns the version
+        cmp     ax,word ptr [wsadata.mVersion]  ; test version
+        jne     exitAppQsocks                   ; quit sockets and exit App
+
+  
+  WSAStartup  need 2  arguments:  a pointer to  WSADATA  struct and the
+ version requested.  This  API retuns in the struct i nto .mVersion the
+ number of the version  avaliable that you asked  for or the more close
+ to your  ask.  Moreover  WSAStartup tells windows  you're going to use
+ wsocks.  So a  WSACleanup call is needed  even if the version  not fit
+ your requests:
+
+        call    WSACleanup                      ; end wsocks use
+
+  Assume now we have the the version we need.  At this point we need to
+ open a socket.
+
+        push    PCL_NONE			; protocol
+        push    SOCK_STREAM			; type of socket
+        push    AF_INET				; family
+        call    socket                          ; open a socket
+        cmp     eax,SOCKET_ERR			; on error:
+        je      doCleanUp			;  WSACleanup
+
+
+  Socket needs 3 arguments: the protocol, the type and the family.  The
+ protocol can be set but this  make posible windows security fucks  our
+ connection.  Example: we want to make a  telnet connection.  If we set
+ the  protocol  to  telnet  protocol  and  windows  doesn't allows this
+ protocol then our socket fails. So is better to set protocol to none.
+  The type of socket can be:  STREAM or DATAGRAM.  First is oriented to
+ connection and  second sends  packets that  can arrive to  receiver in
+ different  order that they were sent.  Moreover the sender cannot know
+ if the packet arrives without the help of the receiver.
+  At last is  the  family  that can  be:  AI_UNIX, AF_INET...  but only
+ AF_INET addresses are supported in the version i check.
+  We use PCL_NONE, SOCK_STREAM and AF_INET. The socket function returns
+ SOCKET_ERR (-1) if the  call fails and the  socket handle if  all goes
+ fine.
+
+  Last step is make  the connection.  In theory we connect the  socket,
+ that is used to manage the connection,  to a remote machine.  First we
+ need to fill  the SOCKADDR struct (this is a modified struct: i merged
+ different structs due to we are going to use only AF_INET).
+
+	SOCKADDR        struct
+	sin_family	dw	0		; ever AF_INET
+	sin_port	dw	0		; the port
+	sin_addr        dd      0       	; addr of server node
+	sin_zero	db	8 dup(0)	; not used 
+	SOCKADDR        ends
+
+  Sin_family is easy to fill, but  sin_port and  sin_addr are more com-
+ plex.  Sin_port is the port where we want to connect.  But this number
+ must be in network byte order. Sockets provides htons for this:
+
+        push    PORT				; number of port
+        call    htons                           ; get port in network byte
+        mov     word ptr [sockaddr.sin_port],ax ; order
+
+  Htons gets the port and returns a WORD with network byte order.
+
+  Sin_addr  is  the  most complex.  We  need the  addr of  the host  to
+ connect.  This is a number  that identifies  the node.  But usually we
+ have the 'domain.ext' form (ex: IBM.com, netscape.com,...). So we must
+ get it's IP (xxx.xxx.xxx....) that comes in the dotted format and then
+ get its address.
+
+        push    offset server			; addr of the string ('oeee.net')
+        call    gethostbyname                   ; get the hostent struct
+        cmp     eax,0				; on error:
+        je      exitQsocksC			; close sock, cleanup and exit app
+						; eax contains the pointer to HOSTENT
+
+        mov     eax,dword ptr [eax+HOSTENT_IP]	; get pointer to IP into HOSTENT
+        mov     eax,dword ptr [eax]		; get pointer to IP
+        mov     dword ptr [sockaddr.sin_addr],eax ; that's all!
+
+        push    sizeOfSockaddr			; the size of sockaddr struct
+        push    offset sockaddr			; the addr of sockaddr
+        push    dword ptr [fd]			; the handle of the socket
+        call    connect                         ; connect now!
+        cmp     ax,SOCKET_ERR			; on error:
+        je      exitQsocksC			; close sock, cleanup and exit app
+
+  This example is enough clear: we get the  HOSTENT structs that has in
+ its  HOSTENT_IP  addr the  IP of the node.  Then fill sin_addr and the
+ sockaddr struct  is now ready to  make the connection.  Connect needs:
+ the size of the SOCKADDR  struct  (constant due to my modification ;),
+ the pointer to SOCKADDR struct and the handle of the socket.
+
+  That's  all.  we only  need to close  the  socket  when  the  work is
+ finished using closesocket:
+
+        push    dword ptr [fd]			; handle of the socket
+        call    closesocket
+
+
+    5.Read and Write
+    ~~~~~~~~~~~~~~~~
+  Miscro$oft provides differnt APIs to read and write but we are going
+ to use: send and recv.
+
+        push    0				; normal (can be OOBD too)
+        push    ecx				; size of message to send
+        push    esi				; addr to message
+        push    eax				; socket handle
+        call    send
+
+        push    0				; normal
+        push    4				; size to read
+        push    offset response			; addr to store message
+        push    eax				; soket handle
+        call    recv
+
+  Send  work  and gives  the same  errors  that _lwrite  and  the same
+ occurs with recv and _lread.
+  Send  and  recv  are  blocking.  This means  if  you're  sending  or
+ receiving and no  data is to  send/receive, the socket blocks the app
+ until  the  data is  avaliable,  the connection fails  or the process
+ ends. This last is what we need to use.
+  We create a thread and the thead makes the connection  and sends/re-
+ ceives the messages  (make the communication).  The main process that
+ creates the thread only  waits some time to let the  thread work. But
+ if the thread is  blocked the time in the main expires. Then the main
+ terminates the thread and continues its work.
+
+  That's all folks!
+
+
+
+
+ APENDIX: wsocks.inc
+
+;
+;      WSocks.inc: include file for windows sockets .
+;      Designed for TASM5 and Win32.
+;
+;      (C) 1999 Bumblebee.
+;
+;       This file contains basic structures and stuff to work
+;       with windows sockets.
+;
+
+; Descriptions of the API:
+;  arguments in order of PUSH ;)
+
+; only for debug
+extrn   WSAGetLastError:PROC
+
+; starts the use of winsock dll
+; addr WSADATA, version requested
+; returns: 0 ok
+extrn	WSAStartup:PROC
+
+; terminates the use of winsock dll
+; returns: SOCK_ERR on error
+extrn	WSACleanup:PROC
+
+; opens a new socket
+; protocol (PCL_NONE), type (SOCK_??), addr format (AF_??)
+; returns: socket id or SOCKET_ERR (socket is dw)
+extrn	socket:PROC
+
+; closes a socket
+; socket descriptor
+;
+extrn   closesocket:PROC
+
+; sends data (this socks are a shit... Unix uses simple write)
+; flags (1  OOB data or 0 normal ) , length, addr of buffer, socket
+; returns: caracters sent or SOCKET_ERR on error
+extrn   send:PROC
+
+; reveives data (this socks are a shit... Unix uses simple read)
+; flags (use 0), length, addr of buffer, socket
+; returns: caracters sent or SOCKET_ERR on error
+extrn   recv:PROC
+
+; connects to a server
+; sizeof struct SOCKADDR, struct SOCKADDR, socket
+; returns: SOCKET_ERR on error
+extrn	connect:PROC
+
+; gets the name of the current host
+; length of the buffer for name, addr of buffer for name
+; return: SOCKET_ERR on error
+extrn   gethostname:PROC
+
+; gets strcut hostent
+; addr of name
+; returns: ponter to the struct or 0 on error
+extrn   gethostbyname:PROC
+
+; converts a zstring like "xxx.xxx.xx...." to netw byte order
+; zstring ptr to change to dotted addr format
+; returns: in_addr (dd)
+extrn 	inet_addr:PROC
+
+; dw to convert into netw byte order (usually the port)
+; returns: the value in network byte order (dw)
+extrn   htons:PROC
+
+; Structs :o
+
+; sockaddr struct for connection
+; modified (for better use)
+; if you want the original look for it into a winsock.h
+SOCKADDR        struct
+sin_family	dw	0	; ex. AF_INET
+sin_port	dw	0	; use htons for this
+sin_addr        dd      0       ; here goes server node (from inet_addr)
+sin_zero	db	8 dup(0)
+SOCKADDR        ends
+
+; for WSAStartup diagnose
+WSADATA		struct
+mVersion	dw	0
+mHighVersion	dw	0
+szDescription	db	257 dup(0)
+szSystemStatus	db	129 dup(0)
+iMaxSockets	dw	0
+iMaxUpdDg	dw	0
+lpVendorInfo	dd	0
+WSADATA		ends
+
+; Some nice equs 
+
+; what version of winsock do you need? (usually 1.1)
+VERSION1_0      equ     0100h
+VERSION1_1      equ     0101h
+VERSION2_0      equ     0200h
+
+AF_UNIX		equ	1	; local host
+AF_INET         equ     2       ; internet (most used)
+AF_IMPLINK	equ	3	; arpanet
+AF_NETBIOS	equ	17	; NetBios style addresses
+
+; types of sockets
+SOCK_STREAM     equ     1       ; stream (connection oriented; telnet like)
+SOCK_DGRAM      equ     2       ; datagram (packets, packets, packets)
+
+; protocol
+PCL_NONE        equ     0       ; none (define the protocol not needed)
+
+SOCKET_ERR      equ     -1      ; standard winsock error
+
+HOSTENT_IP      equ     10h     ; where is the IP into the hostent struct
+
+
+APENDIX ENDS

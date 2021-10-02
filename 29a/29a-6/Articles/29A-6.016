@@ -1,0 +1,229 @@
+
+       浜様様様様様様様様様様様様様様様様様様様様融
+      <*> Explanation of registry shell spawning <*> - by Malfunction
+       藩様様様様様様様様様様様様様様様様様様様様夕
+
+ [* What is registry shell spawning? *]
+ --------------------------------------
+
+In order to clear that question we should take a look at the registry.
+So open regedit.exe and take a look at the following key:
+
+HKEY_CLASSES_ROOT\exefile\shell\open\command
+
+By default there will be no other values than the key's default value.
+This default value is normally set to "%1" %*.
+So what does that mean? When you start a EXE file the above registry
+entry will form it's command line. %1 will be replaced by the EXE's
+filename (with full path) and %* will be replaced by it's parameters.
+Example:
+When you start a file called test.exe in the directory C:\temp with the
+parameters /param1 and /param2 the commandline will look like:
+
+"C:\temp\test.exe" /param1 /param2
+
+In order to use that 'feature' for a virus one need to change the above
+registry entry. Imagine we would change the registry entry to
+
+"C:\windows\system\spawner.exe" "%1" %*
+
+And now let's imagine we would again start the C:\temp\test.exe with the
+same parameters (now with the changed registry value).
+This time the command line will look like this:
+
+"C:\windows\system\spawner.exe" "C:\temp\test.exe" /param1 /param2
+
+That means our virus file (here spawner.exe) will be executed EVERY TIME
+when a EXE file is started. Our 'spawner.exe' (from now on I'll call it
+the spawning file) receives the original command line as it's parameters.
+The spawning file should infect the file in the command line and then
+execute it.
+
+ [* Executing the file after infecting it *]
+ -------------------------------------------
+
+After a file has been infected it shall be executed, of course. There are
+three windows APIs to accomplish this task:
+
+WinExec         (exported by kernel32.dll)
+ShellExecuteA   (exported by shell32.dll)
+CreateProcessA  (exported by kernel32.dll)
+
+When I was playing around with registry shell spawning I tried to use
+ShellExecuteA which seemed to be the best one to me. WinExec is an old
+API which is only exported for compatibility and CreateProcessA seemed
+to be too complex in it's parameters. Very soon I realized that I cannot
+use neither ShellExecuteA nor WinExec. For registry shell spawning ALWAYS
+use CreateProcessA to execute an EXE file! I will tell you the reason:
+WinExec and ShellExecuteA both rely on that above mentioned registry key.
+So let's imagine we changed the registry key and we executed a file.
+Our spawning file will infect it and then execute it by let's say using
+the ShellExecuteA API. Due to the fact that this API also uses the
+registry key the spawning file will be executed again! This leads us to
+an endless loop of executing the spawning file. That's why you always
+should use CreateProcess in case of registry shell spawning.
+
+ [* Make use of quotation marks *]
+ ---------------------------------
+
+With Windows 95 came the invention of long filenames and from then
+on filenames that include a space were allowed. To handle these filenames
+you should make use of quotation marks when you use registry shell spawning!
+Let's assume someone called his windows directory "win dows".
+Let's assume further that you 'installed' your spawning file (which is
+supposed to be in the windows directory) in the registry:
+
+C:\win dows\spawner.exe "%1" %*
+
+What will happen when you execute a file? At first, the commandline will
+be passed to CreateProcessA. Without the quotation marks the API will
+interprete the above commandline like this:
+
+C:\win.exe dows\spawner.exe ...
+
+So it notices that there are no quotation marks and searches for the first
+space. Then it appends the extension .exe to it and tries to start it.
+In the example above no file will be ever started anymore!
+The conclusion is simple: Put the filename (with full path) and the
+%1 in quotation marks, but not the %*! That's all. ;)
+
+ [* Two ways of using registry shell spawning *]
+ -----------------------------------------------
+
+1) Carrying a self-created spawner.exe in your virus
+
+ or
+
+2) Using an infected file as spawner.exe
+
+I won't show any code here for neither both methods. You can have a look
+at my LanKa virus which uses the second method. The second method is
+more difficult, but should reduce the virus' size. Let's have a look
+at the first method:
+
+ [* Carrying an EXE file as the spawning file *]
+ -----------------------------------------------
+
+When your virus is executed it should copy it's spawning file to the
+windows system directory (or wherever you want it to be).
+Then it shall take a look at the registry key and check if the spawning
+file is already installed. If not the virus should change the registry
+key to
+
+"C:\windows\system\spawner.exe" "%1" %*
+
+(C:\windows\system\ is assumed to be the windows system directory
+ and spawner.exe is assumed to be the filename of your spawning file).
+The spawning file itself should do the following when it's executed:
+Scan the commandline until you reached the beginning of the "%1".
+Copy the filename (%1) to a buffer and infect that file. Call CreateProcessA
+and pass the rest of the commandline ("%1" %*) to it as the commandline
+parameter. Then exit the process. This is really rather simple if you
+understood how registry shell spawning works.
+
+ [* Using an infected file as spawning file *]
+ ---------------------------------------------
+
+The second method isn't as easy as the first one. I will show you how
+I used registry shell spawning in my LanKa virus without carrying
+a whole spawning file with the virus. When an infected file starts, the virus
+locates the current filename with path (GetModuleFileNameA) and it
+locates the windows system directory (GetSystemDirectoryA). Then it
+scans the current filename backwards to the last backspace ('\') to
+separate the filename (this time without path). This filename is
+added to the windows system directory. Let's have an example to make
+things easier:
+
+current filename = "C:\spiele\quake\quake3.exe"
+system directory = "C:\windows\system"
+system dir with current filename = "C:\windows\system\quake3.exe"
+
+After that the virus opens the registry key and separates the first string
+that is surrounded by quotation marks. The virus searches for this
+string as a file by using FindFirstFileA. If it isn't found the virus
+will install itself into registry. To take the example from above:
+
+"C:\windows\system\quake3.exe" "%1" %*
+
+Then it will copy itself to the system directory (using the current filename
+and the system directory string with filename).
+If the FindFirstFileA call returns no error the virus assumes to be
+already installed. Now we must distinguish between the following two cases:
+
+1) the running file is the spawning file itself
+2) the running file is another infected file which has been started
+   by the spawning file
+
+In simpler words: Is the spawning file executed or not? To test that
+you must compare the filename in the registry entry with the current
+filename (both with path). If the spawner isn't executed you should
+jump to the dispatcher or you can let your virus do some additional stuff.
+But if the spawning file is executed we want to infect the file that
+is to be started. We need to take a look at the commandline (use
+GetCommandLineA for this task) which should look like this:
+
+"C:\windows\system\spawner.exe" "C:\temp\infect_me.exe" /param1
+
+This is of course just an example. The virus needs to scan forward to
+the third quotation mark and then it should separate the filename
+(oh man, the quotation marks really help, don't they? ;)
+Now the virus can infect the file. After that it should execute that
+file by using CreateProcessA. CreateProcessA's commandline parameter
+should be
+   "C:\temp\infect_me.exe" /param1
+for the example above.
+
+ [* Alternative: Using a flag to determine if spawning file is run *]
+ --------------------------------------------------------------------
+
+An alternative method to check if the running file is the spawning file
+could be the use of a flag. After the virus noticed that it has already
+been installed it could simply check this flag. But be sure that this
+flag is correctly set! Before the spawning file infects a file it
+should clear this flag.
+When the virus notices that it creates a spawning file by copying itself
+to the system directory. If you are using this flag you need to change the
+flag in the recently copied file. To scan for the physical address of the
+flag isn't very efficient. A better solution should be to save the physical
+entrypoint of the virus with each infection. So open the recently copied
+file, seek to (saved entrypoint + (offset flag - offset virusstart))
+and write a zero. The flag should be unencrypted, so that it can be changed
+for the spawning file. You could also use some field in the PE Header
+to store the flag. But then use a DWORD instead of a byte and don't use
+numbers like 1 and 0, but use more unique values like 0e36afb3.
+If you don't want your virus to have this little unencrypted part you
+could do like this:
+1) change the flag in memory
+2) search for an uninfected file
+3) infect it and copy it as spawning file instead of the current file
+
+In my opinion the use of such a flag is even more difficult and requires
+more code than using string comparisons to see if the current file
+is the spawning file.
+
+ [* Tips to make testing your virus safer *]
+ -------------------------------------------
+
+When I was testing my LanKa virus I sometimes forgot to change the
+registry key to the original value. I executed some files and they
+were infected. I started regedit.exe to change the registry value,
+but I forgot that regedit.exe was infected by starting it. X-(
+To avoid this you maybe shall only use a copy of regedit.exe and
+you maybe shall create a backup of your registry.
+
+ [* Last words *]
+ ----------------
+
+I think registry shell spawning is a quite nice method which works
+also very good under win2k. My LanKa virus has two little logical errors,
+but nevertheless it works very well. I think I will use this technique
+in my next virus, too. A friend of mine infected his computer with
+the LanKa virus and very soon some of his EXE files became infected.
+You should also notice that when the virus is installed, all autostarted
+EXE files will be infected by the next restart. I'm not sure, but I think
+registry shell spawning can also be applied to screensavers. If you
+test this please let me know the results. If you got any questions,
+suggestions or critism, then just mail me:
+   mal.function@gmx.net
+
+That's all. Have fun...

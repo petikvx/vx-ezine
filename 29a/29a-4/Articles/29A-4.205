@@ -1,0 +1,338 @@
+                         Linux virus writing tutorial
+                            [v1.0 at xx/12/99]
+                              by mandragore,
+                          from Feathered Serpents.
+
+
+
+
+
+In this paper, I'll discuss how to make a linux virus.
+Of course you won't use this to make one.
+
+
+1) Prelude
+	1.1 linux asm - gdb is your freind, but you should have several others
+	1.2 syscalls interface - syntax, and such boring things.
+
+2) Obscure ELF Manipulations
+	2.1 thoses damn structures needed to know
+	2.2 the mysterys of execution time
+	2.3 mandragore'z way of smashin the file for phun and profit 
+	2.4 how to keep alive the host - survival guide
+
+3) Directories Operations
+	3.1 syscalls needed to change/list dirz
+	3.2 searching for files - and find some
+
+4) Going Further
+	4.1 implementing hightech functions
+	4.2 potentially interesting other syscalls
+	4.3 cyber bibliography
+
+
+Before let's play, lemme tell ya that the enligsh language
+is not my native one. There are few code here, as many things
+are theorical (but applicable, don't fear).
+Some asm skillz is required, and *nx knowleadge is better.
+Of course this paper wuz written with vi :)
+
+
+I] ---------------------------   Prelude
+
+
+1.1  Linux ASM - gdb is your freind but you should have several others.
+
+Here i'll describe what you need, and how to use it.
+
+* At first, get nasm. Start from the url at the 4.3 section to find it.
+  It comes with nice documentations. (ps/man)
+  It does not use the AT&T syntax. If you want to use it, try GAS instead.
+* Next, you need biew. It's the linux port of hiew. It's not very stable, so
+  add the MagicSysRequest kernel-hack to your kernel :)
+  You should know hiew, so i won't explain how to use biew.
+* You already have the others.
+  gdb is a pain in the ass, but it can help you.
+  here are the most usefull functions:
+  - info reg : give the registers status
+  - x 0xoff : dump [offset] to the screen
+  - info files : give the list of section and their virtual address
+  - break *0xoff : set a breakpoint
+  - help : there'z one way to use gdb per coder.
+  you can use strip to get some stripped ELFs (for testing purposes)
+  for oldschooler like me, vi is a decent asm editor.
+  many values, infos, structures are in your kernel srcs. use grep.
+  The syntax to compil is quiet easy:
+   nasm -f elf virus.asm
+   cc virus.o -o virus
+  et voila.
+
+1.2	 Syscalls interface - syntax, and such boring things.
+
+ Linux assembly is 32 bits, and use syscalls.
+ It's something between win32 and dos - that's why i love it.
+ The syscalls are functions called by int 80h. It's a gate to C libz.
+ eax holds the function number and the others hold the arguments in order:
+ ebx 1st, ecx 2nd, and so on up to ebp, the 7th.
+ You have the list of the function numberz in /usr/include/asm/unistd.h
+ For example, opening a file looks like:
+	mov eax,5		;  eax = function 5 (open a file)
+	mov ebx,fil		;  ebx = pointer to the file to open
+	mov ecx,2		;  opening flags (0=r/o 1=w/o 2=r/w)
+	int 80h			;  call the stargate
+ The return is an handle used for subsequent calls, like for dos or win32.
+ Finding syscall usage is not always an easy task. The few docs i found
+ about it are mentionned at the 4.3 section.
+ Return values are stored in eax, or structures pointed by argz.
+ Some syscalls require you to have superuser priviledges.
+
+
+
+II] --------------------  Obscurs ELF Manipulations.
+
+
+2.1 Thoses damn structures needed to know.
+
+I hope you like brut infos :)
+I won't describe everything here, as I ripped the stuff from better docs.
+You'll find where to get them at the 4.3 section.
+
+ELF format is really flexible; the only fixed part is the ELF header : at BOF.
+In practice, most of the ELFs you'll find looks like:
+ elf_header (34h bytes)
+ program_header (6*20h btyes)
+ sections 1
+ sections 2
+ ...
+ sections x
+ sections_header (x*28h bytes)
+Basically, elf_header is used to give general informations about other headers.
+
+struct elf_header
+  0  e_ident     - holds the magic values 0x7f,'ELF' and some flags
++10  e_type		 - this word contains the file type (core, exe, ...)
++12  e_machine   - give the machine needed for running (3 = x86)
++14  e_version   - ELF header version. Currently 1.
++18  e_entry     - virutal address of entry point. I can see you smiling.
++1c  e_phoff     - program header offset (see below)
++20  e_shoff     - sections header offset (see below)
++24  e_flags     - some other flags (processor specific nfos)
++28  e_ehsize    - size of the ELF header
++2A  e_phentsize - size of one entry in the program header
++2C  e_phnum     - number of entrys in the program header
++2E  e_shentsize - size of one entry in the section header
++30  e_shunum    - number of entrys in the section header
++32  e_shstrndx  - give the entry number of the name string section (if exists)
+
+struct section_header
+  0  sh_name      - contains a pointer to the name string section giving the
+ +4  sh_type      - give the section type 				  [name of this section
+ +8  sh_flags     - some other flags ...
+ +c  sh_addr      - virtual addr of the section while running
++10  sh_offset    - offset of the section in the file
++14  sh_size      - zara white phone numba
++18  sh_link      - his use depends on the section type
++1c  sh_info      - depends on the section type
++20  sh_addralign - alignement
++24  sh_entsize   - used when section contains fixed size entrys
+
+struct program_header
+  0  p_type		- type of segment
+ +4  p_offset   - offset in file where to start the segment at
+ +8  p_vaddr    - his virtual address in memory
+ +c  p_addr     - physical address (if relevant, else equ to p_vaddr)
++10  p_filesz   - size of datas read from offset
++14  p_memsz    - size of the segment in memory
++18  p_flags    - segment flags (rwx perms)
++1c  p_align    - alignement
+
+As i said above, i won't waste your HD space with tons of flag descriptions.
+You'll find them in the - nice - ELF documention (urlz at 4.3).
+Everything is document. It's the linux world. So use the source dudez !!!
+
+
+2.2  The mysterys of execution time
+
+A lotta things happen when executing the file.
+(don't forget to check you kernel srcs)
+The kernel reads the program header and compute segments from the file,
+then the sections are defined and allocated.
+You'll notice the modifications while debugging with gdb:
+before and after 'run' the memory is not in the same state, so set a 
+breakpoint at the virutal entry point to read allocated datas.
+Finally, miscellanous dynamic values are set.
+
+
+2.3  the mandragore'z way of smashin the file for phun and profit
+
+Sorry for this ego abuse, but after all, that's a nice way to infect ELFs
+that i'll describe here, and here's the story of how i elaborated it.
+
+act one:
+I tryied a lotta things. At first i though that adding a section at EOF and
+writing my viral code right after should work. The code is no more 
+accessible at run time, so it segmentation faulted :(
+ 
+act two:
+Then i noticed the hole in virutal memory between the code segment and the 
+data one. But i wuzn't able to use it (and believe me, i tryied many things). 
+Overwriting not really used section is not safe, so forget it.
+
+act three:
+Finally I decided to look aroung the segments, not the section. Adding a 
+segment wuz possible, but when i tryied to relocate the program header i 
+came in a lot of troubles. So i decided to enlarge one.
+As i wanted to code a non-destructive virus, i choose to append to the file,
+not to overwrite a part of it. The only way then wuz to enlarge a segment.
+As i append to the file, the only enlargable segment was the data one.
+The new virtual entry point is easy to calculate from the virutal address of
+the data segment. I wuz able to run code before the host. I used the old 
+virutal entry point to get back to the host, but it segf'd once again.
+
+act four:
+The data segment size is not the same in memory and in the file.
+It now contains the rest of the file in memory, with our viral code appended.
+I thought the segfs came from that. And i wuz right. (for once)
+The .bss section problem arised. Normally, this section's flag is SHT_NOBITS.
+As you're not talking kernelian, i'll tell ya what it means: this section
+should not contain bytes from the programs. But i know understand why the
+data segment stops just before it in the file; the program bytes are copied
+in memory up to our code. And the .bss section has to be filled of zero.
+So i decided to overwrite it w/ zeros at runtime before returning to the host. 
+Once again it segf'd. Damn.
+
+act five:
+With further testing I discovered the role of the .rel sections. 
+Especially the .rel.bss section. At runtime, the beginning of the .bss 
+section containes relocated values. And i did overwrite then. 
+My first attempt to bypass this problem wuz to check the other sections 
+between the .bss file offset and our viral code, and to overwrite it with 
+zeroes. No, i didn't overwrite the section headers. I'm not so dumb :)
+When the kernel execute the file, the .bss is already zeroed and the 
+recolation won't be overwritten. This should work!
+The code wuz bigger (computing zeroable section). But once again
+i got a lotta troubles ; the .bss section if often bigger than the rest of 
+the file. Yes I overwritten my viral code before discovering it. 
+
+act six:
+Crashing half of the hosts is not a solution (at least for me). 
+So i took the other solution (may be you already got it) : getting back to 
+the runtime patch and overwrite the .bss section before returning, but
+avoiding the relocations. Hopefully the relocations things are quiet simple. 
+I included a rutine to get the farest relocation in memory and started to zero 
+the .bss section from there up to the viral code.
+No. This should have been to easy. Once again i overwritten my viral code.
+
+seventh and final act:
+May be you're clever than me and already guess why; because of the .bss size.
+The last thing to do wuz to add a rutine to migrate behind the .bss section in
+memory before patching it. et voila. 
+
+This is a nice story, but it's not yet ended.
+A bad point is that's only applicable to regular ELFs: compiled C,
+(6 entry in the program header, a .bss section, regular entrys sizes, ...)
+And if you strip an infected ELF, it won't work anymore.
+I also encountered some problemz w/ proggyz using the kdelib.
+
+
+
+III] ---------------------  Directories Operations
+
+Now that we can infect files, let's find some.
+
+
+3.1  Syscalls needed to seek directories
+
+For linux, a directory is a file like the others.
+This is a nice string, but that's not really true :)
+You can use the open function to access it, but you can't read it
+with the 'read' function. You have to use 'readdir'. Close it with 'close'.
+You can't open it with r/w flags. Open it r/o.
+Many syscalls which requires a file descriptor are applicable with a
+directory descriptor. Thoses descriptorz are called handle in dos/win32.
+In case it's not allowed, the syscall return EISDIR (-21). 
+This is a polite way to say "get the hell outta here, it's a fuckin directory."
+
+
+3.2  Searching for files - and find some
+
+As I not yet ended the way to stay TSR, do it yourself or stay a runtimer
+linux virus writer. Being a RLVW :) obliges you to seek directories.
+You can seek the current directory by opening '.' . You can of course 
+access the '..' directory, but beware to not loop when reaching the root.
+Don't waste the user time by seeking the common directories filled of ELFs
+if you're not suid, so check it before.
+
+
+IV]  -------------------------  Going further
+
+
+4.1  Implementing hightech functions
+
+Please don't waste this promised land with lame viruses. 
+Respect the linux users and don't fill the world of shit.
+So add plenty of nice functions. 
+Here are the ten (old) gold rules;
+1) You will use the utime and state syscall to restore the file times.
+2) You will use the fchmod/chmod and state syscall to restore the file flags.
+3) Retro is limited for now.. just avoid infecting goat files.
+4) Always think about using encryption, poly, RDA and such things!
+5) Disguise the file : overwrite the name section and some other useless 
+   part of the file to make it harder to work on.
+   (gdb segfs when it opens an ELF w/o a SHT_STRTAB entry in the section header)
+6) You won't infect unless you're sure to not bug everything.
+7) Don't run in the street and scream < i'm writing a linux virus ! >
+8) You will add a nice payloads, nothing destructiv of course.
+9) Don't be full of yourself. Your viruses are the reflect of yourself.
+10) You will impose yourself a 10th rule. the more are there, the better it is.
+
+
+4.2  Potentially interesting syscalls
+
+As you found a lotta great ideas while reading the ralf's int list, you'll
+have some nice one while reading syscalls descriptions. 
+It's a pitie that it's not better documented, but i don't think that many
+ppl thought it could be usefull. "who will code in asm under linux anyway ?"
+The umask syscall can be funny in a payload. Adding socket operation can be
+nice too. Adding a security breach to the system is really tempting. 
+I'm currently looking aroung the ptrace syscall to make a kind of TSRing...
+But it may has many other interesting implementations. 
+Thanx to kernel panic who pointed it. (in xine 2 or 3, i don't remember)
+I'm sure they are a lotta things to do w/ the various signals.
+
+
+4.3  Cyber-bibliography
+
+It's still small for now :/
+
+Most of the stuff will be found here:
+(be sure to get the ELF documentation and the syscall descriptions)
+http://lightning.voshod.com/asm
+
+Some other interesting (?) piece of paperz can be found at:
+http://bewoner.dma.be/janw/eng.html
+
+And the unix-virus mailing list that i just discovered (thnx to Quantum):
+http://virus.beergrave.net
+
+
+
+ 
+                                              -=( Experienced by mandragore )=-
+
+
+
+
+Last wurdz:
+
+Greetz to the whole FSA, and in misorder:
+Doctor L, mist, darkman, yesna, reptile, raid, billy b., SSR, mammoth, 
+T2, buzz, acidbytes, owl, evul, morphine, gigabyte, and all others.. 
+And to you, linux users: forgive me for having written this paper.
+
+A special though to all arrested vxers. past, present, and futur.
+
+A special handshake to a non-coder friend of mine, YOGI.
+
+Linux is not what it used to be anymore.
+

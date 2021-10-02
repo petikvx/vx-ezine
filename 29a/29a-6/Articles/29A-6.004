@@ -1,0 +1,390 @@
+
+	Snorting coke (and packets)
+	by GriYo / 29A
+
+;···········································································
+
+Windows 2000 introduces a new concept for Windows users: The possibility
+of creating raw-sockets. We will use this new Windows capacity to capture
+network traffic on a net. What to make with captured packets is your
+decision, some suggestions are:
+
+	* To capture login/password combinations and use them later to
+	  access the corresponding services.
+
+	* To receive commands from the master. These commands can be sent
+	  by means of TCP, UDP or ICMP protocols, or even by a combination
+	  of them.
+
+As limitation we find that only users with administrator priviledges are
+allowed to create raw-sockets.
+
+First of all, we have to initialize Windows Sockets, by calling WSAStartup.
+We must tell WSAStartup that we need Winsock version 2.2+, which will only
+succeed on windows 2000 or XP.
+
+;···········································································
+
+	invoke WSAStartup,00000202h,addr wsaDATA
+
+	.if eax != 0
+
+		;Error: WSAStartup
+
+		jmp ExitApp
+
+	.endif
+
+;···········································································
+
+The second thing is to create a socket to listen at. Its not a bad idea to
+run this code in a separate thread, so its execution does not disturb the
+rest of the application.
+
+;···········································································
+
+	WSA_FLAG_OVERLAPPED	equ	00000001h
+
+	WSockThread		proc	pParam		:DWORD
+
+	LOCAL	s		:SOCKET
+	LOCAL	if0		:sockaddr_in
+	LOCAL	optval		:DWORD
+	LOCAL	dwBytesRet	:DWORD
+	LOCAL	dwFlags		:DWORD
+	LOCAL	wbuf[8]		:BYTE
+			
+	invoke	WSASocket,
+		AF_INET,
+		SOCK_RAW,
+		IPPROTO_IP,
+		0,
+		0,
+		WSA_FLAG_OVERLAPPED
+
+	.if eax == INVALID_SOCKET
+
+		;Error: WSASocket
+
+		return 0
+
+	.endif
+			
+	mov s,eax
+
+	invoke ZeroFill,addr if0,SIZE sockaddr_in
+
+	invoke	WSockGetInterfase,
+		s,
+		addr if0,
+		0
+
+	.if eax == 0
+
+		;Error: GetInterface
+
+		return 0
+
+	.endif
+
+;···········································································
+
+There is a call to a function called WSockGetInterfase in the above code.
+Dont browse Winsock exported functions looking for it. The code for this
+function is the next step to code.
+
+WSockGetInterfase is used to obtain a list of available network interfases.
+To get it we will use SIO_ADDRESS_LIST_QUERY Winsock IOCTL:
+
+;···········································································
+
+	SIO_ADDRESS_LIST_QUERY	equ	48000016h
+
+	WSockGetInterfase	proc	s		:SOCKET,
+					ifx		:DWORD,
+					num		:DWORD
+
+	LOCAL	BytesRet	:DWORD
+	LOCAL	if_LIST[2048]	:BYTE
+
+	invoke ZeroFill,addr if_LIST,2048
+
+	mov BytesRet,0
+
+	invoke	WSAIoctl,
+		s, 
+		SIO_ADDRESS_LIST_QUERY, 
+		NULL, 
+		0, 
+		addr if_LIST, 
+		2048,
+		addr BytesRet, 
+		NULL, 
+		NULL
+
+	.if eax == SOCKET_ERROR
+
+		;Error: WSAIoctl
+
+		return 0
+
+	.endif
+
+	mov ecx,num
+
+	lea esi,if_LIST
+	cld
+	lodsd
+			
+	.if eax == 0
+
+		;Error: No interface found
+
+		return 0
+
+	.elseif ecx >= eax
+
+		;Error: Device number too high
+
+		return 0
+
+	.endif
+		
+	shl ecx,3
+	add esi,ecx
+	cld
+	lodsd
+	add eax,sockaddr_in.sin_addr
+	mov esi,eax
+
+	mov edi,ifx
+	add edi,sockaddr_in.sin_addr
+
+	cld
+	lodsd
+	stosd
+
+	return 1
+
+	WSockGetInterfase	endp
+
+;···········································································
+
+We call WSAIoctl with the SIO_ADDRESS_LIST_QUERY to obtain a list of local
+transport addresses of the socket's protocol family to which the application
+can bind. The list returned in the output buffer using the following format:
+
+;···········································································
+
+	SOCKET_ADDRESS_LIST	STRUCT
+
+	iAddressCount		dd ?
+	Address			dd ?
+
+	SOCKET_ADDRESS_LIST	ENDS
+
+;···········································································
+
+WSockGetInterfase uses 3 entry parameters:
+
+	* A valid socket (s)
+	* A pointer to a sockaddr_in structure that will be filled with
+	  information about the selected network interface
+	* The number of the interfase we will bind to. We use 0 here in
+	  order to use first detected interface.
+
+Once we have created the socket and we have selected the interface we can
+call bind to asociated them.
+
+;···········································································
+
+	mov if0.sin_family,AF_INET
+
+	invoke htons,0
+
+	mov if0.sin_port,ax
+
+	invoke	bind,
+		s,
+		addr if0,
+		SIZE sockaddr_in
+
+	.if eax == SOCKET_ERROR
+
+		;Error: bind
+
+		return 0
+
+	.endif
+			
+;···········································································
+
+The final trick is to set the SIO_RCVALL mode on the socket, by calling
+WSAIoctl. Lets have a look at what MSDN Library says about this IOCTL:
+
+	SIO_RCVALL:
+	
+	Enables a socket to receive all IP packets on the network. The socket
+	handle passed to the WSAIoctl function must be of AF_INET address
+	family, SOCK_RAW socket type, and IPPROTO_IP protocol. The socket 
+	also must be bound to an explicit local interface, which means that
+	you cannot bind to INADDR_ANY. 
+
+	Once the socket is bound and the IOCTL set, calls to the WSARecv or
+	recv functions return IP datagrams passing through the given
+	interface.
+
+	Note that you must supply a sufficiently large buffer. Setting this
+	IOCTL requires Administrator privilege on the local machine.
+
+	SIO_RCVALL is available in Windows 2000 and later versions of 
+	Windows.
+
+Well, water clear, lets do it.
+
+;···········································································
+
+	SIO_RCVALL		equ	98000001h
+
+	mov dwBytesRet,0
+	mov optval,1
+
+	invoke	WSAIoctl,
+		s,
+		SIO_RCVALL,
+		addr optval,
+		4,
+		0,
+		0,
+		addr dwBytesRet,
+		0,
+		0
+
+	.if eax == SOCKET_ERROR
+
+		;Error: WSAIoctl
+
+		return 0
+
+	.endif
+
+;···········································································
+
+Done, now, on result to WSARecv on this socket we will receive IP packets
+running around the network, lets see an example.
+
+;···········································································
+
+	lea edi,wbuf
+	cld
+	mov eax,PACKET_BUFFER_SIZE
+	stosd
+	lea eax,pcap_buffer
+	stosd
+
+	mov dwBytesRet,0
+	mov dwFlags,0
+
+	invoke	WSARecv,
+		s,
+		addr wbuf,
+		1,
+		addr dwBytesRet,
+		addr dwFlags,
+		0,
+		0
+
+	.if eax == SOCKET_ERROR
+
+		;Error: WSARecv
+
+		return 0
+
+	.endif
+
+	;Decode IP header!
+
+	invoke DecodeIpHeader,addr wbuf
+
+;···········································································
+
+The DecodeIpHeader function uses a pointer to a WSABUF structure, which
+contains information about captured network frame. Lets see an example on
+how to extract the information from it.
+
+;···········································································
+
+	IP_HEADER		STRUCT
+
+	Version_and_HdrLen	db ?
+	ServiceType		db ?
+	TotalLen		dw ?
+	ID			dw ?
+	Flags_and_FragOff	dw ?
+	TimeToLive		db ?
+	Protocol		db ?
+	HdrChksum		dw ?
+	SrcAddr			dd ?
+	DstAddr			dd ?
+
+	IP_HEADER		ENDS
+
+DecodeIpHeader			proc	Buffer		:DWORD
+
+	LOCAL	szSrcIp[16]	:BYTE
+
+	mov eax,Buffer
+	mov esi,[eax+4] ;Buffer points to a WSABUF structure
+
+	mov eax,[esi+IP_HEADER.DstAddr]
+
+	;Do something here with destination ip address
+	;...
+	;...
+	;...
+
+	mov eax,[esi+IP_HEADER.SrcAddr]
+
+	;Or do something using source ip address
+	;...
+	;...
+	;...
+
+	mov al,[esi+IP_HEADER.Protocol]
+
+	;You can also check for specific protocols
+
+	.if al == IPPROTO_TCP
+
+	;...
+	;...
+	;...
+
+	.elseif al == IPPROTO_UDP
+
+	;...
+	;...
+	;...
+
+	.elseif al == IPPROTO_ICMP
+
+	;...
+	;...
+	;...
+
+	.endif
+
+	ret
+
+DecodeIpHeader		endp
+
+;···········································································
+
+Thats all folks, 
+happy snorting!
+
+--
+GriYo / 29A
+
+I'm not in the business...
+...I am the business

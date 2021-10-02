@@ -1,0 +1,413 @@
+
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[E-RIPPER.C]ÄÄÄ
+/*
+  Email ripper based on find_email module.      
+
+  Warning ##1: it generates non-uniq list! get "uniq"
+               port for win32 to exclude duplicates.
+
+  Warning ##2: it may generate garbage after first output string.
+  	       this is a bug of MSVCRT lib. (get a patch to prevent this)
+
+  USAGE: e-ripper.exe pizda.xui | uniq > ispanci_mudaki.txt
+
+         or just
+
+         e-ripper.exe pizda.xui
+*/   
+   
+
+#include <stdio.h>
+
+typedef unsigned long dword;
+typedef unsigned char byte;
+typedef unsigned short word;
+
+extern byte *find_next_email(byte *,dword,dword *);
+
+FILE    *in = NULL;
+byte    *buf, *s = NULL;
+dword   len	=  0,
+	work_val = 0;
+
+void    main(int argc, char *argv[])
+{
+  if (argc < 2)
+  {
+        printf("Email ripper v 3.5 - Exp.\n");
+        printf("USAGE: e-ripper.exe file-to-rip-from.ext\n");
+        exit(0);
+  }     
+        
+  if ((in = (FILE *)fopen(argv[1], "rb")) == NULL)
+  {
+        printf("Cant open %s file\n", argv[1]);
+        exit(0);
+  }
+       
+  len = filelength(_fileno(in));  
+  buf = (byte *)malloc(len);  
+  fread(buf,1,len,in);  
+
+  while(1)
+  {    
+    s = (byte *)find_next_email(buf,len,&work_val);
+    if (!s)
+        break;
+    printf("%s\n",s);
+  } 
+
+  fclose(in);
+  free(buf);
+}       
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[E-RIPPER.C]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[FINDEMAIL.ASM]ÄÄÄ
+; Findemail module with very strong system of search
+; Ofcourse, it wont give you 100% result, but 90% of 
+; it will be correct.
+
+; It is based on filter model which 'filters' all
+; email-like strings. 
+; 
+
+; Offset independent
+; Optimized by size
+; __cdecl calling conv-s
+; Uses only ONE external temp value
+
+; byte *find_next_email(byte *buf, dword len, dword *work_val);
+;    buf = ptr to buf where to do a search
+;    len = len of buf
+;    work_val = external temp value(should be set to NULL on first call)
+
+; returns next email in given buffer.
+
+.386
+.model flat
+.data
+
+
+PUBLIC  _find_next_email                ; this is for linking in HiLevel
+PUBLIC  find_next_email
+	
+_find_next_email        equ     $        
+
+find_next_email         proc
+        locals  __
+
+; ----------------------------------------------
+; CONFIG BLOCK
+; ----------------------------------------------
+__MAX_VALID_LEN equ     260
+__MAX_EMAIL_EXT	equ	3
+__MIN_EMAIL_EXT	equ	2  
+; ----------------------------------------------
+        pushad        
+        
+        call    __xx
+__xx:   pop     ebp
+        sub     ebp, offset __xx                
+        xor     eax, eax
+	sub	esp, __MAX_VALID_LEN
+        sub     esp, 4*4
+        
+__last_pos      equ     dword ptr [esp+11*4+4*4+__MAX_VALID_LEN]
+__len           equ     dword ptr [esp+10*4+4*4+__MAX_VALID_LEN]
+__buf           equ     dword ptr [esp+09*4+4*4+__MAX_VALID_LEN]
+__p2            equ     dword ptr [esp+04]
+__p3            equ     dword ptr [esp+08]
+__full_len      equ     dword ptr [esp+12]
+__p1            equ     dword ptr [esp]
+__ret_buf	equ	[esp+4*4]
+
+__0:    mov     edx, __buf
+        mov     esi, edx
+        add     edx, __len
+        mov     eax, __last_pos
+        mov     eax, [eax]
+        add     esi, eax
+        cmp     esi, edx
+        jae     __exit_none
+                
+        cld
+
+__1:    lodsb
+        cmp     esi, edx
+        jae     __exit_none
+        cmp     al, '@'         ; get to the middle
+        jnz     __1     
+                
+        dec     esi     
+        mov     __p1, esi       ; middle address
+                
+        xor     ecx, ecx
+        inc     esi
+
+__2:    lodsb
+        or      al, al          
+        jz      __3     
+        cmp     esi, edx
+        jae     __3
+        
+        inc     ecx
+                        
+; check out for separators
+        cmp     al, 2Dh		; '-'
+        je      __2
+        cmp     al, 2Eh		; '.'
+        je      __2
+        cmp     al, 30h
+        jb      __x8
+        cmp     al, 39h
+        jbe     __2                             
+        cmp     al, 41h
+        jb      __x3
+	cmp	al, 60h
+	jbe	__a
+	jmp	__x03
+__a:    cmp     al, 5Bh
+        jb      __2
+        cmp	al, 5Ch
+        jz	__xx3
+        cmp     al, 5Eh
+        jb      __3                     
+        cmp     al, 60h                 
+        je      __3
+
+__x03:  cmp     al, 7Ah
+        jbe     __2                     
+        
+__3:    cmp     ecx, 4                  ; min len
+        jb      __x3            
+        cmp     ecx, __MAX_VALID_LEN
+        jb      __4
+
+__x3:   mov     eax, __last_pos
+        sub     esi, __buf
+        mov     [eax], esi              ; save new srch position        
+        jmp     __0
+
+__xx3:	dec	esi
+
+__4:	mov     __p2, esi               ; end pos
+        xor     ecx, ecx
+        
+        std                                     
+        mov     esi, __p1               ; scan backward from the middle 
+        xor     ecx, ecx
+        dec     esi
+                
+__5:    inc     ecx
+        lodsb
+        or      al, al
+        jz      __8
+        
+        cmp     esi, __buf
+        jbe     __6
+                
+; check out for separators
+        cmp     al, 2Dh         ; -     
+        je      __5
+        cmp     al, 2Eh         ; .
+        je      __5
+        cmp     al, 30h
+        jb      __8
+        cmp     al, 39h
+        jbe     __5                     
+        cmp     al, 41h
+        jb      __8             
+        cmp     al, 5Bh
+        jb      __5                     
+        cmp     al, 5Eh
+        jb      __8             
+        cmp     al, 60h                 
+        je      __8             
+        cmp     al, 7Ah
+        jbe     __5                                             
+        
+__6:    or      ecx, ecx
+        jnz     __7     
+        cmp     ecx, __MAX_VALID_LEN
+        jb      __7
+        
+__ret:  mov     eax, __p2
+        inc     eax
+        sub     eax, __buf              ; calc offset
+        mov     ebx, __last_pos
+        mov     [ebx], eax      
+        jmp     __0
+
+__8:    inc     esi
+        inc     esi
+        dec     ecx
+        jmp     __6
+        
+__x8:   dec     esi     
+        jmp     __4
+                
+; p3 = start of the string      
+__7:    mov     eax, esi
+        mov     __p3, eax
+        
+; multidot check for 1st part
+        mov     esi, __p1
+        std
+        dec     esi
+
+__x5:   lodsb
+        cmp     esi, __p3               ; start of buffer ?
+        jbe     __x05
+        cmp     al, '.'                 ; dot ?
+        jnz     __x5                    
+        cmp     byte ptr [esi], '.'     ; another dot near ?
+        jz      __ret			; get da fuck out!
+
+        cmp	word ptr [esi], '@.'
+     	jz	__ret
+        cmp	word ptr [esi], '.@'
+        jz	__ret
+	jmp     __x5
+        
+__x05:  mov     eax, __p2
+        sub     eax, __p3
+        mov     __full_len, eax
+        
+; syntax check. (alpha-begining,dot-start,dot-end fixup,short extension)
+__d9:
+        mov     esi, __p3
+        cld
+
+__9:    lodsb
+        cmp	al, '.'
+        jnz	__d10
+
+	inc	__p3
+        dec	__full_len
+        jmp	__d9
+
+__d10:  cmp     al, 41h                 ; 1a@e.com, .a@e.com are not valid addrs
+        jb      __ret           
+                                        
+        mov     esi, __p2
+        std
+        dec     esi
+        xor     ecx, ecx
+
+; multidot check for 2nd part
+__x9:   lodsb
+        cmp     al, '@'                 ; already @ ?
+        jz      __x09                   ; done testing
+        cmp     al, '.'                 ; dot ?
+        jnz     __x9                    
+        cmp     byte ptr [esi], '.'     ; another dot near ?
+        jz      __ret                   ; get da fuck out!
+        cmp	word ptr [esi], '@.'
+	jz	__ret
+        cmp	word ptr [esi], '.@'
+	jz	__ret
+        jmp     __x9
+
+__x09:  mov     esi, __p2
+        dec     esi     
+
+__x10:  lodsb                           ; pass all non-alpha chars
+        cmp     al, 'A'
+        jae     __10
+        dec     __full_len
+        jmp     __x10
+                        
+__10:   inc     ecx
+        lodsb        
+        cmp     esi, __buf              ; check overflow
+        jz      __exit_none
+        cmp     esi, __p3               ; prevent email-without-a-dot processing
+        jbe     __ret
+        
+        cmp     al, '.'
+        jz      __11
+        cmp     al, '@'                 ; email with more than one '@' ?
+        jz      __ret                   ; dont process
+        jmp     __10
+        
+__11:   cmp     ecx, __MIN_EMAIL_EXT
+        jb      __ret
+        cmp     ecx, __MAX_EMAIL_EXT    ; dont let extension be more that 3 bytes
+        ja      __ret
+		
+        mov     esi, __p3
+        mov     ecx, __full_len
+        call	__is_ascii		; final check
+        or	eax, eax
+        jz	__ret
+
+        lea     edi, __ret_buf
+        cld        
+        rep     movsb                   ; copy entire email        
+        xor     eax, eax
+        stosd                           ; zero-terminated
+        
+__exit: mov     eax, __p2
+        inc     eax
+        mov     ebx, __last_pos
+        sub     eax, __buf
+        mov     [ebx], eax              ; for later use
+        lea	eax, __ret_buf
+        
+__x12:  add     esp, 4*4+__MAX_VALID_LEN
+        mov     [esp+7*4], eax
+        
+__12:   popad
+        ret
+        
+__exit_none:
+        xor     eax, eax
+        jmp     __x12    
+
+__is_ascii:
+        pushfd
+        push	esi
+        push	ecx        
+	cld
+__isascii1:
+        lodsb
+        cmp	al, 2Dh
+        jb	__is_ascii_f
+        cmp	al, 7Ah
+        ja	__is_ascii_f
+        loop	__isascii1
+
+        push	1
+        pop	eax
+        pop	ecx
+        pop	esi
+        popfd
+        ret
+__is_ascii_f:
+	pop	ecx
+        pop	esi
+        popfd
+	xor	eax, eax
+        ret
+
+find_next_email endp
+
+findemail_proc_size     = $-find_next_email
+
+                END     find_next_email
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[FINDEMAIL.ASM]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[TESTFILE]ÄÄÄ
+1. -3402923-403-240923-409234-09234-@@@@@@@
+2. valid@email.com
+3. .not.valid.email@com
+4. yet_not_valid@.email.com
+5. hahaha@hahaah..com.com
+6. valid2@email.com
+7. )Ãyme­*me­*me­*THISISVALIDADDRESS@EMAIL.COM
+8. is.it@valid.address.com
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[TESTFILE]ÄÄÄ
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[MAKE.BAT]ÄÄÄ
+tasm32 -ml findemail.asm
+cl -c -MD -O2 -Og e-ripper.c
+link -ALIGN:0x1000 -SUBSYSTEM:CONSOLE e-ripper.obj findemail.obj
+del *.obj
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ[MAKE.BAT]ÄÄÄ

