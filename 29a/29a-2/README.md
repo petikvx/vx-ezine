@@ -28,49 +28,49 @@ Articles______
 
 
 Win32______	
-PE infection under Win32	MrSandman, Jacky Qwerty & GriYo
-Virus oriented VxD writing tutorial	GriYo
-29A INC files	Jacky Qwerty
-PE Write Section	Jacky Qwerty
-GetProcAddress-alike utility	Jacky Qwerty
-Win32.Cabanas.2999	Jacky Qwerty
-Win32.Jacky.1440	Jacky Qwerty
-Lizard	Reptile
-Win95.Z0MBiE	Z0MBiE
-Gollum	GriYo
-You_got_it	"Q" the Misanthrope
+PE infection under Win32			MrSandman, Jacky Qwerty & GriYo
+Virus oriented VxD writing tutorial		GriYo
+29A INC files					Jacky Qwerty
+PE Write Section				Jacky Qwerty
+GetProcAddress-alike utility			Jacky Qwerty
+Win32.Cabanas.2999				Jacky Qwerty
+Win32.Jacky.1440				Jacky Qwerty
+Lizard						Reptile
+Win95.Z0MBiE					Z0MBiE
+Gollum						GriYo
+You_got_it					"Q" the Misanthrope
 
 
 Viruses______	
-PM.Wanderer disassembled	Tcp
-Dementia.4207 disassembled	Darkman
-SSR.19834 disassembled	Tcp
-Z0MBiE.1922	Z0MBiE
-SpiceGirls.2125 disassembled	Darkman
-NUL-Space	"Q" the Misanthrope
-Paraguay	Int13h
-HmaBoot	"Q" the Misanthrope
-Virus spotlite: Padanian Warrior 1	b0z0/iKx
-Ply.5175 disassembled	Darkman
-ELVIRA virus	Spanska
+PM.Wanderer disassembled			Tcp
+Dementia.4207 disassembled			Darkman
+SSR.19834 disassembled				Tcp
+Z0MBiE.1922					Z0MBiE
+SpiceGirls.2125 disassembled			Darkman
+NUL-Space					"Q" the Misanthrope
+Paraguay					Int13h
+HmaBoot						"Q" the Misanthrope
+Virus spotlite: Padanian Warrior 1		b0z0/iKx
+Ply.5175 disassembled				Darkman
+ELVIRA virus					Spanska
 
 
 29A Viruses______	
-Esperanto	MrSandman
-Tupac Amaru	Wintermute
-SuckSexee (Implant)	GriYo
-Zohra	Wintermute
-Anti-ETA	GriYo
-WordMacro.CAP	Jacky Qwerty
-Orgasmatron	Vecna
-Android	Vecna
-DogPaw.720	Jacky Qwerty
-Carriers	Darkman
-RedCode	Wintermute
-Baby Bug	Tcp
-Prion	Darkman
-Insert v 2.0	Darkman
-Animo	Rajaat
+Esperanto					MrSandman
+Tupac Amaru					Wintermute
+SuckSexee (Implant)				GriYo
+Zohra						Wintermute
+Anti-ETA					GriYo
+WordMacro.CAP					Jacky Qwerty
+Orgasmatron					Vecna
+Android						Vecna
+DogPaw.720					Jacky Qwerty
+Carriers					Darkman
+RedCode						Wintermute
+Baby Bug					Tcp
+Prion						Darkman
+Insert v 2.0					Darkman
+Animo						Rajaat
 ```
 ![1](1.png)
 ![2](2.png)
