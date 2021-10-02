@@ -1,10 +1,10 @@
 
-;                          ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
-;                          ³   Win32/Linux.Winux   ³
-;                          ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
-;                             ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
-;                             ³  by Benny/29A  ³
-;                             ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+;                          ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+;                          Â³   Win32/Linux.Winux   Â³
+;                          Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
+;                             ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+;                             Â³  by Benny/29A  Â³
+;                             Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 ;
 ;
 ;
@@ -28,9 +28,9 @@
 ;had fun and I learned a lot. And that's the most important.
 ;
 ;
-;ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
-;³ Technical details ³
-;ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+;ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+;Â³ Technical details Â³
+;Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 ;
 ;The virus itself ain't much. It's not big, it's not complicated,
 ;it's not resident nor polymorphic.. I wanted to be the virus like
@@ -45,7 +45,7 @@
 ;Win32 part, which can be executed in Win32 environment etc etc etc...).
 ;
 ;Win32 part:
-;ÄÄÄÄÄÄÄÄÄÄÄÄ
+;Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„
 ;
 ;Virus infects PE filez by overwritting .reloc section, so it does not
 ;enlarge host file size. Filez that don't have .reloc section, big
@@ -57,7 +57,7 @@
 ;When all filez are passed and/or infected virus will execute host code.
 ;
 ;Linux part:
-;ÄÄÄÄÄÄÄÄÄÄÄÄ
+;Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„
 ;
 ;Virus infects ELF filez by overwritting host code by viral code. The
 ;original host code is stored at the end of host file. It can infect
@@ -81,17 +81,17 @@
 ;any problemz, don't by shy and send me a bug report ;-P
 ;
 ;
-;ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
-;³ Licence agreement ³
-;ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+;ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+;Â³ Licence agreement Â³
+;Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 ;
 ;This virus is covered by GPL - GNU General Public Licence. All crucial
 ;facts can be found there. Read it before using!
 ;
 ;
-;ÚÄÄÄÄÄÄÄÄÄÄÄÄ¿
-;³ Last notez ³
-;ÀÄÄÄÄÄÄÄÄÄÄÄÄÙ
+;ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+;Â³ Last notez Â³
+;Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 ;
 ;While I was finishing Universe and coding Winux, many personal thingz
 ;happened to me. Again such depressive season as only winter can be
@@ -105,11 +105,11 @@
 ;
 ;
 ;
-;                                                  ÚÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
-;                                                  # Benny / 29A ÀÄ¿
-;                                                  @ benny@post.cz ÀÄÄÄÄÄÄÄÄÄ¿
-;(c) March, 2001                                   @ http://benny29a.cjb.net ³
-;Czech Republic                                    ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+;                                                  ÃšÃ„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+;                                                  # Benny / 29A Ã€Ã„Â¿
+;                                                  @ benny@post.cz Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Â¿
+;(c) March, 2001                                   @ http://benny29a.cjb.net Â³
+;Czech Republic                                    Ã€Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã„Ã™
 
 
 
