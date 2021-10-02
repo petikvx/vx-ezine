@@ -2238,10 +2238,10 @@ naebka_7:               jmp     naebka_9
 kewl_names:             db      'COMMAND??????'
                         db      0
 
-suck_names:             db      'AVP??�ਢ��??'
-                        db      'WEB??�ᥬ????'
-                        db      'DRW??�������'
-                        db      'DSAV?????ࠬ?'
+suck_names:             db      'AVP??¯à¨¢¥â??'
+                        db      'WEB??¢á¥¬????'
+                        db      'DRW??¢¨à¬í©ª¥'
+                        db      'DSAV?????à ¬?'
                         db      'NOD???????EXE'
                         db      'NOD???????00?'
                         db      '??????????AVC'
