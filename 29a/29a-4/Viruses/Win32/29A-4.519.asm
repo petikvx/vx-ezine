@@ -1,9 +1,9 @@
 comment *
-                            Win32.Magic.7045          ‹€€€€€‹ ‹€€€€€‹ ‹€€€€€‹
-                             Disassembly by           €€€ €€€ €€€ €€€ €€€ €€€
-                              Darkman/29A              ‹‹‹€€ﬂ ﬂ€€€€€€ €€€€€€€
-                                                      €€€‹‹‹‹ ‹‹‹‹€€€ €€€ €€€
-                                                      €€€€€€€ €€€€€€ﬂ €€€ €€€
+                            Win32.Magic.7045          √ú√õ√õ√õ√õ√õ√ú √ú√õ√õ√õ√õ√õ√ú √ú√õ√õ√õ√õ√õ√ú
+                             Disassembly by           √õ√õ√õ √õ√õ√õ √õ√õ√õ √õ√õ√õ √õ√õ√õ √õ√õ√õ
+                              Darkman/29A              √ú√ú√ú√õ√õ√ü √ü√õ√õ√õ√õ√õ√õ √õ√õ√õ√õ√õ√õ√õ
+                                                      √õ√õ√õ√ú√ú√ú√ú √ú√ú√ú√ú√õ√õ√õ √õ√õ√õ √õ√õ√õ
+                                                      √õ√õ√õ√õ√õ√õ√õ √õ√õ√õ√õ√õ√õ√ü √õ√õ√õ √õ√õ√õ
 
   Win32.Magic.7045 is a 7045 bytes runtime/direct action EXE virus. Infects
   all files in all directories at drive C:, D:, E: and F:, when executed, by
