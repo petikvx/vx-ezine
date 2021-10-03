@@ -3,8 +3,6 @@
 "And he said, 'Whoever finds the interpretation of these sayings will not experience death.'"
 								    - The Gospel of Thomas
 
-- click me first
-
 ## the tales of the oracle (/articles)
 - editorial
 - thoughts of a sentient computer program, year 2666
