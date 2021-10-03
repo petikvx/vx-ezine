@@ -1,0 +1,232 @@
+Notes: Alternate Data Streams In .NET
+-------------------------------------
+alcopaul/brigada ocho
+june 02, 2011
+
+
+"In a computer file system, a fork is metadata associated with a file system object. Depending on the file system, a 
+file may have one or more associated forks. Unlike an extended attribute, a similar file system feature which is typically 
+limited in size, a fork can be of arbitrary size, possibly even larger than the file's data." - Wikepedia
+
+So one day I got curious about Alternate Data Streams (Microsoft's version of forks) and how to access them via .NET. I 
+searched the internet and found a blogger that posted about it.
+
+"NTFS streams cannot be opened directly with regular .Net file IO classes, they throw a “System.NotSupportedException: The 
+given path’s format is not supported” exception. Here is a C# code sample demonstrating a work-around to the “cannot open 
+NTFS streams in .net (using regular classes)” problem…" - Sandeep Datta (http://sandeepdatta.com/?p=19)
+
+The trick is to create a SafeFileHandle using native api CreateFile, passing to it the full path to the alternate data stream.
+We can then pass the SafeFileHandle to a FileStream then viola, we can now read or write to the alternate data stream. Simple.
+
+--------------------------------------------------------------------------
+using System.Runtime.InteropServices;
+
+...
+
+[DllImport("Kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        static extern SafeFileHandle CreateFile(
+        string fileName,
+        [MarshalAs(UnmanagedType.U4)] FileAccess fileAccess,
+        [MarshalAs(UnmanagedType.U4)] FileShare fileShare,
+        IntPtr securityAttributes,
+        [MarshalAs(UnmanagedType.U4)] FileMode creationDisposition,
+        [MarshalAs(UnmanagedType.U4)] FileAttributes flags,
+        IntPtr template);
+
+...
+
+private static SafeFileHandle streamzhandle(string filename, FileAccess g)
+        {
+            SafeFileHandle handlex = CreateFile(filename
+            , g
+            , FileShare.ReadWrite
+            , IntPtr.Zero
+            , FileMode.OpenOrCreate
+            , FileAttributes.Normal
+            , IntPtr.Zero);
+
+            return handlex;
+
+        }
+--------------------------------------------------------------------------
+
+filename is the full path of the stream (i.e. C:\Documents And Settings\myfile.txt:ggg.exe)
+g is FileAccess type (FileAccess.Read if reading its own contents, FileAccess.ReadWrite if reading or writing to others contents)
+
+Getting Its Fullpath
+====================
+
+So far, we have 2 methods that gets the full path of an executing assembly.
+
+(1)
+string fullpath = System.Reflection.Assembly.GetExecutingAssembly().GetModules()[0].FullyQualifiedName;
+
+(2)
+string fullpath = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+
+What if we have an executable in an alternate data stream? How can it get its full path when it is executing? Which of the
+2 methods presented above will do the trick?
+
+Sadly, method (1) will cause the executable to raise an exception. Luckily, method (2) won't.
+
+So we can use "string fullpath = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;" to get the fullpath
+of the executing file inside an alternate data stream. This is useful if we want to read contents from itself.
+
+Sample Code
+===========
+
+Below is a source code that demonstrates reading and writing to alternate data streams.
+
+1.) First you have to compile this to an executable. "ads.exe"
+2.) Run ads.exe. It will create a data stream within itself "ads.exe:s1.exe"
+3.) Now you can test reading and writing from an alternate data stream by executing "ads.exe:s1.exe"
+4.) In command prompt, type "start [path]\ads.exe:s1.exe" (path is important!!!)
+5.) "ads.exe:s1.exe" will first copy its file to itself (which will raise an exception). 
+    it will then copy its contents to "ads.exe:s2.exe"
+6.) In command prompt, type "start [path]\ads.exe:s2.exe" (path is important!!!)
+7.) "ads.exe:s2.exe" will first copy its file to itself (which will raise an exception). 
+    it will then copy its contents to "ads.exe:s1.exe"
+
+
+================================================================================================
+
+using System;
+using System.IO;
+using Microsoft.Win32.SafeHandles;
+using System.Runtime.InteropServices;
+using System.Diagnostics;
+
+namespace NTFSStreams
+{
+
+    class Program
+    {
+        [DllImport("Kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        static extern SafeFileHandle CreateFile(
+        string fileName,
+        [MarshalAs(UnmanagedType.U4)] FileAccess fileAccess,
+        [MarshalAs(UnmanagedType.U4)] FileShare fileShare,
+        IntPtr securityAttributes,
+        [MarshalAs(UnmanagedType.U4)] FileMode creationDisposition,
+        [MarshalAs(UnmanagedType.U4)] FileAttributes flags,
+        IntPtr template);
+
+        private static byte[] Read(FileStream s, int length, int c)
+        {
+            BinaryReader w33 = new BinaryReader(s);
+            w33.BaseStream.Seek(c, SeekOrigin.Begin);
+            byte[] bytes2 = new byte[length];
+            int numBytesToRead2 = (int)length;
+            int numBytesRead2 = 0;
+            while (numBytesToRead2 > 0)
+            {
+                int n = w33.Read(bytes2, numBytesRead2, numBytesToRead2);
+                if (n == 0)
+                    break;
+                numBytesRead2 += n;
+                numBytesToRead2 -= n;
+            }
+            w33.Close();
+            return bytes2;
+        }
+        private static void WriteX(FileStream s, byte[] g)
+        {
+            BinaryWriter w = new BinaryWriter(s);
+            w.BaseStream.Seek(0, SeekOrigin.Begin);
+            w.Write(g);
+            w.Flush();
+            w.Close();
+        }
+
+        private static SafeFileHandle streamzhandle(string filename, FileAccess g)
+        {
+            SafeFileHandle handlex = CreateFile(filename
+            , g
+            , FileShare.ReadWrite
+            , IntPtr.Zero
+            , FileMode.OpenOrCreate
+            , FileAttributes.Normal
+            , IntPtr.Zero);
+
+            return handlex;
+
+        }
+
+        static void Main(string[] args)
+        { 
+           
+           string curproc = Process.GetCurrentProcess().MainModule.FileName;
+           DriveInfo g = new DriveInfo(Path.GetPathRoot(curproc));
+           if (g.DriveFormat == "NTFS")
+           {
+               FileStream fs54 = new FileStream(streamzhandle(curproc, FileAccess.Read), FileAccess.Read);
+               int iccpx = (int)fs54.Length;
+               byte[] bytes44 = Read(fs54, iccpx, 0);
+               fs54.Close();
+
+
+
+               // check if executing inside streams
+
+               string readfromfile = "";
+               int count = curproc.Split(':').Length - 1;
+               if (count == 2)
+               {
+                   Console.WriteLine("We're in a stream");
+
+                   //try to overwrite itself
+                   try
+                   {
+                       FileStream fs1 = new FileStream(streamzhandle(curproc, FileAccess.ReadWrite), FileAccess.ReadWrite);
+                       WriteX(fs1, bytes44);
+                       fs1.Close();
+                       readfromfile = curproc;
+                   }
+                   catch
+                   {
+
+                       Console.WriteLine("Error writing in current stream. Writing in another stream");
+                       if (curproc.IndexOf('1') != -1)
+                       {
+                           curproc = curproc.Replace('1', '2'); // alternate stream
+                       }
+                       else if (curproc.IndexOf('2') != -1)
+                       {
+                           curproc = curproc.Replace('2', '1');
+
+                       }
+                       FileStream fs1 = new FileStream(streamzhandle(curproc, FileAccess.ReadWrite), FileAccess.ReadWrite);
+                       WriteX(fs1, bytes44);
+                       fs1.Close();
+                       Console.WriteLine("Self written in : " + curproc);
+                       readfromfile = curproc;
+                   }
+               }
+               else
+               {
+                   string newfilestream = curproc + ":s1.exe";
+                   FileStream fs1 = new FileStream(streamzhandle(newfilestream, FileAccess.ReadWrite), FileAccess.ReadWrite);
+                   WriteX(fs1, bytes44);
+                   fs1.Close();
+                   readfromfile = newfilestream;
+               }
+               using (FileStream stream = new FileStream(streamzhandle(readfromfile, FileAccess.Read), FileAccess.Read))
+               {
+                   Console.WriteLine("Read from " + readfromfile);
+               }
+
+               Console.ReadKey();
+           }
+        }
+    }
+}
+
+=======================================================================================================
+
+
+Executing Executables In Alternate Data Stream
+----------------------------------------------
+
+1.) in the command prompt, type "start [path]\file.txt:ggg.exe"
+2.) Or in .NET, System.Diagnostics.Process.Start("[path]\file.txt:ggg.exe");
+
