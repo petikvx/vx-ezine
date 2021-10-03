@@ -1,0 +1,288 @@
+
+
+---( assynchronous IO by mort[MATRiX] )-------------------------------------
+
+ This article is for educational purpose only and  I AM  NOT  responsibille
+ for anything nor my english, nor myself,...anyway, enjoy it...
+
+
+---( forewords )------------------------------------------------------------
+ 
+ Well,  u might know there two types of IO operations - the synchronous and
+ the asynchronous one.  Using synchronous IO functions u'll wait  until the
+ IO is done. Despite the asynchronous  IO function allows u to send request
+ of IO operation to the system and then immediatelly continue in code.  The
+ point  of  good  code  is  the  solution of  way  the system  say  us that 
+ asynchronous IO is completed.
+
+
+---( assynchronous IO request )---------------------------------------------
+
+ The first point u must do  to use asynchronous  IO with any kind of device
+ is open  it  via CreateFile  with  FILE_FLAG_OVERLAPPED in flags parameter
+ possition. Having this we can use ReadFile and WriteFile API.
+
+ | push pointer to OVERLAPPED structure
+ | push pointer to number of read bytes
+ | push number of bytes to read
+ | push pointer to read buffer
+ | push handle of device to read from
+ | call ReadFile 
+  \\\\\\\\\\\\\\\
+  
+ | push pointer to OVERLAPPED structure
+ | push pointer to number of written bytes
+ | push number of bytes to write
+ | push pointer to write buffer
+ | push handle of device to write to
+ | call WriteFile
+  \\\\\\\\\\\\\\\
+
+  OVERLAPPED structure - this struc is use only for asynchronous IO
+ 
+  overlapped struc
+          _internal           dd ?
+          _internalHigh       dd ?
+          _offset             dd ?
+          _offsetHigh         dd ?
+          _eventHandle        dd ?
+  overlapped ends
+  _ol     overlapped <>
+
+ Before calling  some IO API some parts of  this struc must be initialized.
+ Working  with file we must init _offset  and _offsetHigh which gives 64bit
+ pointer of file possition. We must set _eventHandle to NULL or handle (see
+ next in article).
+
+ pointer to number of written bytes  -  contains number of read or  written
+                                        bytes
+ 
+ I think next parameters are clear,...
+
+
+---( asynchronous system's strikeback )-------------------------------------
+
+ After asynchronous IO request we are doing anything we want.  Anyway after
+ time we will probably need the  results of IO.  This could be done by four
+ ways:
+   
+  - kernell device object signalization
+  - interruptable IO
+  - event signalization
+
+ I  said there  are four and mentioned three,...:)))  Well, the last one is
+ called 'completion ports'. It's a way thats typical for servers, so i wont
+ waste the space with it...using J.R.Cimrman's words:
+ 
+ "You can talk about, you can disagree, but thats all you can do..."
+ 
+ 
+ _
+ |here we go,...
+ '------------------.
+    ________________|____________________
+   | kernell device object signalization |--.
+    \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\  |
+                                            |
+.-------------------------------------------'------------------------------.
+|Each device handle is supposed by  system to be a synchronization  object.|
+ Calling  the  ReadFile  or  WriteFile  API  the  device  handle  is set to 
+ unsignalized state.  After asynchronous  IO  is done  the device handle is 
+ set to signalized. So knowing this we can wait for end of IO with 
+ WaitForSingleObject or WaitForMultipleObject.
+
+  push timeout
+| push handle to wait for
+| call WaitForSingleObject
+ \\\\\\\\\\\\\\\\\\\\\\\\\\
+
+ timeout - time that function wait to signalization
+ 
+  push timeout
+  push boolean - wait for all is done
+| push pointer to field of handles
+| push count of checking objects - max 64
+| call WaitForMultipleObjects
+ \\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+ boolean - setting to TRUE(1) the func will wait fo all handles, else(0)
+           function will return after one handle signalization
+
+ returns of this APis:
+ 
+  WAIT_OBJECT_0  = 0     - we're all waiting for,...object was signalized
+                         - using XMultipleX API with setting to wait for 
+                           one object, we obtain index of this handle
+  WAIT_TIMEOUT   = 0102h - timeout is done,...object wasnt signalized
+  WAIT_FAILED    = -1    - we failed,...use GetLastError to check
+  
+  
+ After passing trought the one of this  func we know that IO was completed,
+ anyway we dont  know its result.  To check it there's  GetOverlappedResult
+ API.
+
+  push boolean - wait
+| push pointer to dword - retrieves the transfer bytes
+| push pointer to evrlapped struc of IO we want to check
+| push handle
+| call GetOverlappedResult
+ \\\\\\\\\\\\\\\\\\\\\\\\\\
+
+ boolean - wait - if TRUE(1) then function will  wait until asynchronous IO
+                  is done,  else it'll  return imediatelly,  so we  can use 
+                  this  API instead of  WaitFor'x'Objects  APIs to wait for 
+                  signalization
+                  
+ returns - we obtain boolean value -> we must call GetLastError to check
+|          the result of operation                                         |
+'----------.---------------------------------------------------------------'
+ .---------'
+ |  ____________________
+ '-|  interruptable IO  |---.
+    \\\\\\\\\\\\\\\\\\\\\   |
+                            |
+.---------------------------'----------------------------------------------.
+| To explain interruptable  IO way u must  know that there exist APC qeue. |
+  APC  stands for asynchronous  procedure call.  APC is  created for  each 
+  thread. We can request for asyn. IO and its results save to APC. To make
+  this we must use ReadFileEx or  WriteFileEx API.  The funcs have  nearly
+  the same parameters like  the without -Ex ones.  The main change is, you
+  must  specify the  callback function.  The callback function  is call if
+  there's  some item in  APC and  if the thread  is in interrupable state.
+  Well, to many informations in small place,...i'll go step by step.
+
+  So, i mentioned ReadFileEx and WriteFileEx API. Here's the description.
+
+  push pointer to callback function
+| push pointer to OVERLAPPED structure
+| push number of bytes to read
+| push pointer to read buffer
+| push handle of device to read from
+| call ReadFileEx
+ \\\\\\\\\\\\\\\\\
+ 
+| push pointer to callback function
+| push pointer to OVERLAPPED structure
+| push number of bytes to write
+| push pointer to write buffer
+| push handle of device to write to
+| call WriteFileEx
+ \\\\\\\\\\\\\\\\\\
+
+  The callback function prototyp definition (definition from MSDN).
+
+  VOID WINAPI FileIOCompletionRoutine(DWORD fdwError,
+              DWORD cbTransfered,LPOVERLAPPED lpo);
+
+  I thing parameters are clear,...heh
+
+
+  And know the interruptable state. Thread is in interruptable state if it
+| calls some of this five API:
+'--------------------.-------
+                     |
+                   .-'--------------------------.
+                   |WaitForSingleObjectEx       |
+                    WaitForMultipleObjectEx
+                    SleepEx
+                    SignalObjectAndWait
+                   |MsgWaitForMultipleObjectEx  |
+                   '---------------------.------'
+                                         |
+                                         '---------------------------------.
+  (see the prototyps at the end of this part of article)                   |
+                                                                           |
+  Last parameter of the first  four API is boolean  value which set if the |
+  'sleeping of thread'  is interruptable (TRUE means yes,...:)))).  In the
+  last API u must set the flags to MWMO_ALERTABLE.
+
+  So final words for this part.  You request for asynchr. IO by ReadFileEx
+  or WriteFileEx,  then u are doing some other stuff.  When u want results
+  of IO, u must call some API to set the thread to interruptable state and
+  if there's an item of completed IO in APC, the callback function will be
+  called. Thats all,...
+
+  protootyps i promissed...
+ //////////////////////////
+| push boolean - interruptable
+| push timeout
+| push handle of object to wait on
+  call WaitForSingleObjectEx
+.---------------------------------------------------
+| push boolean - interruptable
+| push timeout
+| push boolean - wait for all
+| push pointer to array of objects' handles
+| push count of objects to wait on
+  call WaitForMultipleObjectEx
+.-------------------------------------------------------------
+| push boolean - interruptable
+  push timeout
+  call SleepEx
+.--------------------------------------
+| push boolean - interruptable
+| push timeout
+| push handle of object to wait on
+  push handle of objecct to signal  
+  call SignalObjectAndWait
+.-------------------------------------------------------------------
+| push flags
+| push wake mask
+| push timeout
+| push pointer to handles to waint on
+  push count to wait on
+  call MsgWaitForMultipleObjectEx                                           
+
+  
+  [appendix]-.
+.------------|-------------------------------------------------------------.
+  There's one  more function  which deal on this topic.  It's QueueUserAPC |
+  API.  It allows  set new  record to APC.  The function has  the folowing 
+  prototyp:
+
+  push data
+  push handle of thread to set the APC record to
+  push pointer to callback function
+  call QueueUserAPC
+  \\\\\\\\\\\\\\\\\\
+  
+  The callback function has the folowing prototyp(copy from MSDN):
+  
+  VOID WINAPI APCFunc(DWORD dwParam)
+
+  The  parameter  of thread handle  can points to  thread in other process
+  than the  calling one.  The  last  parameter of  QueueUserAPC is send to
+  callback function  parameter. So, maybe  this function could be used for
+| some IPC, anyway, u can use only one 32bit parameter fot it,...          |
+'----------------------------.---------------------------------------------'
+                             |
+    _______________________  |
+.--|  event signalization  |-'
+|   \\\\\\\\\\\\\\\\\\\\\\\\
+|
+'--------------------------------------------------------------------------.
+  To understand the event signalization u need to be familiar with events. |
+  If u are not, u wont probably understand next words.  Anyway, it's up to
+  you.  Well,  if you look to the overlapped  structure you will see dword
+  called _eventHandle.  Surprise,  u can fill it with handle of event. So,
+  you fill this field with  handle of  event and then request for asynchr.
+  IO.  Then if u wanna results  of your IO operation, u simply wait for it
+  by some waiting  function (eg. WaitForSingleObject,...).  This and other
+  needed funcs  are decribed  somewhere here  in article, so i  wont waste
+| the space. Well, last words: enjoy the event signalization :).           |
+'----.---------------------------------------------------------------------'
+     |                                          _____
+     '-----------------------------------------| end |::OnOK();
+                                                \\\\\\
+                                                          
+                                     Fell free to contact with any comments.
+
+   .
+   |\
+   | |.--.   -|-.
+   | ||  |.--|| |
+   |  \  m o r|t .
+ .-'-----'\._''--'-.
+ '--[MATRiX]-------'
+ [mort@matrixvx.org]
+  \\\\\\\\\\\\\\\\\\

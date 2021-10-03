@@ -1,0 +1,496 @@
+
+
+---( synchronization by mort[MATRiX] )-------------------------------------
+
+ This article is for educational purpose only and  I AM NOT responsibille
+ for anything nor my english, nor myself,...anyway, enjoy it...
+
+
+---( forewords )-----------------------------------------------------------
+
+ If you work with more threads or  processes and using some  kind of IPC,
+ you will need some kind  of  synchronization of theeses features to work
+ together  properlly.  To  synchronize  we  can use  the folowing list of
+ features:
+
+    - critical section
+    - kernell objects like
+         - events
+         - mutexes
+         - semaphores
+         - waitable timers
+
+ Critical  section  isnt kernell  object as u can see.  It  cannot be use
+ in process synchronization,  it can  be  use  only for threads synchron.
+ in one process.
+
+
+---( some theory )---------------------------------------------------------
+
+ Well, some thery,... hummm,... i don't wanna write some hard theoretical
+ stuff, but i think  it's good to say some things  before practical text.
+ Anyway, u are assumed to be familiar with terms like process and threads
+ and have some idea about IPC.
+ 
+ We synchronize  mostly because of  resources access and some other stuff
+ like   access  to  not-reentrance  code.  If  one   thread is  going  to
+ synchronize with another  it says to Operating System (OS) that it wants
+ access  to resource,  code or whatever.  OS make this thread sleep until
+ some another thread, which has required resource says OS,  that resource
+ is free for other threads.  In this moment  the waiting thread is let in
+ the  'critical section' (CS). Of course,  if the resource is free in the
+ moment of query, thread will get the access immediatelly.
+ 
+ 
+ note: I use words: 'OS make this thread sleep',.. that means that thread
+       wont get any of system time during its waiting for resource.  It's
+       opposite of such called 'busy waiting', when thread wait, but pump
+       from system's time. See the code:
+          
+        _CSflag         dd 012345678h       
+          ...
+        @nextCheck:
+            mov eax,012345678h           ;load some nonzero value
+            xchg eax,dword ptr [_CSflag] ;change it with flag value
+            or eax,eax                   ;check if CS is abanonded
+            jnz @nextSection             ;nope,...spare next OS time
+          
+        ;start of critical section
+          
+            xor eax,eax                  ;by leaving CS set flag to zero
+            mov dword ptr [_CSflag],eax
+        ;end of critical section
+            ...
+       One  thread  is  in waiting loop,  while another  (only one) is in
+       critical section. The mutual exclusion is ensured by xchg instr.
+ 
+ 
+ CS could be part of program that works with some uniques resource and if
+ more  then one thread work with it in the same time, it could failed. So
+ this part of code is 'critical' and threads  working with  it must be in
+ 'mutual exclusion' by working with this CS. By using IPC in virris there
+ is need of synchronizing every infected process.
+ 
+ Imagine that  we have  two threads in each  infected  process.  First is
+ searching  HDD for  files to infect and the second infect them.  We have
+ shared  memory area where  the  'searching'  thread  stores  its founded 
+ filename  and  the  'infecting' thread  loads the filename from.  In any
+ time  of 'infected system' we have  any number of this threads.  We must
+ ensure  that just only  one 'searching' thread  will  write  into shared
+ memory and that just only one  'infecting' thread will load the name and 
+ infect file.  Then we  must ensure  that  other 'searching' threads will
+ wait until 'infecting' thread  loads the filename  and  that 'infecting'
+ threads will wait until some new filename is stored in memory.
+ 
+ Windows is preemptive multitasking system, which means running processes
+ are switched  whenever  system says.  Knowing this we can never know how 
+ quick  the  processes are.  Writing  synchronization code  we  can never 
+ assume some speed of threads.
+ 
+ I  wont show here some typical tasks like 'writers and readers' problem.
+ If you wanna  see examples like  that, search some clever books or check
+ viriis using IPC, there're many. I'll show tools offered by  windows for
+ synchronization.
+ 
+
+---( critical sections )---------------------------------------------------
+
+ As  i said, critical section isnt  kernell object and  cannot by use for
+ process synchronization.  Look  above to busy-waiting code.  I will show
+ same code using critical section.
+ 
+ .------------------------------------------------------
+ |Before using critical section we must create it using:
+ |
+ |push pointer to CRITICAL_SECCTION structure
+ |call InitializeCriticalSection
+  \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+  returns : nothing
+  
+ .-----------------------------------------------
+ |If u are using multiprocessor system u can use:
+ |
+ |push spin count
+ |push pointer to CRITICAL_SECCTION structure
+ |call InitializeCriticalSectionAndSpinCount
+  \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+ 
+  returns : nothing
+ 
+  CRITICAL_SECCTION  struc
+          DebugInfo           dd ?
+          LockCount           dd ?
+          RecursionCount      dd ?
+          OwningThread        dd ?
+          LockSemaphore       dd ?
+          SpinCount           dd ?
+  CRITICAL_SECCTION  ends
+
+ So, our critical section is initialized and we can go to use it.
+ 
+          shared code
+          ...
+          push pointer to CRITICAL_SECCTION structure
+          call EnterCriticalSection
+          ;start of critical section
+          ...          
+          ;here can be only one thread
+          ;..
+          push pointer to CRITICAL_SECCTION structure
+          call LeaveCriticalSection
+          ;end of critical section
+          ...
+          
+ This code differ from the above one only in waiting. If there's a thread
+ in a critical section and another wanna enter,  OS makes it sleep,... no
+ busy-waiting.                                      
+ 
+ .---------------------------------------------------------------------
+ |If there's no more need of critical section we destroy it by calling:
+ |
+ |push pointer to CRITICAL_SECCTION structure
+ |call DeleteCriticalSection 
+  \\\\\\\\\\\\\\\\\\\\\\\\\\\
+  
+  returns : nothing
+  
+ There also exist a way to aply for enter into CS but if it's not free at
+ the time our thread wont be made sleep. Use:
+ 
+ |push pointer to CRITICAL_SECCTION structure
+ |call TryEnterCriticalSection 
+  \\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+  
+  returns : if enter CS is succed return value is nonzero
+  
+ Last  API  dealed  with  CS  is  SetCriticalSectionSpinCount.  If u have
+ multiprocessor system go ahead and study that. I havent - I dont care :)
+ 
+ I thing that for critical sections is this text more than enought.
+
+ 
+---( synchronization kernell objects )-------------------------------------
+
+ All kernell objects are supposed to be a synchronizations objects.  That
+ means  that they  can be  either in signalized or in unsignalized state.
+ Object is  unsignalized if it's in use.  Any thread  demanding  acces to
+ such  object  must  wait until object is signalized ( eg.  Processes and
+ threads are signalized when finish its work.).  All kernell  objects are
+ accessed  by handle  wich u get  as a result of some CreateXOBJECTX API.
+
+ .-----------------------------------------------------------
+ |To make thread sleep and wait for object signalization use:
+ |
+ |push timeout
+ |push handle of watching object
+ |call WaitForSingleObject
+  \\\\\\\\\\\\\\\\\\\\\\\\\
+ .---'
+ |push timeout
+ |push boolean - wait for all
+ |push pointer to array of watching handles
+ |push number of objects to wait for
+ |call WaitForMultipleObjects
+  \\\\\\\\\\\\\\\\\\\\\\\\\\\\
+  
+  boolean - setting to TRUE(1) the func will wait for all handles, 
+            else(0) function will return after one handle signalization
+
+  timeout - time in ms, func wait this time for signalization
+  
+  returns of this APis:
+ 
+  WAIT_OBJECT_0  = 0     - we're all waiting for,...object was signalized
+                         - using XMultipleX API with setting to wait for 
+                           one object, we obtain index of this handle
+  WAIT_ABANDONED = 080h  - see in mutex part of article
+  WAIT_TIMEOUT   = 0102h - timeout is done,...object wasnt signalized
+  WAIT_FAILED    = -1    - we failed,...use GetLastError to check
+  
+  
+  Now, u know the way to wait for object. Let's go to see synch. objects.
+  
+
+---( events )--------------------------------------------------------------
+
+ Event  is  simple kernell  object with no special condition to switch to
+ signalizated state.  Imagine  one process wait  with  some WaitX API for
+ event. Any other process  can switch event by calling SetEvent API.  But
+ lets go step by step...
+ 
+ .------------------------------
+ |We can create event by calling
+ |
+ |push pointer to event's name
+ |push boolean - initial state
+ |push boolean - event mode
+ |push pointer to security attributes
+ |call CreateEvent(A/W)
+  \\\\\\\\\\\\\\\\\\\\\\
+  
+  initial state - event will be created in signalizated state(1)
+                  or unsignalizated(0)
+  
+  event mode - event can be either auto-reset (after some WaitX func.
+               is done, event will be switched to unsignalizated state)
+               or manual-reset (we must unsignalizate event by ourself)
+
+               auto reset   = 0
+               manual reset = 1
+
+  security attributes - i explained this stuff in another article,...
+  
+ If one  process  creates  event the other can access the same event with
+ the event's name by calling:
+  
+ |push pointer to events name
+ |push boolean - inherit
+ |push access
+ |call OpenEvent(A/W)
+  \\\\\\\\\\\\\\\\\\\\
+  
+  inherit - if set to TRUE(1) handle of event is inheritable by other
+            created processes
+  access :
+  EVENT_ALL_ACCESS   = 01f0003h  - u have full access to event
+  EVENT_MODIFY_STATE = 2         - u can use only SetEvent and 
+                                   ResetEvent funcs 
+  SYNCHRONIZE        = 0100000h  - Windows NT: u can use only WaitX funcs
+
+  returns: Both CreateEvent and OpenEvent returns handle of event.
+
+
+ There're three APIs to work with event-set.
+ .-----------------------------------
+ |To set event to signalizated state:
+ |
+ |push handle of event
+ |call SetEvent
+  \\\\\\\\\\\\\\
+ .-------------------------------------
+ |To set event to unsignalizated state:
+ |
+ |push handle of event
+ |call ResetEvent
+  \\\\\\\\\\\\\\\\
+ .--------------------
+ |push handle of event
+ |call PulseEvent
+ | 
+ |This  funcs sets event,  wake up the waiting  thread and then reset the
+ |event.  If  used on  manual-reset  event  all waiting  threads  will be 
+ |awaked, but ff used on auto-reset event only one waiting thread will be
+ |awaked.
+  \\\\\\\
+  
+  All this funcs return TRUE(1) if succed.
+
+
+---( mutexes )-------------------------------------------------------------
+  
+  Mutex's  name  means 'mutual exclusion'. It is one of easy-useable very
+  helpfull synchronization object. It's similar to critical sections, but
+  it can be used for process synchronization.
+ .-------------------------------
+ |We can create mutex by calling:
+ |
+ |push pointer to mutex name
+ |push boolean - initialization
+ |push pointer to SECURITY_ATTRIBUTES
+ |call CreateMutex(A/W)
+  \\\\\\\\\\\\\\\\\\\\\\
+  
+  initialization - if TRUE(1) then mutex is created unsignalizated
+                   else mutex is avaiable for anyone
+                    
+  An existing mutex we can open by:
+ .--------------------------
+ |push pointer to mutex name
+ |push boolean - inherit
+ |push access  
+ |call OpenMutex(A/W)  
+  \\\\\\\\\\\\\\\\\\\\
+
+  inherit - if set to TRUE(1) handle of event is inheritable by other
+            created processes
+  access : 
+  
+  MUTEX_ALL_ACCESS  =  01f0001h  full access for the mutex
+  SYNCHRONIZE       =  0100000h  Windows NT: u can use only WaitX funcs
+                                 and the ReleaseMutex func(later)
+
+  returns - both this APIs return handle of mutex if succed
+
+ Well, assume your thread created a mutex and owns it. Other threads wait
+ for mutex by some WaitX func. If there's no need of your mutex using you
+ release it by calling ReleaseMutex  -> one waiting thread will be awaked
+ and mutex will  again switch  to  unsignalizated state. The owner is the
+ awakned thread now. U can release only mutex that u own.
+  
+ |push handle of mutex
+ |call ReleaseMutex
+  \\\\\\\\\\\\\\\\\\
+ 
+  returns : if succed the return value is nonzero
+  
+ It  could  happen that some thread doesnt release mutex and finish work.
+ Such mutex is abandoned and system after some time check it and release.
+ All for mutexes.
+ 
+
+---( semaphores )----------------------------------------------------------
+
+ Semaphore is very powerfull synchronization object.  It is said that you
+ can  synchronize  whatever you  want  via semaphores.  Same like  mutex,
+ semaphore  watch the entry to CS,  but the diference is,  that there can
+ be  more then  one thread in CS together.  Semaphores  could  be use for
+ resource of limited quantity.
+ 
+ .-----------------------------------
+ |We can create semaphore by calling:
+ |
+ |push pointer to semaphore name
+ |push maximum count
+ |push initial count
+ |push pointer to SECURITY_ATTRIBUTES
+ |call CreateSemaphore(A/W)
+  \\\\\\\\\\\\\\\\\\\\\\\\\\
+ 
+ maximum count - number of maximum threads inside CS
+ initial count - initial number of threads inside CS
+ 
+ Each time the CS is entered via semaphore,  windows decrement the number
+ of 'free resource'  - decrement the number of possible accesses into CS.
+ If the semaphore counter is zero,  the  CS entry  is locked  and  coming
+ thread is make sleep.
+
+ .--------------------------------------------=
+ |Sure, there's API to open existing semaphore:
+ |
+ |push pointer to semaphore name
+ |push boolean - inherit
+ |push access
+ |call OpenSemaphore(A/W)
+  \\\\\\\\\\\\\\\\\\\\\\\
+
+  inherit - if set to TRUE(1) handle of event is inheritable by other
+            created processes
+  access :
+  SEMAPHORE_ALL_ACCESS   = 01f0003h  - full acces to semaphore
+  SEMAPHORE_MODIFY_STATE = 2         - enable the use of ReleaseSemaphore
+  SYNCHRONIZE            = 0100000h  - allows use of WaitX funcs
+  
+  returns - both this APIs return handle of semaphore if succed
+  
+ If there's  no need of using resource locked by watched by semaphore use
+ ReleaseSemaphore API to increment the count of semaphore access.
+  
+ |push pointer to dword - obtain thw previos count of semaphore
+ |push number to increment the semaphore count
+ |push handle of semaphore
+ |call ReleaseSemaphore
+  \\\\\\\\\\\\\\\\\\\\\\
+ 
+ Semaphore  is  in signalized state  if  there's  non-zero  number in its
+ counter,  otherwise it's set to unsignalized state and comming thread is
+ make sleep, as i mentioned,...All for semaphores...
+
+  
+---( waitable timers )-----------------------------------------------------
+
+ Waitable timers are implemented from windows from win NT 4.  Till now we
+ had object,  which we  had to  switched  to  signalizated state manually
+ (mostly:)). Waitable timer is object  which signalized itself after some
+ time. Here we go,...
+ 
+ .-------------------------------
+ |To create a waitable timer use:
+ |
+ |push pointer to name
+ |push boolean - auto/manual-reset
+ |push pointer to SECURITY_ATTRIBUTES
+ |call CreateWaitableTimer(A/W)
+  \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+ 
+  auto/manual-reset  - same meaning like in events
+  
+ .------------------------------------
+ |We can open existing waitable timer:
+ |
+ |push pointer to name
+ |push boolean - inherit
+ |push access
+ |call OpenWaitableTimer(A/W)
+  \\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+  inherit - if set to TRUE(1) handle of event is inheritable by other
+            created processes
+
+  access :
+  TIMER_ALL_ACCESS   = 01f0002h  - full access
+  SYNCHRONIZE        = 0100000h  - allows use of WaitX funcs
+  TIMER_MODIFY_STATE = 2         - acces to SetWaitableTimer
+                                   and CancelWaitableTimer     
+
+  returns :  both API return handle of waitable timer, if succed
+
+ So, we created or opened a waitable timer and now,  it's time to set it.
+
+ |push boolean - resume
+ |push pointer to argument for completion routine
+ |push pointer to completion routine
+ |push period
+ |push pointer to start time
+ |push handle of waitable timer
+ |call SetWaitAbleTimer
+  \\\\\\\\\\\\\\\\\\\\\\
+
+  pointer to start time - u need to  specify when the timer  will 'click'
+                                  for the first time. The date must be in
+                                                    LARGE_INTEGER format.
+                                                    
+  period - sets the  period  of 'click' after initial 'click' in nanosec.
+  
+  pointer to completion routine - u can set,  that  in the 'click' system
+                                  put  new item to APC queue.  This param
+                                  is pointer  to that routine.  The rout.
+                                  has the folowing prototyp:
+
+    void APCRoutine(LPVOID argToCompletionRoutine,DWORD dwTimerLowValue,
+                    DWORD dwTimerHighValue);
+
+  resume - if u run waitable timer on removeable comp. and set this
+           param to TRUE(1) it will awaked from sleep mode if is in,..:)
+           
+ .--------------------------------------------------------------------
+ |The last API,...we can cancel the settings of any waitable timer by:
+ |
+ |push handle of waitable timer
+ |call CancelWaitableTimer
+  \\\\\\\\\\\\\\\\\\\\\\\\\
+
+ All for waitable timers,...
+
+---( closing )-------------------------------------------------------------
+
+ I think  that most of new viruses will use some kind of IPC,  that means
+ they will have to use some kind of synchronization. This article is only
+ some  overview  what windows  offers  to  synchronization,  anyway  pure
+ synchronization is very comprehensive  and cannot be described in one or
+ two articles,...lets go and synchronize,...:)) U can check my ls and aiD
+ virii  for  some  synchronization code,... Please fell free to write any 
+ comments.
+
+
+                                                  mort[MATRiX]
+   .
+   |\
+   | |.--.   -|-.
+   | ||  |.--|| |
+   |  \  m o r|t .
+ .-'-----'\._''--'-.
+ '--[MATRiX]-------'
+ [mort@matrixvx.org]
+  \\\\\\\\\\\\\\\\\\
+  

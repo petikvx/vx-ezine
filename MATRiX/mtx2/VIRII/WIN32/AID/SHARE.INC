@@ -1,0 +1,19 @@
+;aiD (s/c) include file
+
+_msMessSize         = 0600    ;mailslot message size
+_aiDsSize           = 02000h  ;size of server file
+_fmSize             = 04000h  ;size of shared file
+_dirAdd             = 0320
+_oldBnum            = 05h    ;size of old bytes
+_vSize              = 2000h
+_vSize0200h         = 01600h
+_vSize01000h        = 02000h
+
+;share file relatives
+          _clientSize         = 0
+          _wholeSize          = 4
+          _aiDsAdd1           = 8
+          _aiDsAdd2           = 0ch
+          _clientStart        = 10h
+          _oldBadd            = 11
+          _retAdd             = 1

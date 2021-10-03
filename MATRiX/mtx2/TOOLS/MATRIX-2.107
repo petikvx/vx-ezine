@@ -1,0 +1,450 @@
+'Huffman Compression/Decompression Engine
+'Version 1.01 beta
+'
+'ULTRAS [MATRiX]
+' (c) may 2000
+'
+' Thanx Deviator[HAZARD] and ANAkTOS[MATRiX]
+' tnx VENGR to correct my vb coding
+'
+' url: www.matrixvx.org
+' e-mail: ultras@matrixvx.org
+
+Event fprogress(sngPercentage As Single)
+Private Type typHuffTree
+lngParent As Integer
+lngRight As Integer
+lngLeft As Integer
+End Type
+
+Private mintInputFile As Integer
+Private mintOutputFile As Integer
+Private mtypHuffTree(511) As typHuffTree
+Private mintRoot As Integer
+Private mlngFileLength As Long
+Private mintBitCount As Integer
+Private mbytByte As Byte
+Private m_strInputFileName As String
+Private m_strOutputFileName As String
+Const mcintBufferSize As Integer = &H7FFF
+
+Public Property Get InputFileName() As String
+'ret:the input file name
+InputFileName = m_strInputFileName
+End Property
+
+Public Property Let InputFileName(ByVal strValue As String)
+'strValue:set the input file name
+m_strInputFileName = strValue
+End Property
+
+Public Property Get OutputFileName() As String
+'ret:the output file name
+OutputFileName = m_strOutputFileName
+End Property
+
+Public Property Let OutputFileName(ByVal strValue As String)
+' strValue:set the output file name
+m_strOutputFileName = strValue
+End Property
+
+'***********************************************************
+'This procedure compresses the input file to the output file
+'***********************************************************
+
+Public Sub Compress()
+Dim lngTotalBytesRead As Long
+Dim lngBytesRead As Long
+Dim lngCounter As Long
+Dim abytBuffer() As Byte
+On Error GoTo Exitz
+mintInputFile = FreeFile
+'open the input file
+Open m_strInputFileName For Binary Access Read As mintInputFile
+'try to delete the output file. If it doesn't exist an error is raised
+On Error Resume Next
+Kill m_strOutputFileName
+On Error GoTo Exitz
+'get the next free file id
+mintOutputFile = FreeFile
+'open the output file
+Open m_strOutputFileName For Binary As mintOutputFile
+'get the length of the input file
+mlngFileLength = LOF(mintInputFile)
+'build the Huffman tree
+BuildTree
+'reset the write variables
+mbytByte = 0
+mintBitCount = 0
+'reset reads to the beginning of the file
+Seek mintInputFile, 1
+'raise the progress event, none of the file
+'has been processed, so we pass zero
+RaiseEvent fprogress(0.5)
+'read data from the file
+lngBytesRead = ReadFile(mintInputFile, abytBuffer, mcintBufferSize)
+'while there is still data in the file
+Do While lngBytesRead > 0
+'for each byte read
+For lngCounter = 0 To lngBytesRead - 1
+'compress byte
+CompressByte abytBuffer(lngCounter)
+Next lngCounter
+' get the total amount of the file that has been processed
+lngTotalBytesRead = lngTotalBytesRead + lngBytesRead
+'raise the progress event, passing the percentage of the file processed
+RaiseEvent fprogress((mlngFileLength + lngTotalBytesRead) / (mlngFileLength * 2))
+'Read data from the file
+lngBytesRead = ReadFile(mintInputFile, abytBuffer, mcintBufferSize)
+Loop
+WriteFinish
+'indicate that we have finished processing the file
+RaiseEvent fprogress(1)
+'close all filez
+Close mintOutputFile
+Close mintInputFile
+U_ext:
+Exit Sub
+Exitz:
+MsgBox "Error: Compress", vbCritical, "Huffman"
+Resume U_ext
+End Sub
+
+'*************************************************************
+'This procedure decompresses the input file to the output file
+'*************************************************************
+Public Sub Decompress()
+Dim bytByte As Byte
+Dim lngCounter As Long
+Dim intCurrentNode As Integer
+Dim bytBit As Byte
+On Error GoTo Exitz
+' Get the next free file id
+mintInputFile = FreeFile
+' Open the input file
+Open m_strInputFileName For Binary Access Read As mintInputFile
+' Try to delete the output file. If it doesn't exist an error is raised
+On Error Resume Next
+Kill m_strOutputFileName
+On Error GoTo Exitz
+' Get the next free file id
+mintOutputFile = FreeFile
+' Open the output file
+Open m_strOutputFileName For Binary As mintOutputFile
+'Get the file header
+Get #mintInputFile, , mintRoot
+Get #mintInputFile, , mtypHuffTree
+Get #mintInputFile, , mlngFileLength
+'Reset the write variables
+mbytByte = 0
+mintBitCount = 8
+' For each byte in the output file
+For lngCounter = 1 To mlngFileLength
+intCurrentNode = mintRoot
+Do While mtypHuffTree(intCurrentNode).lngRight <> 0
+' If eight bits have been processed, get the next byte
+If mintBitCount = 8 Then
+Get #mintInputFile, , bytByte
+mbytByte = bytByte
+mintBitCount = 0
+End If
+bytBit = mbytByte And 128
+mbytByte = Shlb(mbytByte, 1) And 255
+mintBitCount = mintBitCount + 1
+If bytBit Then
+intCurrentNode = mtypHuffTree(intCurrentNode).lngLeft
+Else
+intCurrentNode = mtypHuffTree(intCurrentNode).lngRight
+End If
+Loop
+' Write the byte to the output file
+Put #mintOutputFile, , IntToByte(intCurrentNode)
+If (lngCounter Mod mcintBufferSize) = 0 Then
+' Raise the progress event, passing the percentage of the file processed
+RaiseEvent fprogress(lngCounter / mlngFileLength)
+End If
+Next lngCounter
+' Close the files we opened
+Close mintOutputFile
+Close mintInputFile
+U_ext:
+Exit Sub
+Exitz:
+MsgBox "Error: Decompress", vbCritical, "Huffman"
+Resume U_ext
+End Sub
+
+'************************************************************************
+'Builds a Huffman tree based on the character frequency of the input data
+'************************************************************************
+
+Private Sub BuildTree()
+Dim alngHuffTreeCount(511) As Long
+Dim intHuffOne As Integer
+Dim intHuffTwo As Integer
+Dim intTree As Integer
+Dim lngTotalBytesRead As Long
+Dim lngBytesRead As Long
+Dim lngCounter As Long
+Dim abytBuffer() As Byte
+On Error GoTo Exitz
+intTree = 256
+'initialize character count
+For lngCounter = 0 To 255
+alngHuffTreeCount(lngCounter) = 1
+Next lngCounter
+For lngCounter = 0 To 511
+mtypHuffTree(lngCounter).lngLeft = 0
+mtypHuffTree(lngCounter).lngParent = 0
+mtypHuffTree(lngCounter).lngRight = 0
+Next lngCounter
+RaiseEvent fprogress(0)
+'read data from the file
+lngBytesRead = ReadFile(mintInputFile, abytBuffer, mcintBufferSize)
+'while there is still data in the file
+Do While lngBytesRead > 0
+'for each byte read
+For lngCounter = 0 To lngBytesRead - 1
+'compress the byte
+alngHuffTreeCount(abytBuffer(lngCounter)) = _
+alngHuffTreeCount(abytBuffer(lngCounter)) + 1
+Next lngCounter
+'get the total amount of the file that has been processed
+lngTotalBytesRead = lngTotalBytesRead + lngBytesRead
+'raise the progress event, passing the percentage of the file processed
+RaiseEvent fprogress(lngTotalBytesRead / (mlngFileLength * 2))
+'read data from the file
+lngBytesRead = ReadFile(mintInputFile, abytBuffer, mcintBufferSize)
+Loop
+'build Huffman tree
+intHuffTwo = 1
+Do While intHuffTwo <> 0
+intHuffOne = 0
+intHuffTwo = 0
+For lngCounter = 0 To intTree
+If lngCounter <> intHuffOne Then
+If alngHuffTreeCount(lngCounter) > 0 And mtypHuffTree(lngCounter).lngParent = 0 Then
+If intHuffOne = 0 Or alngHuffTreeCount(lngCounter) < alngHuffTreeCount(intHuffOne) Then
+If intHuffTwo = 0 Or alngHuffTreeCount(intHuffOne) < alngHuffTreeCount(intHuffTwo) Then
+intHuffTwo = intHuffOne
+End If
+intHuffOne = lngCounter
+ElseIf intHuffTwo = 0 Or alngHuffTreeCount(lngCounter) < alngHuffTreeCount(intHuffTwo) Then
+intHuffTwo = lngCounter
+End If
+End If
+End If
+Next lngCounter
+If intHuffTwo = 0 Then
+mintRoot = intHuffOne
+Else
+mtypHuffTree(intHuffOne).lngParent = intTree
+mtypHuffTree(intHuffTwo).lngParent = intTree
+alngHuffTreeCount(intTree) = alngHuffTreeCount(intHuffOne) + _
+alngHuffTreeCount(intHuffTwo)
+mtypHuffTree(intTree).lngRight = intHuffOne
+mtypHuffTree(intTree).lngLeft = intHuffTwo
+intTree = intTree + 1
+End If
+Loop
+'write file headerz
+Put #mintOutputFile, , mintRoot
+Put #mintOutputFile, , mtypHuffTree
+Put #mintOutputFile, , mlngFileLength
+U_ext:
+Exit Sub
+Exitz:
+MsgBox "Error: BuildTree", vbExclamation, "Huffman"
+Resume U_ext
+End Sub
+
+'****************************************
+' This procedure compresses a single byte
+'****************************************
+
+Private Sub CompressByte(bytByte As Byte)
+'Parameters: bytByte - the byte to compress
+On Error GoTo Exitz
+'encode the byte
+Encode bytByte, 0
+U_ext:
+Exit Sub
+Exitz:
+MsgBox "Error: CompressByte", vbExclamation, "Huffman"
+Resume U_ext
+End Sub
+
+'**************************************
+' This procedure Huffman encodes a byte
+'**************************************
+
+Private Sub Encode(ByVal intCurrentNode As Integer, ByVal intChild As Integer)
+' Parameters: intCurrentNode - The current node in the Huffman tree
+'             intChild - The child of the current node
+On Error GoTo Exitz
+If mtypHuffTree(intCurrentNode).lngParent <> 0 Then
+Encode mtypHuffTree(intCurrentNode).lngParent, intCurrentNode
+End If
+If (intChild <> 0) Then
+If intChild = mtypHuffTree(intCurrentNode).lngRight Then
+WriteBit 0
+Else
+WriteBit 1
+End If
+End If
+U_ext:
+Exit Sub
+Exitz:
+MsgBox "Error: " & Err.Number & ". " & Err.Description, , _
+"Encode"
+Resume U_ext
+End Sub
+
+'*********************************************************************
+' This routine does an unsigned conversion from an integer value
+' to a byte value. This procedure correctly handles any integer value
+'*********************************************************************
+
+Private Function IntToByte(ByVal intNumber As Integer) As Byte
+'Parameters: intNumber - the integer value to convert to a byte
+On Error GoTo Exitz
+IntToByte = intNumber And &HFF&
+U_ext:
+Exit Function
+Exitz:
+MsgBox "Error: Conversion Int To Byte", vbCritical, "Huffman"
+Resume U_ext
+End Function
+
+'****************************************************************
+'This routine does an unsigned conversion from a long valueto an
+'integer value. This procedure correctly handles any long value
+'****************************************************************
+
+Private Function LongToInt(ByVal lngNumber As Long) As Integer
+'Parameters: lngNumber - the long value to convert to an integer
+On Error GoTo Exitz
+  ' This routine converts a long value to an integer
+lngNumber = lngNumber And &HFFFF&
+If lngNumber > &H7FFF Then
+LongToInt = lngNumber - &H10000
+Else
+LongToInt = lngNumber
+End If
+U_ext:
+Exit Function
+Exitz:
+MsgBox "Error: Conversion Long To Int", vbCritical, "Huffman"
+Resume U_ext
+End Function
+
+'*************************************************
+'Reads the specified number of bytes from the file
+'*************************************************
+
+Private Function ReadFile(ByVal intFile As Integer, ByRef abytBuffer() As Byte, ByVal lngNumberOfBytes As Long) As Long
+
+'Parameterz: intFile - The file to read from
+'            abytBuffer - The buffer to read the bytes into
+'            lngNumberOfBytes - The number of bytes to read
+
+Dim lngLen As Long
+Dim lngActualBytesRead As Long
+Dim lngStart As Long
+On Error GoTo Exitz
+' Get the starting position of the next read
+lngStart = Loc(intFile) + 1
+' Get the length of the file
+lngLen = LOF(intFile)
+' Check to see if there is more data to read from the file
+If lngStart < lngLen Then
+' Check to see if we are attempting to read past the end of the file
+If lngStart + lngNumberOfBytes < lngLen Then
+lngActualBytesRead = lngNumberOfBytes
+Else
+' If we are attempting to read more data than is left in the file,
+' calculate how much data we should read
+lngActualBytesRead = lngLen - (lngStart - 1)
+End If
+' Create the buffer to hold the data
+ReDim abytBuffer(lngActualBytesRead - 1) As Byte
+' Do the read
+Get intFile, lngStart, abytBuffer
+Else
+' If we attempted to read past the end of file, return zero bytes read
+lngActualBytesRead = 0
+End If
+' Return the number of bytes read
+ReadFile = lngActualBytesRead
+U_ext:
+Exit Function
+Exitz:
+MsgBox "Error: Read File", vbCritical, "Huffman"
+Resume U_ext
+End Function
+
+'********************************************************
+'Shifts a numeric value left the specified number of bits
+'********************************************************
+
+Private Function Shlb(ByVal bytValue As Byte, ByVal bytPlaces As Byte) As Byte
+' Parameters: bytValue - byte value to shift
+'             bytPlaces - number of places to shift
+Dim lngMultiplier As Long
+On Error GoTo Exitz
+'if we are shifting 8 or more bits, then the result is always zero
+If bytPlaces >= 8 Then
+Shlb = 0
+Else
+lngMultiplier = 2 ^ bytPlaces
+Shlb = IntToByte(LongToInt(bytValue * lngMultiplier))
+End If
+U_ext:
+Exit Function
+Exitz:
+MsgBox "Error: Shift", vbCritical, "Huffman"
+Resume U_ext
+End Function
+
+
+'*****************************************
+'Writes to the output file a bit at a time
+'*****************************************
+
+Private Sub WriteBit(bytBit As Byte)
+' Parameters: bytBit - The bit to write to the file
+On Error GoTo Exitz
+' If eight bits have been written, write a byte to the output file
+If mintBitCount = 8 Then
+Put #mintOutputFile, , mbytByte
+mbytByte = 0
+mintBitCount = 0
+End If
+' Accumulate the bit values in a byte variable
+mbytByte = Shlb(mbytByte, 1) Or bytBit
+' Increment the number of bits written
+mintBitCount = mintBitCount + 1
+U_ext:
+Exit Sub
+Exitz:
+MsgBox "Error: Write Bit", vbCritical, "Huffman"
+Resume U_ext
+End Sub
+
+'************************************************************
+'This procedure flushes any remaining data to the output file
+'************************************************************
+
+Private Sub WriteFinish()
+Dim lngCounter As Integer
+On Error GoTo Exitz
+'for each remaining bit, write a zero
+For lngCounter = mintBitCount To 8
+WriteBit 0
+Next lngCounter
+U_ext:
+Exit Sub
+Exitz:
+MsgBox "Error: Write all dataz", vbCritical, "Huffman"
+Resume U_ext
+End Sub

