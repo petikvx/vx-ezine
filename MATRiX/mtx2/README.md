@@ -74,8 +74,3 @@
 ## Demo
      [MATRiX]#1 demo source by Z0MBiE
 
-MATRiX e-zine II - DOS DEMO
-
-MATRiX e-zine II - WINDOWS DEMO
-
-MATRiX e-zine II - WINDOWS VIEWER
