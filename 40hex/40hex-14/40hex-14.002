@@ -1,0 +1,906 @@
+40Hex Number 14 Volume 5 Issue 1                                      File 002
+
+           KILLSMEG (c) 1994 by Stormbringer of Phalcon/Skism
+
+Note: This is an update to an earlier program, KILLQUEEG, which misfired
+      badly when it encountered SMEG.Pathogen, as Pathogen is functionally
+      almost IDENTICAL to Queeg and would scan the same in the old program,
+      but become a disaster on disinfection.  KILLSMEG will scan and 
+      disinfect both correctly, as well as most new variants.  Variants
+      that it is not likely to be able to disinfect it will report as
+      a new variant of SMEG.
+
+
+DISCLAIMER:  Author assumes NO liabilities for any damage this software
+             might cause.  It is not guaraunteed in any way.  I have done
+             my best to make it secure and bug free, but it comes as is.
+             Use it at your own risk.
+
+   This program will find and disinfect the two SMEG viruses from specified 
+files in current directory.  Before using, boot from a CLEAN-WRITE PROTECTED
+disk, and make sure you get this program from a reliable source (source
+code should be included).
+
+   I wrote this as there is currently no shareware/freeware program available 
+capable of disinfecting this polymorphic virus, or even reliably detecting
+it.  It also gives insight into one technique that can be used to detect and/
+or disinfect polymorphic viruses.
+
+   I can be reached via IRC or anywhere else if ya look hard enough ;)
+
+Greets go to: Phalcon/Skism, Trident, Trinity, Hermanni, Frisk, Frans, Jenky,
+              and all the rest of the virus/anti-virus community.
+
+---------------------------
+;KillSMEG (c) 1994 Stormbriner, Phalcon/Skism
+;Finds and disinfects the original SMEG viruses (Pathogen and Queeg)
+
+;Author assumes NO responsibility for any damages caused by this program
+;or by the SMEG viruses themselves.  This utility is simply made to find it,
+;and may or may not work as it is supposed to.  No garuantees.
+
+;First phase is to look for time signatures.  The seconds in any Queeg
+;infected file (unless something else has changed timestamp after infection)
+;is 56 seconds (1c in bits 0-4 of the time sig).  All following Checks are
+;done regardless of the time sig check.  Pathogen marks infections by making
+;the high byte in the date > 0c8h
+
+;Second Phase on each file is to Check if it's an .EXE or a .COM.
+
+;Third phase is to trace the program until an invalid condition is found or
+;the virus is detected.
+
+;Finally, the user is asked if s/he wishes to disinfect the virus, and
+;the file is cleaned.
+
+Strengths:
+;       VERY reliable detection rate from my testing.
+;
+;       Currently only free program capable of disinfecting SMEG viruses, 
+;       especially from .EXE files.
+;
+;       Comes with full source code.
+
+;Weaknesses:
+;       Third phase is slow(!!!), and actually executes part of program, 
+;       although it is careful not to allow detrimental actions to be taken 
+;       (i.e. viruses cannot go memres, etc.)
+;
+;       Only scans current directory using user filemask.
+;
+;       Disinfection will leave some garbage at the end of files,
+;       as the virus pads its hosts to the paragraph boundaries.
+;       This will cause self-checking programs to choke.
+
+.model tiny
+.radix 16
+.code
+        org 100
+start:
+ReduceMem:
+        mov     ah,4a
+        mov     bx,(endfinder-start+10f)/10     ;Reduce Memory to that needed
+        int     21
+
+        mov     sp,offset TopStack              ;Set STack within memory
+
+        mov     ah,09
+        mov     dx,offset IntroMSG
+        int     21
+
+        cmp     byte ptr ds:[80],1
+        ja      CopyFilename
+        mov     ah,09
+        mov     dx,offset Instructions
+        int     21
+        mov     ax,4c00
+        int     21
+CopyFilename:
+        mov     si,82
+        mov     di,offset Filenamebuf
+    CopyFN:
+        lodsb
+        cmp     al,0dh
+        je      doneCFN
+        stosb
+        jmp     CopyFN
+doneCFN:
+        xor     al,al
+        stosb
+
+ComSearch:
+        mov     ah,4e
+        mov     dx,offset FilenameBuf
+        mov     cx,07
+  FindFirstNext:        
+        int     21
+        jnc     SearchGood
+        jmp     NoMoreCOMS
+  SearchGood:
+        call    notifycheck
+
+        mov     cx,ds:[96]
+        and     cl,1f
+        cmp     cl,1c                   ;Check time stamp (56 seconds)
+        jne     AfterTimeCheck1
+        call    SuspiciousTime
+  AfterTimeCheck1:
+        mov     cx,ds:[98]
+        cmp     ch,0c8
+        jb      AfterTimeCheck
+        call    PathTime
+
+  AfterTimeCheck:
+        mov     ax,3d00
+        mov     dx,9e
+        int     21
+        jnc     ATCGood
+        jmp     ErrorOpen
+  ATCGood:
+        xchg    bx,ax
+        mov     dx,offset EXECCheck
+        mov     cx,4
+        mov     ah,3f
+        int     21
+        mov     ah,3e
+        int     21                              ;Close File
+        mov     ax,word ptr ds:[ExecCheck]
+        xor     ah,al
+        cmp     ah,('M' xor 'Z')                ;Check if it's a com or exec
+        je      ISEXE
+        push    cs
+        pop     es
+        mov     di,offset JmpByte
+        mov     si,offset ExecCheck             ;Save Jump
+        movsb
+        movsw
+        mov     byte ptr ds:[COMEXE],0
+        jmp     short OtherChecks
+    ISEXE:        
+        mov     byte ptr ds:[COMEXE],1        
+  OtherChecks:        
+        mov     Infected,0                      ;Initialize to not infected
+        mov     TraceDone,0
+        call    LoadAndCheckFile                ;Trace file
+        cmp     Infected,1
+        jne     FindAnotherFile
+               
+        call    PrintFilename
+        cmp     Knownvir,1
+        je      DisinfectProg
+        mov     ah,09
+        mov     dx,offset NewVar
+        int     21
+        jmp     FindAnotherFile
+
+DisinfectProg:
+        mov     ah,09
+        mov     dx,offset InfectedMSG
+        int     21
+
+        xor     ax,ax
+        int     16
+        push    ax
+        mov     dx,offset DoneChecking
+        mov     ah,09
+        int     21
+        pop     ax
+        or      al,20
+        cmp     al,'y'
+        jne     FindAnotherFile
+   Disinfect:
+        cmp     comexe,1
+        je      DisEXE
+        call    DisinfCom
+        jmp     short FindAnotherFile
+   DisEXE:
+        call    DisinfExe
+  FindAnotherFile:
+        mov     ah,4f
+        jmp     FindFirstNext
+
+ErrorOpen:
+        call    PRintFilename
+        mov     ah,09
+        mov     dx,offset OpenError
+        int     21
+        jmp     FindAnotherFile
+
+NoMoreCOMS:
+        mov     ax,4c00
+        int     21
+
+SuspiciousTime:        
+        call    PrintFilename
+        mov     ah,09
+        mov     dx,offset TIMEMSG
+        int     21
+        ret
+PathTime:
+        call    printfilename
+        mov     ah,09
+        mov     dx,offset pathtimemsg
+        int     21
+        ret
+
+
+NotifyCheck:
+        
+        mov     dx,offset Checking
+        mov     ah,09
+        int     21
+        call    PrintFileName
+        mov     dx,offset DoneChecking
+        mov     ah,09
+        int     21
+        ret
+
+
+PrintFilename:        
+        mov     si,9e
+  PrintFN:        
+        lodsb
+        or      al,al
+        jz      doneprintfn
+        mov     ah,02
+        mov     dl,al
+        int     21
+        jmp     Printfn
+    DonePrintFN:
+        ret
+
+LoadAndCheckFile:
+        push    cs
+        pop     ds
+        mov     ax,ds:[2c]
+        mov     EnvSeg,ax
+        mov     ax,ds
+        mov     word ptr [CommandTail+2],ax
+        mov     word ptr [FCB1+2],ax
+        mov     word ptr [FCB2+2],ax
+        mov     ax,offset ParmData
+        mov     word ptr [CommandTail],ax
+        mov     word ptr [FCB1],ax
+        mov     word ptr [FCB2],ax
+
+        mov     ax,3501
+        int     21
+        mov     IP01,bx
+        mov     CS01,es         ;Get int 1 vector
+
+        mov     ax,2501
+        mov     dx,offset Int01  ;And set it
+        int     21
+        mov     ax,ss
+        mov     Oldss,ax
+        mov     oldsp,sp
+        push    cs
+        pop     es
+
+     LoadFile:
+        mov     ax,4b01
+        mov     bx,offset ParmBlock
+        mov     dx,9e
+        int     21
+        jc      ErrorExecute
+    SetupExec:        
+        push    cs
+        pop     ds
+        mov     ax,2522
+        mov     dx,offset ExecuteTerminated
+        int     21                              ;Set Termination address
+
+        mov     ah,62
+        int     21
+        push    bx bx
+        pop     es ds
+        
+        mov     word ptr cs:[StartDS],bx
+
+        mov     ax,cs
+        mov     word ptr ds:[0a],offset ExecuteTerminated
+        mov     word ptr ds:[0c],ax                      ;Set Termination Address
+        
+        cli
+        mov     ax,word ptr cs:[NewStack+2]
+        mov     ss,ax
+        mov     sp,word ptr cs:[NewStack]
+        sti
+
+        pushf
+        pop     ax
+        or      ax,0100
+        xor     bx,bx
+        xor     cx,cx
+        xor     dx,dx
+        mov     si,100
+        xor     di,di
+        xor     bp,bp
+        push    word ptr cs:[NewCS]
+        push    word ptr cs:[NewIP]
+        push    ax
+        popf
+        retf
+
+ExecuteTerminated:
+        cld
+        pushf
+        pop     ax
+        and     ax,not 100      ;ditch trapflag
+        push    ax
+        popf
+        cli
+        mov     ax,cs:[OldSS]
+        mov     ss,ax
+        mov     sp,cs:[OldSP]
+        sti
+        lds     dx,dword ptr cs:[IP01]
+        mov     ax,2501
+        int     21
+        push    cs cs
+        pop     es ds
+
+        mov     ah,1a
+        mov     dx,80                   ;Reset DTA
+        int     21
+   ErrorExecute:
+        ret
+
+OldSS   dw      0
+OldSP   dw      0
+
+
+Int01:
+        cld
+        push    bp
+        mov     bp,sp
+        add     bp,2
+        push    ax bx cx dx es ds si di
+        cmp     cs:TraceDone,1
+        je      DOneInt01
+        call    CheckESDS   
+        call    CheckOPCode
+        jne     DoneInt01
+        call    InitScanString
+        call    ScanMemory   
+        call    InitScanString
+        
+   DoneInt01:
+        pop     di si ds es dx cx bx ax
+        pop     bp
+        iret
+
+InitScanString:
+        push    ds si cx
+        push    cs
+        pop     ds
+        mov     si,offset QueegScan1
+        mov     cx,EndScan1-QueegScan1
+   DecryptString:        
+        xor     byte ptr [si],42
+        inc     si
+        loop    DecryptString
+        pop     cx si ds
+        ret
+
+TerminateProgram:
+        mov     byte ptr cs:[TraceDone],1
+        mov     ax,4c00
+        int     21
+
+CheckOpCode:
+        mov     si,[bp+2]
+        mov     ds,si
+        mov     si,[bp]
+        cmp     byte ptr dS:[si],0cdh
+        je      NonvalidOp
+        cmp     byte ptr ds:[si],0eah
+        je      NonvalidOp
+        cmp     byte ptr ds:[si],09ah
+        je      NonvalidOp
+        cmp     byte ptr ds:[si],0abh
+        je      NonvalidOp
+        cmp     byte ptr ds:[si],0adh
+        je      NonvalidOp
+        mov     al,byte ptr ds:[si]
+        and     al,0f0
+        cmp     al,60
+        je      NonvalidOp
+        cmp     al,90
+        je      NonvalidOp
+        cmp     al,0a0
+        je      NonvalidOp
+        cmp     word ptr ds:[si],00e8
+        jne     ExitOpTest
+        cmp     word ptr ds:[si+2],5800
+  ExitOpTest:
+        ret
+
+NonValidOp:
+        jmp     TerminatePRogram
+
+
+CheckESDS:
+        mov     ax,[bp+2]
+        cmp     ax,word ptr cs:[NewCS]
+        je      CSOkay
+        jmp     TerminateProgram
+CSOkay:
+        mov     ax,[bp+2]
+        mov     bx,ds
+        cmp     bx,ax
+        jne     DSNotEqualCS
+  CheckES:        
+        mov     bx,es
+        cmp     bx,ax
+        jne     ESNotEqualCS
+  ExitSEGCheck:        
+        ret
+DSNotEqualCS:
+        cmp     bx,word ptr cs:[StartDS]   
+        je      CheckES
+        mov     byte ptr cs:[TraceDone],1
+        jmp     TerminateProgram
+   ESNotEqualCS:
+        cmp     bx,word ptr cs:[StartDS]
+        je      ExitSEGCheck
+        mov     byte ptr cs:[TraceDone],1
+        jmp     TerminateProgram
+
+ScanMemory:
+        push    cs
+        pop     ds
+        mov     si,offset QueegScan1
+        mov     di,[bp+2]
+        mov     es,di
+        mov     di,[bp]
+        mov     cx,800
+        lodsb        
+   SearchForString:        
+        repnz   scasb
+        jcxz    StringNotFound
+        push    ax cx si di 
+        mov     cx,0bh
+        repz    cmpsb
+        jcxz    StringFound
+        pop     di si cx ax
+        jmp     SearchForString
+StringFound:
+        pop     di si cx ax
+SaveInfo:
+        dec     di              ;ES:DI = beginning of virus
+        push    es di
+        pop     si ds
+
+;ds:si+133       22 c0 75 19 bb 00 01 2e a1
+     MakeSureKnowVir:
+        cmp     word ptr ds:[si+33],0c022
+        jne     NotKnown
+        cmp     word ptr ds:[si+39],2e01
+        jne     NotKnown
+        mov     byte ptr cs:[knownvir],1
+        jmp     DoneVarCheck
+     NotKnown:
+        mov     byte ptr cs:[knownvir],0
+     DoneVarCheck:
+        mov     bx,si
+        sub     bx,100
+        
+        mov     si,word ptr ds:[bx+13c]
+        add     si,bx
+        push    cs
+        pop     es
+        mov     di,offset COMStorage
+        movsw
+        movsb
+        
+        mov     si,word ptr ds:[bx+164]
+        add     si,bx
+        mov     di,offset EXEStack
+        movsw
+        movsw
+        
+        mov     si,word ptr ds:[bx+171]
+        add     si,bx
+        mov     di,offset EXEInstruct
+        movsw
+        movsw
+MarkInfected:
+        mov     byte ptr cs:[Infected],1
+        call    InitScanString
+        jmp     TerminateProgram
+StringNotFound:
+        ret
+
+OutOfMemory:
+        mov     dx,offset OOM
+ ErrExit:        
+        push    cs
+        pop     ds
+        mov     ah,9
+        int     21
+        mov     ax,4c02
+        int     21
+
+ErrorClean:
+        mov     dx,offset FileError
+        mov     ah,09
+        push    cs
+        pop     ds
+        int     21
+        jmp     Dealloc
+
+DisinfCom:
+        mov     ah,48
+        mov     bx,1000
+        int     21
+        jc      OutOfMemory
+        mov     es,ax
+        mov     dx,9e
+        mov     ax,3d00
+        int     21
+        jc      ErrorClean
+        xchg    bx,ax
+        push    es
+        pop     ds
+        xor     dx,dx
+        mov     cx,word ptr cs:[ComJump]
+        add     cx,3
+        mov     ah,3f
+        int     21
+        push    ax
+        mov     ah,3e
+        int     21
+        mov     ax,word ptr cs:[COMStorage]
+        mov     word ptr ds:[0],ax
+        mov     al,byte ptr cs:[ComStorage+2]
+        mov     byte ptr ds:[2],al
+        push    cs        
+        pop     ds
+        mov     ah,3c
+        xor     cx,cx
+        mov     dx,9e
+        int     21
+        pop     cx        
+        jc      ErrorClean
+        xchg    bx,ax
+
+        push    es
+        pop     ds
+        mov     ah,40
+        xor     dx,dx
+        int     21
+
+        mov     ah,3e
+        int     21
+  DeAlloc:
+        mov     ah,49
+        int     21
+        push    cs cs
+        pop     es ds
+        ret
+
+EXEErrorClean:
+        mov     dx,offset FileError
+        mov     ah,09
+        push    cs
+        pop     ds
+        int     21
+        ret
+
+
+DisinfEXE:
+        int     3
+        mov     ah,41
+        mov     dx,offset TMPFile       
+        int     21
+
+        push    cs cs
+        pop     es ds
+        mov     dx,9e
+        mov     ax,3d02        ;open file
+        int     21
+        jnc     EXECOpenGood
+        jmp     EXEErrorClean
+     ExecOpenGood:
+        xchg    bx,ax
+        mov     cx,20
+        mov     ah,3f
+        mov     dx,offset ExecHeader
+        int     21
+        mov     di,offset Execheader+0e
+        mov     si,offset ExeStack
+        movsw
+        movsw
+        xor     bp,bp
+        mov     di,offset execheader+14
+        mov     dx,[di+2]               ;DX:AX = new filesize kinda
+        mov     ax,[di]
+        mov     cl,4
+        shl     dx,cl
+        adc     bp,0
+        add     ax,dx
+        adc     bp,0
+        mov     dx,bp                   ;DX:AX = filesize w/o header
+        mov     cx,word ptr [execheader+08]
+        shl     cx,1
+        shl     cx,1
+        shl     cx,1
+        shl     cx,1
+        add     ax,cx        
+        adc     dx,0                    ;Header now calculated in
+        mov     ExeSizeHigh,dx
+        mov     ExeSizeLow,ax
+        and     ax,1ff                      ;modulo 512
+        mov     word ptr [execheader+2],ax
+        mov     ax,EXESizeLow
+        mov     cx,7
+        shl     dx,cl
+        mov     word ptr [execheader+4],dx
+        mov     cx,9
+        add     ax,1ff
+        shr     ax,cl
+        add     word ptr [execheader+4],ax
+        
+        mov     si,offset ExeInstruct
+        movsw
+        movsw
+
+        mov     ax,4200
+        xor     cx,cx
+        xor     dx,dx
+        int     21
+        mov     ah,40
+        mov     dx,offset execheader
+        mov     cx,20
+        int     21
+        mov     ah,3e
+        int     21
+
+        mov     ah,56
+        mov     dx,9e
+        mov     di,offset TmpFile       ;Rename file
+        int     21
+
+        mov     ah,3c
+        mov     dx,9e
+        xor     cx,cx
+        int     21
+        mov     Dest,ax
+        mov     ax,3d00
+        mov     dx,offset TmpFile
+        int     21
+        mov     Source,ax
+        
+     CopyLoop:
+        mov     cx,400
+        cmp     word ptr [EXESizeHIgh],0
+        jne     FullSize
+        cmp     word ptr [ExeSizeLow],400
+        ja      FullSize
+        mov     cx,word ptr [ExeSizeLow]
+    FullSize:
+        sub     word ptr [ExeSizeLow],400
+        sbb     word ptr [ExeSizeHigh],0
+        mov     ah,3f
+        mov     bx,Source
+        mov     dx,offset CopyBuffer
+        int     21
+        
+        mov     cx,ax
+        mov     ah,40
+        mov     bx,Dest
+        mov     dx,offset CopyBuffer
+        int     21
+
+        cmp     ax,400
+        je      CopyLoop
+
+CloseUP:
+        mov     ah,3e
+        mov     bx,Dest
+        int     21
+        mov     ah,3e
+        mov     bx,Source
+        int     21
+ DoneDis:
+        mov     ah,41
+        mov     dx,offset TMPFile       
+        int     21
+        ret
+
+Source   dw      0
+Dest    dw      0
+OldInt01:
+        IP01    dw      0
+        CS01    dw      0
+
+TraceDone       db      0
+StartDS         dw      0
+
+
+ParmBlock:
+   EnvSeg       dw      0
+   CommandTail  dd      0
+   FCB1         dd      0
+   FCB2         dd      0
+   NewStack     dd      0
+   NewIP        dw      0
+   NEWCS        dw      0
+
+Tmpfile         db      'KQTMP',0
+NewVar          db      ' - New Variant of SMEG!',0a,0dh,24
+FileError       db      'Sorry, File Error.',07,0a,0dh,24
+OOM             db      'Sorry, Out Of Memory',07,0a,0dh,24
+Checking        db      'Checking $'
+OpenError       db      ' - Error Opening.'
+DoneChecking    db      0a,0dh,24
+TimeMSG         db      ' - Time stamp is suspicious of SMEG.Queeg signature.',0a,0dh,24
+pathtimemsg     db      ' - Time stamp is suspicious of SMEG.Pathogen signature.',0a,0dh,24
+InfectedMSG     db      ' - INFECTED WITH SMEG!',0a,0dh
+                db      'Disinfect (y/N)?',7,24
+IntroMSG        db      0a,0dh,'KillSMEG (c) 1994 Stormbringer, Phalcon/Skism.',0a,0dh
+                db      'Finds and disinfects the 2 known SMEG viruses in the current directory.',0a,0dh,24
+                
+Instructions:                
+                db      'Usage :    KILLSMEG Filemask (COM once, then EXE once is recommended)',0a,0dh
+                db      'Example:   KILLSMEG *.COM',0a,0dh,24
+
+QueegScan1:
+db 0E8 xor 42, 00 xor 42, 00 xor 42, 58 xor 42, 0FE xor 42, 0CC xor 42
+db 0B1 xor 42, 04 xor 42, 0D3 xor 42, 0E8 xor 42, 08C xor 42, 0CBh xor 42      ;Initializing Code
+EndScan1:
+;QueegScan2:
+;db 0B8, 0EF, 18, 0CDh, 21, 3Dh, 10, 0E7, 75, 01, 0C3, 0E8    ;Installation Check
+
+
+ParmData        db      40 dup(0)
+knownvir        db      0
+Jmpbyte         db      0
+COMJump         db      0,0
+
+Infected        db      0
+COMEXE          db      0                       ;0 for COM, 1 for EXE
+EXECCheck       dw      0,0
+
+COMStorage      db      0,0,0
+EXEStack        dd      0
+EXEInstruct     dd      0
+
+;0f9d-SP  0f9b-SS  0fa0-IP:CS
+ExeSizeLow      dw      0
+EXESizeHigh     dw      0
+
+
+Filenamebuf     db      80d dup (?)
+ExecHeader      db      20 dup(?)
+CopyBuffer      db      400 dup(?)
+StackBuffer db  1000 dup(?)
+TopStack:
+
+endfinder:
+end start
+---------------------------
+N KILLSMEG.COM
+E 0100 B4 4A BB CC 01 CD 21 BC C0 1C B4 09 BA 0C 07 CD 
+E 0110 21 80 3E 80 00 01 77 0C B4 09 BA 88 07 CD 21 B8 
+E 0120 00 4C CD 21 BE 82 00 BF 50 08 AC 3C 0D 74 03 AA 
+E 0130 EB F8 32 C0 AA B4 4E BA 50 08 B9 07 00 CD 21 73 
+E 0140 03 E9 BE 00 E8 D6 00 8B 0E 96 00 80 E1 1F 80 F9 
+E 0150 1C 75 03 E8 B1 00 8B 0E 98 00 80 FD C8 72 03 E8 
+E 0160 B0 00 B8 00 3D BA 9E 00 CD 21 73 03 E9 87 00 93 
+E 0170 BA 3D 08 B9 04 00 B4 3F CD 21 B4 3E CD 21 A1 3D 
+E 0180 08 32 E0 80 FC 17 74 11 0E 07 BF 38 08 BE 3D 08 
+E 0190 A4 A5 C6 06 3C 08 00 EB 05 C6 06 3C 08 01 C6 06 
+E 01A0 3B 08 00 90 C6 06 EC 05 00 90 E8 93 00 80 3E 3B 
+E 01B0 08 01 75 3D E8 78 00 80 3E 37 08 01 74 0A B4 09 
+E 01C0 BA 0B 06 CD 21 EB 2A 90 B4 09 BA E2 06 CD 21 33 
+E 01D0 C0 CD 16 50 BA 6E 06 B4 09 CD 21 58 0C 20 3C 79 
+E 01E0 75 0F 80 3E 3C 08 01 74 05 E8 85 02 EB 03 E8 E7 
+E 01F0 02 B4 4F E9 47 FF E8 36 00 B4 09 BA 5D 06 CD 21 
+E 0200 EB EF B8 00 4C CD 21 E8 25 00 B4 09 BA 71 06 CD 
+E 0210 21 C3 E8 1A 00 B4 09 BA A8 06 CD 21 C3 BA 53 06 
+E 0220 B4 09 CD 21 E8 08 00 BA 6E 06 B4 09 CD 21 C3 BE 
+E 0230 9E 00 AC 0A C0 74 08 B4 02 8A D0 CD 21 EB F3 C3 
+E 0240 0E 1F A1 2C 00 A3 EF 05 8C D8 A3 F3 05 A3 F7 05 
+E 0250 A3 FB 05 B8 F7 07 A3 F1 05 A3 F5 05 A3 F9 05 B8 
+E 0260 01 35 CD 21 89 1E E8 05 8C 06 EA 05 B8 01 25 BA 
+E 0270 09 03 CD 21 8C D0 A3 05 03 89 26 07 03 0E 07 B8 
+E 0280 01 4B BB EF 05 BA 9E 00 CD 21 72 78 0E 1F B8 22 
+E 0290 25 BA DA 02 CD 21 B4 62 CD 21 53 53 07 1F 2E 89 
+E 02A0 1E ED 05 8C C8 C7 06 0A 00 DA 02 A3 0C 00 FA 2E 
+E 02B0 A1 FF 05 8E D0 2E 8B 26 FD 05 FB 9C 58 0D 00 01 
+E 02C0 33 DB 33 C9 33 D2 BE 00 01 33 FF 33 ED 2E FF 36 
+E 02D0 03 06 2E FF 36 01 06 50 9D CB FC 9C 58 25 FF FE 
+E 02E0 50 9D FA 2E A1 05 03 8E D0 2E 8B 26 07 03 FB 2E 
+E 02F0 C5 16 E8 05 B8 01 25 CD 21 0E 0E 07 1F B4 1A BA 
+E 0300 80 00 CD 21 C3 00 00 00 00 FC 55 8B EC 83 C5 02 
+E 0310 50 53 51 52 06 1E 56 57 2E 80 3E EC 05 01 74 11 
+E 0320 E8 77 00 E8 35 00 75 09 E8 10 00 E8 A7 00 E8 0A 
+E 0330 00 5F 5E 1F 07 5A 59 5B 58 5D CF 1E 56 51 0E 1F 
+E 0340 BE EB 07 B9 0C 00 80 34 42 46 E2 FA 59 5E 1F C3 
+E 0350 2E C6 06 EC 05 01 B8 00 4C CD 21 8B 76 02 8E DE 
+E 0360 8B 76 00 80 3C CD 74 30 80 3C EA 74 2B 80 3C 9A 
+E 0370 74 26 80 3C AB 74 21 80 3C AD 74 1C 8A 04 24 F0 
+E 0380 3C 60 74 14 3C 90 74 10 3C A0 74 0C 81 3C E8 00 
+E 0390 75 05 81 7C 02 00 58 C3 EB B6 8B 46 02 2E 3B 06 
+E 03A0 03 06 74 02 EB AA 8B 46 02 8C DB 3B D8 75 07 8C 
+E 03B0 C3 3B D8 75 10 C3 2E 3B 1E ED 05 74 F2 2E C6 06 
+E 03C0 EC 05 01 EB 8B 2E 3B 1E ED 05 74 E9 2E C6 06 EC 
+E 03D0 05 01 E9 7B FF 0E 1F BE EB 07 8B 7E 02 8E C7 8B 
+E 03E0 7E 00 B9 00 08 AC F2 AE E3 6C 50 51 56 57 B9 0B 
+E 03F0 00 F3 A6 E3 06 5F 5E 59 58 EB EB 5F 5E 59 58 4F 
+E 0400 06 57 5E 1F 81 7C 33 22 C0 75 10 81 7C 39 01 2E 
+E 0410 75 09 2E C6 06 37 08 01 EB 07 90 2E C6 06 37 08 
+E 0420 00 8B DE 81 EB 00 01 8B B7 3C 01 03 F3 0E 07 BF 
+E 0430 41 08 A5 A4 8B B7 64 01 03 F3 BF 44 08 A5 A5 8B 
+E 0440 B7 71 01 03 F3 BF 48 08 A5 A5 2E C6 06 3B 08 01 
+E 0450 E8 E8 FE E9 FA FE C3 BA 3B 06 0E 1F B4 09 CD 21 
+E 0460 B8 02 4C CD 21 BA 25 06 B4 09 0E 1F CD 21 EB 55 
+E 0470 90 B4 48 BB 00 10 CD 21 72 DD 8E C0 BA 9E 00 B8 
+E 0480 00 3D CD 21 72 DF 93 06 1F 33 D2 2E 8B 0E 39 08 
+E 0490 83 C1 03 B4 3F CD 21 50 B4 3E CD 21 2E A1 41 08 
+E 04A0 A3 00 00 2E A0 43 08 A2 02 00 0E 1F B4 3C 33 C9 
+E 04B0 BA 9E 00 CD 21 59 72 AD 93 06 1F B4 40 33 D2 CD 
+E 04C0 21 B4 3E CD 21 B4 49 CD 21 0E 0E 07 1F C3 BA 25 
+E 04D0 06 B4 09 0E 1F CD 21 C3 CC B4 41 BA 05 06 CD 21 
+E 04E0 0E 0E 07 1F BA 9E 00 B8 02 3D CD 21 73 02 EB DE 
+E 04F0 93 B9 20 00 B4 3F BA A0 08 CD 21 BF AE 08 BE 44 
+E 0500 08 A5 A5 33 ED BF B4 08 8B 55 02 8B 05 B1 04 D3 
+E 0510 E2 83 D5 00 03 C2 83 D5 00 8B D5 8B 0E A8 08 D1 
+E 0520 E1 D1 E1 D1 E1 D1 E1 03 C1 83 D2 00 89 16 4E 08 
+E 0530 A3 4C 08 25 FF 01 A3 A2 08 A1 4C 08 B9 07 00 D3 
+E 0540 E2 89 16 A4 08 B9 09 00 05 FF 01 D3 E8 01 06 A4 
+E 0550 08 BE 48 08 A5 A5 B8 00 42 33 C9 33 D2 CD 21 B4 
+E 0560 40 BA A0 08 B9 20 00 CD 21 B4 3E CD 21 B4 56 BA 
+E 0570 9E 00 BF 05 06 CD 21 B4 3C BA 9E 00 33 C9 CD 21 
+E 0580 A3 E6 05 B8 00 3D BA 05 06 CD 21 A3 E4 05 B9 00 
+E 0590 04 83 3E 4E 08 00 75 0C 81 3E 4C 08 00 04 77 04 
+E 05A0 8B 0E 4C 08 81 2E 4C 08 00 04 83 1E 4E 08 00 B4 
+E 05B0 3F 8B 1E E4 05 BA C0 08 CD 21 8B C8 B4 40 8B 1E 
+E 05C0 E6 05 BA C0 08 CD 21 3D 00 04 74 C2 B4 3E 8B 1E 
+E 05D0 E6 05 CD 21 B4 3E 8B 1E E4 05 CD 21 B4 41 BA 05 
+E 05E0 06 CD 21 C3 00 00 00 00 00 00 00 00 00 00 00 00 
+E 05F0 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+E 0600 00 00 00 00 00 4B 51 54 4D 50 00 20 2D 20 4E 65 
+E 0610 77 20 56 61 72 69 61 6E 74 20 6F 66 20 53 4D 45 
+E 0620 47 21 0A 0D 24 53 6F 72 72 79 2C 20 46 69 6C 65 
+E 0630 20 45 72 72 6F 72 2E 07 0A 0D 24 53 6F 72 72 79 
+E 0640 2C 20 4F 75 74 20 4F 66 20 4D 65 6D 6F 72 79 07 
+E 0650 0A 0D 24 43 68 65 63 6B 69 6E 67 20 24 20 2D 20 
+E 0660 45 72 72 6F 72 20 4F 70 65 6E 69 6E 67 2E 0A 0D 
+E 0670 24 20 2D 20 54 69 6D 65 20 73 74 61 6D 70 20 69 
+E 0680 73 20 73 75 73 70 69 63 69 6F 75 73 20 6F 66 20 
+E 0690 53 4D 45 47 2E 51 75 65 65 67 20 73 69 67 6E 61 
+E 06A0 74 75 72 65 2E 0A 0D 24 20 2D 20 54 69 6D 65 20 
+E 06B0 73 74 61 6D 70 20 69 73 20 73 75 73 70 69 63 69 
+E 06C0 6F 75 73 20 6F 66 20 53 4D 45 47 2E 50 61 74 68 
+E 06D0 6F 67 65 6E 20 73 69 67 6E 61 74 75 72 65 2E 0A 
+E 06E0 0D 24 20 2D 20 49 4E 46 45 43 54 45 44 20 57 49 
+E 06F0 54 48 20 53 4D 45 47 21 0A 0D 44 69 73 69 6E 66 
+E 0700 65 63 74 20 28 79 2F 4E 29 3F 07 24 0A 0D 4B 69 
+E 0710 6C 6C 53 4D 45 47 20 28 63 29 20 31 39 39 34 20 
+E 0720 53 74 6F 72 6D 62 72 69 6E 67 65 72 2C 20 50 68 
+E 0730 61 6C 63 6F 6E 2F 53 6B 69 73 6D 2E 0A 0D 46 69 
+E 0740 6E 64 73 20 61 6E 64 20 64 69 73 69 6E 66 65 63 
+E 0750 74 73 20 74 68 65 20 32 20 6B 6E 6F 77 6E 20 53 
+E 0760 4D 45 47 20 76 69 72 75 73 65 73 20 69 6E 20 74 
+E 0770 68 65 20 63 75 72 72 65 6E 74 20 64 69 72 65 63 
+E 0780 74 6F 72 79 2E 0A 0D 24 55 73 61 67 65 20 3A 20 
+E 0790 20 20 20 4B 49 4C 4C 53 4D 45 47 20 46 69 6C 65 
+E 07A0 6D 61 73 6B 20 28 43 4F 4D 20 6F 6E 63 65 2C 20 
+E 07B0 74 68 65 6E 20 45 58 45 20 6F 6E 63 65 20 69 73 
+E 07C0 20 72 65 63 6F 6D 6D 65 6E 64 65 64 29 0A 0D 45 
+E 07D0 78 61 6D 70 6C 65 3A 20 20 20 4B 49 4C 4C 53 4D 
+E 07E0 45 47 20 2A 2E 43 4F 4D 0A 0D 24 AA 42 42 1A BC 
+E 07F0 8E F3 46 91 AA CE 89 00 00 00 00 00 00 00 00 00 
+E 0800 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+E 0810 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+E 0820 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+E 0830 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+E 0840 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+RCX
+0750
+W
+Q
+---------------------------

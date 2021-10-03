@@ -1,0 +1,391 @@
+40Hex Number 13 Volume 4 Issue 1                                      File 003
+ 
+===============================================================================
+ 
+ 
+                    Extracting virus signatures from F-PROT
+                               by Peter Vincent
+ 
+The program  included here  does just  that:   Extracts signatures  used by the
+notorious anti-virus product F-PROT.  Before  we get to the code though,  there
+are a couple of things that need to be said.
+ 
+There are two sets  of signatures used in  F-PROT.  One is  used by F-PROT.EXE,
+and  is  included  in  a  file  named  SIGN.DEF,  while  the  other  is used by
+VIRSTOP.EXE and is included in VIRSTOP.EXE itself.
+ 
+A virus signature is defined as a sequence of hex bytes, which can also include
+one or more wildcards.  A wildcard, represented here as "??", matches any given
+hex byte.  F-PROT does not use wildcards that can match more than one byte.
+ 
+Note that  F-PROT defines  at least  two different  signatures for  each virus.
+This is apparently aimed at better identification of viruses.  Also, the search
+algorithm used ignores any hex bytes of  value 90 or CC.  This means  that code
+that contains a F-PROT signature with some of these bytes inserted into it will
+still  match  the  signature.   In  addition  to signatures for detecting known
+viruses, there are a few  other signatures included that can  presumably detect
+some unknown viruses.  These signatures are named as "unknown".
+ 
+How to extract signatures from F-PROT:  easy as 1-2-3.  Extract the source code
+included here and store it to a file named GETFP211.PAS.  Compile this  program
+with Turbo Pascal (version 4.0 or  later).  Copy SIGN.DEF and VIRSTOP.EXE  from
+F-PROT  distribution  to  the  default  DOS  directory,  and  run GETFP211.  On
+successful  completion,  two  text  files  will  be  created:   F-PROT.STR  and
+VIRSTOP.STR.   They  will  contain   the  signatures  found  in  SIGN.DEF   and
+VIRSTOP.EXE, respectively.  Each line of these files will contain a  signature,
+and the corresponding virus  name on every line.   VIRSTOP signatures for  boot
+sector  viruses  are  not  included.   The  program  has  been  tested  to work
+successfully with F-PROT 2.11; it might or might not work with future  versions
+if they change the formats.
+ 
+The internal format used by F-PROT to store signatures can be easily  retrieved
+by reading the source code by any knowledgeable programmer.
+ 
+And now for the source code:
+ 
+--- Begin GETFP211.PAS --------------------------------------------------------
+ 
+{
+  GETFP211.PAS: Extract virus signatures from F-PROT version 2.11.
+  This program is in the Public Domain.  Courtesy of Peter Vincent.
+}
+ 
+{$i-,r-}
+ 
+program getfpstr;
+  type ba = array[0..$fffe] of byte;
+       wa = array[0..$7ffe] of word;
+       bp = ^ba;
+       wp = ^wa;
+  function alloc(i: word): pointer;
+    var p: pointer;
+  begin
+    if maxavail < i then begin
+      writeln('Error: Not enough memory.');
+      halt(1);
+    end;
+    getmem(p,i);
+    alloc := p
+  end;
+  procedure writesig(var f: text; var s, name: string; x: char);
+    const hexstr: string[16] = '0123456789ABCDEF';
+    var i: word;
+        c: char;
+  begin
+    for i := 1 to length(s) do begin
+      c := s[i];
+      if c = x
+        then write(f,'?? ')
+        else write(f,hexstr[ord(c) shr 4+1],hexstr[ord(c) and 15+1],' ');
+    end;
+    for i := length(s)*3 to 79-length(name) do write(f,' ');
+    writeln(f,name);
+  end;
+  procedure dovirstop;
+    var len: longint;
+        virstop: pointer;
+        adj: word;
+    procedure readvirstop;
+      var f: file;
+    begin
+      writeln('Reading VIRSTOP.EXE...');
+      assign(f,'VIRSTOP.EXE');
+      reset(f,1);
+      if ioresult <> 0 then begin
+        writeln('Error: Cannot open VIRSTOP.EXE.');
+        halt(1);
+      end;
+      len := filesize(f);
+      if len > $fffe then begin
+        writeln('Error: VIRSTOP.EXE too big.');
+        halt(1);
+      end;
+      virstop := alloc(len);
+      blockread(f,virstop^,len);
+      if ioresult <> 0 then begin
+        writeln('Error: Cannot read VIRSTOP.EXE.');
+        halt(1);
+      end;
+      close(f);
+      case wp(virstop)^[0] of
+        $5a4d, $4d5a: else begin
+          writeln('Error: VIRSTOP.EXE is invalid.');
+          halt(1);
+        end;
+      end;
+      adj := wp(virstop)^[4]*16
+    end;
+    procedure writesigs;
+      var i,j,k,l,startpos,endpos,sigcnt: word;
+          found: boolean;
+          f: text;
+          buf: array[0..2047] of byte;
+          sig, name: string;
+      procedure chkioerr;
+      begin
+        if ioresult <> 0 then begin
+          writeln('Error: Cannot write to VIRSTOP.STR.');
+          halt(1);
+        end;
+      end;
+    begin
+      found := false;
+      j := 0;
+      k := 0;
+      for i := 0 to len-1 do
+        if chr(bp(virstop)^[i]) = '$' then begin
+          if i-j > 30
+            then
+              if found
+                then begin
+                  endpos := j-adj;
+                  i := len-1;
+                end else startpos := i-adj-30
+            else
+              if not found then begin
+                inc(k);
+                if k = 20 then inc(found);
+              end;
+          j := i;
+        end;
+      sigcnt := 0;
+      if found then
+        for i := 0 to len-1 do begin
+          j := i;
+          k := 0;
+          found := true;
+          while found do begin
+            l := bp(virstop)^[j];
+            if (l-1 > 24) or (wp(@bp(virstop)^[j+l+1])^[0]-startpos > endpos)
+              then dec(found)
+              else begin
+                inc(k);
+                inc(j,l+3);
+              end;
+          end;
+          if k >= 20 then begin
+            if sigcnt = 0 then begin
+              writeln('Writing VIRSTOP.STR...');
+              assign(f,'VIRSTOP.STR');
+              settextbuf(f,buf,sizeof(buf));
+              rewrite(f);
+              chkioerr;
+            end;
+            k := i;
+            repeat
+              sig := '';
+              for l := bp(virstop)^[k] downto 1 do begin
+                inc(sig[0]);
+                sig[length(sig)] := chr(bp(virstop)^[k+l]);
+              end;
+              inc(k,bp(virstop)^[k]+3);
+              name := '';
+              l := wp(@bp(virstop)^[k-2])^[0]+adj;
+              while chr(bp(virstop)^[l]) <> '$' do begin
+                inc(name[0]);
+                name[length(name)] := chr(bp(virstop)^[l]);
+                inc(l);
+              end;
+              writesig(f,sig,name,#$fe);
+              chkioerr;
+              inc(sigcnt);
+            until k = j;
+            writeln(f);
+            chkioerr;
+            i := k;
+          end;
+        end;
+      if sigcnt <> 0 then begin
+        close(f);
+        chkioerr;
+        writeln(sigcnt,' signatures found in VIRSTOP.EXE.');
+      end else writeln('Error: No signatures found in VIRSTOP.EXE.');
+    end;
+  begin
+    readvirstop;
+    writesigs;
+    freemem(virstop,len);
+  end;
+  procedure dosigndef;
+    var sigs, nameidx, names: pointer;
+    procedure readsigndef;
+      var f: file;
+          date: record
+            y: word;
+            d,m: byte
+          end;
+      procedure chkioerr;
+      begin
+        if ioresult <> 0 then begin
+          writeln('Error: Cannot read SIGN.DEF.');
+          halt(1);
+        end;
+      end;
+      procedure checksigndef;
+        var buf: array[0..4095] of byte;
+            i: word;
+            l,c0,c1: longint;
+        function rol(l: longint): longint;
+        begin
+          rol := l shl 1 or l shr 31
+        end;
+      begin
+        l := filesize(f)-4;
+        c0 := 0;
+        repeat
+          c1 := 0;
+          i := sizeof(buf);
+          if l < i then i := l;
+          blockread(f,buf,i);
+          chkioerr;
+          dec(l,i);
+          for i := 0 to i-1 do c1 := rol(c1) xor buf[i];
+          c0 := c0 xor c1;
+        until l = 0;
+        blockread(f,c1,sizeof(c1));
+        chkioerr;
+        if c0 <> c1 then begin
+          writeln('Error: SIGN.DEF has an invalid checksum.');
+          halt(1);
+        end;
+      end;
+      procedure readsigs;
+        const frisk: string[15] = 'Copyright (c) F';
+        var l: longint;
+            i,c: word;
+            x: byte;
+        function ror(x: byte): byte;
+        begin
+          ror := x shr 1 or x shl 7;
+        end;
+      begin
+        seek(f,0);
+        blockread(f,l,sizeof(l));
+        chkioerr;
+        seek(f,l+4);
+        blockread(f,i,sizeof(i));
+        chkioerr;
+        sigs := alloc(i-8);
+        blockread(f,sigs^,i-8);
+        chkioerr;
+        c := -wp(@bp(sigs)^[i-10])^[0];
+        for i := 0 to i-11 do begin
+          x := not ror(bp(sigs)^[i]) xor ord(frisk[i mod 100 mod 15+1]);
+          x := x xor i mod 100;
+          bp(sigs)^[i] := x;
+          inc(c,x xor i mod 100)
+        end;
+        if c <> 0 then begin
+          writeln('Error: Invalid signatures checksum.');
+          halt(1);
+        end;
+      end;
+      procedure readnames;
+        var i: word;
+      begin
+        blockread(f,i,sizeof(i));
+        chkioerr;
+        nameidx := alloc(i*2);
+        blockread(f,nameidx^,i*2);
+        chkioerr;
+        i := filesize(f)-filepos(f)-4;
+        names := alloc(i);
+        blockread(f,names^,i);
+        chkioerr;
+        date.y := not wp(@bp(names)^[i-4])^[0];
+        date.d := not bp(names)^[i-2];
+        date.m := not bp(names)^[i-1];
+      end;
+    begin
+      writeln('Reading SIGN.DEF...');
+      assign(f,'SIGN.DEF');
+      reset(f,1);
+      if ioresult <> 0 then begin
+        writeln('Error: Cannot open SIGN.DEF.');
+        halt(1);
+      end;
+      checksigndef;
+      readsigs;
+      readnames;
+      writeln('Signatures created ',date.m,'-',date.d,'-',date.y);
+      close(f);
+    end;
+    procedure writesigs;
+      var buf: array[0..2047] of byte;
+          i,sigcnt: word;
+          f: text;
+          sig, name: string;
+      procedure chkioerr;
+      begin
+        if ioresult <> 0 then begin
+          writeln('Error: Cannot write to F-PROT.STR.');
+          halt(1);
+        end;
+      end;
+      procedure extract(n: word);
+        var i,j,k: word;
+      begin
+        inc(sig[0]);
+        for i := 1 to bp(sigs)^[n] do begin
+          sig[length(sig)] := chr(bp(sigs)^[n+i+1]);
+          j := wp(@bp(sigs)^[n+bp(sigs)^[n]])^[i];
+          if i > bp(sigs)^[n+1]
+            then extract(j-8)
+            else begin
+              inc(j,512);
+              for k := bp(sigs)^[j] downto 1 do begin
+                inc(sig[0]);
+                sig[length(sig)] := chr(bp(sigs)^[j+k]);
+              end;
+              k := wp(@bp(sigs)^[j+bp(sigs)^[j]+1])^[0];
+              if k = 0 then
+                name := 'unknown'
+              else begin
+                k := wp(nameidx)^[k-1];
+                name := '';
+                while bp(names)^[k] <> 0 do begin
+                  inc(name[0]);
+                  name[length(name)] := chr(bp(names)^[k]);
+                  inc(k);
+                end;
+              end;
+              writesig(f,sig,name,#$90);
+              chkioerr;
+              dec(sig[0],bp(sigs)^[j]);
+              inc(sigcnt);
+            end;
+        end;
+        dec(sig[0]);
+      end;
+    begin
+      writeln('Writing F-PROT.STR...');
+      assign(f,'F-PROT.STR');
+      settextbuf(f,buf,sizeof(buf));
+      rewrite(f);
+      chkioerr;
+      sigcnt := 0;
+      for i := 0 to 255 do begin
+        sig := chr(i);
+        if wp(sigs)^[i] >= 512 then extract(wp(sigs)^[i]-8);
+      end;
+      writeln(f);
+      chkioerr;
+      close(f);
+      chkioerr;
+      writeln(sigcnt,' signatures found in SIGN.DEF.');
+    end;
+  begin
+    readsigndef;
+    writesigs;
+  end;
+begin
+  dovirstop;
+  dosigndef;
+  writeln('Done.');
+end.
+ 
+--- End GETFP211.PAS ----------------------------------------------------------
+ 
+<<< end of file >>>
+
+
