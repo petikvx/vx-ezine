@@ -1,5 +1,4 @@
 # Brigada Ocho E-zine #2 (Draft) - February 2003
-----------------------
 
 ## articles
 
@@ -15,9 +14,7 @@
 - art010.txt | independant jpg virus
 - art011.txt | creating outlook mail account with vbscripts
 
----------
 ## sources
----------
 
 - src000.txt | michelle by energy
 - src001.txt | holocaust by energy
