@@ -16,8 +16,12 @@
 - book.txt Story of one book / The Ziggy Zag
 - diary.txt Diary - Present future to forgotten past / The Unforgiven of Immortal Riot/Genesis
 ## Viruses
+- vdarkpara.txt Dark Paranoid / Terror-6
+- vkyjacisko.txt Kyjacisko / Vyvojar
+- vonehalf.txt One_Half.3577 / Vyvojar
+- vtmc.txt TMC:Level_6x9.A (Tiny Mutation Compiler) / Ender
+- vdictator.txt WordMacro.SlovakDictator / Nasty Lamer & Ugly Luser
 ## Jokes
 ## Closing
 
 ![1](01.png)
-
