@@ -1,0 +1,34 @@
+Displays or modifies file types used in file extension associations
+
+FTYPE [fileType[=[openCommandString]]]
+
+  fileType  Specifies the file type to examine or change
+  openCommandString Specifies the open command to use when launching files
+                    of this type.
+
+Type FTYPE without parameters to display the current file types that
+have open command strings defined.  FTYPE is invoked with just a file
+type, it displays the current open command string for that file type.
+Specify nothing for the open command string and the FTYPE command will
+delete the open command string for the file type.  Within an open
+command string %0 or %1 are substituted with the file name being
+launched through the assocation.  %* gets all the parameters and %2
+gets the 1st parameter, %3 the second, etc.  %~n gets all the remaining
+parameters starting with the nth parameter, where n may be between 2 and 9,
+inclusive.  For example:
+
+    ASSOC .pl=PerlScript
+    FTYPE PerlScript=perl.exe %1 %*
+
+would allow you to invoke a Perl script as follows:
+
+    script.pl 1 2 3
+
+If you want to eliminate the need to type the extensions, then do the
+following:
+
+    set PATHEXT=.pl;%PATHEXT%
+
+and the script could be invoked as follows:
+
+    script 1 2 3

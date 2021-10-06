@@ -1,0 +1,11 @@
+Displays or modifies file extension associations
+
+ASSOC [.ext[=[fileType]]]
+
+  .ext      Specifies the file extension to associate the file type with
+  fileType  Specifies the file type to associate with the file extension
+
+Type ASSOC without parameters to display the current file associations.
+If ASSOC is invoked with just a file extension, it displays the current
+file association for that file extension.  Specify nothing for the file
+type and the command will delete the association for the file extension.

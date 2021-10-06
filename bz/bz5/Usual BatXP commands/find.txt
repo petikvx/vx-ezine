@@ -1,0 +1,15 @@
+Searches for a text string in a file or files.
+
+FIND [/V] [/C] [/N] [/I] [/OFF[LINE]] "string" [[drive:][path]filename[ ...]]
+
+  /V         Displays all lines NOT containing the specified string.
+  /C         Displays only the count of lines containing the string.
+  /N         Displays line numbers with the displayed lines.
+  /I         Ignores the case of characters when searching for the string.
+  /OFF[LINE] Do not skip files with offline attribute set.
+  "string"   Specifies the text string to find.
+  [drive:][path]filename
+             Specifies a file or files to search.
+
+If a path is not specified, FIND searches the text typed at the prompt
+or piped from another command.

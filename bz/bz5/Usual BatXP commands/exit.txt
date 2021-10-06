@@ -1,0 +1,12 @@
+Quits the CMD.EXE program (command interpreter) or the current batch
+script.
+
+EXIT [/B] [exitCode]
+
+  /B          specifies to exit the current batch script instead of
+              CMD.EXE.  If executed from outside a batch script, it
+              will quit CMD.EXE
+
+  exitCode    specifies a numeric number.  if /B is specified, sets
+              ERRORLEVEL that number.  If quitting CMD.EXE, sets the process
+              exit code with that number.
