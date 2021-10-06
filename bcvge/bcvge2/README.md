@@ -1,5 +1,6 @@
 # BCVG Network Security E-zine
 
+```
 		     Issue #2, File 1
 
 
@@ -58,3 +59,5 @@ SeCoNd PaRt To HeLl	Member		:SPTH@jet2web.cc
 alcopaul		Member		:alcopaul@digitelone.com
 IllAwesome		Contributor	:illawesome@lycos.com
 philet0ast3r		Contributor	:philet0ast3r@rRlf.de
+```
+![bcvge2.png](bcvge2.png)
