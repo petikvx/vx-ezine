@@ -1,0 +1,95 @@
+@ECHO OFF
+:: SortTime, Version 3.12 for Windows NT 4 and 2000
+:: Save time and "sorted" time in environment variables.
+::
+:: This batch file will always display the same results,
+:: independent of "International" settings.
+::
+:: Written by Rob van der Woude
+:: http://www.robvanderwoude.com
+
+
+:: Help required?
+IF NOT [%1]==[] GOTO Syntax
+
+:: Windows NT 4/2000 only
+SET OS_OK=0
+VER | FIND "Windows NT" >NUL
+IF NOT ERRORLEVEL 1 SET OS_OK=1
+VER | FIND "Windows 2000" >NUL
+IF NOT ERRORLEVEL 1 SET OS_OK=1
+IF [%OS_OK%]==[0] GOTO :OsErr
+:: Command Extensions should be enabled
+SET /A 12 + 4 2>&1 | FIND "16" >NUL
+IF ERRORLEVEL 1 GOTO :CmdExtErr
+
+:: Store current time in default Locale format
+FOR /F "TOKENS=*" %%A IN ('TIME/T') DO SET TIME=%%A
+ECHO It's %TIME% now
+
+:: Store current time in a variable in hh:mm format
+:: Export registry settings to a temporary file
+START /W REGEDIT /E %TEMP%.\_TEMP.REG "HKEY_CURRENT_USER\Control Panel\International"
+:: Read the exported data, filtering out keys added by Windows 2000
+FOR /F "tokens=1* delims==" %%A IN ('TYPE %TEMP%.\_TEMP.REG ^| FIND "iTime" ^| FIND /V "iTimePrefix"') DO SET iTime=%%B
+:: Thanks for Daniel R. Foster for correcting a typo in the next line
+FOR /F "tokens=1* delims==" %%A IN ('TYPE %TEMP%.\_TEMP.REG ^| FIND "sTime" ^| FIND /V "sTimeFormat"') DO SET sTime=%%B
+DEL %TEMP%.\_TEMP.REG
+:: Remove quotes
+SET iTime=%iTime:"=%
+SET sTime=%sTime:"=%
+
+:: Format SORTTIME depending on registry settings
+IF %iTime%==1 GOTO Sort
+SET AMPMTIME=%TIME%
+FOR /F "TOKENS=1,2* DELIMS=%sTime% " %%A IN ('ECHO %TIME%') DO (
+	SET HOUR=%%A
+	SET MINS=%%B
+)
+SET AMPM=%MINS:~2,1%
+SET MINS=%MINS:~0,2%
+IF %HOUR% LSS 12 IF /I %AMPM%==P SET /A HOUR=%HOUR%+12
+IF %HOUR% LSS 10 IF /I %AMPM%==A SET HOUR=0%HOUR%
+IF %HOUR% EQU 12 IF /I %AMPM%==A SET HOUR=00
+SET TIME=%HOUR%%sTime%%MINS%
+
+:Sort
+FOR /F "TOKENS=1,2* DELIMS=%sTime% " %%A IN ('ECHO %TIME%') DO SET SORTTIME=%%A%%B
+:: Thanks for Holger Stein who mailed me this correction (add leading zero):
+IF %SORTTIME% LSS 1000 SET SORTTIME=0%SORTTIME%
+ECHO For sorting purposes: %SORTTIME%
+GOTO End
+
+:CmdExtErr
+ECHO.
+ECHO Command extensions need to be enabled for this batch file to run correctly.
+ECHO.
+ECHO You can run this batch file using the command:
+ECHO.
+ECHO     CMD /X %~n0
+ECHO.
+ECHO to enable command extensions, however, the results will not be saved in
+ECHO environment variables that way.
+GOTO Syntax
+
+:OsErr
+ECHO.
+ECHO This batch file is written for Windows NT 4 and Windows 2000 only!
+ECHO.
+ECHO Visit http://www.robvanderwoude.com for Kix and Rexx versions.
+
+:Syntax
+ECHO.
+ECHO SortTime.bat,  Version 3.11 for Windows NT 4 and Windows 2000
+ECHO Displays the time of execution in the system's default time format and in
+ECHO hhmm format for sorting purposes.
+ECHO The values are also stored in the environment variables DATE and SORTDATE.
+ECHO This version uses native Windows commands only.
+ECHO.
+ECHO Written by Rob van der Woude
+ECHO http://www.robvanderwoude.com
+ECHO.
+ECHO Usage:  %~n0
+
+:End
+SET OS_OK=

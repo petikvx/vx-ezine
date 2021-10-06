@@ -1,0 +1,141 @@
+@ECHO OFF
+ECHO.
+
+:: Windows NT 4 / 2000 / XP only
+IF NOT "%OS%"=="Windows_NT" GOTO Syntax
+
+:: Localize environment and enable command extensions
+SETLOCAL ENABLEEXTENSIONS
+
+:: Command line check
+IF NOT [%2]==[] GOTO Syntax
+
+:: Determine current year
+CALL :ThisYear
+
+:: If no year is specified, use current year
+IF [%1]==[] (SET Y=%ThisYear%) ELSE (SET Y=%1)
+
+:: Is the specified year valid?
+:: Check if number
+FOR /F "tokens=1 delims=0123456789 " %%A IN ('ECHO.%Y%') DO IF NOT "%%A"=="" GOTO Syntax
+:: check if in range
+IF %Y% LSS 1752 GOTO Syntax
+IF %Y% GTR 3000 GOTO Syntax
+
+:: Calculate Easter Day using the instructions found at
+:: Simon Kershaw's "KEEPING THE FEAST"
+:: http://www.oremus.org/liturgy/etc/ktf/app/easter.html
+SET /A G  = ( %Y% %% 19 ) + 1
+SET /A S  = (( %Y% - 1600 ) / 100 ) - (( %Y% - 1600 ) / 400 )
+SET /A L  = ((( %Y% - 1400 ) / 100 ) * 8 ) / 25
+SET /A P1 = ( 30003 - 11 * %G% + %S% - %L% ) %% 30
+SET P=%P1%
+IF %P%==28 IF %G% GTR 11 SET P=27
+IF %P%==29 SET P=28
+SET /A D  = ( %Y% + ( %Y% / 4 ) - ( %Y% / 100 ) + ( %Y% / 400 )) %% 7
+SET /A D1 = ( 8 - %D% ) %% 7
+SET /A P2 = ( 70003 + %P% ) %% 7
+SET /A X  = (( 70004 - %D% - %P% ) %% 7 ) + 1
+SET /A E  = %P% + %X%
+IF %E% LSS 11 (
+	SET /A ED = %E% + 21
+	SET EM=March
+) ELSE (
+	SET /A ED = %E% - 10
+	SET EM=April
+)
+IF %Y% LSS %ThisYear% SET IS=was
+IF %Y% EQU %ThisYear% SET IS=is
+IF %Y% GTR %ThisYear% SET IS=will be
+
+:: Calculate Ascension day's date
+IF %EM%==March (
+	IF %ED% GTR 22 (
+		SET AM=May
+		SET /A AD = %ED% - 22
+	) ELSE (
+		SET AM=April
+		SET /A AD = %ED% + 8
+	)
+) ELSE (
+	IF %ED% GTR 21 (
+		SET AM=June
+		SET /A AD = %ED% - 21
+	) ELSE (
+		SET AM=May
+		SET /A AD = %ED% + 9
+	)
+)
+
+:: Calculate Pentecost date
+IF %AM%==April (
+	IF %AD% GTR 20 (
+		SET PM=May
+		SET /A PD = %AD% - 20
+	) ELSE (
+		SET PM=April
+		SET /A PD = %AD% + 10
+	)
+)
+IF %AM%==May (
+	IF %AD% GTR 21 (
+		SET PM=June
+		SET /A PD = %AD% - 21
+	) ELSE (
+		SET PM=May
+		SET /A PD = %AD% + 10
+	)
+)
+IF %AM%==June (
+	IF %AD% GTR 21 (
+		SET PM=July
+		SET /A PD = %AD% - 21
+	) ELSE (
+		SET PM=June
+		SET /A PD = %AD% + 10
+	)
+)
+
+:: Display the result
+ECHO In %Y% Easter Day %IS% %EM% %ED%
+ECHO         Ascension day %IS% %AM% %AD%
+ECHO         Pentecost %IS% %PM% %PD%
+
+:: Done
+GOTO End
+
+
+:ThisYear
+:: Export registry settings to a temporary file
+START /WAIT REGEDIT /E %TEMP%.\_TEMP.REG "HKEY_CURRENT_USER\Control Panel\International"
+:: Read the exported data
+FOR /F "tokens=1* delims==" %%A IN ('TYPE %TEMP%.\_TEMP.REG ^| FIND /I "iDate"') DO SET iDate=%%B
+FOR /F "tokens=1* delims==" %%A IN ('TYPE %TEMP%.\_TEMP.REG ^| FIND /I "sDate"') DO SET sDate=%%B
+DEL %TEMP%.\_TEMP.REG
+:: Remove quotes
+SET iDate=%iDate:"=%
+SET sDate=%sDate:"=%
+:: Detemine current year depending on registry settings
+IF %iDate%==0 FOR /F "TOKENS=1-4* DELIMS=%sDate% " %%A IN ('DATE/T') DO SET ThisYear=%%D
+IF %iDate%==1 FOR /F "TOKENS=1-4* DELIMS=%sDate% " %%A IN ('DATE/T') DO SET ThisYear=%%D
+IF %iDate%==2 FOR /F "TOKENS=1-4* DELIMS=%sDate% " %%A IN ('DATE/T') DO SET ThisYear=%%B
+GOTO:EOF
+
+:Syntax
+ECHO Easter.bat,  Version 2.00 for Windows NT 4 / 2000 / XP
+ECHO Calculate Easter day, Ascension day and Pentecost dates for the specified year.
+ECHO.
+ECHO Usage:  EASTER  [ year ]
+ECHO.
+ECHO Where:  year should be within the range of 1752 through 3000
+ECHO.
+ECHO Written by Rob van der Woude
+ECHO http://www.robvanderwoude.com
+ECHO.
+ECHO Easter day calculation based on the instructions found at
+ECHO Simon Kershaw's "KEEPING THE FEAST"
+ECHO http://www.oremus.org/liturgy/etc/ktf/app/easter.html
+
+:End
+IF "%OS%"=="Windows_NT" ENDLOCAL

@@ -1,0 +1,54 @@
+@ECHO OFF
+IF NOT [%2]==[] GOTO Syntax
+IF NOT [%OS%]==[Windows_NT] GOTO Syntax
+
+REGEDIT /E "%Temp%.\numlock.dat" "HKEY_CURRENT_USER\Control Panel\Keyboard"
+FOR /F "tokens=2 delims==" %%A IN ('TYPE "%Temp%.\numlock.dat" ^| FIND /I "InitialKeyboardIndicators"') DO SET IKI=%%~A
+
+IF [%1]==[]  GOTO :Read
+IF [%1]==[0] GOTO :Reset
+IF [%1]==[1] GOTO :Set
+GOTO Syntax
+
+:Read
+SET /A IKI = "%IKI% & 2"
+IF %IKI%==2 (ECHO Default numlock state is ON) ELSE (ECHO Default numlock state is OFF)
+GOTO End
+
+:Set
+SET /A IKI = "%IKI% | 2"
+GOTO :Store
+
+:Reset
+SET /A IKI = "%IKI% & 253"
+
+:Store
+>  "%Temp%.\numlock.dat" ECHO REGEDIT4
+>> "%Temp%.\numlock.dat" ECHO.
+>> "%Temp%.\numlock.dat" ECHO [HKEY_CURRENT_USER\Control Panel\Keyboard]
+>> "%Temp%.\numlock.dat" ECHO "InitialKeyboardIndicators"="%IKI%"
+>> "%Temp%.\numlock.dat" ECHO.
+REGEDIT.EXE /S "%Temp%.\numlock.dat"
+
+:: Reread value from register
+REGEDIT /E "%Temp%.\numlock.dat" "HKEY_CURRENT_USER\Control Panel\Keyboard"
+FOR /F "tokens=2 delims==" %%A IN ('TYPE "%Temp%.\numlock.dat" ^| FIND /I "InitialKeyboardIndicators"') DO SET /A IKI = "%%~A & 2"
+IF %IKI%==2 (ECHO Default numlock state is now ON) ELSE (ECHO Default numlock state is now OFF)
+GOTO End
+
+:Syntax
+ECHO.
+ECHO NumLock.bat,  Version 1.00 for Windows NT 4 / 2000 / XP
+ECHO Display or change the default NumLock status for the current user
+ECHO.
+ECHO Usage:  NUMLOCK  [ 0 ³ 1 ]
+ECHO.
+ECHO If no argument is specified, the current status will be displayed;
+ECHO 1 will turn the default NumLock status ON; 0 will turn it OFF.
+ECHO.
+ECHO Written by Rob van der Woude
+ECHO http://www.robvanderwoude.com
+
+:End
+SET IKI=
+IF EXIST "%Temp%.\numlock.dat" DEL "%Temp%.\numlock.dat"

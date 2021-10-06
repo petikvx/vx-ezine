@@ -1,0 +1,10 @@
+```
+.-----------------------------[BATCH ZONE]-.
+|  .:Batch Zone, batch and related zine:.  |
++------------------------------------------+
+| o  interviews                            |
+| o  batch tutorials/articles              |
+| o  batch virii/worms/constructors/tools  |
+| o  batch made utilities                  |
+`-[DvL]-[2003,Romania]---------------------'
+```

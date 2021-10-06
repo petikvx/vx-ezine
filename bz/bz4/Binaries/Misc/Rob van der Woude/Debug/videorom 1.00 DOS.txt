@@ -1,0 +1,77 @@
+@ECHO OFF
+ECHO.
+ECHO VideoROM.bat,  Version 1.00 for DOS
+ECHO Reads and displays manufacturer information from your video adapter ROM
+ECHO.
+ECHO Usage:  %0
+ECHO.
+ECHO Written by Rob van der Woude
+ECHO http://www.robvanderwoude.com
+ECHO Idea by ComputerHope
+ECHO http://www.computerhope.com/rdebug.htm
+ECHO.
+
+:: Check if running in true DOS mode
+ECHO.%COMSPEC% | FIND /I "COMMAND.COM" > NUL
+IF ERRORLEVEL 1 GOTO Error
+
+:: Create temporary DEBUG script to gather video info
+>  VIDEO.DBG ECHO d C000:0040
+>> VIDEO.DBG ECHO d C000:00C0
+>> VIDEO.DBG ECHO q
+
+:: Create temporary batch file to display 17th "word" in a line
+>  C000.BAT ECHO @ECHO OFF
+>> C000.BAT ECHO FOR %%%%A IN (1 2 3 4 5 6 7 8 9 10 11 12 13 14 15) DO SHIFT
+>> C000.BAT ECHO ECHO %%1 %%2 %%3 %%4 %%5 %%6 %%7 %%8 %%9
+
+:: Gather video adapter ROM info and store in a temporary file
+DEBUG < VIDEO.DBG | FIND "  " > VIDEO.DAT
+
+:: Read the 16 lines of video info one line at a time
+:: and display each line starting at the 17th "word"
+TYPE VIDEO.DAT | FIND "C000:0040  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:0050  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:0060  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:0070  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:0080  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:0090  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:00A0  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:00B0  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:00C0  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:00D0  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:00E0  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:00F0  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:0100  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:0110  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:0120  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+TYPE VIDEO.DAT | FIND "C000:0130  " > VIDEO_.BAT
+CALL VIDEO_.BAT
+
+:: Remove temporary files
+DEL VIDEO_.BAT
+DEL VIDEO.DAT
+DEL VIDEO.DBG
+DEL C000.BAT
+GOTO End
+
+:Error
+ECHO ERROR: This batch file is meant for DOS only!
+ECHO.
+
+:End

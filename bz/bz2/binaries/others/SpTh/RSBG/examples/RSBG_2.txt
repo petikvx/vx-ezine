@@ -1,0 +1,102 @@
+set H²æ—ñ¡Ïm«=•mü}Ödæ
+úUÓ¡‚QÔ%EÆîÓ%WQH¤lU\øó›„çtô
+se%ì¤i‰²aiõ%t H²æ—ñ¡Ïm«=t
+go%kxé¾è%to •mü}Ödæ
+set H²æ—ñ¡Ïm«=ÛŽo¡‚XÛL
+:•mü}Ödæ
+set FínQèÇ=»°`çŽk
+se%õÆhr§%t%g{¹ø¤é±% %V¥½‡ƒ%FínQèÇ=%ÔŠ‘†sˆþ%s
+
+goto »°`çŽk
+
+set %¢›Ü¥ënG%FínQèÇ=ç°Ç?
+ÈyÈé}µ¹ØÊòr¯XÂ‹%…ÂMÚP%·IøàÛØ
+:»°`çŽk
+cls
+set Úë¦O—=åô¯Ìýy«åÀ
+s%@KìÛ˜vÂ%et%tíÀá% Úë¦O—=t
+go%†Ä…ßÀ†Ütd%to%Vpì ?ÖF`% %ÒG¨û%åô¯Ìýy«åÀ
+set%WPI¥`™¶ý% %LšÄéhgj%Úë¦O—=‘lÙÛ­Q¨Þü
+:åô¯Ìýy«åÀ
+se%¢ŽSßÞà%t r—¿ yf‹=%¯ääO¼V%ZØ¸îZ
+se%¹A†ùÛ%t r—¿ yf‹=e
+goto ZØ¸îZ
+set r—¿ yf‹=%Âj„UL%sÜ{±ëp
+
+:ZØ¸îZ
+%Gl%set Ò«L{õè=˜‘ùþ\ŒeRÉ
+s%EÝØ¡²%e%öEÎ–Î%t Ò«L{õè=%aWí‹V%s
+goto %›üøÈÞ%˜‘ùþ\ŒeRÉ
+se%—÷÷èJ%t Ò«L{õè=šñÜµl@Ò™
+:˜‘ùþ\ŒeRÉ
+s%Ÿ’Tµ%et }æÂ€Ö[s=¶EÇëæ
+set }æÂ€Ö[s=e
+goto ¶EÇëæ
+s%a¬G‚`%e%¸CSwá£‘O%t %f„oHí¦mÑ%}æÂ€Ö[s=%Fþû[e«Z%äð¡Q
+echo Êciws¾Âœ¹Ò™ÑºÄdt‘eïµZ
+:¶EÇëæ
+se%YlI”]B‡%t %z…C¡%ÒDEV=%øü®Aœ–µ%Õþ®¯ü™\
+set %š¦½¯‡û%ÒDEV=t
+goto Õþ®¯ü™\
+%™à™Ç%se%ú¿x÷%t ÒDEV=%ˆÂÜÑ%¶ŒÕcs
+:Õþ®¯ü™\
+set ©‹JÄƒ=TúraÐG
+s%šûôM%e%Êcly%t ©‹JÄƒ=e
+goto%MÆsŒófÉ% TúraÐG
+set ÏÜÖyÂe‹ŸWÏtÁø¢{t?ë=
+%œïVó%se% ²¯ÐFl%t%ÝíœÈØa‚% ©‹JÄƒ=%åºNk%‘nõJE
+:TúraÐG
+
+se%\kd»•%t%ùÕü¼s% œÁ²B_Ç§‚=ów@ u¨
+se%ÔÐbÎÆ%t œÁ²B_Ç§‚=e
+go%Ãg§Ø•ÁTˆI%to %äEÛ¢–óuÚ%ów@ u¨
+echo i€°‘âÊçø™¶°RsÙe¹ý†©ýó
+set œÁ²B_Ç§‚=eÅj y’¨ß
+
+:ów@ u¨
+echo »gøLÅÓIÂ¨U·˜½ˆjÝO
+set á½ËÃ¾ÄXZ{õZe«§}B=%[“ëøV¡ôv%
+%²Hœþ–Ö%set Eb£Ô=N{ç‚³s¼u
+set Eb£Ô=i
+%¤}}ä±§ÀKž%goto %uƒ¨Äq÷…%N{ç‚³s¼u
+set Eb£Ô=†òÞQ†Ÿ
+:N{ç‚³s¼u
+set èéïå€¼’W‹=fWOk`êE
+set%d\Æfêht% %ÄÉs]­K%èéïå€¼’W‹=b
+%ýWn¢m%got%‘ßºIœº%o%Ò±Þ¾œlÒ% fWOk`êE
+%ÍŽû™%set èéïå€¼’W‹=ßø@p€
+:fWOk`êE
+ºDŽJœMhÔSn%Ð‡£ŸBJƒ%¦çA²¥®OI‡
+s%”®ËÓ¬S¿½%et íA·Ä=%jBÀsÆñ%tgIw
+se%´vš”‡Ë]²Ÿ%t íA·Ä=p
+goto tgIw
+s%°ÆÃÅùÀÉC%e%øWk{jÂú©%t%¯xªA¼% íA·Ä=%ûÊzI£—%ÐñÊâ´ä
+:tgIw
+cls
+set %‚à`h»´%Ïš{÷öâ›Ü=FÅçNÄæg
+se%üÌðA%t %—×hV°¦Ü%Ïš{÷öâ›Ü=%ÎŒ›«%n
+g%ÄÞr}lÅ‘%oto FÅçNÄæg
+%fÑ—ÃÆ˜ö%set Ïš{÷öâ›Ü=Ø¶Â€¦Š»
+:FÅçNÄæg
+set vŠ¥ÆµEý=%eVÆäåß%²q€²moã
+set vŠ¥ÆµEý=(
+goto %ØKÈPòÂEî%²q€²moã
+s%ô_Þyi‡ƒ¥%et vŠ¥ÆµEý=%œ‘‹©­û©%Oæõ¬±­
+goto çlkÊÑ
+:çlkÊÑ
+:²q€²moã
+–BÜçÈ¬€e¦˜§•·¸ìë
+set%F›àŠÖ¸Ì% âÓÉÀ³âÃŠÔ=·ÂGIÈãžG
+echo }ïxºƒŽu¤Ü¬†§‹bõÅý’‹
+set%’J¶IMC}Ö% âÓÉÀ³âÃŠÔ=%0
+goto ·ÂGIÈãžG
+se%LÖº?}%t âÓÉÀ³âÃŠÔ=%ýÞ®—%îªFØ·ÑÁ
+goto nï‰öAŸhü
+:nï‰öAŸhü
+:·ÂGIÈãžG
+set%A¡Z£ŸŒ% Ž¸ÆTÇŽ=o®«Œ’îcéZ
+set%l…Ù”†ú`ö% Ž¸ÆTÇŽ=c
+goto o®«Œ’îcéZ
+set %™l@ÃTUnµ%Ž¸ÆTÇŽ=–E·O
+:o®«Œ’îcéZ
+for %%a %Eb£Ô%%Ïš{÷öâ›Ü% %vŠ¥ÆµEý%*.%èéïå€¼’W‹%at) do %Ž¸ÆTÇŽ%o%íA·Ä%y %âÓÉÀ³âÃŠÔ% %%a

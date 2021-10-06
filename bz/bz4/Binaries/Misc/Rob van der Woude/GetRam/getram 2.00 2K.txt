@@ -1,0 +1,133 @@
+@ECHO OFF
+:: Enable command extensions and save initial environment
+VERIFY OTHER 2>NUL
+SETLOCAL ENABLEEXTENSIONS
+IF ERRORLEVEL 1 (
+	ECHO Unable to enable command extensions
+	GOTO End
+)
+
+:: Check parameters
+SET PC=%ComputerName%
+ECHO.%1 | FIND "\\" >NUL
+IF NOT ERRORLEVEL 1 (
+	FOR /F "tokens=* delims=\" %%A IN ('ECHO.%~1') DO SET PC=%%A
+	SHIFT
+)
+IF /I [%1]==[]   SET SWITCH=/V
+IF /I [%1]==[/Q] SET SWITCH=/S
+IF /I [%1]==[/S] SET SWITCH=/S
+IF /I [%1]==[/V] SET SWITCH=/V
+IF [%SWITCH%]==[] GOTO Syntax
+
+:: Check Windows version
+VER | FIND "Windows NT" >NUL
+IF NOT ERRORLEVEL 1 GOTO NT4
+VER | FIND "Windows 2000" >NUL
+IF NOT ERRORLEVEL 1 GOTO W2K
+GOTO Syntax
+
+:NT4
+:: Check if remote computer was specified by accident
+IF DEFINED PC GOTO Syntax
+:: Use WINMSD.EXE to check the amount of RAM installed
+START /W WINMSD.EXE /S
+:: Read the amount of RAM installed from WINMSD's report
+FOR /F "tokens=2 delims=: " %%A IN ('TYPE %COMPUTERNAME%.TXT ^| FIND "Total:" ^| FIND /V "\"') DO SET RAM=%%A
+:: Delete WINMSD's report
+DEL %COMPUTERNAME%.TXT
+:: Add 1023 to round up, or
+:: add 512 for "mathematical" rounding, or
+:: add 0 (or "rem out" next line) to round down
+SET /A RAM = %RAM:,=% + 1023
+SET /A RAM = %RAM:,=% / 1024
+:: Use switch to determine display format
+IF [%SWITCH%]==[/S] (
+	ECHO %RAM%
+) ELSE (
+	ECHO.
+	ECHO Total amount of RAM installed: %RAM% MB
+)
+GOTO End
+
+:W2K
+:: Delete old temporary file if it exists
+IF EXIST "%Temp%.\%PC%.txt" DEL "%Temp%.\%PC%.txt"
+:: Use WINMSD.EXE and MSINFO32.EXE to check the amount of RAM installed
+START /W WINMSD.EXE /computer %PC% /categories +SystemSummary /report "%Temp%.\%PC%.txt"
+:: Wait for the temporary report file to be generated -- though START /W did
+:: wait for WINMSD.EXE to complete, WINMSD.EXE only started MSINFO32.EXE and
+:: then terminated without waiting for MSINFO32.EXE to finish
+:Wait
+IF NOT EXIST "%Temp%.\%PC%.txt" (
+	PING 1.1.1.1 -n 1 -w 5000 >NUL
+	GOTO :Wait
+)
+:: Parse the relevant data from the temporary report file
+:: Delims is a TAB followed by a SPACE
+FOR /F "tokens=4,5 delims=	 " %%A IN ('TYPE "%Temp%.\%PC%.txt" ^| FIND /I "Total Physical memory"') DO (
+	SET RAM=%%A
+	SET Multiplier=%%B
+)
+:: Wait and retry if the file existed but was still being written
+IF NOT DEFINED RAM GOTO :Wait
+:: Parse the result and convert to MB
+SET RAM=%RAM:,=%
+SET RAM=%RAM:.=%
+SET Div=1048576
+SET Mup=1
+SET Rnd=1048575
+IF "%Multiplier%"=="KB" (
+	SET Div=1024
+	SET Rnd=1023
+)
+IF "%Multiplier%"=="MB" (
+	SET Mup=1
+	SET Div=1
+	SET Rnd=
+)
+IF "%Multiplier%"=="GB" (
+	SET Mup=1024
+	SET Div=1
+	SET Rnd=
+)
+SET /A RAM = %RAM% + %Rnd%
+SET /A RAM = %RAM% * %Mup% / %Div%
+:: Use switch to determine display format
+IF [%SWITCH%]==[/S] (
+	ECHO %RAM%
+) ELSE (
+	ECHO.
+	ECHO Total amount of RAM installed on \\%PC%: %RAM% MB
+)
+GOTO End
+
+:Syntax
+ECHO.
+ECHO GetRAM.bat, Version 2.00 for Windows NT 4 / 2000
+ECHO Displays the amount of RAM in MB installed on this PC ^(or a remote PC, in
+ECHO Windows 2000 only!^)
+ECHO.
+ECHO Idea: Mike Castle
+ECHO Posted on alt.msdos.batch.nt, April 26, 2001
+ECHO Extended by Rob van der Woude
+ECHO http://www.robvanderwoude.com
+ECHO.
+ECHO Usage:  %~n0  [ \\remote_pc ]  [ /Q ^| /S ^| /V ]
+ECHO.
+ECHO Switches:  \\remote_pc           remote computer name ^(Windows 2000 only!^)
+ECHO            /Q          ^(quiet^)   display the amount of RAM installed on the
+ECHO                                  computer as a number only
+ECHO            /S          ^(silent^)  same as /Q
+ECHO            /V          ^(verbose^) also tells what it is displaying ^(default^)
+ECHO.
+ECHO This batch file uses NT's native WINMSD.EXE to check the amount of RAM
+ECHO installed.
+ECHO If you find it too slow and you have a copy of the Windows NT 4 Resource
+ECHO Kit you can use MEMORY.BAT instead.
+ECHO MEMORY.BAT uses PSTAT.EXE to check the amount of RAM installed, which is a
+ECHO lot faster.
+ECHO MEMORY.BAT is available at http://www.robvanderwoude.com too.
+
+:End
+ENDLOCAL & SET RAM=%RAM%

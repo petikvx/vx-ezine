@@ -1,0 +1,51 @@
+@ECHO OFF
+:: Windows NT 4 / 2000 only
+IF NOT "%OS%"=="Windows_NT" GOTO Syntax
+:: Not for servers, for workstations only
+FOR /F "skip=8 tokens=2 delims=:" %%A IN ('NET ACCOUNTS') DO FOR /F "tokens=1 delims= " %%K IN ('ECHO.%%A') DO IF /I NOT "%%K"=="WORKSTATION" GOTO Syntax
+
+:: Rollback
+ECHO Creating a rollback file . . .
+START /WAIT REGEDIT /E "%Temp%.\BrowseRollBack.reg" "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Browser\Parameters"
+IF NOT EXIST "%Temp%.\BrowseRollBack.reg" (
+	ECHO Error creating rollback file, aborting . . .
+	GOTO End
+)
+ECHO A rollback file has been created:
+ECHO "%Temp%.\BrowseRollBack.reg"
+ECHO Doubleclick this file if you want to restore the original settings later.
+ECHO.
+
+ECHO Creating temporary file . . .
+> %Temp%.\NoBrowse.reg ECHO REGEDIT4
+>>%Temp%.\NoBrowse.reg ECHO.
+>>%Temp%.\NoBrowse.reg ECHO [HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Browser\Parameters]
+>>%Temp%.\NoBrowse.reg ECHO "IsDomainMaster"="No"
+>>%Temp%.\NoBrowse.reg ECHO "MaintainServerList"="No"
+>>%Temp%.\NoBrowse.reg ECHO.
+IF NOT EXIST "%Temp%.\NoBrowse.reg" (
+	ECHO Error creating temporary file, aborting . . .
+	GOTO End
+)
+
+ECHO Changing registry settings . . .
+START /WAIT REGEDIT /S %Temp%.\NoBrowse.reg
+
+ECHO Removing temporary file
+DEL %Temp%.\NoBrowse.reg
+
+ECHO Done
+GOTO End
+
+
+:Syntax
+ECHO.
+ECHO NoBrowse.bat,  Version 1.00 for Windows NT 4 / 2000
+ECHO Prevent the local workstation from becoming a domain browser master
+ECHO.
+ECHO Usage:  NOBROWSE
+ECHO.
+ECHO Written by Rob van der Woude
+ECHO http://www.robvanderwoude.com
+
+:End

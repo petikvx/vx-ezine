@@ -1,0 +1,65 @@
+@ECHO OFF
+ECHO.
+ECHO DDLU.bat,  Version 1.00 for Windows 95/98/NT 4/2000
+ECHO Don't Display Last Username
+ECHO Clears the last user name from the login box by adding the following
+ECHO registry entry:
+ECHO.
+
+IF NOT "%1"=="" GOTO Syntax
+VER | FIND /I "Windows" >NUL
+IF ERRORLEVEL 1 GOTO Syntax
+
+:: Create temporary .REG file
+> %TEMP%.\DDLU.REG ECHO REGEDIT4
+>>%TEMP%.\DDLU.REG ECHO.
+IF "%OS%"=="Windows_NT" GOTO WinNT
+ECHO.%COMSPEC% | FIND /I "COMMAND.COM" >NUL
+IF ERRORLEVEL 1 GOTO Syntax
+
+::Win9x
+>>%TEMP%.\DDLU.REG ECHO [HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Winlogon]
+ECHO   [HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Winlogon]
+GOTO AddVal
+
+:WinNT
+ECHO   [HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon]
+>>%TEMP%.\DDLU.REG ECHO [HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon]
+
+:AddVal
+>>%TEMP%.\DDLU.REG ECHO "DontDisplayLastUserName"="1"
+>>%TEMP%.\DDLU.REG ECHO.
+
+:: Ask for confirmation
+ECHO   DontDisplayLastUserName=1
+ECHO.
+ECHO Disclaimer:  Modifying the registry can cause serious problems that can
+ECHO              only be "solved" by reinstalling your operating system.
+ECHO              Use this batch file at your own risk.
+ECHO.
+ECHO Press any key to proceed, or Ctrl+C to abort . . .
+PAUSE > NUL
+
+:: Add registry key using temporary file
+REGEDIT /S %TEMP%.\DDLU.REG
+
+:: Remove temporary file
+DEL %TEMP%.\DDLU.REG
+
+:: Done
+GOTO End
+
+:Syntax
+ECHO   [HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon]
+ECHO   DontDisplayLastUserName=1
+ECHO.
+ECHO Usage:  DDLU
+ECHO.
+ECHO Written by Rob van der Woude
+ECHO http://www.robvanderwoude.com
+ECHO.
+ECHO Disclaimer:  Modifying the registry can cause serious problems that can
+ECHO              only be "solved" by reinstalling your operating system.
+ECHO              Use this batch file at your own risk.
+
+:End

@@ -1,0 +1,72 @@
+@ECHO OFF
+IF NOT [%OS%]==[Windows_NT] GOTO Syntax
+IF NOT [%1]==[] IF NOT [%1]==[0] IF NOT [%1]==[1] GOTO Syntax
+
+SETLOCAL
+
+REGEDIT /E %Temp%.\ShortExt.reg "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem"
+FOR /F "tokens=2 delims=:" %%A IN ('TYPE %Temp%.\ShortExt.reg ^| FIND "Win95TruncatedExtensions"') DO SET /A W95TruncExt=%%A
+DEL %Temp%.\ShortExt.reg
+
+CALL :FuncDescr
+CALL :Display %W95TruncExt% Current
+ECHO Type %~n0 /? for online help
+
+IF [%1]==[] GOTO End
+> %Temp%.\_ShortExt.reg ECHO REGEDIT4
+>>%Temp%.\_ShortExt.reg ECHO.
+>>%Temp%.\_ShortExt.reg ECHO [HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem]
+>>%Temp%.\_ShortExt.reg ECHO "Win95TruncatedExtensions"=dword:0000000%1
+>>%Temp%.\_ShortExt.reg ECHO.
+START /WAIT REGEDIT /S %Temp%.\_ShortExt.reg
+DEL %Temp%.\_ShortExt.reg
+
+REGEDIT /E %Temp%.\ShortExt.reg "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem"
+FOR /F "tokens=2 delims=:" %%A IN ('TYPE %Temp%.\ShortExt.reg ^| FIND "Win95TruncatedExtensions"') DO SET /A W95TruncExt=%%A
+DEL %Temp%.\ShortExt.reg
+CALL :Display %W95TruncExt% New
+
+ENDLOCAL
+GOTO End
+
+:Display
+ECHO.
+ECHO %2 value:
+ECHO.
+ECHO     [HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem]
+ECHO     Win95TruncatedExtensions=%1
+ECHO.
+IF [%1]==[0] (ECHO Extension truncation is disabled) ELSE (ECHO Extension truncation is enabled)
+ECHO.
+GOTO:EOF
+
+:FuncDescr
+ECHO.
+ECHO By default, Windows NT and 2000 evaluate file extensions on the first
+ECHO three characters: "filename.html" is actually treated as "filename.htm".
+ECHO Therefore if you use a command such as "del *.htm" to delete all the
+ECHO ".htm" files, you will also delete all ".html" files as well.
+ECHO This behaviour will be referred to as "extension truncation".
+ECHO Extension truncation can be disabled by modifying the registry, which
+ECHO is exactly what this batch file can do for you.
+GOTO:EOF
+
+:Syntax
+ECHO.
+ECHO ShortExt.bat,  Version 1.00 for Windows NT 4 / 2000
+ECHO Display or modify the Win95TruncatedExtensions registry entry
+CALL :FuncDescr
+ECHO.
+ECHO Usage:  %~n0  [ 0 ^| 1 ]
+ECHO.
+ECHO Without command line parameters, the current value will be displayed.
+ECHO Command line parameter 0 will disable extension truncation.
+ECHO Command line parameter 1 will reenable extension truncation again.
+ECHO.
+ECHO Written by Rob van der Woude
+ECHO http://www.robvanderwoude.com
+ECHO Based on a tip from Windows Registry Guide
+ECHO http://registry.winguides.com
+ECHO.
+
+:End
