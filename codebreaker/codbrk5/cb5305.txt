@@ -1,0 +1,488 @@
+; Huffman Compression/Decompression in 32bit ASSEMBLY 
+; Ver 1.00
+;
+; ANAkTOS (c)1999 
+; Europe/Greece 
+;------------------------------------------------------
+
+Files in this package:
+
+  ankts_hf.txt	- this file	
+  ankts_c.inc	- includes the compression routine:   "anaktos_compress"
+  ankts_d.inc	- includes the decompression routine: "anaktos_decompress"
+
+ The two routines 'anaktos_compress'/'anaktos_decompress' are written as 
+C callable functions, thus you can call them directly from a C/C++ program.  
+Here, i will describe only how you can use it from ASM programs.
+
+Place the following two lines in the code segment of your ASM file:
+
+ include "ankts_c.inc"
+ include "ankts_d.inc" 
+
+For compressing a memory block, you need to reserve a 5Kbytes memory block 
+used as a working buffer by the engine and a memory block used as the 
+destination big enough to hold the compressed data. 
+Then push in the stack the following information, and call the function:
+
+  PUSH  'starting offset of the working buffer'
+  PUSH  'size of the data to be compressed' 
+  PUSH  'starting offset of the data to be compressed'
+  PUSH  'starting offset of the destination memory block'
+  CALL anaktos_compres
+
+For decomressing a compressed memory block you only need to reserve a
+memory block for destination of the decompressed data. The size of 
+this block can be determined by the compressed data(see next paragraph).
+As before, you have to push the input data into the stack, before 
+calling the decompression function:
+
+  PUSH  'starting offset of the compressed data to be decompressed'
+  PUSH  'starting offset of the destination memory block'
+  CALL anaktos_decompress
+
+The compressed data has the following format:
+
+Offset   Meaning
+   0-1   Recognition Mark. The WORD 'CA'
+         The decompression routine checks if this WORD exists.
+   2-5   DWORD value. The size of uncompressed data.
+   6-9   DWORD value. The size of compressed data.
+  10-13  DWORD value. Starting offset of the bitstream.
+  14-??  The huffman tree.
+
+ANAkTOS
+http://welcome.to/SPL
+
+<----(COMPRESS INC)---->
+
+
+; ANKTS_C.INC  -  Huffman Compression in 32bit ASSEMBLY 
+; Ver 1.00
+;
+; ANAkTOS (c)1999 
+; Europe/Greece 
+;------------------------------------------------------
+;
+; Size: 382 bytes
+
+ac_destinationdata	equ	24h+ 0
+ac_sourcedata		equ	24h+ 4
+ac_orig_size		equ	24h+ 8
+ac_workingdata		equ	24h+ 12
+
+ac_treesize		equ	400h
+ac_ids_offset		equ	(ac_treesize*4)*1
+ac_weights_offset	equ	(ac_treesize*4)*0
+ac_parents_offset	equ	(ac_treesize*4)*2
+ac_leftchilds_offset	equ	(ac_treesize*4)*3
+ac_rightchilds_offset	equ	(ac_treesize*4)*4
+
+;Memory layout
+;The working buffer is used for bulding the huffman tree.
+;It holds 1024 records. Each record consists of 5 DW values.
+;
+; offset
+; 0000h-0003h	first value of record 1
+; 0004h-0007h	first value of record 2
+; ....
+; 0FFCh-0FFFh	first value of record 1024
+; 1000h-1003h	second value of record 1
+; 1004h-1007h	second value of record 2
+; ...
+; 2000h-2003h	third value of record 1
+; ...
+; 3000h-3003h	forth value of record 1
+; ...
+
+;Record structure
+; NAME	     OFFSET   	 SIZE 	WHAT?
+; WEIGHT     000h-0FFFh	 DWORD	The frequency/weight of this leaf/node.
+; 				If = 000h this node/leaf is not used.
+; ID         1000h-1FFFh DWORD	If = 000h it's a leaf. It's record number represents the character.
+; 				if = 1000h it's a node.
+; PARENT     400h-7FFh	 DWORD	The record number of the parent node.
+;				If =0FFFFFFFFh this node/leaf doesn't have a parent yet.
+; LEFTCHILD  800h-7FFh	 DWORD	The record number of the left child node.
+;				If =0FFFFFFFFh this node doesn't have a child yet.
+; RIGHTCHILD a00h-cFFh	 DWORD	The record number of the right child node.
+;				If =0FFFFFFFFh this node doesn't have a child yet.
+
+anaktos_compress:
+	pushad 
+	mov ebp,esp
+	;load input into regs
+	mov edi,ss:[ebp+ac_workingdata] ;working buffer
+	
+	;INITIALIZE THE TREE
+	push edi
+
+	;set IDs/weigths to 0 
+	xor eax,eax	
+	mov ecx, ac_treesize*2
+	rep stosd
+	;set parents/leftchilds/rightchilds to FFFFFFh
+	dec eax		;eax=-1
+	mov ecx, ac_treesize*3
+	rep stosd
+
+	pop edi
+
+	;load input into regs
+	mov ecx,ss:[ebp+ac_orig_size] ;load size
+	mov esi,ss:[ebp+ac_sourcedata] ;load  source
+
+	;GET the weigths
+	push ecx
+	push esi
+
+	xor eax,eax
+ac_get_weights:	
+	lodsb
+	inc dword ptr [edi+eax*4+ac_weights_offset]
+	loop ac_get_weights
+
+	pop esi
+	pop ecx	
+
+	push ecx
+	push esi
+ac_buildHuffmanTree:
+	;find the two records with the lowest weigths, that doesn't have a parent
+	call ac_find_two_records
+	cmp ebx,0FFFFFFFFh
+	jz ac_buildHuffmanTree_done
+	
+;	eax - a record with no parent and the lowest possible weight  
+;	ebx - a record with no parent and the lowest possible weight after eax
+;	esi - a free record (weight=0)
+
+	xchg eax,ebx
+	;create a new record and set the childs/parent
+	mov ecx,[edi+eax*4+ac_weights_offset] ;weight of left child
+	add ecx,[edi+ebx*4+ac_weights_offset] ;+weight of right child
+	mov [edi+esi*4+ac_weights_offset],ecx  ; to weight of new node 
+	add dword ptr [edi+esi*4+ac_ids_offset],1000h ;change type
+	mov [edi+eax*4+ac_parents_offset],esi	; set parent of left node
+	mov [edi+ebx*4+ac_parents_offset],esi	; set parent of right node
+	mov [edi+esi*4+ac_leftchilds_offset],eax	; set left node
+	mov [edi+esi*4+ac_rightchilds_offset],ebx	; set right node
+
+	jmp ac_buildHuffmanTree
+ac_buildHuffmanTree_done:
+	pop esi	
+	pop ecx
+
+	push ecx
+	push esi
+
+	mov ebx,eax	;ebx top node
+
+	;build a nested structured of that tree, into the destination buffer 
+	cld
+	
+	mov esi,edi;working buffer
+	mov edi,ss:[ebp+ac_destinationdata] ;destination
+
+	mov ax,'AC'   ;mark of compression
+	stosw
+
+	mov eax,ecx ;load size
+
+	;eax - size
+	;esi - working  buffer
+	;edi - destination buffer
+
+	stosd ;write the size
+	stosd ;keep a Dword for compressed size
+	stosd ;keep a Dword for bitstream offset
+
+	call ac_build_nested_structure
+
+	;edi - starting position of bitstream
+
+	pop esi
+	pop ecx
+
+	;edi - starting position of bitstream
+	;ecx - size of source
+	;esi - offset of source
+
+	;mov ecx,ss:[ebp+ac_orig_size] ;load size
+	;mov edx,[ebp+ac_sourcedata] ;source
+	mov edx,esi ;source
+	mov esi,[ebp+ac_destinationdata] ;destination
+
+	call ac_translate
+
+	popad
+	ret 16
+	ret
+
+;----------------------------------------------------------------------
+ac_find_two_records:
+;returns
+;	eax - a record with no parent and the lowest possible weight  
+;	ebx - a record with no parent and the lowest possible weight after eax
+;	esi - a free record (weight=0)
+
+	push ecx
+	push edx
+	push ebp
+
+	or eax,-1
+	xor ebx,eax
+	xor esi,esi
+	xor ecx,ecx
+	or ebp,-1
+
+	mov ecx,3FFh
+
+	;load the last record's weight  
+	or edx,-1
+
+ac_find_lowest:	 
+	;is it free? Keep it on esi
+	cmp dword ptr [edi+ecx*4+ac_weights_offset],0
+	jnz ac_find_two_records_notempty
+	mov esi,ecx
+	jmp ac_next_record 
+
+ac_find_two_records_notempty:
+
+	cmp dword ptr [edi+ecx*4+ac_parents_offset],0FFFFFFFFh
+	jnz ac_next_record
+
+	cmp edx,dword ptr [edi+ecx*4+ac_weights_offset]
+	jc ac_next_record
+	mov edx,dword ptr [edi+ecx*4+ac_weights_offset]
+	mov ebx,ecx	
+
+	cmp edx,ebp
+	jnc ac_next_record		
+	xchg eax,ebx
+	xchg edx,ebp
+
+ac_ch_second:
+
+ac_next_record:
+	dec ecx
+	cmp ecx,0ffffffffh 
+	jnz ac_find_lowest
+
+ac_find_lowest_ok:
+	pop ebp
+	pop edx
+	pop ecx	
+	ret
+;----------------------------------------------------------------------
+
+;----------------------------------------------------------------------
+ac_build_nested_structure:
+	;	esi - working  buffer
+	;	edi - destination buffer
+	;	edx - current depth
+	;	ebx - current node/leaf
+
+	push eax
+	push ebx	
+
+	cmp ebx,0ffffffffh
+	jz  ac_build_nested_structure_leaf
+
+	cmp dword ptr [esi+ebx*4+ac_ids_offset],256
+	jc ac_build_nested_structure_leaf
+
+ac_build_nested_structure_node:
+	;begin of group
+	mov al,0FFh
+	stosb
+
+	mov eax,ebx
+	mov ebx,[esi+eax*4+ac_leftchilds_offset] ;take the left node
+	call ac_build_nested_structure
+	mov ebx,[esi+eax*4+ac_rightchilds_offset] ;take the right node
+	call ac_build_nested_structure
+	mov ebx,eax
+
+	pop ebx
+	pop eax
+	ret
+;----------------------------------------------------------------------
+
+;----------------------------------------------------------------------
+ac_build_nested_structure_leaf:
+	cmp bl,0FEh
+	jc ac_build_nested_structure_leaf_no_FE 	
+	mov al,0FEh
+	stosb
+ac_build_nested_structure_leaf_no_FE:
+	mov al,bl
+	stosb
+	pop ebx
+	pop eax
+	ret
+;----------------------------------------------------------------------
+
+;----------------------------------------------------------------------
+ac_translate:
+	;input
+	;	edi - starting position of bitstream
+	;	ecx - size of source
+	;	esi - offset of source
+
+	xor ebx,ebx
+
+	sub edi,esi
+	mov [esi+10],edi
+	add edi,esi
+	add esi,14
+
+	;edi - starting position of bitstream
+	;ecx - size of source
+	;esi - nested tree
+	;edx - offset of source
+
+	ac_translate_loop:
+	push ecx
+	mov esi,[ebp+ac_destinationdata] 	;esi - nested tree
+	add esi,14
+	mov ah,[edx]
+	inc edx
+	mov ecx,ebx
+	call ac_translate1
+	pop ecx	
+	loop ac_translate_loop
+	
+	mov esi,[ebp+ac_destinationdata] 	;esi - nested tree
+	shr ebx,3
+	inc ebx
+	mov [esi+6],ebx
+
+	ret
+;----------------------------------------------------------------------
+
+;----------------------------------------------------------------------
+ac_translate1:
+	;al - char
+	lodsb 
+
+	cmp AL,0FFh
+	jnz ac_no_FF
+
+	inc ebx
+	inc ecx
+
+	call ac_translate1
+
+	jc ac_check_second
+	dec ecx
+	BTR [edi],ecx
+	jmp ac_translate_end_ok
+
+ac_check_second:
+	call ac_translate1
+
+	jc ac_check_second_faild
+	dec ecx
+	BTS [edi],ecx
+	jmp ac_translate_end_ok
+
+ac_check_second_faild:	
+	dec ecx
+	dec ebx
+	stc
+	ret	
+
+ac_no_FF:
+	cmp al,0FEh
+	jnz ac_is_noExt_ch1
+	lodsb
+ac_is_noExt_ch1:
+	cmp AL,ah
+	jz  ac_translate_end_ok
+	stc
+	ret
+
+ac_translate_end_ok:
+	clc
+	ret
+;-------------------------------------------------------
+
+
+<----DECOMPRESS INC)---->
+
+
+; ANKTS_D.INC  -  Huffman Decompression in 32bit ASSEMBLY 
+; Ver 1.00
+;
+; ANAkTOS (c)1999 
+; Europe/Greece 
+;------------------------------------------------------
+;
+; Size: 79 bytes
+
+
+ad_sourcedata		equ	 24h+ 0
+ad_destinationdata	equ	 24h+ 4
+
+anaktos_decompress:
+	pushad 
+
+	mov ebp,esp
+
+	;load input into regs
+	cld
+	mov esi,[ebp+ad_destinationdata] ;load  source
+	mov edx,esi
+	mov edi,[ebp+ad_sourcedata] ;load destination
+
+	lodsw		;mark
+	cmp ax,'AC'	
+	jnz ad_end
+
+	lodsd		;size
+	mov ecx,eax 
+	lodsd 		;skip the bitstreamsize
+	lodsd		;offset off bitstream	
+	add edx,eax
+
+	xor ebx,ebx
+	
+ad_loop:
+	push esi
+ad_innerloop:
+	lodsb
+	cmp al,0FEh
+	jz ad_is_FE
+	jc ad_is_char
+	bt [edx],ebx
+	inc ebx
+	jnc ad_innerloop
+	call ad_dive
+	jmp ad_innerloop
+ad_is_FE:	
+	lodsb
+ad_is_char:
+	stosb
+	pop esi
+	loop ad_loop
+ad_end:
+	popad
+	ret 8
+		
+
+ad_dive:	
+	lodsb
+	cmp al,0FEh
+	jz ad_dive_is_FE
+	jc ad_dive_is_char
+	call ad_dive
+	call ad_dive
+	ret	
+ad_dive_is_FE:
+	lodsb
+ad_dive_is_char:
+	ret	
+
+	

@@ -1,0 +1,684 @@
+
+Comment!
+
+                      ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+                      º    ÛÛÛÛÛ»  ÛÛ»      ÛÛÛÛÛÛÛÛ»  º
+                      º   ÛÛÉÍÍÛÛ» ÛÛº  #2  ÈÍÍÛÛÉÍÍ¼  º
+                      º   ÛÛÛÛÛÛÛº ÛÛº         ÛÛº     º
+                      º   ÛÛÉÍÍÛÛº ÛÛº         ÛÛº     º
+                      º   ÛÛº  ÛÛº ÛÛÛÛÛÛÛ»    ÛÛº     º
+                      º   ÈÍ¼  ÈÍ¼ ÈÍÍÍÍÍÍ¼    ÈÍ¼     º
+                      ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+                      º The Assembly Language Tutorial º
+                      º           b˜ v–lt–ç‰           º
+                      º Srstanek@aol.com  /  10-4-1998 º
+                      ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+
+And here we have the second tutorial from vulture. This one will discuss
+how to create a bootstrap so that you can load an operating system from
+a disk drive. Since it is probably easier to write a file in DOS and copy
+it to a disk via DOS, the included program will load a binary image in
+DOS format and run it.
+
+This tutorial will also discuss some of the storage methods that DOS uses
+for a filesystem. This is by no means the only way of storing files: I will
+just explain this since it is one way that everyone has access to and can
+easily copy files to and from.
+
+The first thing you must know about booting from a disk is that DOS is
+not loaded and thus you cannot call any DOS interrupts like INT 21h.
+
+Secondly, memory must be managed. We could setup a memory management system,
+but that is for the operating system; not for the bootstrap. All the
+bootstrap does is load some system files off the disk (i.e. MSDOS.SYS and
+IO.SYS) and allows them to setup interrupts and load the command interpreter.
+
+But wait... if we don't have DOS, how do we read from a disk? The BIOS gives
+us INT 13h which allows us to do some low-level I/O. Rather than files, we
+have sectors, sides, and tracks. On a hard drive, sides are heads since there
+can be more than 2 sides; and tracks are called cylinders.
+
+Here are some INT 13h calls:
+
+INT 13h Read Sector:
+------------
+AH=2
+AL=sectors to read
+CH=cylinder
+CL=sector
+DH=head
+DL=drive
+ES:BX -> buffer for read data
+
+On return, Carry flag set if error and AH contains error code.
+
+A note here may be made that only the lower 6 bits of CL are used for
+sector. The high 2 bits are used as bits 8 and 9 of the cylinder. Also,
+only the lower 6 bits of DH are used for the head, so the high 2 bits are
+used as bits 10 and 11 of the cylinder. Also, the disk controller on the
+PC starts sector numbers at 1, so the sector can be a number from 1 to 63.
+This is not always true - especially for a floppy disk. For example, a
+high density 3.5" disk generally has 18 sectors. The head has a limit from
+0 to 63. Since floppy disks are portable and contain one disk, they have
+2 sides. These sides can also be called heads. The number of cylinders can
+range from 0 all the way up to 4095 using INT 13h / AH=2 .
+
+For a method of shortening space, a triplet can be used to specify a certain
+sector on disk. The triplet is given as (sector, side, track). For example,
+(1,0,0) is the boot sector.
+
+Another thing about reading sectors from disk: the read should be done about
+3 times because of various status messages like a disk change. If the read
+fails 3 times, then an error handler should be used.
+
+INT 13h Write Sector:
+------------
+AH=3
+AL=sectors to write
+CH=cylinder
+CL=sector
+DH=head
+DL=drive
+ES:BX -> buffer for data to be written
+
+On return, Carry flag set if error and AH contains error code.
+
+INT 13h Get Last Operation Status
+------------
+AH=1
+DL=drive
+
+On return, Carry flag set if last call had an error and AH contains 
+the last error code or if no error then 0.
+
+INT 13h Reset Disk - Seek to (1,0,0)
+------------
+AH=0
+DL=drive
+
+On return, Carry flag set if error and AH contains error code.
+
+
+Now, onto the loading procedure.
+
+When a disk is booted, the boot sector (1,0,0) is loaded at 0:7C00h. No
+stack is setup, so one should be created to prevent overwriting something.
+
+XOR AX,AX
+MOV SS,AX
+MOV DS,AX
+MOV ES,AX
+SUB AX,2            ; This is used because older style computers store values
+MOV SP,AX           ; then subtract SP by whatever size
+
+Now that a stack is setup, we can PUSH and POP all we like. A more important
+thing to do right now is to attempt to load the operating system off of the
+disk. As you can see, since sectors are not linear (they are given as a
+triplet of (sector, head, cylinder)), it will be hard to load an operating
+system from different sizes of disks. Because of this, the boot sector
+normally contains a record of the disk that DOS and others can use to
+determine the type of disk and its characteristics. Here is the basic boot
+sector:
+
+ Offset         Size        Description
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ 0003h          8 bytes     OEM Name String
+ 000Bh          2 bytes     Bytes per Sector
+ 000Dh          1 byte      Sectors per Cluster
+ 000Eh          2 bytes     Reserved Sectors
+ 0010h          1 byte      Number of File Allocation Tables
+ 0011h          2 bytes     Number of Root Directory Entries
+ 0013h          2 bytes     Total Number of Sectors
+ 0015h          1 byte      Media Descriptor Byte
+ 0016h          2 bytes     Sectors per File Allocation Table
+ 0018h          2 bytes     Sectors per Track
+ 001Ah          2 bytes     Number of Heads
+ 001Ch          2 bytes     Number of Hidden Sectors
+ 001Eh          9 bytes     ???????????? Unused ????????????
+ 0027h          4 bytes     Volume Serial Number (Reverse Order)
+ 002Bh          11 bytes    Volume Name at Creation (Actual Volume is in Root)
+ 0036h          8 bytes     FAT Description String
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+
+Space after here is operating system specific. These are the only required
+data bytes that should be used if you want a DOS compatible disk. You must
+also remember to allocate enough sectors for the File Allocation Table and
+the root directory.
+
+Now wait a minute... if that offset starts at 0003h, where is my program
+supposed to go? At offset 0000h you should call a short or near jump to
+goto the rest of your loader program. A short jump only takes 2 bytes so
+a NOP instruction (opcode 90h) can be used as filler.
+
+One sector only gives you 512 bytes. The boot sector table above reduces it
+a little so remember to keep your loader code small; put all non-needed code
+into a system file.
+
+Media Descriptor Table:
+
+ Byte   Disk Type   Sectors     Heads   Tracks   Formatted Size
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ FFh    5 1/4"      8           2       40       320K bytes
+ FEh    5 1/4"      8           1       40       160K bytes
+ FDh    5 1/4"      9           2       40       360K bytes
+ FCh    5 1/4"      9           1       40       180K bytes
+ FBh    both        9           2       80       640K bytes
+ FAh    both        9           1       80       320K bytes
+ F9h    5 1/4"      15          2       80      1200k bytes
+ F9h    3 1/2"      9           2       80       720k bytes
+ F0h    3 1/2"      18          2       80      1440k bytes
+ F8h    hard disk
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+
+For the hard disk type, you can have almost any number of sectors, heads,
+and tracks. Also note that a hard drive usually has a master boot record
+(MBR) which will point to a sector which contains the boot sector. Also
+note here that these media descriptor bytes don't mean much anymore since
+some of the same byte can mean different things (i.e. F9h) and also all
+the needed information is already given in the boot sector.
+
+By no means is the above boot sector table a table for the master boot
+record. If you write over the MBR on your hard drive, you'll have a problem
+when you startup your computer next time.
+
+Continuing from the above loader code...
+
+XOR AX,AX
+MOV SS,AX
+MOV DS,AX
+MOV ES,AX
+SUB AX,2            ; This is used because older style computers store values
+MOV SP,AX           ; then subtract SP by whatever size
+
+Okay... since now we know that different types of disks can have different
+numbers of sectors, heads, and tracks; it should be understandable that to
+load a system file from say (5,1,3) would not be the same from a 1.44M disk
+to a 360k disk. With this in mind, a linear sector reader could be very
+helpful. Linear would indicate that we could pass a value of 55 to the
+procedure and it would read (2,1,1) from a 1.44M disk or (2,0,3) from a 360k
+disk. Here is how we establish these numbers:
+
+Read_Sector Proc     ; DL = Drive / EAX = Sector / SI = Num / ES:BX -> Buffer
+                      ; EAX = 0 is the first sector for this and EAX = 1
+                       ;  is the second, etc.
+PUSH ESI                ; Save For Whatever Reason
+PUSH BX                 ; Save Buffer Offset
+PUSH DX                 ; Save Drive
+XOR EDX,EDX             ; Prepare For Dividing
+MOV ESI,EDX             ; Set High 16 bits of ESI to 0 For Divide
+MOV SI,[Sectors_Per_Track]; Set ESI is 32 bit Sectors per track
+DIV ESI                 ; EDX = Remainder / EAX = Quotient
+INC DX                  ; DX = Sector
+MOV CX,DX               ; CX = Sector
+XOR EDX,EDX             ; Prepare for another divide
+MOV ESI,EDX             ; ESI = 0 Again
+MOV SI,Number_Of_Heads  ; For Another 32 bit Divide
+DIV ESI                 ; DX = Head / AX = Track
+MOV BX,DX               ; Save Head
+POP DX                  ; Get Drive Back (DL)
+MOV DH,BL               ; Set DH to Head
+MOV CH,AL               ; CH = Track
+SHR AX,2                ; AH = bits 10 and 11 of Track (Cylinder)
+AND AL,11000000b        ; Set AL for adding to CL
+ADD CL,AL               ; Add on bits 8 and 9 of Track (Cylinder)
+SHL AH,6                ; Set AH for adding to DH
+ADD DH,AH               ; Add on bits 10 and 11 of Track (Cylinder)
+POP BX                  ; Restore Offset
+POP ESI                 ; Restore ESI
+MOV AX,SI               ; Set AL to number to read (1 to xx)
+                        ; Note that xx is not always read because of
+                        ;  various reasons like crossing to the next head
+                        ;  or track (running out of sectors on current head)
+                        ; This will be returned in AL on return
+MOV AH,2                ; Function AH=2 / INT 13h = Read Sector
+INT 13h                 ; Read sector(s) into memory
+RET                     ; Carry flag set if error, AH = error
+                        ; AL = number of sectors read
+ENDP                    ; End Procedure
+
+There it is. This particular read sector procedure has support for reading
+in multiple sectors at a time as well as reading from a hard drive (12 bit
+cylinder support). The reason that EAX is used for sector and not AX is
+because on hard drives, sector numbers can reach up VERY high. There is
+still some limitation with this procedure as it can only read up to the
+ 63 * 64 * 4096 = 16,515,072th sector limiting it to 8,455,716,864 bytes.
+This tutorial will only discuss floppy disk bootstraps though and so this
+is irrelevent for the moment.
+
+Now that our linear sector reader is written, we can attempt to load the
+system file from disk. Linear sector 0 is actually the boot sector and
+linear sector 1 is actually the sector after the boot sector.
+
+Anyway... what sector is the system file at on the disk? The file allocation
+table and the root directory entry tells us this. The file allocation table
+is xxxx sectors which can be found in the boot sector and has a format like
+this:
+
+File Allocation Table:
+
+ Value              Meaning
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ 00000h             Free Sector
+ 0FFF0h to 0FFF6h   Reserved
+ 0FFF7h             Bad Sector - data error or other
+ 0FFF8h to 0FFFFh   End of File Chain
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+
+Any other value points to the next sector. Note that each entry actually
+counts as a cluster, not necessarily one sector. This value can be found
+in the boot sector.
+
+Note that ALL floppy disks use a 12-bit FAT and thus 0FF8h to 0FFFh can mean
+end of file chain.
+
+Now, this is probably confusing... it is probably easier to explain the
+file allocation table (FAT) by an example:
+
+    F0  FF  FF  03  40  00  06  F0  FF  07  80  00  FF  0F
+
+This is a 12-bit FAT and thus 3 characters are used for each.
+
+Here is a conversion in columns for ease of comprehension:
+
+0000 / FF0
+0001 / FFF
+0002 / 003
+0003 / 004
+0004 / 006
+0005 / FFF
+0006 / 007
+0007 / 008
+0008 / FFF
+
+Okay... entry 0000 seems to be reserved. This could probably be the root
+directory or something. It would be located at Cluster 0.
+
+Entry 0001 is an end of file chain. This could be the last 512 bytes or
+however many bytes per cluster of a file. This is located at Cluster 1.
+Maybe this is the root directory?
+
+Entry 0002 has the value of 3. Thus, a file on the disk starts at Cluster 2
+and continues on to 3. Since now we are at cluster 3, we read the number
+there. If it is not an end of file chain marker, then we continue further.
+We find 4 : the value is 6. So we look at entry 6 : the value is 7. 7 to 8.
+And then at 8 we have and end of file marker. This tells us that there is
+information here but it might not be entirely filled with data. To figure
+out how much of the data belongs to the file, you must look at the root
+directory file size entry.
+
+Entry 0005 has an end of file chain marker. This is a file here that has from
+0 to 512 bytes since no other cluster pointed to it. An exact size can be
+found in the root directory entry. Since the previous file that started at
+entry 0002 and was "split" in the middle by this entry, we have a
+defragmented file. This demonstrates how the file allocation table is used
+to allow space to be wasted as little as possible since it is not really
+necessary to have a linear block of space for a file. When you defragment
+your hard drive or a floppy drive, you are actually moving data from cluster
+to cluster in such a way that each entry will point to the next one creating
+all linear files.
+
+Now the root directory... this contains xxxx entries (which can be found in
+the boot sector) which are of 32 bytes each. This is found immediately after
+the file allocation table(s) whose size and number of FATs can be found in
+the boot sector.
+
+ Offset         Size        Description
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+ 0000h          8 bytes     Filename (Space (20h) padded if shorter)
+ 0008h          3 bytes     Filename extention (padded if needed)
+ 000Bh          1 byte      File Attribute
+ 000Ch          10 bytes    Reserved - I think Win95 uses this for long names
+ 0016h          2 bytes     Time of last write to file
+ 0018h          2 bytes     Date of last write to file
+ 001Ah          2 bytes     Start Cluster (see FAT)
+ 001Ch          4 bytes     Exact file size
+ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+
+If the filename starts with value 00 it generally means that the entry is
+not in use.
+
+If the filename starts with value E5 it generally, but not always means
+that the entry is not in use. To find out if it is really deleted, the FAT
+value pointed at by the Start Cluster must be 0000.
+
+The file attribute tells what kind of a file it is, or whether it is hidden
+or something. Here is a bit table from bit 0 (rightmost) to bit 7
+(leftmost):
+
+ bit 0 : read-only if set
+ bit 1 : hidden file if set
+ bit 2 : system file if set
+ bit 3 : volume label if set
+ bit 4 : subdirectory if set
+ bit 5 : archive bit - backup programs use this to see if the file has
+          changed since last backup
+ bit 6 : reserved
+ bit 7 : reserved
+
+Note: Only the first file with the volume label set is actually the volume
+label.
+
+Back to the bootstrap program...
+
+After setting up the stack and establishing the linear sector reader, we
+must find and load a file off the disk. This is accomplished by:
+
+ (1) Scan through root directory for OUR file to load
+ (2) Get starting cluster of file and filesize
+ (3) Load first cluster (starting cluster) into memory and add cluster size
+      to the memory offset
+ (4) If value at (starting cluster) in FAT is not end of file chain marker,
+      set (starting cluster) to value found and goto step 3
+ (5) End of file. JMP to original memory offset to run the file. Note that
+      the file loaded must be a raw machine language file - NOT an EXE file.
+      COM files work nicely here.
+
+One note here: My bootstrap program fills up most of the boot sector except
+for 3 bytes. If you plan to edit it at all for your own use and it turns out
+too big, I suggest shortening the "System file(s) not found" string. Also,
+this bootstrap is superior to DOS's in that it doesn't HAVE to load a linear
+file starting from cluster 1 like when you boot from a DOS disk. My
+bootstrap here will load ANY file that is on the disk. All you have to do is
+change the systemfilename variable. One more thing - if you plan to make
+a bootstrap for your hard drive, remember that this program loads a 12-bit
+FAT and your hard drive will usually be 16-bit or 32-bit (or neither if you
+don't use a DOS compatible OS). After reading my tutorial, you should be
+able to figure out how to modify this, right? :)  Anyhow, a 16-bit FAT
+should take less code and math - that's why I chose to explain the 12-bit
+FAT.
+
+That is pretty much all there is to a bootstrap. The included set of
+programs should help you, if you choose to, make a bootstrap and be able
+to load your own operating system or whatever you want it to do. Until next
+time...
+
+  - vulture a.k.a. Sean Stanek
+
+!
+
+locals @@
+
+segment code
+assume cs:code,ds:code
+org 7C00h
+start:
+
+.386                            ; enable 386 stuff - 386 required
+
+jmp short skipdiskinfo          ; Short jump to skip boot sector info
+nop                             ; NOP for filler
+
+Byte_Per_Sector Equ word ptr ds:[7C0Bh]
+Sectors_Per_Cluster Equ byte ptr ds:[7C0Dh]
+Reserved_Sectors Equ word ptr ds:[7C0Eh]
+Number_Of_FATs Equ byte ptr ds:[7C10h]
+Number_Of_Root_Entries Equ word ptr ds:[7C11h]
+Number_Of_Sectors Equ word ptr ds:[7C13h]
+Media_Descriptor Equ byte ptr ds:[7C15h]
+Sectors_Per_FAT Equ word ptr ds:[7C16h]
+Sectors_Per_Track Equ word ptr ds:[7C18h]
+Number_Of_Heads Equ word ptr ds:[7C1Ah]
+Number_Of_Hidden_Sectors Equ word ptr ds:[7C1Ch]
+
+org 7C3Eh                       ; Point after boot sector info
+skipdiskinfo:                   ; The start of the bootstrap
+
+cli                             ; Disable interrupts so no stack is used
+xor ax,ax
+mov ss,ax
+mov ds,ax
+mov es,ax
+dec ax
+dec ax
+mov sp,ax                       ; SS:SP -> 0000:FFFEh
+
+xor eax,eax                     ; Set EAX=0
+
+mov al,number_of_FATs           ; Calculate number of sectors to root dir
+mov dx,sectors_per_FAT
+mul dx
+shl edx,16
+add eax,edx
+xor ebx,ebx
+mov bx,Reserved_Sectors
+add eax,ebx
+
+mov dl,0                        ; A:
+
+mov si,1                        ; 1 sector at a time
+
+xor bp,bp                       ; bp = number of entries read so far
+
+nextroot:                       ; try all root entries until OUR's is found
+mov cx,3                        ; try 3 times
+tryread:
+push cx
+push eax
+mov dl,0                        ; A:
+mov si,1                        ; 1 sector
+mov bx,60h
+mov es,bx                       ; ES:BX -> 60h:100h
+mov bx,100h                     ; 100h just because
+call Read_Sector
+pop eax
+pop cx
+jnc readokay                    ; if okay, jump to okay
+dec cx                          ; decrement # of tries
+jnz tryread                     ; and try again if we haven't done CX times
+jmp baddisk                     ; something went bad... print bad disk string
+
+readokay:
+mov si,100h
+
+nextentry:
+mov di,offset systemfilename
+mov cx,11                       ; 11 characters per file
+push ds
+push es
+
+push ds
+push es
+pop ds                          ; Swap  DS=0060h / ES=0000h
+pop es
+
+push si
+rep cmpsb                       ; compare string
+pop si
+pop es
+pop ds
+jz filefound
+add si,20h
+inc bp
+cmp si,300h
+jae didntfind
+jmp nextentry
+
+didntfind:
+inc eax                         ; next sector
+cmp bp,number_of_root_entries   ; if we've read all and found it not, then
+jae baddisk                     ; print bad disk message
+jmp nextroot                    ; if under then try again
+
+filefound:                      ; at es:si
+xor eax,eax
+mov ax,es:[si+1Ah]              ; start cluster
+mov di,100h                     ; start offset for loading file
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;            LOW LEVEL LOAD A FILE ROUTINE                                ;;
+;;            THIS WILL LOAD A FILE WITHOUT DOS                            ;;
+;;            AND A MAX SIZE OF 65,280 BYTES                               ;;
+;;            VIA INTERRUPT 13h ONLY                                       ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+continueLOADFILE:
+
+push ax                         ; save old current cluster
+mov ch,0
+mov cl,Sectors_Per_Cluster
+mul cx                          ; convert cluster -> sector
+shl edx,16                      ; Now EDX(16):AX is sector number
+add eax,edx                     ; EAX is now sector number
+
+mov ch,0
+mov cl,Number_Of_FATs
+xor edx,edx
+mov dx,Sectors_Per_FAT
+AddFATOffset:                   ; Adding FAT offset
+add eax,edx
+loop AddFATOffset               ; by Number_Of_FATs times
+
+mov dx,Number_Of_Root_Entries   ; add root entry offset
+                                ; 512 / 32 = 16 entries per sector
+cmp dl,0                        ; 16/sector = 2^4 = 10000b
+jnz noaddDH                     ; if we had a weird number, inc DH to fix
+inc dh                          ; counteract
+noaddDH:
+shr dx,4                        ; convert # of entries -> # of sectors
+
+add eax,edx
+dec eax                         ; EAX is _finally_ actual sector number 
+
+push es
+mov bx,1000h                    ; Load file at segment 1000h
+mov es,bx
+mov bx,DI                       ; current offset is in DI
+add DI,512                      ; add for later
+
+mov dl,0                        ; drive A:
+mov si,1                        ; 1 sector
+
+call Read_Sector                ; read sector in EAX
+
+pop es                          ; restore old ES segment
+
+xor eax,eax
+pop ax                          ; get back last cluster number
+
+;; In FAT12, we can get 1536 / 1.5 = 1024 entries in 3 sectors
+;; Calculate sectors to load in FAT - AX contains cluster number
+
+push es                         ; save for program segment
+push ax                         ; save again
+shr ax,10                       ; divide by 1024 = 2^10
+mov bx,3                        ; every 3 sectors
+mul bx                          ; multiply
+add ax,Reserved_Sectors         ; add boot sector size, etc.
+
+mov bx,2000h
+mov es,bx
+mov bx,0                        ; 2000h:0000  (just some place not used)
+mov si,3                        ; 1 sector
+mov dl,0                        ; drive A:
+call Read_Sector
+
+pop ax
+and ax,3ffh                     ; AX MOD 1024
+
+mov bx,3
+mul bx                          ; AX*3/2 = offset of number of cluster
+shr ax,1                        ; divide by 2
+jc midway
+
+;;; if we are here it means that our 12 bit cluster should appear this way:
+;;;  bc xa xx
+;;; where abc is the cluster number
+;;; read in bc xa which reads into a register as xabc
+;;; and xabc by 0fffh to get 0abc
+
+mov bx,ax
+mov ax,es:[bx]
+and ax,0fffh
+jmp gotcluster
+
+midway:
+
+;;; if we are here it means that our 12 bit cluster should appear this way:
+;;;  xx cx ab
+;;; where abc is the cluster number
+;;; read in cx ab which reads into a register as abcx
+;;; shift abcx right by 4 to get 0abc
+
+mov bx,ax
+mov ax,es:[bx]
+shr ax,4
+
+gotcluster:
+pop es
+
+cmp ax,0fffh
+jz runprogram
+jmp continueLOADFILE
+
+runprogram:
+db 0eah
+dw 100h,1000h   ; JMP FAR 1000h:100h
+                ; 1000h:100h -> place where system file was loaded
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+Read_Sector Proc     ; DL = Drive / EAX = Sector / SI = Num / ES:BX -> Buffer
+                      ; EAX = 0 is the first sector for this and EAX = 1
+                       ;  is the second, etc.
+PUSH ESI                ; Save For Whatever Reason
+PUSH BX                 ; Save Buffer Offset
+PUSH DX                 ; Save Drive
+XOR EDX,EDX             ; Prepare For Dividing
+MOV ESI,EDX             ; Set High 16 bits of ESI to 0 For Divide
+MOV SI,Sectors_Per_Track; Set ESI is 32 bit Sectors per track
+DIV ESI                 ; EDX = Remainder / EAX = Quotient
+INC DX                  ; DX = Sector
+MOV CX,DX               ; CX = Sector
+XOR EDX,EDX             ; Prepare for another divide
+MOV ESI,EDX             ; ESI = 0 Again
+MOV SI,Number_Of_Heads  ; For Another 32 bit Divide
+DIV ESI                 ; DX = Head / AX = Track
+MOV BX,DX               ; Save Head
+POP DX                  ; Get Drive Back (DL)
+MOV DH,BL               ; Set DH to Head
+MOV CH,AL               ; CH = Track
+SHR AX,2                ; AH = bits 10 and 11 of Track (Cylinder)
+AND AL,11000000b        ; Set AL for adding to CL
+ADD CL,AL               ; Add on bits 8 and 9 of Track (Cylinder)
+SHL AH,6                ; Set AH for adding to DH
+ADD DH,AH               ; Add on bits 10 and 11 of Track (Cylinder)
+POP BX                  ; Restore Offset
+POP ESI                 ; Restore ESI
+MOV AX,SI               ; Set AL to number to read (1 to xx)
+                        ; Note that xx is not always read because of
+                        ;  various reasons like crossing to the next head
+                        ;  or track (running out of sectors on current head)
+                        ; This will be returned in AL on return
+MOV AH,2                ; Function AH=2 / INT 13h = Read Sector
+INT 13h                 ; Read sector(s) into memory
+RET                     ; Carry flag set if error, AH = error
+                        ; AL = number of sectors read
+ENDP                    ; End Procedure
+
+BadDisk:
+mov si,offset BadDiskString     ; Offset of ASCIZ string to print
+WriteString:
+mov al,[si]                     ; get character
+cmp al,0                        ; if Z then stop
+jz endString
+mov ah,0eh                      ; INT 10h / AH=0Eh - Print Character
+int 10h                         ; Print character
+inc si                          ; Offset of next character
+jmp WriteString                 ; Loop until Z found
+endString:
+xor ax,ax                       ; INT 16h / AH=0 - Wait for keypress
+int 16h                         ; Getkey
+int 19h                         ; INT 19h - Reload bootstrap
+
+BadDiskString db 0dh,0ah
+              db 'System file(s) not found.',0dh,0ah
+              db 'Press any key to softboot.',0dh,0ah,0
+
+systemfilename db 'LOADER  COM'     ; 8 char / 3 char - all space padded
+
+org 7DFEh
+db 055h,0AAh                    ; It's customary to end stuff this way, but
+                                ; not required
+
+ends
+end start

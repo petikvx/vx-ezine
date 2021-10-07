@@ -1,0 +1,739 @@
+;*********
+;Filenc32 
+;*********
+;by Device [CodeBreakers]
+
+;Filenc32 is a 32 bit key file encryption program for windows done entirely
+;in ASM. When compiling cut and save FILENC32.DEF and FILENC32.RC into thier
+;own files.
+
+
+;--------------------------FILENC32.DEF-------------------------------------
+NAME            FILENC32
+DESCRIPTION     'Devices 32 Bit Key File Encrypter'
+EXETYPE         WINDOWS
+STUB		'WINSTUB.EXE'
+CODE		PRELOAD MOVEABLE
+DATA		PRELOAD MOVEABLE MULTIPLE
+HEAPSIZE	65536
+STACKSIZE	65536
+EXPORTS         WindowProc
+
+
+;--------------------------FILENC32.RC-------------------------------------
+
+#define IDM_FILE_EXIT		100
+#define IDM_HELP_ABOUT		900
+
+#define IDD_CHILD_DLG		100
+#define IDC_INPUT_EDIT		1000
+#define IDC_OUTPUT_EDIT		1001
+#define IDC_KEY_EDIT		1002
+#define IDC_ENC_COMBO		1003
+#define IDC_PROGRESS		1004
+#define IDC_BROWSE1_BUTTON	1005
+#define IDC_BROWSE2_BUTTON	1006
+#define IDC_PAUSE_BUTTON	1007
+#define IDC_GO_BUTTON		1008
+#define IDC_EXIT_BUTTON		1009
+
+#define WS_TABGRP		(WS_TABSTOP|WS_GROUP)
+
+FILENC32 MENU
+BEGIN
+	POPUP "&File"
+	BEGIN
+		MENUITEM "E&xit",	IDM_FILE_EXIT
+	END
+	POPUP "&Help"
+	BEGIN
+		MENUITEM "&About...",	IDM_HELP_ABOUT
+	END
+END
+
+IDD_CHILD_DLG DIALOG DISCARDABLE  0, 0, 309, 95
+STYLE DS_3DLOOK | WS_VISIBLE | WS_CHILD
+FONT 8,"MS Sans Serif"
+//FONT 9,"Fixedsys"
+BEGIN
+	EDITTEXT			IDC_INPUT_EDIT,		68,7,167,14,	ES_AUTOHSCROLL | WS_TABGRP
+	EDITTEXT			IDC_OUTPUT_EDIT,	68,24,167,14,	ES_AUTOHSCROLL | WS_TABGRP
+	EDITTEXT			IDC_KEY_EDIT,		68,41,167,14,	ES_AUTOHSCROLL | WS_TABGRP
+
+	COMBOBOX			IDC_ENC_COMBO,		68,58,167,60,	CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABGRP
+
+	PUSHBUTTON	"Browse...",	IDC_BROWSE1_BUTTON,	252,7,50,14,	WS_TABGRP
+	PUSHBUTTON	"Browse...",	IDC_BROWSE2_BUTTON,	252,24,50,14,	WS_TABGRP
+	PUSHBUTTON	"Go",		IDC_GO_BUTTON,252,	41,50,14,	WS_TABGRP
+	PUSHBUTTON	"Pause",	IDC_PAUSE_BUTTON,	252,57,50,14,	WS_TABGRP
+	PUSHBUTTON	"Exit",		IDC_EXIT_BUTTON,	252,74,50,14,	WS_TABGRP
+
+	CONTROL		"P1",		IDC_PROGRESS,"msctls_progress32",WS_BORDER,68,74,167,14,WS_TABGRP
+
+	LTEXT		"Key:",		IDC_STATIC,		7,44,57,8
+	LTEXT		"Enc/Dec:",	IDC_STATIC,		7,61,54,8
+	LTEXT		"Output File:",	IDC_STATIC,		7,27,55,8
+	LTEXT		"Status:",	IDC_STATIC,		7,78,52,8
+	LTEXT		"Input File:",	IDC_STATIC,		7,10,58,8
+END
+
+;--------------------------FILENC32.ASM-------------------------------------
+.386
+locals
+.model	flat,stdcall
+
+	include	c:\asm\tasm\include\win32.inc
+
+	CHUNK_SIZE		equ	1024
+	IDM_FILE_EXIT		equ	100
+	IDM_HELP_ABOUT		equ	900
+	IDD_CHILD_DLG		equ	100
+	IDC_INPUT_EDIT		equ	1000
+	IDC_OUTPUT_EDIT		equ	1001
+	IDC_KEY_EDIT		equ	1002
+	IDC_ENC_COMBO		equ	1003
+	IDC_PROGRESS		equ	1004
+	IDC_BROWSE1_BUTTON	equ	1005
+	IDC_BROWSE2_BUTTON	equ	1006
+	IDC_PAUSE_BUTTON	equ	1007
+	IDC_GO_BUTTON		equ	1008
+	IDC_EXIT_BUTTON		equ	1009
+
+.data
+
+	hInst			dd 0
+	message			MSGSTRUCT <>
+
+	window_title		db 'Device',27h,'s 32 bit Key Encrypter',0
+	class_name		db 'filenc32',0
+	class_struct		WNDCLASS <>
+	openfilename		OPENFILENAME <>
+
+	main_win_handle		dd 0
+	child_dlg_handle	dd 0
+	name_buffer		db 256 dup (0)
+
+	processing_state	db 0
+	current_position	dd 0
+	total_size		dd 0
+	read_buffer		dd 0
+	read_count		dd 0
+	f_100			dd 100
+	progress_position	dd 0
+	enc_dec			db 0
+	key_check_sum		db 0
+	key_check_sum2		db 0
+	key_length		dd 0
+	key			db 256 dup(0)
+	chunk_location		dd 0
+	chunk_buffer		db CHUNK_SIZE dup(0)
+
+	input_handle		dd 0
+	output_handle		dd 0
+
+	error_string		db 'Error...',0
+	input_error		db 'Error opening input file!',0
+	output_error		db 'Error creating output file!',0
+
+	go_string		db 'Go',0
+	pause_string		db 'Pause',0
+	resume_string		db 'Resume',0
+	stop_string		db 'Stop',0
+	sure_stop		db 'Abort Encryption/Decryption?',0
+	about_title		db 'About...',0
+	about_string		db '32 Bit Key File Encrypter',13,10,13,10
+				db '(c) 1998 by device Software',0
+
+	num_enc_types		dd 2
+
+	enc_type1		db 'Encrypt-Default Method',0
+	enc_type2		db 'Decrypt-Default Method',0
+
+	enc_table		dd offset enc_type2
+				dd offset enc_type1
+
+	public			WindowProc
+	public			ChildDlgProc
+
+	extrn			GetModuleHandleA		: proc
+	extrn			LoadIconA			: proc
+	extrn			LoadCursorA			: proc
+	extrn			SetCursor			: proc
+	extrn			RegisterClassA			: proc
+	extrn			CreateWindowExA			: proc
+	extrn			GetMessageA			: proc
+	extrn			PeekMessageA			: proc
+	extrn			IsDialogMessageA		: proc
+	extrn			TranslateMessage		: proc
+	extrn			DispatchMessageA		: proc
+	extrn			ExitProcess			: proc
+	extrn			DefWindowProcA			: proc
+	extrn			DefDlgProcA			: proc
+	extrn			DefFrameProcA			: proc
+	extrn			PostQuitMessage			: proc
+	extrn			CreateDialogParamA		: proc
+	extrn			InitCommonControls		: proc
+	extrn			PostMessageA			: proc
+	extrn			SendDlgItemMessageA		: proc
+	extrn			GetOpenFileNameA		: proc
+	extrn			MessageBoxA			: proc
+	extrn			GetDlgItem			: proc
+	extrn			SetWindowTextA			: proc
+	extrn			EnableWindow			: proc
+	extrn			GetCommandLineA			: proc
+	extrn			SetWindowTextA			: proc
+	extrn			GetWindowTextA			: proc
+	extrn			CreateFileA			: proc
+	extrn			GetFileSize			: proc
+	extrn			ReadFile			: proc
+	extrn			WriteFile			: proc
+	extrn			CloseHandle			: proc
+	extrn			SetFocus			: proc
+	extrn			ShowWindow			: proc
+;	extrn			DrawMenuBar			: proc
+;	extrn			GetMenu				: proc
+;	extrn			GetSubMenu			: proc
+;	extrn			GetMenuItemID			: proc
+;	extrn			EnableMenuItem			: proc
+
+.code
+
+start:
+	call	GetModuleHandleA,0
+	mov	[hInst],eax
+
+	call	InitCommonControls
+
+	mov	[class_struct.clsStyle],CS_HREDRAW or CS_VREDRAW
+	mov	[class_struct.clsLpfnWndProc],offset WindowProc
+	mov	[class_struct.clsCbClsExtra],0
+	mov	[class_struct.clsCbWndExtra],0
+	mov	[class_struct.clsHInstance],eax
+
+	call	LoadIconA,0,IDI_APPLICATION
+	mov	[class_struct.clsHIcon],eax
+
+	call	LoadCursorA,0,IDC_ARROW
+	mov	[class_struct.clsHCursor],eax
+
+	mov	[class_struct.clsHbrBackground],COLOR_BACKGROUND+1
+
+	mov	[class_struct.clsLpszMenuName],offset class_name
+	mov	[class_struct.clsLpszClassName],offset class_name
+
+	call	RegisterClassA,offset class_struct
+
+	mov	eax,WS_CAPTION or WS_SYSMENU or WS_MINIMIZEBOX
+	mov	ebx,0
+	call	CreateWindowExA,ebx,offset class_name,offset window_title,eax,CW_USEDEFAULT,CW_USEDEFAULT,466,194,0,0,hInst,0
+	mov	[main_win_handle],eax
+
+;	call	CreateDialogIndirectParamA,[hInst],IDD_CHILD_DLG,[main_win_handle],offset ChildDlgProc,0
+	call	CreateDialogParamA,[hInst],IDD_CHILD_DLG,[main_win_handle],offset ChildDlgProc,0
+;	call	CreateDialog,[hInst],IDD_CHILD_DLG,[main_win_handle],offset ChildDlgProc
+	or	eax,eax
+	jz	end_loop
+	mov	[child_dlg_handle],eax
+
+	mov	ecx,[num_enc_types]
+add_string_loop:
+	push	ecx
+	lea	edx,[ecx-1]
+	mov	edx,[edx*4+offset enc_table]
+	call	SendDlgItemMessageA,[child_dlg_handle],IDC_ENC_COMBO,CB_ADDSTRING,0,edx
+	pop	ecx
+	loop	add_string_loop
+
+	call	SendDlgItemMessageA,[child_dlg_handle],IDC_ENC_COMBO,CB_SETCURSEL,0,0
+
+	call	GetDlgItem,[child_dlg_handle],IDC_PAUSE_BUTTON
+	call	EnableWindow,eax,0
+
+	call	GetDlgItem,[child_dlg_handle],IDC_INPUT_EDIT
+	push	eax
+
+	call	GetCommandLineA
+	mov	esi,eax
+	inc	esi
+
+find_loop:
+	lodsd
+	sub	esi,3
+	cmp	eax,'EXE.'
+	jne	find_loop
+
+find_loop2:
+	lodsb
+	cmp	al,20h
+	jne	find_loop2
+
+find_loop3:
+	lodsb
+	cmp	al,20h
+	je	find_loop3
+	dec	esi
+
+	pop	ebx
+	push	esi
+	call	SetWindowTextA,ebx,esi
+	pop	esi
+	lodsb
+	or	al,al
+	jz	no_first_param
+
+	call	GetDlgItem,[child_dlg_handle],IDC_OUTPUT_EDIT
+	call	SetFocus,eax
+
+no_first_param:
+
+	call	ShowWindow,[main_win_handle],SW_NORMAL
+
+;	call	GetMenu,[main_win_handle]
+;	mov	ebx,eax
+;	call	GetSubMenu,eax,1
+;	call	EnableMenuItem,ebx,eax,1
+;	call	DrawMenuBar,[main_win_handle]
+	
+msg_loop:
+	call	PeekMessageA,offset message,0,0,0,PM_REMOVE
+	or	ax,ax
+	jz	no_message
+	call	IsDialogMessageA,[child_dlg_handle],offset message
+	or	eax,eax
+	jnz	no_message
+	cmp	[message.msMESSAGE],WM_QUIT
+	je	end_loop
+	call	TranslateMessage,offset message
+	call	DispatchMessageA,offset message
+
+no_message:
+	cmp	[processing_state],1
+	jne	no_process
+
+	call	ReadFile,[input_handle],offset chunk_buffer,CHUNK_SIZE,offset read_count,0
+	mov	[chunk_location],0
+
+	mov	ecx,[read_count]
+	or	ecx,ecx
+	jz	done_file
+
+chunk_loop:
+	push	ecx
+
+	xor	edx,edx
+	mov	eax,[current_position]
+	mov	ebx,[key_length]
+	div	ebx
+	mov	al,[key+edx]
+	push	eax
+
+	cmp	[enc_dec],0
+	je	encrypt
+
+	mov	ax,word ptr [current_position]
+	mov	cx,ax
+	mov	bx,ax
+	add	cl,ch
+	mov	ebp,[chunk_location]
+	add	ebp,offset chunk_buffer
+	mov	dl,[ebp]
+	xor	dl,[key_check_sum]
+	xchg	[key_check_sum2],cl
+	ror	dl,cl
+	xchg	[key_check_sum2],cl
+	rol	dl,cl
+	add	dl,cl
+	ror	bl,3
+	xor	dl,bl
+	and	al,ah
+	xor	dl,al
+	neg	dl
+	pop	eax
+	xor	dl,al
+	mov	[ebp],dl
+
+	jmp	next_byte
+
+encrypt:
+	pop	eax
+	mov	ebp,[chunk_location]
+	add	ebp,offset chunk_buffer
+	mov	dl,[ebp]
+	xor	dl,al
+	neg	dl
+	mov	ax,word ptr [current_position]
+	mov	cx,ax
+	mov	bx,ax
+	and	al,ah
+	xor	dl,al
+	ror	bl,3
+	xor	dl,bl
+	add	cl,ch
+	sub	dl,cl
+	ror	dl,cl
+	xchg	[key_check_sum2],cl
+	rol	dl,cl
+	xchg	[key_check_sum2],cl
+	xor	dl,[key_check_sum]
+	mov	[ebp],dl
+
+next_byte:
+	inc	[current_position]
+	inc	[chunk_location]
+	pop	ecx
+	dec	ecx
+	jnz	chunk_loop
+
+write_to_file:
+	call	WriteFile,[output_handle],offset chunk_buffer,[chunk_location],offset read_count,0
+
+;	fild	dword ptr [current_position]
+;	fild	dword ptr [total_size]
+;	fdivp
+;	fild	dword ptr [f_100]
+;	fmulp
+;	fistp	dword ptr [progress_position]
+
+;	call	SendDlgItemMessageA,[child_dlg_handle],IDC_PROGRESS,PBM_SETPOS,[progress_position],0	
+
+	fild	dword ptr [current_position]
+	fild	dword ptr [total_size]
+	fdivp
+	fild	dword ptr [f_100]
+	fmulp
+	fistp	dword ptr [progress_position]
+
+	call	SendDlgItemMessageA,[child_dlg_handle],IDC_PROGRESS,PBM_SETPOS,[progress_position],0	
+	jmp	msg_loop
+
+done_file:
+	mov	[processing_state],0
+	call	CloseHandle,[input_handle]
+	call	CloseHandle,[output_handle]
+	mov	dword ptr [input_handle],0
+	mov	dword ptr [output_handle],0
+
+	call	GetDlgItem,[child_dlg_handle],IDC_PAUSE_BUTTON
+	push	eax
+	call	EnableWindow,eax,0
+	pop	eax
+	call	SetWindowTextA,eax,offset pause_string
+	call	GetDlgItem,[child_dlg_handle],IDC_GO_BUTTON
+	call	SetWindowTextA,eax,offset go_string
+
+	call	SendDlgItemMessageA,[child_dlg_handle],IDC_PROGRESS,PBM_SETPOS,0,0	
+
+no_process:
+	jmp	msg_loop
+
+end_loop:
+	call	ExitProcess,[message.msWPARAM]
+
+;----------------------------------------------------------------------------------------------------------------------------
+
+WindowProc proc stdcall, @@hwnd:dword, @@wmsg:dword, @@wparam:dword, @@lparam:dword
+
+	pushad
+
+	mov	eax,@@wmsg
+
+	cmp	eax,WM_DESTROY
+	je	destroy_window
+
+	cmp	eax,WM_COMMAND
+	je	@@Handle_Command
+
+@@Default_Proc:
+	popad
+	call	DefWindowProcA, @@hwnd,@@wmsg,@@wparam,@@lparam
+	ret
+
+@@Handle_Command:
+	mov	eax,@@wparam
+	mov	bx,ax
+	shr	eax,16
+	cmp	ax,0
+	jne	@@Default_Proc
+
+	cmp	bx,IDM_FILE_EXIT
+	je	file_exit
+	cmp	bx,IDM_HELP_ABOUT
+	je	about_enc
+
+	jmp	@@Default_Proc
+
+about_enc:
+	call	MessageBoxA,[main_win_handle],offset about_string,offset about_title,MB_OK
+	xor	eax,eax
+	ret
+
+file_exit:
+	cmp	[processing_state],0
+	je	destroy_window
+
+	call	MessageBoxA,[main_win_handle],offset sure_stop,offset stop_string,MB_YESNO
+
+	cmp	eax,IDNO
+	jne	close_exit
+
+	xor	eax,eax
+	ret
+
+close_exit:
+	call	CloseHandle,[input_handle]
+	call	CloseHandle,[output_handle]
+	jmp	destroy_window
+
+destroy_window:
+	call	PostQuitMessage,0
+	popad
+	xor	eax,eax
+	ret
+
+WindowProc endp
+
+;----------------------------------------------------------------------------------------------------------------------------
+
+ChildDlgProc proc stdcall, @@hwnd:dword, @@wmsg:dword, @@wparam:dword, @@lparam:dword
+
+	pushad
+
+	mov	eax,[@@wmsg]
+
+	cmp	eax,WM_INITDIALOG
+	je	Initialize
+
+	cmp	eax,WM_COMMAND
+	je	Handle_Command
+
+	jmp	Done_Not_Handled
+
+Handle_Command:
+	mov	eax,@@wparam
+	mov	bx,ax
+	shr	eax,16
+	cmp	ax,0
+	jne	Done_Not_Handled
+
+	cmp	bx,IDC_EXIT_BUTTON
+	je	Exit_Button
+	cmp	bx,IDC_BROWSE1_BUTTON
+	je	Browse1_Button
+	cmp	bx,IDC_BROWSE2_BUTTON
+	je	Browse2_Button
+	cmp	bx,IDC_GO_BUTTON
+	je	go_button
+	cmp	bx,IDC_PAUSE_BUTTON
+	je	pause_button
+
+	jmp	Done_Not_Handled
+
+pause_button:
+	cmp	[processing_state],1
+	je	pause_process
+
+	mov	[processing_state],1
+	call	GetDlgItem,[child_dlg_handle],IDC_PAUSE_BUTTON
+	call	SetWindowTextA,eax,offset pause_string
+
+	jmp	Done_Handled
+
+pause_process:
+	mov	[processing_state],2
+	call	GetDlgItem,[child_dlg_handle],IDC_PAUSE_BUTTON
+	call	SetWindowTextA,eax,offset resume_string
+
+	jmp	Done_Handled
+
+go_button:
+	cmp	[processing_state],0
+	je	setup_process
+
+	call	MessageBoxA,[main_win_handle],offset sure_stop,offset stop_string,MB_YESNO
+
+	cmp	eax,IDNO
+	je	Done_Handled
+
+	mov	[processing_state],0
+	call	CloseHandle,[input_handle]
+	call	CloseHandle,[output_handle]
+	mov	dword ptr [input_handle],0
+	mov	dword ptr [output_handle],0
+
+	call	GetDlgItem,[child_dlg_handle],IDC_PAUSE_BUTTON
+	push	eax
+	call	EnableWindow,eax,0
+	pop	eax
+	call	SetWindowTextA,eax,offset pause_string
+	call	GetDlgItem,[child_dlg_handle],IDC_GO_BUTTON
+	call	SetWindowTextA,eax,offset go_string
+
+	call	SendDlgItemMessageA,[child_dlg_handle],IDC_PROGRESS,PBM_SETPOS,0,0	
+
+	jmp	Done_Handled
+
+setup_process:
+	call	GetDlgItem,[child_dlg_handle],IDC_INPUT_EDIT
+	call	GetWindowTextA,eax,offset name_buffer,256
+	call	CreateFileA,offset name_buffer,GENERIC_READ,0,0,OPEN_EXISTING,0,0
+	cmp	eax,-1
+	jne	good_open_input
+
+	call	MessageBoxA,[main_win_handle],offset input_error,offset error_string,MB_OK
+	jmp	Done_Handled
+
+good_open_input:
+	mov	[input_handle],eax
+
+	call	GetDlgItem,[child_dlg_handle],IDC_OUTPUT_EDIT
+	call	GetWindowTextA,eax,offset name_buffer,256
+	call	CreateFileA,offset name_buffer,GENERIC_WRITE,0,0,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,0
+	cmp	eax,-1
+	jne	good_open_output
+
+	call	CloseHandle,[input_handle]
+	call	MessageBoxA,[main_win_handle],offset output_error,offset error_string,MB_OK
+	jmp	Done_Handled
+
+good_open_output:
+	mov	[output_handle],eax
+
+	mov	[processing_state],1
+	mov	[current_position],0
+	call	GetFileSize,[input_handle],0
+	mov	[total_size],eax
+
+	call	SendDlgItemMessageA,[child_dlg_handle],IDC_ENC_COMBO,CB_GETCURSEL,0,0
+	mov	[enc_dec],al
+
+	mov	edi,offset key
+	mov	ecx,64
+	xor	eax,eax
+	cld
+	rep	stosd
+
+	call	GetDlgItem,[child_dlg_handle],IDC_KEY_EDIT
+	call	GetWindowTextA,eax,offset key,256
+
+	mov	byte ptr [key_check_sum2],0
+	mov	esi,offset key
+	xor	ebx,ebx
+	mov	edx,256
+make_check_sum:
+	lodsb
+	add	[key_check_sum2],al
+	mov	cl,al
+	ror	bl,cl
+	ror	byte ptr [key_check_sum2],cl
+	xor	bl,al
+	dec	edx
+	jnz	make_check_sum
+	mov	[key_check_sum],bl
+
+	mov	edi,offset key
+	xor	al,al
+	mov	cx,256
+	cld
+	repne	scasb
+	dec	edi
+	sub	edi,offset key
+	mov	[key_length],edi
+
+	call	GetDlgItem,[child_dlg_handle],IDC_PAUSE_BUTTON
+	call	EnableWindow,eax,1
+	call	GetDlgItem,[child_dlg_handle],IDC_GO_BUTTON
+	call	SetWindowTextA,eax,offset stop_string
+
+;	call	LoadCursorA,[hInst],IDC_APPSTARTING
+;	call	SetCursor,eax
+
+	jmp	Done_Handled
+
+Browse1_Button:
+	mov	[openfilename.lStructSize],76
+	mov	eax,[main_win_handle]
+	mov	[openfilename.hwndOwner],eax
+	mov	[openfilename.hInstance],0
+	mov	[openfilename.lpstrFilter],0
+	mov	[openfilename.lpstrCustomFilter],0
+	mov	[openfilename.nFilterIndex],0
+	mov	eax,offset name_buffer
+	mov	byte ptr [eax],0
+	mov	[openfilename.lpstrFile],eax
+	mov	[openfilename.nMaxFile],256
+	mov	[openfilename.lpstrFileTitle],0
+	mov	[openfilename.lpstrInitialDir],0
+	mov	[openfilename.lpstrTitle],0
+	mov	[openfilename.Flags],OFN_EXPLORER or OFN_FILEMUSTEXIST or OFN_NOCHANGEDIR or OFN_PATHMUSTEXIST
+	mov	[openfilename.lpstrDefExt],0
+
+	call	GetOpenFileNameA, offset openfilename
+	or	eax,eax
+	jz	Done_Handled
+
+	call	GetDlgItem,[child_dlg_handle],IDC_INPUT_EDIT
+	call	SetWindowTextA,eax,offset name_buffer
+
+	jmp	Done_Handled
+
+Browse2_Button:
+	mov	[openfilename.lStructSize],76
+	mov	eax,[main_win_handle]
+	mov	[openfilename.hwndOwner],eax
+	mov	[openfilename.hInstance],0
+	mov	[openfilename.lpstrFilter],0
+	mov	[openfilename.lpstrCustomFilter],0
+	mov	[openfilename.nFilterIndex],0
+	mov	eax,offset name_buffer
+	mov	byte ptr [eax],0
+	mov	[openfilename.lpstrFile],eax
+	mov	[openfilename.nMaxFile],256
+	mov	[openfilename.lpstrFileTitle],0
+	mov	[openfilename.lpstrInitialDir],0
+	mov	[openfilename.lpstrTitle],0
+	mov	[openfilename.Flags],OFN_EXPLORER or OFN_NOCHANGEDIR
+	mov	[openfilename.lpstrDefExt],0
+
+	call	GetOpenFileNameA, offset openfilename
+	or	eax,eax
+	jz	Done_Handled
+
+	call	GetDlgItem,[child_dlg_handle],IDC_OUTPUT_EDIT
+	call	SetWindowTextA,eax,offset name_buffer
+
+	jmp	Done_Handled
+
+Exit_Button:
+	cmp	[processing_state],0
+	je	just_exit
+
+	call	MessageBoxA,[main_win_handle],offset sure_stop,offset stop_string,MB_YESNO
+
+	cmp	eax,IDNO
+	je	Done_Handled
+
+	call	CloseHandle,[input_handle]
+	call	CloseHandle,[output_handle]
+
+just_exit:
+	call	PostQuitMessage,0
+	jmp	Done_Handled
+
+Initialize:
+	jmp	Done_Handled
+
+Done_Handled:
+	popad
+	xor	eax,eax
+	inc	eax
+	ret
+
+Done_Not_Handled:
+	popad
+	xor	eax,eax
+	ret
+
+ChildDlgProc endp
+
+	end	start
+	end
