@@ -1,7 +1,6 @@
--------------------
-*CB5 FILE INDEX*
--------------------
+# CB5 FILE INDEX
 
+```
 INTRODUCTION:
 
 cb5001.txt = Introduction 
@@ -78,3 +77,4 @@ cb5502.txt = Conclusion
 ABOUT:
 
 cb5601.txt = Current CodeBreakers Member List (May '99)
+```
