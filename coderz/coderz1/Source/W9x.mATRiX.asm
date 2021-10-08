@@ -1,4 +1,4 @@
-comment                                                                           ÿ
+comment                                                                           #
 
 released
 
@@ -122,7 +122,7 @@ The virus contains the text strings:
 where 'xxxxxxx' is the virus' "generation" number.
 
 
-úÄÍÄÍÍÍÍÄÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÄúÄÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÄÍÍÍÄÍÄ ú   ÿ
+úÄÍÄÍÍÍÍÄÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÄúÄÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÄÍÍÍÄÍÄ ú   #
 
 .486p
 .model flat
