@@ -1,5 +1,35 @@
 # Coderz EZine 2
 
+```
+Heya all,
+Welcome to Coderz.Net Zine #2.
+In November 2000, we released the first issue of Coderz.Net Zine. Now, a year later, after being delayed several times, and even almost canceled once, here is finally Coderz.Net Zine #2.
+Several things have happened during the past year:
+
+In late January, Coderz.Net went down for a while.
+In March, Benny wrote Winux, the first virus that infects both Windows and Linux files.
+In April, Coderz.Net was back online.
+In May, the Sadmind worm which spreads itself between Solaris systems and defaces websites running unpatched IIS 4.0 and IIS 5.0 servers, spread globally.
+In July, a worm called Code Red got even more widespread than Sadmind. This one spreads between unpatched IIS servers. Infected servers were supposed to flood www.whitehouse.gov, but administrators of the White House's site moved the site to avoid this.
+Rumour has it T-2000 committed suicide on August 24th. T-2000, member of Immortal Riot, was the author of Kriz, Chainsaw, Messev, Gwar, Obsolete, Altar, Savior, and other viruses. He also contributed several things to this zine and the first issue of the zine. He was a great coder and we'll miss him.
+Coderz.Net being a site, not a group, the zine wouldn't be possible without contributions. Thanks goes out to all people who sent us articles, viruses, tools and such. These people are:
+
+Fweek, LiteSys, renegade, GodOfBasic, mar00n, Necronomikon, Vecna, slurp, Dr. Watcom, T-2000, e[ax], Lys Kovick, S.H., Knowdeth, Lifewire, ULTRAS, GzR, blueEbola
+
+Thanks also goes out to:
+
+Lifewire: For writing a tool to put the interviews in HTML a lot faster
+People who filled in the  "Music, alcohol and drug use amongst VXers" survey
+People who were interviewed
+Greetings to:
+
+Evul, darkman, Antistate Tortoise, Vecna, Knowdeth, ShadSeek, Raid, nucleii, Spanska, Roadkil, Error, jackie, Benny, Sinixtar, Raven, Lys Kovick, Painter6, Lifewire, Rajaat, Simon7, urgo32, LethalMind, and everyone else from Undernet #virus
+
+I hope you enjoy reading this zine.
+
+Gigabyte
+```
+
 ## Editorial
 - Introduction Gigabyte/Metaphase
 
