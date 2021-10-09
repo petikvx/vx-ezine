@@ -1,1 +1,1 @@
-![editorial](editorial.png)
+![eof1](eof1.png)
