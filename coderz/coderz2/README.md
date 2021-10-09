@@ -79,10 +79,8 @@ Contributed by Gigabyte/Metaphase and Error/Team Necrosis, without Virus-X's per
 - Virus-X making a fool out of himself at VX No Sleep Marathon: Kamehameha
 Contributed by Gigabyte/Metaphase and Error/Team Necrosis, without Virus-X's permission, of course :)
 
-```
 ![1](1.png)
 ![2](2.png)
 ![3](3.png)
 ![4](4.png)
 ![5](5.png)
-![3](https://user-images.githubusercontent.com/2539129/136648731-09f9ae3f-c324-4ca4-b36f-a8148b90b7aa.png)
