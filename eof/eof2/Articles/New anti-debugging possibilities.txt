@@ -1,0 +1,492 @@
+  New anti-debugging possibilities
+  Written by izee/EOF in May, 2008
+              
+                  xchg code, mind!
+
+
+  Index`
+  ``````
+
+
+     I.  Prolog  
+     II. Entry:
+                1. Looking for IDA database files
+                2. Magic debuggers keys
+                3. Detecting IDA Remote Debug Server
+                4. NtSetDebugFilterState syscall
+                5. DebugActiveProcess
+                6. Structured Exception Handler
+                7. Thread Local Storage Callback
+    III. Epilog
+     IV. References
+      V. Thanks
+
+
+ 
+  Prolog`
+  ```````
+ 
+  Nowadays there  are  plenty  anti-debugging  tricks, some  of  them are known, some not.
+  However, all publicly known  tricks  are  Win32-specific  and Win64 is  still  untouched
+  currently. In the first part of article i'm going to demonstrate few  new  tricks, which
+  are coded for Win64, but can be easily ported to Win32. In the  second  part  i'll  show
+  how to implement SEH and TLS on Win64 and also some other new Win64-specific  anti-debug
+  techniques.
+
+
+
+  Entry`
+  ``````
+
+  1. Looking for IDA database files
+
+  By loading something in IDA for analysis, you can notice that files with  the  following
+  extensions are being created in the current directory:
+
+
+    program file name.id0
+                      id1
+                      nam
+                      til
+
+  These are IDA database related files. Using  FindFirstFileA(W) function, we  can  easily
+  check if there are files with such extensions in the current directory or not, and  thus
+  detect a presence of IDA.
+
+
+  Let's have a look at the example.
+
+    ~~~~~~~~~~~~~~~~~~~~
+
+    .data
+ 
+    ex  db  '*.id0',0
+    fd  dd  ?
+ 
+    .code
+ 
+    lea  rcx, ex
+    lea  rdx, fd
+    call FindFirstFileA
+  
+    inc  al
+    jnz  dbgfnd
+    ~~~~~~~~~~~~~~~~~~~~
+
+
+  See also: idadb64.rar
+
+  Tested  on: Windows Vista SP0/SP1 32/64bit
+  Applies to: Interactive Disassembler
+
+  Can be ported to Windows XP 32/64
+
+
+
+
+  2. Magic debuggers keys
+
+  The idea: to check if a debugger-specific  keys (such as: F4, F7, F8, F9, F10, F11) were
+  pressed during the debugging session. For that, we'll use the GetAsyncKeyState function.
+
+
+  In the following example we'll try to determine if a typical debugger  key -- F8 --  was
+  pressed.
+
+    ~~~~~~~~~~~~~~~~~~~~~~~~
+
+    cdq
+    lea  ecx, [rdx+77h] ;F8
+    call GetAsyncKeyState
+
+    dec  al
+    jz dbgfnd
+    ~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+  See also: gaks64.rar
+
+  Tested  on: Windows Vista SP0/SP1 32/64bit
+  Applies to: Interactive Disassembler
+              WinDBG
+              OllyDBG
+              future ring3 debuggers
+
+  Can be ported to Windows XP 32/64
+
+
+
+
+  3. Detecting IDA Remote Debug Server
+
+  For a local debugging of 64bit  executables  an  IDA Win64 Remote Debug Server  must  be
+  turned on. It's a console application, which listens  on  port  #23946. We  can  try  to
+  connect to this port and thus detect a presence of IDA.
+
+
+  And now an example.
+
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    sockaddr struc
+    sa_family       dw ?
+    sa_data         db 14 dup(?)
+    sockaddr        ends
+
+    WSAData         struc
+    wVersion        dw ?
+    wHighVersion    dw ?
+    szDescription   db 257 dup(?)
+    szSystemStatus  db 129 dup(?)
+    iMaxSockets     dw ?
+    iMaxUdpDg       dw ?
+                    dw ? ; undefined
+                    dw ? ; undefined
+    lpVendorInfo    dq ? ; offset
+    WSAData         ends
+
+    .data
+
+    ip  db  '127.0.0.1',0
+
+    hsocket dq ?
+
+    .data?
+
+    sa  sockaddr <>
+    wsd WSAData  <>
+
+    .code
+
+    lea  rdx, wsd
+    mov  cl, 2 ;Winsock 2.0
+    call WSAStartup
+
+    mov  r11d, 2
+    mov  word ptr [sa.sa_family], r11w
+    mov  cx, 5D8Ah ;port #23946
+    call htons
+
+    mov  word ptr [sa.sa_data], ax
+    lea  rcx, ip
+    call inet_addr
+
+    mov  dword ptr [sa.sa_data+2], eax
+
+    mov  r8d, 6 ;IPPROTO_TCP
+    mov  edx, 1 ;SOCK_STREAM
+    mov  ecx, 2 ;AF_INET
+    call socket
+
+    mov  [hsocket], rax
+
+    mov  r8d, 10h
+    lea  rdx, [sa]
+    mov  rcx, qword ptr [hsocket]
+    call connect
+
+    test al, al
+    jz   dbgfnd
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+  See also: idardbg64.rar
+
+  Tested  on: Windows Vista SP0/SP1 64bit
+  Applies to: Interactive Disassembler 64
+
+
+
+  4. NtSetDebugFilterState syscall
+
+  I can't say much about this syscall, since it's not documented  well, however i found it
+  as a new anti-debug trick. What the syscall does is sets the debug output  filter  level
+  for the specified component, under debugger it returns  NT_STATUS_SUCCESS (0), otherwise
+  it returns error code 22.
+
+
+  Let's have a quick look at the example now.
+
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    mov  r10, rcx
+    mov  eax, 14Ah ;NtSetDebugFilterState
+    syscall
+
+    test  al, al
+    jz dbgfnd
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+  See also: ntsdfs64.rar
+
+  Tested  on: Windows Vista SP0/SP1 64bit
+  Applies to: Interactive Disassembler
+              WinDBG
+              future ring3 debuggers
+
+  Can be ported to Windows XP: unknown.
+
+
+
+  5. DebugActiveProcess
+
+  The function enables a debugger to attach to an active process and debug it. Not so long
+  ago i found, that calling this function with current process handle on Windows Vista x64
+  under the ring-3 debugger will cause a local DoS or  even  BSOD. I  still  analyze  this
+  strange behavior,however i decided to write about my current researches. The funny thing
+  is, that local DoS or BSOD will occur only on x64 versions of Windows Vista, not on x86.
+
+  Here's the example.
+
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    or rcx, -1 ;pseudo handle (current process handle)
+    call DebugActiveProcess
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+
+  Here's the disassembled version.
+
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    ;ntdll.DbgUiConnectToDbg
+           
+    mov  r11, rsp
+    sub  rsp, 58h
+
+    mov  dword ptr [rsp+20h], 30h
+
+    mov  rcx, gs: [30h]
+    lea  r8,  [r11-38h]
+    mov  r9d, 1
+    add  rcx, 16A8h
+
+    mov  r10, rcx  ;NtCreateDebugObject
+    mov  eax, 91h  ;SP0 - 93h, SP1 - 91h
+    syscall
+
+    add rsp, 58h
+
+    call CsrGetProcessId ;get csrss.exe pid
+
+    lea  r9,  [rsp+20h]
+    lea  rcx, [rsp+78h]
+
+    mov  edx, 0C3Ah
+    mov  [rsp+20h], rax
+
+    mov  r10, rcx
+    mov  eax, 23h  ;NtOpenProcess
+    syscall
+
+    mov  rcx, [rsp+78h]
+
+    ;ntdll.DbgUiDebugActiveProcess
+
+    mov  rdx, gs:[30h]
+    mov  rdx, [rdx+16A8h]
+
+    mov  r10, rcx   ;NtDebugActiveProcess
+    mov  eax, 0ADh  ;SP0 - 0AFh, SP1 - 0ADh
+    syscall
+
+    ;---DoS---
+
+    ret
+           
+    ;---BSOD---
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+  See also: dap64.rar
+
+  Tested  on: Windows Vista SP0/SP1 64bit
+  Applies to: Interactive Disassembler 64
+              WinDBG 64
+              probably future ring3 64bit debuggers
+
+
+
+
+  6. Structured Exception Handler
+
+  SEH can be used as a powerful anti-debug trick, as we know. Here is an example of SEH for
+  Microsoft Linker x64.
+
+
+   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+ 
+   eh proc ;exception handler <-------,
+                                      |
+           ;your code goes here       |
+                                      |      
+   eh endp                            |
+                                      |
+                                      |
+     eof proc frame: eh               |
+                                      |^
+     push rbp                         |
+                                      |
+     .pushreg rbp                     |
+     .endprolog                       |
+                                      |
+     ud2, int3, icebp ----------------'
+     nop                      >
+
+     eof endp
+   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+ 
+  See also: seh64.rar
+
+
+  Now a bit of explanation.
+
+  eof proc frame: eh ;setup a SEH frame
+
+            push rbp ;generate unwind data for the base pointer
+        .pushreg rbp
+
+          .endprolog ;end of prologue
+  
+                 ud2 ;invalid opcode
+                     ;generates EXCEPTION_ILLEGAL_INSTRUCTION
+  
+                int3 ;trap to debugger
+                     ;generates EXCEPTION_BREAKPOINT
+
+               icebp ;Ice breakpoint
+                     ;generates EXCEPTION_SINGLE_STEP
+
+                 nop ;after SEH frame execution, RIP must point to some do-nothing code
+
+  Debuggers especially don't like ud2 instruction. IDA for instance will be not capable to
+  disassembly nor debug that instruction.
+
+
+  Tested  on: Windows Vista SP0/SP1 64bit
+  Applies to: Interactive Disassembler 64
+              WinDBG 64
+              future ring3 64bit debuggers
+
+
+
+
+
+  7. Thread Local Storage Callback
+
+  TLS Callback is called before the main entrypoint, this gives an ability to execute  the
+  virus or check for a debugger presence, before the debugger reaches the main entrypoint.
+  Unfortunately, ml64  don't support  TLS Callbacks, so  FASM  is  the  only  choice  then
+  currently for implementing TLS manually in Win64 executables.
+
+
+  Let's examine the example below.
+
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    format pe64 gui 5.0
+    include 'win64a.inc'
+
+    entry $
+          ret
+
+          proc cb, r
+          cmp  [r],DLL_PROCESS_ATTACH ;avoid double callback execution
+          jz   @f
+
+          ;---PEB.BeingDebugged Win64 variation---
+
+          mov  rax, [gs: 30h]     ;get ProcessEnvironmentBlock pointer
+          mov  rcx, [rax+60h]     ;from ThreadEnvironmentBlock
+          movzx eax, byte [rcx+2] ;read the BeingDebugged byte-flag
+
+          dec al
+          jz @f
+
+          ;---------------------------------------
+
+          xor  r9d, r9d
+          lea  r8,  [c]
+          lea  rdx, [nf]
+          jmp  mbox
+
+      @@: xor  r9d, r9d
+          lea  r8,  [c]
+          lea  rdx, [f]
+
+    mbox: xor  rcx, rcx
+	  call [MessageBox]
+
+	  ret
+          endp
+
+
+    data  9      ;TLS structure
+          dq sea ;StartAddressOfRawData
+          dq sea ;EndAddressOfRawData
+          dq sea ;AddressOfIndex
+          dq cba ;AddressOfCallBacks
+     sea  dq 0   ;SizeOfZeroFill
+     cba  dq cb  ;Characteristics
+          dq 0   ;NULL
+    end data
+
+
+    section '.data' data readable writeable
+
+     c    db 'Debugger:'   ,0
+     f    db 'I see you!'  ,0
+     nf   db 'Not found.'  ,0
+
+
+    section '.idata' import data readable writeable
+
+     library u32, 'user32' ;rgb's optimization tip ;-)
+
+     import  u32,\
+             MessageBox,'MessageBoxA'
+
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+  See also: tls64.rar
+
+  Tested  on: Windows Vista SP0/SP1 64bit
+  Applies to: Interactive Disassembler
+              WinDBG
+              future ring3 64bit debuggers
+
+
+
+
+  Epilog`
+  ```````
+
+  I hope you enjoyed reading the article as much as I enjoyed writing it. Don't forget  to
+  see attached archives also. If you will have some questions or comments, you can  always
+  write me an e-mail to: izee@eof-project.net
+
+  Welcome to Win64 world and let's protect our future creations!
+
+
+
+  References`
+  ```````````
+
+  29A #8  - Thread Local Storage (64bit AMD version) - roy g biv
+  WASM.RU - TLS from the inside - Bill / TPOC
+  WASM.RU - http://www.wasm.ru/forum/viewtopic.php?id=26306 - Joes
+  http://www.tortall.net/projects/yasm/manual/html/objfmt-win64-exception.html
+
+
+
+  Thanks`
+  ```````
+
+  WarGame, roy g biv, kaze, RadiatioN, Scorpions.
+

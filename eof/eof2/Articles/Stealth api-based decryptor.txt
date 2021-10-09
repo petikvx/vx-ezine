@@ -1,0 +1,553 @@
+Stealth api-based decryptor
+___________________________
+
+kaze/FAT
+
+http://fat.next-touch.com
+
+
+
+Table of Contents
+
+ 1. Introduction
+ 2. The idea
+ 3. The decryptor
+ 4. "Stealth" IAT patching
+ 5. Adding some semantic junk
+    5.1. Finding safe APIs
+    5.2. Adding random api calls to the decryptor
+ 6. Decryptor fragmentation
+ 7. Polymorphism
+    7.1. Kpasm
+    7.2. The poly rules
+ 8. Obfuscation through relocations
+ 9. Results & Conclusion
+
+
+
+1. Introduction
+_______________
+
+
+This paper is a (partial and crapy) translation of the original paper written in  french. I take no
+responsibility for the brain injuries caused by my awful english. You have been warned.
+
+
+
+The main thing i really enjoy in virus writing is  neither  spreading  nor  weird  target  platform
+infection, it's just AV detection evading. And  when I  say  stealth, i don't  mean  "kill  any  AV
+running on  the  victim's OS", I  mean: not  detected. But  to  be  honest, writing  a  long-enough
+undectetd virus begins to be a real challenge. Nowadays, even the most advanced  poly  engines  get
+detected in a  few  days. A  few  years  ago, some  little  tricks  like  including  big  loops  in
+decryptors, generating a lot of junk or using uncommon opcodes  could  fool  some  of  the  weakest
+emulators. But new techniques like code normalization can detect easily such  tricky  polymorphized
+decryptors.
+
+
+
+I'll try to present here a new approach to evade av detection. Instead of increasing the complexity
+of the decryptor, as most of the actual poly engines tend to, we will try to build a decryptor that
+looks as common as possible, hopping for the AV to cancel emulation. We will try  to  increase  the
+risk of false positive during virus detection. This approach has been implemented in my last virus,
+win32.leon, which can be found in the virus section of this emag.
+
+
+
+
+2. The idea
+___________
+
+
+To defeat or slow down actual emulators, I propose a new approach: not a breaking-through  one, but
+I never saw it in a working virus. It's based on two hypothesis:
+
+
+
+* Current emulators don't emulate APIs. At least, not all the APIs
+
+* If the emulated code looks like a traditionnal app and unemulable APIs calls are being
+  analyzed, emulators will be likely to cancel the scanning
+
+
+
+
+Those hypothesis may be a bit too strong. Some av products, like sandboxes, emulate  the  whole  OS
+environnement. But those two hypothesis are likely to be the reality  for  desktop  antivirus, that
+can't spend more than a bunch of seconds for an executable analyzis.
+
+
+
+Usual virus decryptors use to be as complex and as hard to emulate as possible. What  we  will  try
+here instead is to build a decryptor that looks like a common  application, an  harmless  chunk  of
+code. Our decryptor will only use standard win32 api calls. No xor  nor  uncommon  opcodes. A  very
+few number of viruses use APIs in their decryptor, and they're often  used  as  junk  code. If  AVs
+don't emulate them, they can still ignore them: no good. And in most of the cases, the API sequence
+used by the virus is constant, leaving the possibility to perform behavioural detection.
+
+
+
+3. The decryptor
+________________
+
+
+There are several ways to build a 100% api-based decryptor, you just need to find a set of api able
+to perform simple encryption. I choosed the CryptoApis for leon, but other api sets should  do  the
+job. For example, the BitBlt API with it's xor capability may be a good choice too (even  a  better
+one, as the XOR operation is done by the graphic card chipset, not the  cpu). But  simpler, better,
+let's look at our candiate :
+
+
+
+   csp dd ?
+   hash dd ?
+   key db 48 dup (?)
+   hkey dd ?
+
+   call CryptAcquireContext, offset csp,0,0,PROV_RSA_FULL,CRYPT_VERIFY_CONTEXT
+   call CryptCreateHash, csp,CALG_MD5,0,0,offset hash
+   call CryptHashData, hash, offset key,4,0
+   call CryptDeriveKey, csp,CALG_RC4,hash,48,offset hkey
+   call CryptDecrypt, hkey,0,1,0,start_of_virus,size_of_virus,start_of_virus
+
+
+
+This simple bit of code will decrypt our virus through the RC4 symmetric  algorithm. More  info  on
+the CryptoApis can be found easily on the msdn library. In  fact, win32.leon  has  two  decryptors,
+this one and a standard xor decryptor, but the xor decryptor is rarely used, and we'll  focus  here
+on the cryptoapis based one. We will first see how to build an api-based  decryptor, and  then  how
+to make it as stealth as possible.
+
+
+
+4. "Stealth" IAT patching
+_________________________
+
+
+In order to use APIs in the decryptor, we need to  gather  the  used  APIs  adresses, nothing  new.
+Usually, in a virus, API adresses are obtained at runtime from a memory scan, by parsing the export
+table of the DLLs. As we want our decryptor to look as harmless as possible, looking  for  the  api
+adresses in memory at runtime won't be considered. Instead, we will modify  the  infected  host  to
+make it import the wanted APis for us . This can be done by patching the host's  IAT  at  infection
+time, in this way:
+
+
+
+1. Modify the IAT RVA in the host's data directory to point to  some  free  space. For  example, we
+   can allocate an extra 4kb space in the last section by resizing the section. Copy  the  original
+   host's IAT to this free space
+
+2. Add an extra Image Import Descriptor for the DLL hosting the APIs used in the decrpytor. For the
+   CryptoApis, it will be an IID for advapi32.dll. If an IID for advapi32 was already in the host's
+   IAT it won't matter: a PE containing two IIDs for the same DLL is still a valid PE.
+
+3. Add to this IID the names (in the First Thunk and Original First Thunk) of the APIs used in  the
+   decryptor: "CryptAcquireContext", "CryptCreateHash", etc.
+
+4. Remember the virtual adress of the First Thunk of this IID. It will contain the adresses of  the
+   wanted APIs when the infected host is loaded in memory by the  windows  loader. For  example, if
+   CryptAcquireContext is the second imported API, the call  CryptAquireContext  in  the  decryptor
+   will be replaced by call [adress_of_first_thunk+4].
+
+
+
+
+I won't show here the structure of the Import Image Descriptor, as it has been already explained in
+a bunch of papers: if you're lost, go get some documentation about the PE format. Source  code  for
+this task can be found in the functions add_iid_decrypteur and deal_imports  of  fusion_imports.asm
+in win32.leon source code.
+
+
+
+Thanks to IAT patching, we can now call APIs in the decryptor without having to look for the  API's
+adresses in memory, that is, just like  a  traditionnal  application. But  this  algorithm  can  be
+improved a bit thought: the IID we just added in the IAT is too much  constant. In  fact, it  could
+lead to potential signatures for the AVs. To make it a bit stealthier, I added  two  little  tricks
+in win32.leon:
+
+
+
+* The API strings (referenced by the FirstThunk and the OriginalFirstThunk of the  extra  IID)  are
+  stored at random locations in the  host  file. This  is  done  to  avoid  simple  signature  like
+  "CryptAcquireContext+CryptCreateHash+…+CryptDecrypt".
+
+* Some random advapi32 API (APIs we don't need in the decryptor) are added to the  extra  IID. This
+  done to avoid an heuritic detection: without this trick, our extra IID  would  alway  import  the
+  same five APIs in the same order: CryptAcquireContext .. CryptDecrypt. Even if  the  API  strings
+  are stored at random locations in the host file, it could be detected through heuristic.
+
+
+
+The first algorithm is very simple: the only thing you have to do  is  to  find  (or to make)  some
+random located free spaces in the host and to store the API strings there. Those  free  spaces  can
+be located in the virus body, but be careful to let enough space between the API strings. And  make
+sure that the spaces between two API strings aren't constant bytes, as it could lead to a potential
+signature too.
+
+
+￼
+
+
+
+The second trick isn't harder to implement. What you have to do is to keep a list of  advapi32  API
+strings (or whatever dll your decryptor uses) inside your virus, and add a  random  set  of  thoses
+string at infection time into the extra IID (well, into the FirstChunk  and  OriginalFirstThunk  of
+the IID). Don't hesitate to insert a lot of different APIs into the extra IID, but make sure:
+
+
+
+* Those APIs are inserted between the APIs you really use in your decryptor.
+
+* The API you add are cross-compatible. It would be a mess if your virus couldn't spread  to  win2k
+  because you added an import to an API only aviable on winXP.
+
+
+
+Again, I won't show source code for this as this is a trivial task. If you're very curious, take  a
+look to the other functions in fusion_imports.asm in win32.leon source  code. The  cross-compatible
+advapi32 APIs list is stored in the file  apis_advapi_compat.inc. Of  course  this  list  has  been
+computed, I didn't test APIs one by one ;)
+
+
+
+5. Adding some semantic junk
+____________________________
+
+
+Now, we have a 100% api-based decryptor that looks pretty harmless. It could be still  detected  in
+two ways :
+
+
+
+* Through standard signature. I will present the poly engine later.
+
+* Dynamically, through the sequence of api calls in the  decryptor. In  fact, our  decryptor  will
+  always perform the same api calls  sequence: CryptAcquireContext, CryptCreateHash … CryptDecrypt.
+  No good.
+
+
+
+Because we don't want our decryptor to be detected, even dynamically, we will try to introduce some
+randomness to the API calls sequence of the virus decryptor. We will insert random "safe API" calls
+between our effective api calls in the decryptor. By "safe API", I mean an API  we  can  call  with
+random-value parameters and that won't do anything besides returning an error code. For example the
+API CloseHandle: if we call CloseHandle(random()) under Windows  XP  or  2000, the  API  will  just
+return (99.999% of the time) an  harmless  error  code  into  eax, nothing  more. No  side  effect,
+nothing. So the idea is to insert calls  to  such  harmless  APIs  into  our  decryptor, at  random
+locations.
+
+
+
+5.1. Finding safe APIs
+______________________
+
+
+Before adding safe api calls into our decryptor, we have to find witch win32 API is a  "safe"  one,
+witch APIs can we execute without a risk. It can be a painful task if we test them by hand  one  by
+one. Would be nice if a program could compute that for us. That's why I wrote a  little  tool  that
+tests all APIs on a given OS with random parameters, and write down the APIs that don't  crash, i.e
+the safe ones. Again, as this tool is very simple, I won't paste source code. It can  be  found  in
+this emag too (safeapisdetector). To be short, what it does is:
+
+
+
+1. List all of the APIs in the system dlls (kernel32, user32, advapi32, gdi32, etc.)
+
+2. For each API, find the number of parameters of the API. This is done by calling the API with
+   just say 20 parameters on the stack, call the API, and look how many dword have been  popped
+   from the stack. This number is the number of parameteres for the API.
+
+3. Call the API many times, each time with different random parameters.
+
+4. If no exception has been thrown and if we still haven't crashed, this API is a safe one.
+
+
+
+
+Then, this tool write the list of (crc of the name of safe api, number of parameters)  into  a .inc
+file that can be directly included into a .asm file. I ran it on several  OS  (win XP SP0, SP2, SP2
+Pro and 2000) and kept the intersection of all the safe APIs that the tool found  on  each  system.
+The result can be found into the file  fake_apis.inc  from  win32.leon  source  code. Here  is  the
+beginning of that file:
+
+
+
+list_safe_apis:
+        db "kernel32.dll",0
+        dd 034EEF5CFh, 1 ; AddAtomA
+        dd 085870330h, 1 ; AddAtomW
+        dd 0E8EE9923h, 3 ; AddConsoleAliasA
+        dd 07B5E9926h, 3 ; AddConsoleAliasW
+        dd 0E9FA4F67h, 0 ; AllocConsole
+        dd 0E35DCCE1h, 0 ; AreFileApisANSI
+        ...
+
+
+
+
+For windows XP and 2000, something like 66% of the APIs are safe ones. Under Vista it's about 5-10%
+as most of the APIs throw an exception when called with  wrong  parameters. But  I  don't  care, as
+win32.leon targets XP/2000 only.
+
+
+
+5.2. Adding random api calls to the decryptor
+_____________________________________________
+
+
+We now have a list of cross-compatible safe apis, that we can call from our decryptor, embedded  in
+our virus. The next step is to modify the decryptor. We will insert api calls to some of those safe
+apis at random locations into the decryptor. This  is  done  at  infection  time, just  before  the
+decryptor gets polymorphized. But again, in order to call those APIs in the decryptor, we  have  to
+make sure the host import them. In win32.leon, I choosed to use only already-imported  APIs. As  my
+safe-API list is a big one (more than 500 cross-compatible safe APIs), we are nearly sure that  the
+infected host will import at least two or three of them.
+
+
+
+After semantic polymorphism, our api-based decryptor (for a given generation of the virus) may look
+like:
+
+
+
+
+   call CreateFiber, random(),random(),random()
+   call CloseHandle, random()
+   call CryptAcquireContext, offset csp,0,0,PROV_RSA_FULL,CRYPT_VERIFY_CONTEXT
+   call TlsAlloc
+   call CryptCreateHash, csp,CALG_MD5,0,0,offset hash
+   ...
+
+
+
+6. Decryptor fragmentation
+__________________________
+
+
+In order to obfuscate a bit more the  virus, Win32.leon's  decryptor  is  fragmented  into  several
+chunks of code. Each chunk contains the code for a (fake or not) API call. Those chunks are written
+at random locations into the host, the first chunk being located at the entry point of the infected
+PE. They overwrite the host data (or code), data that are saved into the virus body. Those data are
+of course restored when the virus exits, just before jumping to the infected program.
+
+
+
+The location of each chunk is choosed carefully, in order to avoid  the  host  corruption: the  main
+PE structures won't be overwritten by any chunk. In leon's source code, the module fragmentation.asm
+will list all the important structures of the PE (IAT, EAT, ressources, tls, etc.) and choose N safe
+locations for the chunks (where N=number of chunks=number of api calls in the decryptor).
+
+
+
+￼
+
+
+
+In order to loose a bit the emulator, the jump from chunk #k to chunk #k+1 is a bit  obfuscated. If
+the av doesn't know the number of parameters of the api used in chunk #k (and if the api itself  is
+not emulated of course), it won't be able to locate chunk #k+1. Lets look at an example:
+
+
+￼
+
+
+
+
+
+7. Polymorphism
+_______________
+
+
+Our api-based decryptor may be able to bypass emulation, but it is still vulnerable  to  signature-
+based detections. A quick solution is to polymorphize the decryptor code, but  it  should  be  done
+carefully. As we want our decryptor to look as harmless  as  possible, standard  engines  won't  be
+considered: most of them produce "strange"  code, uncommon  opcodes  and  are  quickly  flagged  as
+"suspicious" by AV  emulators. Instead, the  poly  engine  for  such  decryptors  should  focus  on
+"standard" code production.
+
+
+
+7.1. Kpasm
+__________
+
+
+As i'm a lazy person, I didn't want to build the poly engine for leon entierly in asm. A good  poly
+engine is an engine with a lot of obuscation rules, and writing all those rules in asm is a painful
+task. Instead, I created a tool to help me in the creation of my poly engine. This  tool, kpasm, is
+like a specialized compiler designed to build poly engines. The obfuscation rules are written in  a
+high level language that looks like C, with specialized instructions for polymorphism. To be  short,
+an obfuscation rule may look like:
+
+
+
+mov reg,cst <=> mov reg,0; add reg,cst
+
+
+
+This is not Kpasm syntax, but the idea is there: rules are described in a short and elegant manner,
+while poly engine implementation is abstracted. Rules may be of course  more  complicated  (use  of
+random registers, jumps, loops, memory reads and writes etc.). From those rules, kpasm will produce
+the source code (asm source code) of the poly engine that will apply those user-defined obfuscation
+rules.
+
+
+￼
+
+
+
+
+I won't describe kpasm here as it is a complex tool. User guide (in french) can  be  found  on  the
+FAT website, as well as binaries and examples. An english version may be  avaible  in  the  future.
+Using kpasm permits to build a lot of obfuscation rules very quickly, and that's what is  important
+for the kind of decryptor we want to build. For example, the poly engine  of  win32.leon  has  been
+built in 2-3 hours (see regles.kpasm in source code).
+
+
+
+7.2. The poly rules
+___________________
+
+
+As we want to increase the risk of false positive for AVs, poly rules must be written carefuly. The
+idea is to apply a lot of small  obfuscation  rules  that  produce  short  standard  code. Uncommon
+operations like push reg / junk reg / pop reg should be avoided, as well as uncommon  opcodes  like
+stc, clc etc. The polymorphized decryptor of win32.leon only contains:
+
+
+
+* Standard operations: mov, add, sub, lea, cmp, jmp, push, pop, etc.
+
+* Api calls: junk apis and useful ones
+
+* Always false tests followed by jumps to host code. Those tests must not be too much trivial
+
+* Memory accesses: reads, writes and read of previsouly written values. Most of the memory
+  access are "useful" for the virus, i.e not junk. A big piece of code without any meaningful
+  memory access would look suspicious
+
+* Small junk loops
+
+
+
+
+The decryptor should not be polymorphized too much tho, as unoptimized code always looks suspicious.
+In win32.leon, only a few steps of polymorphism are done: not all  opcodes  are  polymorphized  and
+polymorphized code is not too big. But  two  decryptors  from  different  generations  are  totally
+differents, and that's what matter. All the rules  are  described  in  kpasm  syntax  in  the  file
+regles.kpasm. Below is an example of a polimorphised (fake) api chunk of the decryptor. Just infect
+some executable with win32.leon to look at more samples.
+
+
+
+
+01008A61 > $ C705 6F3C0801 >MOV DWORD PTR DS:[1083C6F],kazerege.0100>
+01008A6B   . FF35 6F3C0801  PUSH DWORD PTR DS:[1083C6F]
+01008A71   . 8B35 D33C0801  MOV ESI,DWORD PTR DS:[1083CD3]           ;  kazerege.01069704
+01008A77   . 2B1D 733C0801  SUB EBX,DWORD PTR DS:[1083C73]
+01008A7D   . 56             PUSH ESI                                 ; /hTemplateFile => 01069704
+01008A7E   . FF35 433D0801  PUSH DWORD PTR DS:[1083D43]              ; |Attributes = HIDDEN|SYSTE
+01008A84   . BF 239C70DD    MOV EDI,DD709C23                         ; |
+01008A89   . BB FD350801    MOV EBX,kazerege.010835FD                ; |
+01008A8E   . 2B15 BB3C0801  SUB EDX,DWORD PTR DS:[1083CBB]           ; |
+01008A94   . 8BB3 B2060000  MOV ESI,DWORD PTR DS:[EBX+6B2]           ; |
+01008A9A   . 57             PUSH EDI                                 ; |Mode => DD709C23
+01008A9B   . C705 E73D0801 >MOV DWORD PTR DS:[1083DE7],8BAE08D6      ; |
+01008AA5   . BB 093D0801    MOV EBX,kazerege.01083D09                ; |
+01008AAA   . 8B53 0A        MOV EDX,DWORD PTR DS:[EBX+A]             ; |
+01008AAD   . FF35 E73D0801  PUSH DWORD PTR DS:[1083DE7]              ; |pSecurity = 00E2DA48
+01008AB3   . 68 F73848DB    PUSH DB4838F7                            ; |ShareMode = FILE_
+01008AB8   . 68 A2A36A41    PUSH 416AA3A2                            ; |Access = GENERIC_WRITE|16
+01008ABD   . FF35 5B3D0801  PUSH DWORD PTR DS:[1083D5B]              ; |FileName = 0035DB23 ???
+01008AC3   . FF15 B0110001  CALL DWORD PTR DS:[<&KERNEL32.CreateFile>; \CreateFileW
+01008AC9   . 813D 233D0801 >CMP DWORD PTR DS:[1083D23],9DD8D33
+01008AD3   .^0F84 9D9CFFFF  JE kazerege.01002776
+01008AD9   . C3             RETN
+
+
+
+
+As you can see, the polymorphized decryptor chunks don't look  very suspicious: pushs, pops, memory
+access, that's all. Of course  all  registers, instructions  and  memory  access  change  from  one
+generation to another.
+
+
+
+8. Obfuscation through relocations
+__________________________________
+
+
+Our stealth api-based decryptor can be even be more obfuscated, without looking too much suspicious.
+A good technique to obfuscate the decryptor (besides polymorphism) without introducing  weird  code
+ike xor loops, is the "encryption through relocations"  technique. This  technique  is  a  old  one,
+first presented by TCP in 29A#5 and used in his  resur  virus  and  my  sankey  (aka slicer)  virus.
+I won't describe the original technique here, as it's not original anymore.
+
+
+
+Though, some additional work has to be done in order to use this  old technique  under  winXP/2000.
+The main difference between win9x and xp/2000 for the PE relocation process  is  that  the  default
+imagebase under xp/2000 is no longer 0x400000 but 0x10000. It implies that in  order  to  use  this
+technique, we first have to relocate the infected executable, because the imagebase of the  process
+(often 0x400000) differs from the default imagebase (0x10000) under 2k/XP.
+
+
+
+A consequence is that this technique will only be possible  for  executable  which  have  a  .reloc
+section (~5% of the executables). But 5% is better than nothing, isn't it ? I  won't  describe  the
+whole technique here: the idea is the same as the old one, and for the differences under winxp/2000
+(relocating the host), just take a look at the file relocation.asm in win32.leon source code  (this
+is a trivial task).
+
+
+
+This technique allow us to have some chosen dwords of the virus decryptor encrypted  on  the  disk.
+Those dwords are decrypted by the  windows  loader  when  applying  relocations : no  need  to  use
+additional decryptor code, windows decrypts our code for us. Let's look at an example:
+
+
+
+￼
+
+
+
+Finally, we have a 100% api-based polymorphic decrytor, fragmented, featuring fake  api  calls  and
+sometimes encrypted through the reloc technique. It's likely that actual AVs engine won't  be  able
+to emulate the decryptor. The only flaw is see is located  in  the  poly  engine: it  must  feature
+enough obfuscation rules to avoid signature-based detections. Actual  poly  engine  may  be  a  bit
+"light", but thanks to kpasm, it shouldn't be hard to add a lot of polymorphism rules to the engine.
+
+
+
+9. Results & Conclusion
+_______________________
+
+
+The few techniques presented in this paper or not killer ones. But put together, they are likely to
+make life hard for the AVs. As leon is a proof of concept, i didn't spend a lot of time on the poly
+rules (well, the poly is still better than a lot of  engines). But  even  with  this  reduced  poly
+engine, it took more than three weeks for the AVs  (after i sent them samples)  to  detect  it, and
+with a bad detection rate (~80% for sophos, less than 20%  for  the  others). After  6  months, the
+detection rate is about 95% for sophos and some others, while most of AVs, e.g KAV, stay  near  15%
+(source: virustotal). Maybe the reason for those bad detection rates is because  the  virus  hasn't
+been spread into the wild, so avers don't care ?
+
+The main goal has been achieved though: the virus decryptor is not emulated (i did some tests  with
+well-known malwares embedded into win32.leon: still not detected). Sophos  detection  seems  to  be
+signature based (the signature for win32.leon is ~40k big, seems that they detect win32.leon  tanks
+to a lot of different decryptor signatures, but I may be wrong as I didn't ask them :). I won't say
+it's a win, infact further tests with a slightly improved  poly  engine  should  be  done  to  draw
+conclusions.  But  I  still  believe  that  stealth  api-based  decryptor  are  the  solution   for
+undetectability in future viruses. Todays AVs engines are good, and what we have left  is  to  play
+with the false positive rate.
+
+Finally, I hope that you enjoyed reading this short paper. Greets go to all FAT members, as well as
+ex 29a & IKx members for their past work. Thanks to izee too, for taking the time to read  my  poor
+english ;) Don't hesitate to mail me comments or questions.
+
+
+
+
+kaze/FAT
+
+
+Last updated 2008-07-26 20:18:22 Paris, Madrid
+

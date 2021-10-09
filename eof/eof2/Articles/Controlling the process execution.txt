@@ -1,0 +1,269 @@
+Controlling the process execution.
+
+You should have basic Driver coding skills,and advanced C coding skill to fully understand the article and codes.
+Tools: DDK,win C compiler
+	 InstDrv - to load/unload your drivers - www.rootkit.com/vault/hoglund/InstDvr.zip
+	 DbgView - to capture debug output - http://technet.microsoft.com/en-us/sysinternals/bb896647.aspx 
+
+NOTE: Im not responsible for what are you doing with this codes.They are made for educational purposes and you take full responsibillity
+	for what are you doing.Im not responsible for any kind of damage you cause,by improper using of this codes.
+	Read the license before using the codes.
+
+In my rootkit research i came to conclusion,that i need to have total control over the victim.
+Is the user about to execute some kind of AV or rootkit hunting software?If so,i need to be aware.
+
+There are many ways to acomplish this task.
+ 
+-In userland: we can hook CreateProcess API call,but we have to do it in every process 
+	      currently running and every process executed in future.There is also need of hooking
+       	all the LoadLibrary calls.Even ,after so many hooks installed ,there is still possibility 
+      	that some execution will be missed.The process can call directly NtCreateProcess,
+      	thus evade our hooks.I have rejected this approach immediately.
+
+-In kernel: we can hook SSDT which is very common approach of the AV/personal Fw software.
+	      There is need to pay special attention when implementing this kind of hooks.
+	      The arguments must be handled properly to avoid possible system failures.
+	      For more info read:http://uninformed.org/?v=all&a=21&t=sumry		
+
+But the approach i have chosen for this task is using PsSetCreateProcessNotifyRoutine.
+I can see lot of advantages.There is no need to alter any tables,nothing to hook - (almost)nothing to screw up.
+
+Quote from msdn :
+"The PsSetCreateProcessNotifyRoutine routine adds a driver-supplied callback routine to,
+or removes it from, a list of routines to be called whenever a process is created or deleted.
+
+For us this means,that our callback routine will be called everytime when the process creation/termination 
+occurs in system.
+
+NTSTATUS PsSetCreateProcessNotifyRoutine(
+    IN PCREATE_PROCESS_NOTIFY_ROUTINE  NotifyRoutine,
+    IN BOOLEAN  Remove
+);
+
+PCREATE_PROCESS_NOTIFY_ROUTINE NotifyRoutine - pointer to our notify routine
+BOOLEAN Remove - FALSE - add notify routine
+		   - TRUE  - remove notify routine
+
+This is very important.Don't forget to remove the notify routine once your driver is about to unload.
+If you do forget,expect BSOD.
+
+The notify routine looks like this:
+
+VOID (*PCREATE_PROCESS_NOTIFY_ROUTINE) (
+    IN HANDLE  ParentId,
+    IN HANDLE  ProcessId,
+    IN BOOLEAN  Create
+);
+
+HANDLE ParentId  - id of creator process
+HANDLE ProcessId - id of created process
+BOOLEAN Create - TRUE  - execution   -> just after the initial thread is created within the newly created process
+		   - FALSE - termination -> process address space is about to be deleted
+
+Okey lets do it.
+
+We will start with simple driver,which will use the debug messages as output.
+
+CODE---------------------------------------------------------------------
+/* this is testing driver.compile with ddk checked */
+
+#include <ntddk.h>
+
+// our notify routine
+VOID NotifyRoutine (HANDLE  parentId,HANDLE  processId,BOOLEAN  Create)
+{
+	if(Create) DbgPrint("Execution detected.PID :%d",processId);
+	else DbgPrint("Termination detected.PID :%d",processId);
+}
+
+// driver unload function
+VOID OnUnload(IN PDRIVER_OBJECT DriverObject)
+{
+	// remove notify callback 
+	PsSetCreateProcessNotifyRoutine(NotifyRoutine,TRUE);
+	DbgPrint("DRIVER: Unload called.Removing callback.\n");
+}
+
+// driver entry function
+NTSTATUS DriverEntry(IN PDRIVER_OBJECT DriverObject,IN PUNICODE_STRING theRegistryPath)
+{
+    // Register a dispatch function for Unload
+    DriverObject->DriverUnload = OnUnload; 
+
+	// Register our notify callback 
+    if(PsSetCreateProcessNotifyRoutine(NotifyRoutine,FALSE) == STATUS_INVALID_PARAMETER){
+        DbgPrint("DRIVER: Error registering notify routine.\n");
+	    return STATUS_UNSUCCESSFUL;
+    }
+	DbgPrint("DRIVER: Notify callback registered successfully.\n");
+
+    return STATUS_SUCCESS;
+}
+
+END----------------------------------------------------------------------
+
+Load the driver and check out the debug output.Try run some processes and try to kill some.
+Here is the output.One execution and one termination happended.
+
+OUTPUT-------------------------------------------------------------------
+
+DRIVER: Notify callback registered successfully.
+Execution detected.PID :1140
+Termination detected.PID :1140
+DRIVER: Unload called.Removing callback.
+
+END----------------------------------------------------------------------
+Simple hmmm ?
+
+Communicating with usermode.
+
+Notify callback works good,our task now is to dispatch data to the usermode application.
+We are going to use I/O Request Packets (IRPs).As this article is not about IRPs im not going much
+into details.For more information read... http://msdn.microsoft.com/en-us/library/ms810023.aspx
+
+At first the driver must create the communication device.
+
+Quote from msdn:
+"The IoCreateDevice routine creates a device object for use by a driver."
+
+NTSTATUS IoCreateDevice(
+    IN PDRIVER_OBJECT  DriverObject,
+    IN ULONG  DeviceExtensionSize,
+    IN PUNICODE_STRING  DeviceName  OPTIONAL,
+    IN DEVICE_TYPE  DeviceType,
+    IN ULONG  DeviceCharacteristics,
+    IN BOOLEAN  Exclusive,
+    OUT PDEVICE_OBJECT  *DeviceObject
+);
+
+Communication with such a device from usermode is very simple.
+You have to get handle of this device by using CreateFile API call,just like with any regular file.
+
+Then you can use DeviceIoControl or WriteFile/ReadFile just like an regular file I/O.
+(You can also use fopen,or C++ fstream functions)
+
+Creating the symbolic link to device makes device accesing easyer so we will do it.
+NTSTATUS IoCreateSymbolicLink(IN PUNICODE_STRING  SymbolicLinkName,IN PUNICODE_STRING  DeviceName);
+
+So how is the whole system going to work?
+
+When the NotifyCallback is called,the function stores data in dynamically allocated memory,
+till the data are requested by userapp.The user-side application will be requesting the data every second.
+(You can decrease the sleep time id you need).If there are some data to be dispatched,driver will put 
+it at the IRP stack and userapp will get it.
+
+Im sure there must be much better approach to this ,but since the deadline is tomorrow,i don't have time to code it.
+
+Okey.Sounds like a plan.Let start with driver.I will mention just interesting parts.
+
+
+In the DriverEntry you can find this piece of code:
+
+	DriverObject->MajorFunction[IRP_MJ_READ]		= OnRead;  //  data are requested
+	DriverObject->MajorFunction[IRP_MJ_WRITE]       = OnWrite; //  data are written to device
+	DriverObject->MajorFunction[IRP_MJ_CREATE]	= OnCreate;//  we got connection to our device
+	DriverObject->MajorFunction[IRP_MJ_CLOSE]	      = OnClose; //  user disconnected from our device
+
+OnRead,OnWrite,OnCreate,OnClose are special handling functions.The are getting called when special action has been
+occured on on our device.
+
+OnCreate - Handles the situation when someone has connected to our device.(remember CreateFile())
+OnClose  - When the client has disconnected from our device.
+OnRead   - When client is requesting data.
+
+	typedef struct pinfo{
+		HANDLE parent;
+		HANDLE process;
+		BOOLEAN create;
+	}PROC_INFO;
+
+The structure PROC_INFO is exacly same as parameters passed to our NotifyRoutine.
+(I changed type do DWORD in clientapp which is the same as HANDLE on lowest levels.(32bit unsigned))
+The data are dispatched in this structure for easyer handling.
+
+	#define INDEX_MAX 10
+
+	VOID NotifyRoutine (HANDLE  parentId,HANDLE  processId,BOOLEAN  Create)
+	{
+		PROC_INFO p_info;
+		p_info.parent  = parentId;
+		p_info.process = processId;
+		p_info.create  = Create; 
+	
+		if( index < INDEX_MAX ){
+			memcpy(&p_buffer[index],&p_info,sizeof(PROC_INFO));
+			index++;
+		}
+	}
+
+If there is still free space in allocated memory (index < INDEX_MAX),put the proc info data to the memory.
+Those data will be waiting there,until the userland client application request them.
+
+When client is requesting data,the OnRead routine is called,this routine will put them on the stack.	
+
+Now the userland application.The code is pretty simple.
+What it does is ,connect to device and request data in cycle every second.
+
+CODE----------------------------------------------------------------------------------------------
+/*   this is the userland client.Compile with any C compiler */
+
+#include <windows.h>
+#include <stdio.h>
+
+#define DEVICE_NAME  "\\\\.\\PControl_device"
+
+typedef struct pinfo{
+	DWORD parent;
+	DWORD process;
+	BOOLEAN create;
+}PROC_INFO;
+
+int main()
+{
+	HANDLE hDevice;
+	DWORD bRead = 0;
+	PROC_INFO p_info;
+
+	if(( hDevice = CreateFile( DEVICE_NAME, GENERIC_READ | GENERIC_WRITE,0,NULL,
+		 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)) == INVALID_HANDLE_VALUE){
+			 printf("[-]Cannot open I/O device \n ");
+			 return -1;
+	}
+
+	printf("[+]Connected to device.\n");
+
+	while(1)
+	{
+		ReadFile(hDevice,&p_info,sizeof(PROC_INFO),&bRead,0);
+		if(bRead == sizeof(PROC_INFO))
+		{	
+			printf("parent: %d process: %d create: %x \n",p_info.parent,p_info.process,p_info.create);
+		}
+		bRead = 0;
+		ZeroMemory(&p_info,sizeof(PROC_INFO));
+		Sleep(1000);// sleep for a second	
+	}
+
+	CloseHandle(hDevice);
+	return 0;
+}
+END-----------------------------------------------------------------------------------------------
+Now OpenProcess to get the process handle,GetModuleFileNameEx to get filename with path.
+See the source,where this is fully implemented.
+
+And that's it.Now you are aware of every execution/termination.The sources of pControl v0.5
+are included somewhere in ezine.Thx for reading.  
+
+There also exists:
+	PsSetLoadImageNotifyRoutine - to be notified about every image loaded
+	PsSetCreateThreadNotifyRoutine - to be notified about creation of thread
+
+ ... but that is another story.
+
+greets goes to berniee,synge,Dj_oGGy,AIPA,Haku,Player,and others.
+	and special thanks to tUff for language correction.
+
+regards.
+v1rusL4ir in july 2008 one day before the ezine release.
+ (viruslair[at]ihrisko[dot]org)
+
