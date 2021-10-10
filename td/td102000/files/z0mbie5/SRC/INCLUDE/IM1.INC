@@ -1,0 +1,51 @@
+
+                        import  SetLastError
+                        import  GetLastError
+                        import  CreateFileA
+                        import  CloseHandle
+                        import  SetFilePointer
+                        import  ReadFile
+                        import  WriteFile
+                        import  GetTickCount
+                        import  GetWindowsDirectoryA
+                        import  GetEnvironmentVariableA
+                        import  GetDriveTypeA
+                        import  FindFirstFileA
+                        import  FindNextFileA
+                        import  FindClose
+                        import  CreateThread
+                        import  Sleep
+                        import  GetCurrentProcessId
+                        import  VirtualProtect
+                        import  ExitProcess
+                        import  ExitThread
+                        import  GetVersion
+                        import  SetFileAttributesA
+                        import  SetFileTime
+                        import  CopyFileA
+                        import  DeleteFileA
+                        import  GetFileSize
+                        import  GlobalFindAtomA
+                        import  GlobalAddAtomA
+                        import  GlobalDeleteAtom
+                        import  GetCommandLineA
+                        import  VirtualAlloc
+                        import  CreateProcessA
+                        import  WritePrivateProfileStringA
+                        import  LoadLibraryA
+                        import  GetProcAddress
+                        import  GlobalAlloc
+                        import  GetCurrentThread
+                        import  GetThreadContext
+                        import  SetThreadContext
+                        import  GetThreadSelectorEntry
+IFDEF   DEBUG
+                        import  AllocConsole
+                        import  GetStdHandle
+                        import  WriteConsoleA
+                        import  ReadConsoleA
+                        import  FlushConsoleInputBuffer
+                        import  SetConsoleMode
+                        import  FlushFileBuffers
+ENDIF
+

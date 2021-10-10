@@ -1,0 +1,141 @@
+<html>
+
+<head>
+<meta http-equiv="Content-Type"
+content="text/html; charset=windows-1251">
+<meta name="GENERATOR" content="Microsoft FrontPage Express 2.0">
+<title>Top Device</title>
+</head>
+
+<body bgcolor="#B1B1B1" text="#000000" topmargin="0"
+leftmargin="3">
+
+<p><STYLE> </p>
+
+<p>INPUT { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt
+}</p>
+
+<p>SELECT { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE:
+8pt } </p>
+
+<p>OPTION { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE:
+8pt } </p>
+
+<p>TEXTAREA { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE:
+8pt } </p>
+
+<p>FORM { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt
+} <br>
+BODY { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt } <br>
+P { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt }
+TABLE { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt
+}TR { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 8pt } TD
+{ FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE: 10pt
+}TEXTAREA { FONT-FAMILY: Tahoma, sans-serif, arial; FONT-SIZE:
+8pt } A { COLOR: #005500; TEXT-DECORATION: none }A:hover {
+TEXT-DECORATION: underline } A:link { TEXT-DECORATION: none
+}A:visited { }text:unknown { FONT-SIZE: 8pt } } </STYLE> </p>
+
+<table border="0" cellpadding="0" cellspacing="0" width="100%">
+    <tr>
+        <td>&nbsp;</td>
+        <td valign="top"><div align="center"><center><table
+        border="0" cellpadding="0" cellspacing="0" width="100%">
+            <tr>
+                <td width="100%" bgcolor="#000000"><img
+                src="../-.gif" width="1" height="1"></td>
+            </tr>
+            <tr>
+                <td width="100%" bgcolor="#808080"><strong>14.03.2000</strong>
+                FindK32Ex <strong>[u_dev]</strong></td>
+            </tr>
+            <tr>
+                <td bgcolor="#000000"><img src="../-.gif"
+                width="1" height="1"></td>
+            </tr>
+            <tr>
+                <td><pre>
+
+      Стандартная идея поиска базового адреса kernel32.dll
+(HINSTANCE, HMODULE - кому как нравится) заключается в следующем:
+после загрузки исполняемого модуля в память система вызывает процедуру 
+расположенную по EntryPoint (берется из PE header-a). Вызов делается
+как все тут прекрасно знают коммандой call [XXXXX]. После исполнения
+этой комманды на стек кладется адрес возврата из процедуры (адрес 
+следующей за call комманды) - как нетрудно предположить, если вызов был 
+сделан из kernel32.dll (далее k32), то адрес возврата будет указывать на
+точку внутри k32.  Далее все просто - если вы тем или иным образом 
+заместили процедуру старта модуля то имеется возможность прочитав со 
+стека адрес возврата и пробежав в сторону уменьшения от данного адреса 
+по памяти найти 'MZ'. Тот адрес который указывает на данное 
+буквосочетание и есть базовый адрес k32. Есть одна тонкость - данный 
+адрес  должен быть выравнен на 0x10000. Т.е. если найденный адрес не 
+выравнен на это значение то значит это не то, бежим дальше....
+
+    Теперь о том какие проблемы могут быть. Перврое на что я наткнулся 
+так это то что под WinNt и при заражении DLL-й вызов DllMain делается не
+из kernel32.dll а из ntdll.dll. Не трудно догадаться что таким способом 
+мы найдем не тот HMODULE. И хотя получив адрес ntdll.dll можно (зная 
+WinNt Native API) в итоге получить все что надо и еще массу полезных 
+вещей, мне это не нравилось - приходилось писать достаточно большую 
+поддержку для разных осей.
+    Второе что мне не понравилось (хотя это не смертельно) это то что 
+приходилось запоминать адрес возврата максимально близко к точке старта
+моего кода. Т.е. чем больше своих дел я сделаю до вынимания со стека 
+адреса возврата тем сложнее вычислить место в стеке где он лежит. Хотя
+это чисто субъективная причина она то в общем и оказалась той каплей 
+после которой я начал думать как все это обойти...
+
+    Немного подумав я вспомнил о SEH... Дело в том что в win32 
+приложениях всегда существует глобальный обработчик исключений 
+(тех ошибок которые пользователь не обработал сам) - он то и выдает 
+всевозможные сообщения &quot;Программа совершила недопустимую операцию ...&quot;
+ и т.п. Так вот для Win32 приложений адрес этого обработчика всегда 
+лежит внутри k32. Таким образом мы в любой момент можем получить его:
+
+<font color="#0000A0">   typedef struct _SEH
+   {
+     _SEH  *m_pSEH;
+     DWORD  m_pExcFunction;
+   } SEH, *PSEH;
+
+
+   SEH  *seh;
+
+   __asm{ 
+         mov eax, fs:[0]   // указатель на список обработчиков
+                           // лежит здесь
+         mov [seh], eax
+        }
+   // если seh-&gt;m_pSEH = -1
+   // то это последний в списке обработчик
+   // он то нам и нужен
+
+   while((DWORD)seh-&gt;m_pSEH != 0xffffffff)
+      seh = seh-&gt;m_pSEH;
+
+   // seh-&gt;m_pExcFunction - этот адрес мы передаем
+   // стандартной процедуре нахождения HMODULE k32
+   // (ее алгоритм описан выше)
+</font>
+
+Вот собственно и все... Если кому чего не нравится 
+то это его личные трудности... ;))
+</pre>
+                </td>
+            </tr>
+            <tr>
+                <td>&nbsp;</td>
+            </tr>
+            <tr>
+                <td>&nbsp;</td>
+            </tr>
+        </table>
+        </center></div></td>
+        <td>&nbsp;</td>
+    </tr>
+</table>
+
+<p>&nbsp;</p>
+</body>
+</html>
