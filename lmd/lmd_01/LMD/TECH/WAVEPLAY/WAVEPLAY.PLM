@@ -1,0 +1,242 @@
+//  WAV files 8 bit mono player
+// by Alex Morshchakin AKA Scout
+// Scientific Programming Society, 1996
+
+equals  BufferSize      = 15000
+
+.CrLf   EQU     0Dh, 0Ah
+
+(expr	Terminate (?)
+	ax=4C^1; 21h=.int
+expr)
+
+(expr	ReadKey
+	ax=0; 16h=.int
+expr)
+
+(expr	KeyPressed
+	ah=01h; 16h=.int
+expr)
+
+(expr   Display(?, ?)
+.IFNB	<^1>
+	dx=OFFSET ^1
+.ENDIF
+	ah=^2; 21h=.int
+expr)
+
+(expr	JumpFAR ?) -> bytes   =0EAh, ^1(4)
+
+	MODEL	Tiny, Pascal
+	.ORG	100h
+        ..286
+        .LOCALS _@
+        PROGRAM WavPlayer
+
+        Display(CopyrightMsg, 09h)
+
+        bx=0200h
+        (loop 10
+          (save cx
+            dx=bx+06h; dx=.out.al=1;
+            al=.in.dx; al=.in.dx; al=.in.dx; al=.in.dx
+            dx=.out.al=0
+            dx=bx+0Ah
+            (loop 100
+              al=.in.dx; al=.cmp.0AAh
+            loop)<>
+          save)
+          if = goto SBFound
+          bx=+10h
+        loop)
+SBNotFound:
+        dx=OFFSET SBErrorMsg
+        goto Finish
+SBFound:
+        SBPort=bx
+
+        bx=0; bl=ds:[80h]
+        (save cx
+          BYTE PTR ds:[bx+81h]=00h; BYTE PTR ds:[bx+82h]="$"
+        save)
+        bl=-3
+        (if is carry
+          dx=OFFSET CLErrorMsg
+          goto Finish
+        if)
+
+        Display(FirstMsg, 09h)
+        Display(81h, )
+        Display(CrLfStr, )
+
+        ax=3D00h
+        dx=82h
+        21h=.int
+        (if is carry
+          dx=OFFSET OpenErrorMsg
+          goto Finish
+        if)
+        Handle=ax
+
+        bx=.xchg.ax; ah=3Fh; cx=44; dx=OFFSET Buffer; 21h=.int
+        (if is carry
+          ah=3Eh; bx=Handle; 21h=.int
+          dx=OFFSET ReadErrorMsg
+          goto Finish
+        if)
+
+        (if WORD PTR [Buffer+22]<>01h
+          ah=3Eh; bx=Handle; 21h=.int
+          dx=OFFSET MonoErrorMsg
+          goto Finish
+        if)
+
+        .cli
+        ax=3508h; 21h=.int; WORD PTR (Old_Int_08h+2)=es; WORD PTR Old_Int_08h=bx
+        dx=OFFSET Int_08h; ax=2508h; 21h=.int
+
+        43h=.out.al=36h
+        ax=WORD PTR [Buffer+24]; dx=0; cx=19; cx=.div.; Freq=ax
+        dx,cx=0; ax=1234h; cl=[Buffer+25]; cx=.div
+        40h=.out.al=-1-1; 40h=.out.al=.xchg.ah
+        .sti
+
+        al=0D1h; call Write2DAC()
+
+        goto ReadFirstPart
+
+NextTest:
+        KeyPressed
+        (if =
+          (if Flags.test.00000010b<>
+            (if Buff2Size=00h
+              bx=Handle; ah=3Fh; cx=BufferSize; dx=OFFSET Buffer2; 21h=.int
+              if is carry goto FileReadError
+              Buff2Size=ax
+            if)
+            (if Buff1Size=00h
+ReadFirstPart:
+              bx=Handle; ah=3Fh; cx=BufferSize; dx=OFFSET Buffer1; 21h=.int
+              (if is carry
+FileReadError:
+                call DeInitialize()
+                dx=OFFSET ReadErrorMsg
+                goto Finish
+              if)
+              Buff1Size=ax
+              Flags=.and.11111110b
+            if)
+            if ax=0 then Flags=.and.11111101b
+          else
+            if Buff2Size=00h and Buff1Size=00h goto DeInit
+          if)
+        else
+          ReadKey
+          goto DeInit
+        if)
+        goto NextTest
+
+DeInit:
+        call DeInitialize()
+
+        dx=OFFSET OkMsg
+
+Finish:
+        Display(, 09h)
+	Terminate (00h)
+
+(proc   DeInitialize()[]
+        dx=WORD PTR Old_Int_08h; ds=WORD PTR (Old_Int_08h+2); ax=2508h; 21h=.int
+        push cs; pop ds
+
+        43h=.out.al=36h
+        40h=.out.al=0; goto $+2; goto $+2; 40h=.out.al
+
+        al=0D3h; call Write2DAC()
+
+        ah=3Eh; bx=Handle; 21h=.int
+
+        return
+proc)
+
+(proc   FAR Int_08h()[]
+        .pusha; push ds; push cs; pop ds
+        if Flags.test.00000001b<> goto Pass_08h
+
+        (if BuffFlag=00h
+          (if Buff2Size=00h
+            (if Buff1Size<>00h
+              BuffFlag=0FFh
+              BuffOffs=OFFSET Buffer1
+              goto PlayBuff1
+            else
+              goto Pass_08h
+            if)
+          else
+PlayBuff2:
+            Buff2Size=-1; bx=BuffOffs; BuffOffs=+1
+          if)
+        else
+          (if Buff1Size=00h
+            (if Buff2Size<>00h
+              BuffFlag=00h
+              goto PlayBuff2
+            else
+              goto Pass_08h
+            if)
+          else
+PlayBuff1:
+            Buff1Size=-1; bx=BuffOffs; BuffOffs=+1
+          if)
+        if)
+
+        al=10h; call Write2DAC()
+        al=BYTE PTR [bx]; call Write2DAC()
+
+Pass_08h:
+        ax=Counter=+1
+        if ax.cmp.Freq> goto Go_Int_08h
+        20h=.out.al=20h; pop ds; .popa; .iret
+
+Go_Int_08h:
+        Counter=00h
+        pop ds; .popa; JumpFAR Old_Int_08h
+proc)
+
+(proc   Write2DAC()[]
+        ah=al
+Next:
+        al=.in.dx=SBPort+0Ch
+        if al.test.80h<> goto Next
+        dx=.out.al=ah
+        return
+proc)
+
+bytes   CopyrightMsg    = CrLf."WAVEPlayer Version 1.0 Copyright (C) 1996 by Scout, SPS.".CrLf."$",
+        CLErrorMsg      = CrLf."Usage: waveplay.com FileName".CrLf."$",
+        SBErrorMsg      = CrLf."Sound Blaster not found.".CrLf."$",
+        MonoErrorMsg    = CrLf."This WAVE file is not 8-bit mono.".CrLf."$",
+        FirstMsg        = CrLf."Playing File:$",
+        ReadErrorMsg    = CrLf."File Read Error.".CrLf."$",
+        OpenErrorMsg    = CrLf."File Open Error.".CrLf."$",
+        CrLfStr         = CrLf."$",
+        OkMsg           = CrLf."OK/OB!!".CrLf."$"
+
+bytes   Flags           = 00000011b
+
+data    Counter         = 0
+
+data    Buff1Size=0,
+        Buff2Size=0
+
+bytes   BuffFlag =0
+
+data    BuffOffs,
+        Freq,
+        SBPort,
+        Handle
+
+bytes   Buffer=
+bytes   Buffer1(BufferSize),
+        Buffer2(BufferSize)
+

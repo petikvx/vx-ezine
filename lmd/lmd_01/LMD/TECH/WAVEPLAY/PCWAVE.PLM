@@ -1,0 +1,229 @@
+// WAV files 8 bit mono player
+
+// Ой. Попробовал сделать то же самое, но на  Спикер...  Чего-то  не
+// очень... Ну, кому интересно - тому интересно...
+
+// Alex Morshchakin aka Scout                 Fri  03-01-97 18:36:41
+//                   Scientific Programming Society
+
+equals  BufferSize      = 15000
+
+.CrLf   EQU     0Dh, 0Ah
+
+(expr	Terminate (?)
+	ax=4C^1; 21h=.int
+expr)
+
+(expr	ReadKey
+	ax=0; 16h=.int
+expr)
+
+(expr	KeyPressed
+	ah=01h; 16h=.int
+expr)
+
+(expr   Display(?, ?)
+.IFNB	<^1>
+	dx=OFFSET ^1
+.ENDIF
+	ah=^2; 21h=.int
+expr)
+
+(expr	JumpFAR ?) -> bytes   =0EAh, ^1(4)
+
+	MODEL	Tiny, Pascal
+	.ORG	100h
+        ..286
+        .LOCALS _@
+        PROGRAM PCWave
+
+        Display(CopyrightMsg, 09h)
+
+        bx=0; bl=ds:[80h]
+        (save cx
+          BYTE PTR ds:[bx+81h]=00h; BYTE PTR ds:[bx+82h]="$"
+        save)
+        bl=-3
+        (if is carry
+          dx=OFFSET CLErrorMsg
+          goto Finish
+        if)
+
+        Display(FirstMsg, 09h)
+        Display(81h, )
+        Display(CrLfStr, )
+
+        ax=3D00h
+        dx=82h
+        21h=.int
+        (if is carry
+          dx=OFFSET OpenErrorMsg
+          goto Finish
+        if)
+        Handle=ax
+
+        bx=.xchg.ax; ah=3Fh; cx=44; dx=OFFSET Buffer; 21h=.int
+        (if is carry
+          ah=3Eh; bx=Handle; 21h=.int
+          dx=OFFSET ReadErrorMsg
+          goto Finish
+        if)
+
+        (if WORD PTR [Buffer+22]<>01h
+          ah=3Eh; bx=Handle; 21h=.int
+          dx=OFFSET MonoErrorMsg
+          goto Finish
+        if)
+
+        .cli
+        ax=3508h; 21h=.int; WORD PTR (Old_Int_08h+2)=es; WORD PTR Old_Int_08h=bx
+        dx=OFFSET Int_08h; ax=2508h; 21h=.int
+
+        43h=.out.al=36h
+        ax=WORD PTR [Buffer+24]; dx=0; cx=19; cx=.div.; Freq=ax
+        dx,cx=0; ax=1234h; cl=[Buffer+25]; cx=.div
+        40h=.out.al=-1-1; 40h=.out.al=.xchg.ah
+        .sti
+
+        43h=.out.al=0B0h; 42h=.out.al=01h; 42h=.out.al=0
+        al=.in.61h; 61h=.out.al=.or.03h; 43h=.out.al=90h
+
+        goto ReadFirstPart
+
+NextTest:
+        KeyPressed
+        (if =
+          (if Flags.test.00000010b<>
+            (if Buff2Size=00h
+              bx=Handle; ah=3Fh; cx=BufferSize; dx=OFFSET Buffer2; 21h=.int
+              if is carry goto FileReadError
+              Buff2Size=ax
+            if)
+            (if Buff1Size=00h
+ReadFirstPart:
+              bx=Handle; ah=3Fh; cx=BufferSize; dx=OFFSET Buffer1; 21h=.int
+              (if is carry
+FileReadError:
+                call DeInitialize()
+                dx=OFFSET ReadErrorMsg
+                goto Finish
+              if)
+              Buff1Size=ax
+              Flags=.and.11111110b
+            if)
+            if ax=0 then Flags=.and.11111101b
+          else
+            if Buff2Size=00h and Buff1Size=00h goto DeInit
+          if)
+        else
+          ReadKey
+          goto DeInit
+        if)
+        goto NextTest
+
+DeInit:
+        call DeInitialize()
+
+        dx=OFFSET OkMsg
+
+Finish:
+        Display(, 09h)
+	Terminate (00h)
+
+(proc   DeInitialize()[]
+        dx=WORD PTR Old_Int_08h; ds=WORD PTR (Old_Int_08h+2); ax=2508h; 21h=.int
+        push cs; pop ds
+
+        43h=.out.al=36h
+        40h=.out.al=0; goto $+2; goto $+2; 40h=.out.al
+
+        ah=3Eh; bx=Handle; 21h=.int
+
+        return
+proc)
+
+(proc   FAR Int_08h()[]
+        .pusha; push ds; push cs; pop ds
+        if Flags.test.00000001b<> goto Pass_08h
+
+        (if BuffFlag=00h
+          (if Buff2Size=00h
+            (if Buff1Size<>00h
+              BuffFlag=0FFh
+              BuffOffs=OFFSET Buffer1
+              goto PlayBuff1
+            else
+              goto Pass_08h
+            if)
+          else
+PlayBuff2:
+            Buff2Size=-1; bx=BuffOffs; BuffOffs=+1
+          if)
+        else
+          (if Buff1Size=00h
+            (if Buff2Size<>00h
+              BuffFlag=00h
+              goto PlayBuff2
+            else
+              goto Pass_08h
+            if)
+          else
+PlayBuff1:
+            Buff1Size=-1; bx=BuffOffs; BuffOffs=+1
+          if)
+        if)
+
+        al=BYTE PTR [bx]; bx=OFFSET PCTable; .xlat; 42h=.out.al
+
+Pass_08h:
+        ax=Counter=+1
+        if ax.cmp.Freq> goto Go_Int_08h
+        20h=.out.al=20h; pop ds; .popa; .iret
+
+Go_Int_08h:
+        Counter=00h
+        pop ds; .popa; JumpFAR Old_Int_08h
+proc)
+
+bytes   CopyrightMsg    = CrLf."WAVEPlayer Version 1.0 Copyright (C) 1997 by Scout, SPS.".CrLf."$",
+        CLErrorMsg      = CrLf."Usage: pcwave.com FileName".CrLf."$",
+        MonoErrorMsg    = CrLf."This WAVE file is not 8-bit mono.".CrLf."$",
+        FirstMsg        = CrLf."Playing File:$",
+        ReadErrorMsg    = CrLf."File Read Error.".CrLf."$",
+        OpenErrorMsg    = CrLf."File Open Error.".CrLf."$",
+        CrLfStr         = CrLf."$",
+        OkMsg           = CrLf."OK/OB!!".CrLf."$"
+
+bytes   Flags           = 00000011b
+
+data    Counter         = 0
+
+data    Buff1Size=0,
+        Buff2Size=0
+
+bytes   BuffFlag =0
+
+bytes   PCTable  =1.1.1.1.1.1.2.2.2.2.2.2.2.2.2.2.2,
+                 =2.2.3.3.3.3.3.3.3.3.3.3.3.4.4.4.4,
+                 =4.4.4.4.4.4.4.4.4.5.5.5.5.5.5.5.5,
+                 =5.5.5.6.6.6.6.6.6.6.6.6.6.6.6.6.7,
+                 =7.7.7.7.7.7.7.7.7.7.8.8.8.8.8.8.8,
+                 =8.8.8.8.8.8.9.9.9.9.9.9.9.10.10.10.10,
+                 =11.11.12.12.13.14.14.15.16.17.17.18.19.20.21.22.23,
+                 =24.26.27.28.29.30.31.33.34.35.36.38.39.40.41.43.44,
+                 =45.46.48.49.50.51.52.53.54.55.57.58.58.59.60.61.62,
+                 =63.64.64.65.66.66.67.67.67.67.67.67.68.68.68.68.68,
+                 =68.68.68.68.68.68.68.68.69.69.69.69.69.69.69.69.69,
+                 =69.69.70.70.70.70.70.70.70.70.70.70.70.70.70.71.71,
+                 =71.71.71.71.71.71.71.71.71.72.72.72.72.72.72.72.72,
+                 =72.72.72.72.72.73.73.73.73.73.73.73.73.73.73.73.74,
+                 =74.74.74.74.74.74.74.74.74.74.74.74.75.75.75.75.75.75
+
+data    BuffOffs,
+        Freq,
+        Handle
+
+bytes   Buffer=
+bytes   Buffer1(BufferSize),
+        Buffer2(BufferSize)
+

