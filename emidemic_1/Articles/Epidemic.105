@@ -1,0 +1,288 @@
+---------------
+* Epidemic #1 *
+---------------
+
+
+HOW TO STAY RESIDENT IN MEMORY
+==============================
+by Beol
+
+Introduction
+------------
+
+Staying resident in memory and patching the OS-funtions is much easier
+on Amiga than on most other systems. The problem virus-writers will have
+is to patch the system in a way, so AV-ware won't yell about changed
+vectors...
+
+
+
+Get some memory
+---------------
+
+Before patching the OS, we need to get some memory which will not be
+overwritten. Using hardcoded addresses isn't a good idea, because chances
+are big that this memory is or will be in use.
+
+Probably the best way is to get some memory is to use the AllocMem()
+function. AmigaOS doesn't keep track of who allocated memory, so unlike
+under MS-DOS it's impossible to notice that there's memory missing.
+If you plan to let your virus be resetresident, you should take care to
+allocate mem, which will be available directly after reset (just alloc
+chip-memory using the MEMF_CHIP flag).
+
+Another method I like, is to get the lower bound of the systemstack
+(ExecBase->SysStkLower). This works because the system allocates some
+kbytes for stack, but uses only some 100 bytes. I like this one, because
+system stack doesn't move until the next reset, so when the virus is
+executed, it doesn't need to check if it's allready in memory: it just
+copies itself to SysStkLower. No problem if it was allready there...
+
+
+
+Copying virus
+-------------
+
+Once we've got some memory, we copy the virus to it using a simple
+copy loop. Don't forget, that it's very important to keep the whole
+virus PC-relativ!!
+It is also very important to flush the caches before jumping to
+the new location. This is very easy:
+
+    move.l  4.w,a6  ;Get ExecBase
+    jsr     _LVOCacheClearU(a6) ;clear caches
+
+This system routine cleares all caches and is garanteed to handle all
+processors (from 68000-68060) right.
+
+
+
+Marking presence
+----------------
+
+Most viruses will need to recognize if they are allready in memory.
+It's best to check the patches. Another method consists in writing
+a magic number into fixed places (e.g. ExecBase->LastAlert). This is
+no good idea, because AV-ware will remove the patches but leave the
+mark => the virus will not reinstall itself, when called.
+
+
+
+Patching
+========
+
+The easy way
+------------
+
+The easiest way of patching the system is to just patch the library
+vectors. This needs some work (Patch/compute library checksum/...) but
+fortunately there is a system-function doing all this (SetFunction()).
+This way we can intercept dos.library calls like:
+ * LoadSeg() - If you want to infect only when a proggy is executed
+ * Open() - If you want to infect a proggy when it's accessed
+ * Read() - To do filestealth
+ * Seek() - To do filestealth
+ * Examine()/ExamineFH()/ExamineNext() - For directory stealth
+
+The problem is that every AV will recognise the changed vectors. So the
+user will be aware of the virus.
+
+
+Illegal Access
+--------------
+
+This one is used in the Illegal Access virus. It fools old AV but new
+AV-wares won't be cheated.
+
+A library vector is 6 bytes. The first two bytes are $4ef9 (opcode
+for JMP $xxxxxxxx.l) followed by the address of the function. When
+a programm uses a library-function, it JSRs to the vector of the
+function and thus JSRs to the function. The old (stupid) AVs just
+check if the address of the function lies in the ROM.
+
+What Illegal Access does: it leaves the address, but changes the $4ef9
+opcode to $4AFC (ILLEGAL). When a programm wants to call a function,
+it JSRs to the vector and thus executes an ILLEGAL. This will cause
+a Illegal-Opcode-Exception. Illegal Access patched the corresponding
+exception vector and using the stackframe can figure out which function
+the proggy wanted to call.
+
+Unfortunately modern AV check for $4ef9 too, so this one is just a waste
+of time.
+
+
+
+Changing the code of the function
+---------------------------------
+
+This one is AFAIK used on PeeCee. The problem on Amiga: the OS functions
+are in a ROM => this just won't work. One could copy the ROM to RAM and
+use the MMU to simulate the original addresses, but every Amiga-user
+would notice the lack of 512k RAM.
+
+I tried to patch the code of filehandlers, but this doesn't work very
+well. Most of the code lies in ROM and patching code in RAM ain't easy
+either.
+
+
+Use Packetlevel IO!
+-------------------
+
+The best way to escape all these problems, is to use IO on another level
+than dos.library: using direct communication with handlers thru packets.
+I will write a whole file describing how to do packet-IO, so just a brief
+overview:
+
+Filehandlers are processes just Wait()ing for a message to arrive at
+their messageport. To every message they get there is attached a so 
+called packet, which describes what to do. The handler gets the
+packet, executes the desired function and sends the packet back to the
+sender. (Note that this way you can realize async-IO.)
+
+What a packetlevel-virus does, is intercept these packets. This can be
+done by several ways:
+
+ * Patch the Process->pr_PktWait field. (Points to a function called when
+   a process waits for a packet)
+ * Patch the Task->tc_Launch field. (Points to a function called when a
+   process gets CPU-time)
+ * Patch the stack of the handlers.
+ * Patch the interrupts used for taskswitching.
+
+Modern AVs check for pr_PktWait, tc_Launch and tc_Switch fields, but there
+are more ways of intercepting packets -> just use your imagination!
+(Only experienced Amiga Programmers will be able to patch the system this
+way -> beginners should try the conventional methods first!)
+
+
+
+Surviving Resets
+================
+
+Standard Way
+------------
+
+The Amiga-OS has some nice features making it easy to stay reset-resident:
+
+ExecBase->ColdCapture, ExecBase->CoolCapture and ExecBase->WarmCapture
+point to routines that will be called during different phases of boot.
+Normaly they are set to 0, but some programms and many viruses use these
+to reinstall themselves after reset. When changing them, you have to
+compute the ExecBase->ChkSum otherwise the OS will rebuild a new
+ExecBase after reset. To compute the checksum use this code:
+
+    move.l  4.w,a6          ;get ExecBase
+    lea     SoftVer(a6),a0  ;beginning of checksummed structure
+    moveq   #0,d0
+    moveq   #24-1,d1        ;Checksum over 24 words
+.l  add.w   (a0)+,d0        ;Add the words
+    dbf     d1,.l
+    not.w   d0
+    move.w  d0,(a0)         ;Store checksum in ExecBase->ChkSum
+    jsr     _LVOClearCacheU(a6)  ;Avoid troubles with copyback caches
+
+A very sober programmer, you would do the patching and checksumming in
+a Forbid()/Permit() lock, but chances are nearly 0 that another task will
+do this the same time as you.
+
+The memory pointed to by Cold-,Cool- and WarmCapture must be available
+after reset (e.g. AutoConfig boards won't), so it's wise to use
+chipmemory to install the virus. (Chipmemory is garanteed to exist).
+
+The WarmCapture will be called first, when the system is still in a
+very raw state: there is not even a stack! So you can't call subroutines
+or save data on stack. Ofcourse you can't RTS from the warmcapture,
+instead you must do a JMP (a5), because you will get the returnaddress
+in a5. In the WarmCapture you can't call any OS-function, so you won't
+be able to do many useful things. Infact only very few viruses use
+this one.
+
+ColdCapture and CoolCapture are far more useful. Usually you will use
+this to AllocAbs() the memory you're using (To prevent being overwritten)
+and patch some systemfunctions.
+
+This is very useful for BootBlock viruses as all they need (ExecBase,
+trackdisk.device) is allready installed, but linkviruses have a little
+problem: neither dos.library, nor the filehandlers are ready yet.
+Best way is to patch the OpenLibrary() function and wait until a
+OpenLibrary("dos.library",ver) succeeds and then patch dos.library
+or handlers and remove the OpenLibrary() patch. Or use another way
+of staying reset-resident.
+
+
+ROMTags
+-------
+
+On startup, the AmigaOS searches the ROM after socalled ROMTags and
+executes them after priority. These ROMTags contain the initcode for
+all parts of the system. Of course you cannot change the ROM, but the
+OS allows you to replace or add modules. This is done using two ExecBase
+variables: ExecBase->KickMemPtr and ExecBase->KickTagPtr.
+
+KickMemPtr points to a list of MemEntry structures, that will be allocated
+at startup. (The memory must be available at this time=>use chipmem!)
+
+KickTagPtr points to a array of pointers to ROMTag structures the last
+item of the Array is NULL or an address with bit 31 set. In the latter
+case the last item points to another array of this type. (You must ofcourse
+clear bit 31). This way you can add your own ROMTag array by overwritting
+the NULL at the end of the last array with a pointer to your array (but
+don't forget to set bit 31!). But chances are 99:1 that KickTagPtr is 0
+anyway, so you can directly install your array, which will usually contain
+only one entry.
+
+A ROMTag is just a Resident structure and looks like this:
+
+WORD MatchWord (=$4afc)
+LONG MatchTag  (Pointer to the above)
+LONG EndSkip   (??)
+BYTE Flags
+BYTE Version
+BYTE Type      (Type of resident (LIBRARY,DEVICE,...)) 
+BYTE Priority  (The higher the priority, the earlier it will be installed)
+LONG Name      (Pointer to name)
+LONG IdString  (Pointer to IDstring)
+LONG Init      (Poniter to Initialisation routine or to AutoInit-struct)
+ 
+This method is especially interesting for us linkviruswriters as
+we can set a flag called RTF_AFTERDOS which will make sure, that the
+resident is called after dos.library has been installed. And you can
+set the priority to very low (-128), so everything else will be
+installed. (dos.library has priority -120)
+
+After altering the KickTagPtr or the KickMemPtr (or the data pointed to
+by them), you have to call SumKickData() (no arguments) and store the
+result in ExecBase->KickCkeckSum. (And flush caches).
+
+
+
+KBResetHandler
+--------------
+
+The problem with all the ColdCapture etc. stuff is that ever Viruskiller
+will notice the changed vectors.
+
+One way to avoid this: Using the keyboard.device, you can install a
+ResetHandler wich will be called when the user want's to do a reset
+(by pressing CTRL-AMIGA-AMIGA). This is hard work as you need to
+initialise a MsgPort, an IORequest, open the device, init an interrupt
+structure, do an IO-Commmand and close the device. And this won't work
+on all amigas.
+
+Anyway, if you've done everything right, it's pretty cool because
+AV-warez can't easily check ResetHandlers. When your reset handler
+is called, you have enough time (some seconds) to patch the resetvectors
+you want and perform a reset, before a Viruskiller can notice what's
+going on!
+
+
+FileSystem
+----------
+
+By far the best way of staying reset resident is to infect the filesystem
+in the RigidDiskBlock (RDB) Area of the harddisk! This will allways be called
+when the harddisk is mounted (every reboot!). I cannot understand why
+no virus uses this feature!? In the near future I will write the first
+FileSystem infecting Virus.
+
+For information about RDB look at the devices/hardblocks.h includes.

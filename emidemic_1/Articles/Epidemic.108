@@ -1,0 +1,199 @@
+---------------
+* Epidemic #1 *
+---------------
+
+Packet Viruses. As in the likes of BEOL, HH4, Smeg, and HANF
+(Only those!?)
+
+  This article will be an introduction about the inner workings
+of some Amiga DOSPacket viruses.
+It will describe the Smeg1 and Smeg2 engines (to avoid a
+Penetrator 2) which were released in
+1996 and 2001 respectively. Forget the oldstyle dos.library
+patches. Packets are the future, and
+have been since 1995/1996 already!
+
+  First a little bit about myself. I started to code in 1994.
+Mainly some bootviruses.
+In 1995 I made Hitch-Hiker 1.10 which was my first attempt at a
+linkvirus (And that
+shows!). In 1996 I got heavily involved in the warez scene and
+had many ways to spread them
+(Mostly through Digital Corruption channels; Hi Zer0, Lobo and
+Narwhal!). This went on
+until the end of 1997 after which I decided to retire. This was
+after the ZIB virus (First
+e-mail sending virus on Amiga). Recently, I got back from
+retirement to give another boost
+to the virusscene (and maybe also the antivirus scene, which saw
+some good people go. No offence
+Jan, but the new ones don't live up to the standard set by their
+predecessors) and I joined up
+with VRU.
+   A warning, I make a lot of references to the development kit.
+To fully understand this
+article, you must know your way around the devkit. Also, Amiga
+Intern (Vol. 1 and 2) are
+VERY handy.
+
+  AmigaDos uses so-called DosPackets to communicate between the
+dos.library and the different
+DOS-devices which are present in the system. DosPackets are in
+essence a special type
+of messages, where LN_NAME (see exec/nodes.i) of the message
+points to the actual DosPacket
+which has the structure as pointed out in dos/dosextens.i.
+
+  There are two ways to send and construct packets. One is
+through the dos.library, the other
+one is through the exec.library.
+  The easiest one (and NOT used by the Smeg viruses) is to use
+the DOS commands SendPkt()/WaitPkt()
+or DoPkt(). For DoPkt, the arguments are passed using d3-d7,
+with d1 being the port to send the
+packet to (could be DH0: or HD0: etc.) and d2 being the action
+taken (read, write etc. I'll come
+to that back later). This way, a maximum of 5 arguments can be
+passed while there is room for 7
+in the DosPacket. To fully use the 7 arguments, the easiest way
+is to use AllocDosObject() with
+the DOS_STDPKT argument (see dos/dos.i). This way, you create a
+DosPkt using the system (and why
+not?). Now you just fill in the arguments and action and send it
+on its way using SendPkt().
+Now call WaitPkt(), this waits for the replymsg at your
+pr_msgport. So this will only work
+if your are calling from a process.
+
+  The exec.library method is somewhat more difficult maybe, but
+is it also slightly more lowlevel
+than the dos.library way. Here, you also create a DosPkt using
+AllocDosObject(). This is not
+required, you can also manually make a Msg/DosPkt but this is
+easier at the expense of some stealth
+(The more system calls, the less stealth). Create a MsgPort or
+Process (which also contains a MsgPort).
+Fill in the dospacket just like above, with the addition of
+filling in the dp_port with your port which
+you aquired using AddPort() or CreateProc(). Get the Msg pointer
+(which is at offset 0 of the DosPkt
+(see dos/dosextens.i) and send it to the device port using
+PutMsg().
+
+  The next step is to wait for replies to return to your port.
+You can use WaitPort() or a GetMsg() loop.
+If you set your port to PA_SIGNAL (exec/ports.i) then your
+process will be automaticly signalled when
+a packet arrives back at the port. Just do a Wait(signal) with
+the signal being the MP_SIGBIT of the
+MsgPort and the Wait() will return as soon as a packet arrives
+at the port. Then do a GetMsg() and
+the Msg will be removed from the port. Do this until GetMsg()
+returns 0 (no more messages) and go into
+Wait() again.
+  To get more into detail of the dospackets. The most usefull
+actions are:
+
+ACTION_LOCATE_OBJECT                                     Lock()
+ACTION_FREE_LOCK                                         Unlock()
+ACTION_DISK_INFO                                         Info()
+ACTION_EXAMINE_OBJECT					 Examine()
+ACTION_READ                                              Read()
+ACTION_WRITE                                             Write()
+ACTION_SEEK                                              Seek()
+ACTION_END                                               Close()
+
+  Some more are used in Smeg(2). A full list can be seen in
+dos/dosextens. The arguments mostly behave like
+the dos.library equivalents. with d1 being dp_Arg1, d2 being
+dp_Arg2 etc. So for a Lock() equivalent of
+a packet. Send a DosPacket to a device with dp_Type being
+ACTION_LOCATE_OBJECT and dp_Arg1 being the pointer
+to the name of the file you want to Lock(). The reply send to
+your port then contains in dp_Res1 the lock.
+If there was an error (dp_Res1 would be 0 in this case) then the
+error number is in dp_Res2 (eg. 205 for file
+not found). Strangely enough, some pointers used with dospackets
+are in the BPTR format (address/4) which
+is probably a remnant of the BPCL code of the pre V36
+dos.libraries. In the case of the name pointer of
+our Lock() example; this is also a BPTR pointer (in other words,
+the name must be longword aligned and then
+divided by four (simple lsr.l #2,dx)).
+
+  Now something about how to intercept system packets for
+infections. There are four ways used in virus as of
+date. A simple PutMsg() patch (used by HH4). A pr_PktWait patch
+(BEOL3).This is a special field within the
+process which is used when a packet arrives at the MsgPort. When
+this field is not zero or negative,
+a jump is made to this pointer. The next one is the replacement
+of the MP_SIGTASK of the pr_MsgPort of
+system devices. Every device (DH0: etc) has its own MsgPort
+where you (or the system) sends packets to.
+If a packet arrives at the MsgPort, the task indicated at
+MP_SIGTASK is signalled. This is by default
+the device task. For every device you want to patch you replace
+this MP_SIGTASK with your own task.
+If a patched device gets a packet, then your task is signalled
+instead of the original device task. This
+method is used by Smeg1 and HANF. The last method I'll mention
+is the one used in Smeg2.
+
+  When a device has finished handling the stuff it has to do, it
+calls the Wait() function. This triggers
+a taskswitch which puts all data and address registers onto the
+stack. This stack can be found at
+TC_SPREG (see exec/tasks.i). So if we count the 16 registers (64
+bytes), add the SuperVisor() command
+(envoked by the system during Wait()) and the status register (2
+bytes). This adds up to 70. Also add
+the jsr to Wait(), then you get at offset 74 the return address
+inside the device task. The code
+at this address inside the device task is just beyond the 'jsr
+_LVOWait()' call. Just look 4 bytes back and
+you'll see the Wait() function. Replace this offset with a
+pointer to your own code, and when the device task
+is switched to 'Running' (it leaves the wait function because of
+the arrival of a packet) your code is
+executed in stead of the code normally following the Wait()
+command inside the device task. Now you can get
+the Message from the device's MsgPort. Look at LN_NAME and
+behold.....A DOSPacket.
+
+  This is how it should work on <3.1 systems. On 3.1 systems
+things are done somewhat differently and the
+offset can be mostly found at 70. With OS 3.9 however, the
+offset is at 82. But don't pin me down on
+these numbers. So this is in a nutshell how packets work. Just
+look at the sources of Smeg1/2 and Beol3 for
+further examples of packet viruses. These sources can be found
+somewhere on the net.
+
+  As a side note: because the number of files being examined is
+so high, a lot of disk access is happening on
+ an infected system. All the latest packet viruses try to
+minimize disk access by marking files already examined.
+Smeg1, Smeg2 and HH4 do this by using the unused 16 bits of the
+protection longword (see dos/dos.i). These
+bits are normally zero. By looking at these bits, the virus
+doesn't have to read the file again to see
+whether it is an exe or whether it is already infected; only an
+examine() is needed.
+
+  Next time I will be writing something about the new HAVOC
+polymorph engine found in the next version
+of Hitch-Hiker. As I understand it correctly, I should have
+included the Smeg2 infection engine together
+with the HAVOC polymorph engine (This according to Pandamen).
+But the Smeg series must be seen as an
+experimental series, with just one new technique never seen
+before in Amiga viruses. As you read the
+source with its comments, I already marked some spots which
+could give enforcer hits and/or GURUs
+(most notably the Bus Error GURU). And I wouldn't want to waste
+a PE on a virus that would crash on any other
+system but my own.
+
+
+Cheers for now, Aginor

