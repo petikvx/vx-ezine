@@ -1,0 +1,360 @@
+
+  gggggggg   ........  n i g h t f a l l   m a g a z i n e   ......   gggggggg
+  $$$$$$$$   ::                                                  ::   $$$$$$$$
+  $$7'````          reverse engineering для протоколов в сети         ''''`7$$
+  $[ ·∙xxmmmmgg                     by subtle                    ggmmmmxx∙· ]$
+  $$┌,....   $$                                                  $$   ....,┐$$
+  $$$$$$$$   $$mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm$$   $$$$$$$$
+  ¤¤¤¤¤¤¤¤                                                            ¤¤¤¤¤¤¤¤
+
+ каждому наверняка  хотелось бы  получить протоколы, по которым работают всякие
+ Аськи, Васьки,  трояны и тому подобная хрень. в принципе это и несложно, впер-
+ вые такие опыты  по реверсной разборке софта проводились в l0pht с первой вер-
+ сией протокола  ICQ. ну а дальше уже люди подхватили гордый флаг и полный впе-
+ ред.
+
+ так вот я и расскажу о том, как анализировать и разбирать на лету протоколы. в
+ качестве примера возьмем троян Subseven, версия 2.1 Gold. для начала посмотрим
+ вообще как же они общаются. берем простенький дампер траффика примерно в таком
+ духе:
+
+#include <winsock.h>
+#include <stdio.h>
+
+#define LOOP_BACK "127.0.0.1"
+#define LIS_PORT 2000
+#define CON_PORT 27374
+#define MAX_PACKET_SIZE 2048
+
+void fatal_error(char *msg);
+void bnd_n_lsn(int sock, int port);
+int connect_sock(int sock, char *host, int port);
+void server_side_thread(void *param);
+void client_side_thread(void *param);
+
+int ss, cs, ls;
+void main()
+{
+        WSADATA data;
+        WORD ver;
+        WORD thid;
+        HANDLE h;
+        struct sockaddr_in peer;
+        int szpeer;
+        ver = MAKEWORD(1, 1);
+        if (WSAStartup(ver, &data) < 0) fatal_error("Unable to initialise Winsock.");
+        if ((ss = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) fatal_error("Could not create socket.");
+        if ((cs = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) fatal_error("Could not create socket.");
+        if ((ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) fatal_error("Could not create socket.");
+
+        printf("Waiting for connection...");
+        bnd_n_lsn(ls, LIS_PORT);
+        szpeer = sizeof(peer);
+        do
+        {
+                cs = accept(ls, (struct sockaddr *)&peer, &szpeer);
+        } while(cs == -1);
+        printf("accepted from [%s].\n", inet_ntoa(peer.sin_addr));
+        closesocket(ls); // We won't be needing this...
+
+        printf("Connecting to [%s]...", LOOP_BACK);
+        connect_sock(ss, LOOP_BACK, CON_PORT);
+        printf("\nLinked: [%s]<->[%s]\n", inet_ntoa(peer.sin_addr), LOOP_BACK);
+
+        h = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)client_side_thread, (LPVOID)0, 0, (LPDWORD)&thid);
+        SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL);
+        h = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)server_side_thread, (LPVOID)0, 0, (LPDWORD)&thid);
+        SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL);
+        getch();
+
+        closesocket(ss);
+        closesocket(cs);
+        return; // Exit
+}
+
+void fatal_error(char *msg)
+{
+        printf("Fatal error: %s\n", msg);
+        exit(1);
+}
+
+void bnd_n_lsn(int sock, int port)
+{
+        struct sockaddr_in addr;
+        int c = 0;
+
+        memset((char *)&addr,'0', sizeof(addr));
+
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_port = htons(port);
+
+        if (bind(sock, &addr, sizeof(addr)) == -1) fatal_error("Error binding socket.");
+        if (listen(sock, 20) == -1) fatal_error("Error listening.");
+}
+
+int connect_sock(int sock, char *host, int port)
+{
+        struct sockaddr_in addr;
+        struct hostent *he;
+
+        memset(&addr, '0', sizeof(addr));
+
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = inet_addr(host);
+        addr.sin_port = htons(port);
+
+        if ((he = gethostbyname(host)) != NULL) memcpy((char *)&addr.sin_addr, he->h_addr, he->h_length);
+        else if ((addr.sin_addr.s_addr = inet_addr(host)) == -1) fatal_error("Invalid host.");
+        if (connect(sock, (struct sockaddr_in *)&addr, 16) == -1) return -1;
+        return 0;
+}
+
+void server_side_thread(void *param)
+{
+        char buf[MAX_PACKET_SIZE];
+        int r;
+        do
+        {
+                memset((char *)&buf, 0, MAX_PACKET_SIZE);
+                r = recv(ss, (char *)&buf, MAX_PACKET_SIZE, 0);
+                if (r > 0)
+                {
+                        printf("Server: [%s]\n", buf);
+                        send(cs, (char *)&buf, r, 0); // Forward to client socket
+                }
+        } while(r != -1);
+        printf("Server socket died.\n");
+        exit(0);
+}
+
+void client_side_thread(void *param)
+{
+        char buf[MAX_PACKET_SIZE];
+        int r;
+        do
+        {
+                memset((char *)&buf, 0, MAX_PACKET_SIZE);
+                r = recv(cs, (char *)&buf, MAX_PACKET_SIZE, 0);
+                if (r > 0)
+                {
+                        printf("Client: [%s]\n", buf);
+                        send(ss, (char *)&buf, r, 0);
+
+                }
+        } while(r != -1);
+        printf("Client socket died.\n");
+        exit(0);
+}
+
+ теперь  настраиваем сервер SubSeven на порт 27374 и с паролем hello. ну теперь
+ стоматологи рекомендуют четко следовать инструкции:
+
+ соединяемся  клиентом subseven с портом 2000 и по-порядку выполняем такие дей-
+ ствия:
+
+ - вводим пароль ("hello")
+ - выбираем "keys/messages"
+ - жмем на "msg manager"
+ - выбираем иконку Warning
+ - выбираем княпочки Yes, No, Cancel
+ - вводим левый текст поле "message title"
+ - вводим лекый текст в поле "message text"
+ - жмем Send message
+ - нажимаем Yes на возникшее окно
+ - повторяем посылку, но теперь жмем No
+ - сменим иконку на Error
+ - пошлем сообщение, выберем Yes
+ - сменим княпочку на OK
+ - пошлем сообщение
+
+ вот и все. что же смог утянуть наш дампер?
+
+ Waiting for connection...accepted from [127.0.0.1].
+ Connecting to [127.0.0.1]...
+ Linked: [127.0.0.1]<->[127.0.0.1]
+ Server: [PWD]
+ Client: [PWDhello]
+ Server: [connected. 05:11.28 - April 5, 2000, Wednesday, version: GOLD 2.1]
+ Client: [MW:51titleZJXXtext]
+ Server: [user clicked : Yes.]
+ Client: [MW:51titleZJXXtext]
+ Server: [user clicked : No.]
+ Client: [MW:53titleZJXXtext]
+ Server: [user clicked : Yes.]
+ Client: [MW:03titleZJXXtext]
+ Server: [user clicked : Ok.]
+
+ ну что, попробуем разобраться... выглядит это где-то так:
+
+ Server: [PWD]  -- сервер требует у клиента пароль
+ Client: [PWDhello]  -- клиент отвечает словом PWD + паролем
+ Server: [connected. 05:11.28 - April 5, 2000, Wednesday, version: GOLD 2.1]
+                -- сервер сообщает время и версию
+ Client: [MW:51titleZJXXtext]  -- Yes/No/Cancel плюс параметры и иконка Warning
+ Server: [user clicked : Yes.]  -- вполне понятно =)
+ Client: [MW:51titleZJXXtext]  -- то же самое
+ Server: [user clicked : No.]  -- похоже на наши действия?
+ Client: [MW:53titleZJXXtext]  -- опа! сменили иконку и 1 превратилось в 3
+ Server: [user clicked : Yes.]  -- ответ
+ Client: [MW:03titleZJXXtext]  -- сменили набор кнопок - сменилась первая буква
+ Server: [user clicked : Ok.]
+
+ как несложно догадаться из вышенаписанного, первая цифра после MW: будет набо-
+ ром кнопок, а вторая  - иконкой. теперь просмотрим тот же траффик в шестнадца-
+ тиричном виде. для этого нам нужно чуть-чуть подправить дампер:
+
+#include <winsock.h>
+#include <stdio.h>
+
+#define LOOP_BACK "127.0.0.1"
+#define LIS_PORT 2000
+#define CON_PORT 27374
+#define MAX_PACKET_SIZE 2048
+
+void fatal_error(char *msg);
+void bnd_n_lsn(int sock, int port);
+int connect_sock(int sock, char *host, int port);
+void server_side_thread(void *param);
+void client_side_thread(void *param);
+
+int ss, cs, ls;
+void main()
+{
+        WSADATA data;
+        WORD ver;
+        WORD thid;
+        HANDLE h;
+        struct sockaddr_in peer;
+        int szpeer;
+        ver = MAKEWORD(1, 1);
+        if (WSAStartup(ver, &data) < 0) fatal_error("Unable to initialise Winsock.");
+        if ((ss = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) fatal_error("Could not create socket.");
+        if ((cs = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) fatal_error("Could not create socket.");
+        if ((ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) fatal_error("Could not create socket.");
+
+        printf("Waiting for connection...");
+        bnd_n_lsn(ls, LIS_PORT);
+        szpeer = sizeof(peer);
+        do
+        {
+                cs = accept(ls, (struct sockaddr *)&peer, &szpeer);
+        } while(cs == -1);
+        printf("accepted from [%s].\n", inet_ntoa(peer.sin_addr));
+        closesocket(ls); // We won't be needing this...
+
+        printf("Connecting to [%s]...", LOOP_BACK);
+        connect_sock(ss, LOOP_BACK, CON_PORT);
+        printf("\nLinked: [%s]<->[%s]\n", inet_ntoa(peer.sin_addr), LOOP_BACK);
+
+        h = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)client_side_thread, (LPVOID)0, 0, (LPDWORD)&thid);
+        SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL);
+        h = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)server_side_thread, (LPVOID)0, 0, (LPDWORD)&thid);
+        SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL);
+        getch();
+
+        closesocket(ss);
+        closesocket(cs);
+        return;
+}
+
+void fatal_error(char *msg)
+{
+        printf("Fatal error: %s\n", msg);
+        exit(1);
+}
+
+void bnd_n_lsn(int sock, int port)
+{
+        struct sockaddr_in addr;
+        int c = 0;
+
+        memset((char *)&addr,'0', sizeof(addr));
+
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_port = htons(port);
+
+        if (bind(sock, &addr, sizeof(addr)) == -1) fatal_error("Error binding socket.");
+        if (listen(sock, 20) == -1) fatal_error("Error listening.");
+}
+
+int connect_sock(int sock, char *host, int port)
+{
+        struct sockaddr_in addr;
+        struct hostent *he;
+
+        memset(&addr, '0', sizeof(addr));
+
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = inet_addr(host);
+        addr.sin_port = htons(port);
+
+        if ((he = gethostbyname(host)) != NULL) memcpy((char *)&addr.sin_addr, he->h_addr, he->h_length);
+        else if ((addr.sin_addr.s_addr = inet_addr(host)) == -1) fatal_error("Invalid host.");
+        if (connect(sock, (struct sockaddr_in *)&addr, 16) == -1) return -1;
+        return 0;
+}
+
+void server_side_thread(void *param)
+{
+        char buf[MAX_PACKET_SIZE];
+        int r, c;
+        do
+        {
+                memset((char *)&buf, 0, MAX_PACKET_SIZE);
+                r = recv(ss, (char *)&buf, MAX_PACKET_SIZE, 0);
+                if (r > 0)
+                {
+                        c = 0;
+                        printf("Server: [");
+                        do
+                        {
+                                printf("%x ", buf[c]);
+                                c++;
+                        } while(c < r);
+                        printf("]\n", buf);
+                        send(cs, (char *)&buf, r, 0);
+                }
+        } while(r != -1);
+        printf("Server socket died.\n");
+        exit(0);
+}
+
+void client_side_thread(void *param)
+{
+        char buf[MAX_PACKET_SIZE];
+        int r, c;
+        do
+        {
+                memset((char *)&buf, 0, MAX_PACKET_SIZE);
+                r = recv(cs, (char *)&buf, MAX_PACKET_SIZE, 0);
+                if (r > 0)
+                {
+                        c = 0;
+                        printf("Client: [");
+                        do
+                        {
+                                printf("%x ", buf[c]);
+                                c++;
+                        } while(c < r);
+                        printf("]\n", buf);
+                        send(ss, (char *)&buf, r, 0);
+                }
+        } while(r != -1);
+        printf("Client socket died.\n");
+        exit(0);
+}
+
+ мы можем повторить все вышеописанные действия с обеих сторон и увидим, что все
+ сообщения идут подряд, а значит разделяются пакетами, а не какими-то символами
+ разметки.
+
+ формат сообщений вида окно-иконка-кнопки выглядит винимо так:
+
+ MW:<кнопки><иконка><заголовок окна>ZJXX<текст окна>
+
+ как наверное  несложно догадаться, MW - это Message Window ;) вобщем-то так мы
+ можем разбирать  самые  разнообразные тулзы и их протоколы по работе. наверное
+ это все, что я могу показать на сегодня, возможно в следующем выпуске я выложу
+ еще какие-нибудь свои исследования.

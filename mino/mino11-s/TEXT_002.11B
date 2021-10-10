@@ -1,0 +1,552 @@
+MINOTAURO MAGAZINE #11
+
+                          Guia de infeccion de NE
+                                 por Trurl
+
+
+     En esta nota voy a explicar paso a paso todos los detalles necesarios
+para infectar parasiticamente el formato NE de Windows 16. Voy a explorar
+todas las opciones de infeccion que existen dado el formato, mas alla de
+que alguna vez hayan sido implementadas o no, aunque voy a dejar en claro
+cuando una posibilidad ha sido explorada exitosamente con anterioridad, y
+cuando es mera conjetura. Tambien voy a indicar cual es el que considero el
+modo mas eficiente y sencillo para infectar NE, diferenciandolo de los
+otros modos posibles que son inutiles, ineficientes o inconvenientes; y
+desde luego voy a aclarar porque.
+
+     Al escribir la nota estoy asumiendo que el lector tiene un cierto
+conocimiento del formato NE; si no es tu caso lo recomendable es recurrir a
+los viejos numeros de minotauro y leer la especificacion del formato y la
+diseccion que hemos publicado alli. Ademas, todo el material sobre esto
+esta orientado a gente que ya sepa algo de programacion. No es para
+novatos.
+
+     La nota esta organizada asi:
+
+     1. Consideracion previa sobre si conviene infectar NEs o no
+     2. Lo basico; en que consiste la infeccion de NE: agregar el codigo,
+          diverger el CS:IP, y conseguir las APIs que necesitemos.
+     3. Como agregar el codigo: 
+          3.1. Insertando entradas a la segment table
+               3.1.1. Sacando del header MZ
+               3.1.2. Sacando del stub MZ
+               3.1.3. Sacando del espacio despues del NE
+          3.2. Escribir el codigo del virus al final
+     4. Realocaciones:
+          4.1. El salto al host
+          4.2. Como usar APIs
+     5. Divergiendo el control hacia el virus (CS:IP)
+     6. Conviene usar un segmento o mas?
+     7. Sobre NEs autoload
+     8. Conclusion..
+
+
+     // 1 - Consideracion previa //
+
+     La pregunta fundamental es: a esta altura del partido vale la pena
+infectar NE? Despues de todo, hace dos a¤os que salio Windows 95 y Windows
+97 tendria que salir este a¤o. Las compa¤ias de software ya han migrado
+todas a Windows 95, y por lo tanto han dejado o estan dejando de producir
+NEs dentro de sus paquetes comerciales. 
+
+     La respuesta es que a pesar de esto, los NEs no han perdido totalmente
+vigencia porque la carga de NEs viejos que existen es bastante grande (ver
+la nota "Como conviene infectar NE", en esta edicion). Quedan muchos NEs
+viejos y esto quiere decir que probablemente permanezcan con nosotros por
+varias versiones de Windows mas. Y a juzgar por la lenta agonia del DOS y
+la persistencia del MZ y del COM, que se niegan a desaparecer del todo,
+podrian ser muchas versiones, aunque no se si son cosas realmente compara-
+bles. Ademas de esto, aun si el NE hubiera perdido vigencia tal y como la
+perdieron el MZ o el COM, sobre estos ultimos dos formatos existe abundante
+informacion relacionada a virus, pero esto no es asi con el NE, por lo que
+a pesar de todo vale la pena publicar todo esto.
+
+
+     // 2 - Lo basico //
+
+     Dividamos la infeccion en tres partes: agregar el codigo del virus al
+host, diverger de algun modo el flujo de control hacia el codigo del virus,
+y efectuar todas las otras acciones que sean necesarias para que el codigo
+que hemos agregado funcione en el ejecutable host, y para que el codigo del
+host siga andando. Las dos partes mas dificiles dentro del NE son la
+primera y la tercera; la segunda es tan facil como en la infeccion de MZ.
+
+     Insertar el codigo es dificil porque basicamente hay solo dos maneras
+de hacerlo, y las dos implican mover partes del NE de aca para alla para
+insertar cosas.
+
+     La segunda es tan facil como modificar el campo "CS:IP inicial" del
+header, aunque puede ofrecer ciertos matices, porque hay otras formas de
+hacerlo sin modificar el CS:IP del header.
+
+     La tercera parte en realidad no es siempre dificil, sino que solo lo
+es si decidimos usar APIs dentro del virus, porque en cada infeccion
+deberemos asegurar que las APIs funcionen (sean realocadas) dentro del
+host. Si no usamos APIs, lo unico que debemos hacer es fixear el salto al
+host.
+
+
+     // 3 - Agregando codigo a un NE //
+
+     Como mencione antes, hay dos maneras de agregar el codigo del virus.
+Estas son: agregar codigo a segmentos ya definidos, o agregar nuevos
+segmentos.
+
+     Agregar codigo a segmentos ya definidos es en teoria posible pero tan
+lejos como nos concierne es demasiado costoso. El segmento al que queremos
+agregar codigo puede estar en el medio del file y por lo tanto puede ser
+necesario moverlo al final, para alli poder agregarle codigo. En casi todos
+los casos esto implica mover demasiado, ademas de que el virus debe ser
+programado para realocarse (osea para correr en distintos offsets en cada
+host, como los viejos infectores de COM). Por otro lado tambien complicaria
+un poco el ultimo paso (el agregado de APIs), ya que si el segmento de
+codigo al cual queremos appendear el codigo tiene realocaciones, deberiamos
+agregar entradas a una tabla de realocacion ya existente en vez de senci-
+llamente escribir una nueva. Por todo esto, este modo de hacer las cosas
+seria problematico y no sera tomado en cuenta en esta nota.
+
+     Agregar nuevos segmentos significa agregar nuevas entradas a la
+segment table. A primera vista pareceria que estamos en la misma situacion
+que en el caso anterior, ya que deberemos hacer espacio en la segment table
+para poder agregar esas entradas. Sin embargo esta opcion es menos costosa
+porque en general lo que deberemos mover es menos. Ademas, simplifica un
+poco la programacion del virus ya que este siempre corre en el mismo
+offset. Ademas podemos olvidarnos de toda tabla de realocacion que no sea
+la del virus. Por todo esto, esta es la opcion mas elegible.
+
+
+     // 3.1 - Haciendo espacio en la Segment Table //
+
+     La forma mas obvia y facil de entender de agregar entradas a la
+segment table consiste en moverla al fin del file, actualizar el puntero
+del NE para que apunte a la nueva posicion de la tabla, y alli agregarle
+todas las entradas. El problema con esto es que este puntero a la segment
+table es un WORD, y es relativo a la posicion del NE, por lo que seria
+imposible apuntarlo a mas de 64k de distancia del NE. Por lo tanto este
+metodo solo serviria para NEs de no mas de 64k de largo + el offset del
+header NE (que esta al principio). Osea que es inutil.
+
+     La otra forma de agregar entradas a la segment table es no moverla,
+sino hacer espacio al final de la tabla. Hacer espacio es necesario porque
+no hay nada que asegure que despues de la segment table no va a estar
+alguna de las otras tablas del formato NE (de hecho, por lo general la
+segment table es la que esta primero, inmediatamente despues del header NE
+y antes de todas las otras tablas). Hacer espacio significa sacar espacio
+de algun lado, y hay basicamente solo tres lugares de donde se puede sacar
+espacio para ponerlo final de la segment table.
+
+     Estos tres lugares son:
+
+     1) El header MZ, en el que los linkers dejan mucho espacio si el stub
+          MZ tiene realocaciones.
+     2) El espacio entre el fin del codigo del stub MZ, y el header NE.
+     3) El espacio entre el fin de la ultima tabla del NE, y el comienzo
+          del primer segmento de codigo o datos.
+
+     De estos tres lugares, dos han sido usados exitosamente en virus. Son
+el segundo y el tercero, usados respectivamente por el virus WinSurfer de
+VLAD, y por el virus ejemplo de esta nota. El lugar que yo recomiendo es el
+tercero, porque es el que mas espacio tiene, es un lugar en el que podemos
+estar casi completamente seguros de que va a haber espacio, y ademas un
+lugar en el que podemos verificar que lo haya. El primer metodo directa-
+mente es inutil ya que hay muy pocos NEs que tengan espacio ahi (para mas
+detalles ver la nota de estadisticas). 
+
+
+     // 3.1.1 - El espacio del header MZ //
+
+     Como sabemos, los linkers cuando generan un EXE de formato MZ suelen
+dejar espacio de a 512 bytes en el header MZ si hay realocaciones. Por lo
+tanto si hay muy pocas realocaciones, alli queda mucho espacio libre. Esto
+era aprovechado por los llamados "infectores de header", como el RAT,
+mencionado en la nota de infeccion de EXE de la mino 1.
+
+     Para verificar que haya espacio, deberemos ver si el size del header
+MZ es mayor al necesario para albergar todas sus realocaciones; como el
+espacio se roba de a paragrafos, la cantidad minima es 16. La "formula"
+vendria a ser:
+
+     (HeaderSizeInPara * 16 + 40h) - RealocCount * 4 > 16
+
+     Una vez verificado que hay espacio, lo que tendriamos que hacer es
+mover todo lo comprendido desde el principio del codigo del MZ hasta el fin
+de la segment table, lo cual comprende al header NE, y posiblemente algunas
+tablas del NE. Esto lo tendremos que mover hacia arriba 16 bytes (o un
+multiplo de 16 bytes si hay mas de 2 segmentos que insertar). Luego de esto
+deberemos modificar algunas entradas del header NE para que el ejecutable
+siga siendo consistente. 
+
+     Lo que deberemos modificar es:
+     - Decrementar en uno (o mas) el size en paras reportado en el header
+          MZ
+     - Decrementar en 16 (o un multiplo de) el puntero al NE del MZ (el
+          ultimo campo).
+     - Incrementar en 16 (o un multiplo de) el puntero del NE a todas las
+          tablas que NO HAYAMOS MOVIDO, osea todas las tablas de offset
+          mayor al offset de la segment table.
+     - Decrementar en 16 (o un multiplo de) el puntero del NE a la nonresi-
+          dent-names table SI LA HEMOS MOVIDO, osea si su offset es menor
+          al offset absoluto de la segment table.
+
+     El porque de estas ultimas dos modificaciones se explica de la
+siguiente manera: si movimos una tabla que no sea la nonresident-names
+table, el offset reportado en el NE sigue siendo correcto puesto que es
+relativo al header NE; y al header NE tambien lo hemos movido. En cambio,
+si no la hemos movido, la tabla esta relativamente mas adelante del NE,
+porque hemos movido al NE hacia atras. Si la tabla es la nonresident-names
+table el caso es al reves porque su offset es absoluto, osea que la
+modificacion del offset depende exclusivamente de si la hemos movido o no.
+
+     Repito que este metodo nunca fue implementado y ademas es de dudosa
+utilidad.
+
+
+     // 3.1.2 - El espacio entre el codigo del stub y el NE //
+
+     Al final de el o los segmentos de codigo del stub MZ y el principio
+del header NE puede haber muchos bytes puestos ahi para stack. Esto quiere
+decir que si los hubiera podemos mover el header hacia arriba y estos bytes
+de stack van a seguir siendo lo mismo para el stub MZ, puesto que no
+importa su valor.
+
+     Suponiendo que usemos este metodo, lo que tendremos que hacer es
+bastante parecido al primer metodo. Hay que mover hacia arriba todo lo
+contenido entre el header NE y el fin de la segment table. Luego solo hay
+que modificar los offsets a las tablas, tal y como fue explicado en el
+metodo anterior, con la diferencia de que como aqui podemos robar de a un
+byte, podemos robar de a multiplos de 8 bytes (el size de una entrada de la
+segment table) en vez de a 16 bytes.
+
+     Lo malo de este lugar es que no hay manera fehaciente de verificar que
+haya espacio; el stub MZ puede tanto tener una gigantesca seccion de ceros
+final para stack o puede utilizar hasta el ultimo byte para su codigo mas
+sensitivo. Sencillamente no hay manera de saberlo. Por lo tanto lo unico
+que podemos hacer es sacar espacio y rezar para que el virus nunca se cruce
+con el infimo porcentaje de NEs que NO tienen espacio ahi. Cuando se cruce
+con uno, le va a hacer pelota una parte mas alla de toda duda, aunque el
+efecto quiza no se note en seguida o aun no se note en absoluto. Este es el
+motivo fundamental por el que no me gusta este metodo. Se podria intentar
+alguna cosa como ver si al final del codigo del stub hay ceros o no, pero
+esto es medio una cochinada para mi gusto, y no asegura nada. El virus de
+VLAD WinSurfer (y esto sin animo de criticar) directamente no intenta
+ninguna verificacion y procede a hacer lugar; lo que si verifica es que el
+NE este en 400h (osea que tenga el stub standard), lo cual es mas o menos
+logico. Y aun asi hay posibilidades de que su virus trashee algun ejecuta-
+ble. Son bajas, pero las hay.
+
+     Este es un metodo practicable y util ya que la mayoria de los NEs
+tienen espacio en este lugar, pero como ya he mencionado no es muy seguro,
+y puede conducir a que el virus trashee un cierto porcentaje de ejecuta-
+bles. El unico aspecto bueno que tiene es que es el metodo para el que
+menos bytes hay que mover, pero esto no es un gran consuelo.
+
+
+     // 3.1.3 El espacio entre el fin del NE y el 1er segmento //
+
+     Los linkers, al linkear un NE, pueden generarlos con varios shift
+count distintos; las mas comunes son cuatro (de a paragrafo) y nueve (de a
+512 bytes). Shift counts menores a cuatro aunque posibles son poco practi-
+cos ya que los NEs tendrian que ser muy chicos, y los NEs tienden a ser
+largos porque contienen codigo, datos, y recursos como bitmaps e iconos. 
+
+     Pero la ultima tabla del NE puede terminar en cualquier offset, no
+necesariamente en uno redondeado en paragrafo o en un borde de 512 bytes;
+esto quiere decir que puede haber bytes desaprovechados entre el ultimo
+byte de la ultima tabla del NE, y el primer byte del primer segmento de
+codigo o datos del NE.
+
+     El modo de verificar que hay espacio es calcular el offset en bytes
+del primer segmento del NE, y restarle el offset del ultimo byte de la
+ultima tabla del NE (que tambien deberemos calcular).
+
+     A primera vista pareceria que este metodo, aunque seguro y convenien-
+te, es inutil por ser muy costoso. El virus tendria que incluir codigo para
+calcular los largos de todas las tablas del NE, ya que teoricamente todas
+pueden ser la ultima, y a esto agregado el codigo necesario para calcular
+el offset del primer segmento. Esto es mucho codigo. Todo esto pense cuando
+considere este metodo por primera vez. Sin embargo luego de ver los NEs
+encontre que la inmensa mayoria tiene como ultima tabla la nonresident-
+names table. Estoy hablando de un porcentaje abrumador, y realmente la
+cantidad de NEs que tienen otra tabla como la ultima es en verdad inexis-
+tente. Lo cual es raro ya que no esta explicitado en la especificacion del
+formato NE; solo es una convencion implicita que siguen los linkers, quiza
+debido a que esta es la tabla con un offset absoluto y no relativo al NE y
+por lo tanto la unica tabla que podria ser puesta a mas de 64k de distancia
+del header NE. 
+
+     Como sea, esto es increiblemente ventajoso para nosotros ya que el
+largo de la nonresident-names table viene precalculado en el header NE, lo
+cual reduce el "calcular el offset del ultimo byte de la ultima table" a
+una simple suma de dos variables que ya tenemos.
+
+     La unica dificultad entonces consistira en encontrar el offset del
+primer segmento, que consiste simplemente en iterar en la segment table y
+encontrar el valor de "offset en sectores" mas bajo, y luego convertir el
+"offset en sectores" a "offset en bytes" haciendole un SHL por el shift
+count del NE. Luego de todo esto solo restamos y obtenemos el numero de
+bytes disponibles que podriamos aprovechar; si los hay suficientes para
+albergar las entradas que queremos insertar, podremos proseguir. Tambien
+convendra verificar que la nonresident-names table sea la ultima, y abortar
+si no lo es (uno nunca sabe).
+
+     Luego de todo esto, deberemos mover todo lo comprendido entre el fin
+de la segment table y el fin de la ultima tabla (nonresident-names table) N
+bytes hacia adelante. Como vemos esto podria ser mucho, dependiendo del
+largo de todas las tablas. Este es el metodo en el que mas hay que mover, y
+aun sigue siendo el mas costoso. Pero esto no tiene tanta importancia
+porque de todos modos, el size maximo posible de esto es de 128k; y tomemos
+en cuenta que podemos usar un buffer lo bastante grande como para asegurar
+que esto sea movido con unos pocos accesos a disco (y asi asegurar que la
+infeccion sea rapida); por ejemplo, 50k. Estos 50k desde ya no viajaran con
+el virus, ni tampoco sera necesario alocarlos dinamicamente (lo que
+requeriria APIs o DPMI), sino sencillamente manipulando bien la entrada de
+segment table que escribimos, osea que el costo es 0 (esto sera mejor
+explicado mas adelante). Ademas tomemos en cuenta que esos 128k son el
+teorico maximo posible y que el largo promedio es de un poco mas de 1k,
+osea que no hay motivo para empezar a mesarse los cabellos y gemir triste-
+mente por este tema. Por lo tanto en vez de usar lo del buffer tambien
+podriamos sencillamente desechar todos los NEs de un "tama¤o de cosas que
+hay que mover" mayor a cierto limite, y podremos estar seguros de no estar
+perdiendonos muchos NEs.
+
+     Luego de haber movido esos bytes, para mantener el NE coherente habra
+sencillamente que modificar el offset de todas las tablas que hayamos
+movido (seran las de offset mayor a la segment table); incluida desde ya la
+nonresident-names table.
+
+     Resumiendo, este es el lugar que considero mejor por varias razones;
+es en donde mas espacio hay en promedio, es un metodo que permite verificar
+si hay espacio o no, y ademas es el lugar en el que el mayor porcentaje de
+NEs tiene espacio. El unico aspecto negativo es que es el metodo en donde
+probablemente mas bytes hay que mover para hacer el espacio que queremos,
+pero como ya dije esto puede no tener tanta importancia como parece si
+sabemos como hacer las cosas.
+
+
+     // 3.2 - Escribiendo el segmento //
+
+     Entonces ya hemos logrado sacar espacio de alguno de estos tres
+lugares y "moverlo" al final de la segment table; el siguiente paso es
+armar las entradas y escribirlas al final de la segment table, y luego
+escribir los segmentos.
+
+     De todos los campos de la entrada de segment table, hay uno solo que
+varia de infeccion a infeccion, que es el "offset en sectores" del codigo
+del virus. Las flags sin duda son constante (un valor como 1D10h por
+ejemplo). El "size en file" tambien es fijo y es igual a largo del segmento
+del codigo del virus. El "size en memoria" es el largo del codigo del virus
+mas todo el espacio de heap que queramos; alli podemos poner variables no
+inicializadas. Esto puede llegar a ser realmente muy util. Por ejemplo si
+decidimos usar el metodo 3 (descrito en la seccion anterior) y necesitamos
+un buffer de 50k, solo habra que poner en este campo el size del virus +
+50k, y al final del codigo del virus tendremos unos lindos 50k para nuestro
+uso. Solo queda calcular el "offset en sectores" del virus.
+
+     Esto lo deberemos hacer obteniendo el size del file y redondeandolo de
+acuerdo al shift count especificado en el header NE. La cuenta seria algo
+asi:
+
+     OffsetRedondeado =  SizeOfFile + ((1 << ShiftCount) - 1) & 
+                         ~((1 << ShiftCount) - 1)
+     (ejemplo, shift count = 9)
+     OffsetRedondeado = SizeOfFile + ((1 << 9) - 1) &
+                         ~((1 << 9) - 1));
+     (osea..)
+     OffsetRedondeado = SizeOfFile + (0000)01FF & (FFFF)FE00
+
+     Esto a su vez deberemos SHRtearlo con el shift count del header, y asi
+obtendremos el offset "en sectores" del segmento del virus. Luego de esto
+solo resta posicionarse sobre el final de la segment table, escribir la o
+las nuevas entradas, e incrementar el numero de segmentos reportado en el
+header NE.
+
+     Ya hemos insertado la entrada de la segment table, y ahora solo resta
+ir al offset redondeado que hemos calculado para armar la entrada inserta-
+da, y escribir alli el segmento del virus. El unico detalle a tomar en
+cuenta es que todas las llamadas a APIs o saltos intersegmento (al host)
+dentro del codigo del virus, deben ser modificados para que contengan los
+valores 0, FFFF (call FFFF:0000); esto es necesario para que el sistema
+pueda realocar esas referencias. Luego de escribirlo tenemos que restaurar
+las APIs a sus valores originales desde luego.
+
+
+     // 5.1 - Ese maldito salto al host //
+
+     Olvidemonos por un momento de las APIs y comencemos con el salto al
+host que es algo imprescindible en todo virus parasitico. La forma de
+lograrlo es usar la realocacion. Lo que haremos sencillamente es agregar
+despues del virus una tabla de realocacion con una entrada; esta realoca-
+cion sera de tipo internal reference, con incremental linking (de tipo
+"4"), y sera de 32 bits ("3"). Los ultimos cuatro bytes seran el segmento y
+el offset del entry point del host, que sacamos del header NE. Con esto
+tenemos el salto al host listo y funcionando cuando el host infectado es
+cargado en memoria.
+
+
+     // 5.2 - Esas malignas APIs //
+
+     Luego de esto, la pregunta es si conviene usar APIs o no. Esta demos-
+trado que es posible hacer virus sin usar ninguna API (WinSurfer) porque
+bajo Windows 16 todavia se puede llamar a DOS (y usando DPMI). Tambien esta
+demostrado que es posible hacerlo con APIs y que el costo no es muy grande
+asi que depende de la eleccion de cada uno. En el caso particular del virus
+ejemplo de esta nota, yo decidi usar tres APIs para hacer que el (unico)
+segmento de codigo del virus sea "escribible" (ver detalles mas adelante) y
+poder poner las variables del virus en el mismo segmento que el codigo y
+simplificar mucho las cosas, pero aun asi usar DOS para hacer todo el resto
+del virus; tambien puede elegirse usar APIs para hacer todo el virus, si a
+alguien le divierte. Todo es posible.
+
+     Pues supongamos que decidimos usar una o mas APIs en nuestro virus.
+Casi invariablemente las unicas APIs que necesitaremos son las del KERNEL,
+porque aun cuando necesitemos APIs de otros modulos, podemos obtenerlas sin
+realocacion usando las APIs contenidas en KERNEL (LoadLibrary, y GetProcAd-
+dress para ser mas exactos). Por lo tanto voy a asumir que lo unico que
+necesitaremos son APIs de KERNEL, aunque esto puede hacerse para todos los
+modulos que queramos.
+
+     El primer paso para poder usar APIs de KERNEL desde el virus es
+verificar que el host importe el KERNEL. Si el host no importa KERNEL, sera
+imposible hacer que nos realoque las APIs y por lo tanto nos deja dos
+opciones; desistir de intentar infectar ese ejecutable o "importar a la
+fuerza" el KERNEL, osea, agarrar la imported-names table y la module
+reference table y modificarlas.
+La discusion de como hacer esto ultimo excede este articulo; habria que
+hacer mas lugar (usando los metodos descriptos antes), y alli escribir las
+nuevas entradas de las tablas. Pero como el porcentaje de ejecutables que
+no importa KERNEL es realmente infimo, lo mas sensato es sencillamente no
+infectar esos NEs. Por lo tanto conviene hacer la verificacion de la
+importacion de KERNEL al principio de todo, antes de mover o modificar nada
+en el NE. 
+
+     Como verificar que el host a infectar importe KERNEL? Debemos caminar
+caminar la imported-names table usando las entradas de la module reference
+table (que son indices dentro de la primera). Osea, leemos la module
+reference table a un buffer, y usamos cada entrada de ella para ir al
+offset de cada entrada de la imported-names table. Una vez alli leemos un
+byte (el largo en bytes del nombre); si es igual a strlen("KERNEL"), leemos
+esos bytes y los comparamos con "KERNEL"; y asi hasta que no haya mas
+entradas o hasta que nos encontremos con "KERNEL".
+
+     Una vez encontrado el KERNEL debemos guardar su indice (es 1-based,
+osea que la primera entrada es indice 1). Este indice lo usaremos mucho
+despues para modificar la tabla de realocacion del virus.
+
+     Por cada vez que usemos una API, debe haber una entrada de realocacion
+de tipo "3, 5" (32 bits, imported ordinal + incremental link). Los ultimos
+dos bytes son el numero de ordinal de la API, que averiguamos viendo la
+exported names table del modulo en cuestion (ver la nota "Numeros ordinales
+de APIs" en el numero anterior de Mino). Y los anteultimos dos bytes son el
+indice del modulo (KERNEL) dentro de la module reference table; este es el
+indice que hemos guardado y es lo que deberemos modificar en cada infeccion
+dentro de nuestras tablas de realocacion.
+
+     Luego de modificar todas las entradas de APIs (y la del salto al
+host), solo resta escribir la realocation table inmediatamente despues del
+segmento de codigo del virus.
+
+     Una aclaracion importante es que la tabla de realocacion viaja con el
+virus como dato Y ADEMAS esta escrita despues del virus, osea que en file
+esta dos veces. Esto puede parecer un gasto innecesario pero realmente no
+lo es, porque la unica otra opcion seria leer la tabla de realocacion del
+virus desde el host desde donde se esta corriendo, y solo el codigo para
+hacer esto es probablemente mas largo que la realocation table mas larga
+que puedan necesitar (y ademas presenta ciertos problemas).
+
+
+     // 6 - Divergiendo el control hacia el virus //
+
+     La forma mas sencilla de hacerlo es modificar el CS:IP del host. Esto
+no merece mas discusion; sabemos cual es el numero de segmento del virus
+(el ultimo), y sabemos el IP, osea que no hay problema y es facil de hacer.
+
+     La otra forma de hacerlo seria modificar una realocacion de algun
+segmento de codigo del host y convertirla en un salto intersegmento hacia
+el virus. Y luego de que el virus corrio, en vez de hacer un salto al host,
+se llama a la API original y se RETorna del call. El beneficio de todo esto
+es que le hariamos mas dificiles las cosas al antivirus porque tendria que
+hacer mas trabajo para encontrar el entry point del codigo del virus. Esto
+quiza mereceria mas discusion pero voy a dejar el tema aca porque realmente
+hacer esto no daria muchos beneficios, por el motivo de que si usamos una
+API cualquiera de un segmento cualquiera del host, esto haria que en
+realidad no podamos tener la certeza de que el virus es ejecutado, pues esa
+API a lo mejor solo es llamada excepcionalmente dentro del funcionamiento
+del host. Y por otro lado, si modificamos una API fija de un segmento fijo
+(p.ej. la primera API del primer segmento, que es casi indudable que se
+ejecute), esto convierte el metodo en inutil porque el antivirus ya sabe
+donde encontrar el entry point para este virus siempre; el trabajo extra es
+minimo.
+
+
+     // 7 - Un segmento o mas? //
+
+     Es posible hacer un virus de un segmento, pero sera posible hacerlo
+con mas segmentos? Para que nos serviria hacerlo asi?
+     Lo mas conveniente es usar un solo segmento, porque simplifica el
+agregado del codigo del virus. Ademas, la unica razon que se me ocurre para
+usar dos o mas segmentos es para separar el codigo de los datos, y de este
+modo no tener que hacer el segmento del virus escribible y evitar llamar
+APIs o a DPMI. Pero esto en realidad es imposible de evitar, porque
+tendremos que escribir necesariamente al segmento de codigo del virus al
+escribirlo (recuerden lo del 0, FFFF). Osea que realmente, un solo segmen-
+to, y se acabo.
+
+     Un ultimo detalle que viene al caso incidentalmente. Existe un
+atributo de los segmentos que es el PRELOAD (0x40). Estos segmentos son
+cargados a memoria cuando el NE es cargado a memoria, los otros son
+cargados cuando se los necesita por primera vez (de ahi el nombre del
+atributo LOADONCALL). Para lograr esto eficientemente los linkers lo que
+hacen es poner todos los segmentos en un area continua e indicar este area
+desde el NE (ver los ultimos campos del header NE); esta es la llamada
+"fastload" o "gangload" area. Cuando hice el virus ejemplo crei que
+sencillamente marcando el virus como no-preload bastaria para que todo se
+cargara bien aun en NEs con fastload area, pero verifique que por alguna
+razon no es asi. Lo unico que atine a hacer es desactivar la fastload area
+cuando infecto; asi todo anda bien, pero quiza otros puedan resolverlo de
+alguna otra manera.
+
+     // 8 - Una ultima detalle de color.. //
+
+     El formato NE contempla la posibilidad de que algunas aplicaciones,
+debido a que hacen alguna cosa rara, se carguen a si mismas en vez de ser
+cargadas normalmente por el loader del sistema. Esto da lugar a una
+interesante posibilidad. Que pasa si en vez de preocuparnos de que nos
+cargue el loader, cargamos al host nosotros mismos? Nos da mucha mas
+libertad, aunque desde ya agrega complejidad a la cuestion. Pero no solo
+facilitaria por ejemplo el polimorfismo, sino que posibilita el proverbial
+virus con compresion (existen para DOS), el cual al ver que el formato es
+tan rigido uno sin duda penso que seria imposible.. (mi caso al menos). El
+que quiera mas detalles sobre esto.. puede rezar si quiere. Nunca fue
+testeado y es totalmente una conjetura loca y hasta pervertida.
+     De todos modos la infeccion de NEs con autoload no es problematica, el
+virus es cargado normalmente aun en estos casos, osea que se puede ignorar
+el tema totalmente.
+
+
+     // 9 - Conclusion //
+
+     Esta es la nota mas profesoral que escribi en mi vida, pero que puedo
+hacer.. el tiempo pasa, nos vamos poniendo windows. Con cada conversacion,
+cada beso, cada abrazo... etc.
+
+     La nota es totalmente enciclopedica porque queria ya finiquitar el
+tema y pasar a otra cosa. Si sencillamente quieren hacer un virus como el
+virus ejemplo desde cero, sigan lo recomendable e ignoren todo el resto de
+lo explicado, todos los metodos no recomendables y las conjeturas de lo que
+es posible.
+
+     La infeccion de NE es el primer paso hacia los virus de Windows. Lo
+fue para mi y espero que lo sea para algunos de ustedes. Se que todo este
+asunto puede llegar a ser poco interesante o muy complicado para alguien
+que lo mira de afuera, pero al menos en mi caso cuando uno se empapa en el
+asunto, todo es claro y natural. Segun creemos, los virus "serios" (resi-
+dentes, polimorficos, etc) son posibles en Windows, y esta es la primera
+parada que hacemos para llegar a ellos. Con los datos de esta nota y de las
+dos o tres mas que publicamos sobre NE, cualquier lector de la mino tiene
+el material como para hacer su propio virus de Windows. Quiza no lo haga
+nadie, es mas, es probable que asi sea, pero que les puedo decir, es como
+nuestra obligacion informar.. No?
+
+     Espero que se hayan divertido (irony is my middle name). Yo me
+diverti, al menos. Je. 
+                                                                  Trurl tgc

