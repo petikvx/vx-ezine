@@ -1,0 +1,215 @@
+Advanced EPO: Deeper, longer and harder
+
+Part 1: Hiding behind the traces of host
+
+herm1t <webmaster@vx.netlux.org>, july 2011
+
+Introduction
+Deceive, inveigle and obfuscate
+Tracing under Lin32
+Harvesting the data
+Elven tricks
+The assemblage point
+Conclusion and further work
+References
+
+Introduction
+In the recent zine Decepticons, Tiberio published the nice article [1] about entry-point obscuring and listed there a number of ways in which the virus could capture the control from application. Most of them are related to API calls - replacing the API call or replace the callback in the API's parameter list (the first is known under Linux as PLT redirection [2]) other techniques explores different cavities which could be used to place there the get-me-to-the-virus instruction. There is something common for all of these methods - no one will tell you when the virus will gain the control and will it get it at all. I think we have to do something about this.
+
+Long, long time ago I was cracking Might and Magic 5 game to disable the control question window which required the player to enter the word from the manual (surely I have no manual, because the game was pirated), in the case of the wrong answer the game stopped. I had tried to find the place where the check was performed by debugging the game, but quickly got lost in the massive executable. When I told myself: look, there are two points in the program through which it can terminate, the first is the common "End game" button, the second is the copy protection routine. I quickly found the exit() routine and followed all its ancestors. As I expected there were exactly two paths which lead to exit and soon I found the place I was looking for, patched it and continued playing.
+
+The copy protection is somewhat similar to EPO viruses, both should be rooted as deep in the program as possible. It's better to avoid obvious places like the entry and exit nodes. The problem is that if you have put the call to virus somewhere in the middle of the program it could be not executed at all! And where is the "middle"? In this article I will try to show how the dynamic analysis would help to solve this problem to inveigle the anti-virus into emulating a large amounts of code.
+
+Deceive, inveigle and obfuscate
+My first intention was to use a static analysis (there is a nice theoretical stuff which could be used), but I decided to try a dynamic approach first. Using debugging to select the correct place for EPO was already described by Z0mbie [3] and Whale [4] (Whale's virus Nastena is using Z0mbie's tool TRACER32).
+
+My idea is slightly differs from the cited ones. My goal is to collect as much information about potential host as possible. Which locations are executed more frequently? How far they are located in the program? I want to clarify the terms "distance", "far" and "near" as they used in this article. I want to number all instructions in the order they are executed. We have a program:
+
+101	mov	eax, 0
+102 L0:	cmp	eax, 2
+103	jae	L1
+104	push	eax
+105	push	format
+105	call	printf
+106	inc	eax
+107	jmp	L0
+108 L1:	call	L3
+....
+130	mov	ebp, esp
+....
+999	hlt
+Suppose, that we tracing this program and saving the min. and max. value of the instruction counter (initially set to zero) along with instruction address:
+
+counter = 0 (program's entry point)
+Instruction	Addr, min max of counter
+mov	eax, 0 	<101, 1, 1>
+cmp	eax, 2 	<102, 2, 2>
+jae	L1	<103, 3, 3>
+....
+jmp	L0	<107, 7, 7>
+cmp	eax, 2	<102, 2, 8>
+jae	L1	<103, 3, 9>
+....
+cmp	eax, 2	<102, 3, 13>
+jae	L1	<103, 3, 14>
+call	L3	<108, 15, 15>
+mov	ebp,esp	<130, 16, 16>
+....
+hlt		<999, 1567, 1567>
+E = counter = 1567 (the end of program)
+I will skip the instructions located outside the .text of the infected program such as library calls. After the program will finish its work we'll have the final value of the counter (1567) this what I called the end of the program or E (not the address - 999) and the initial value - zero is the host's start. Now we can count the run-time-position for each instruction, by substracting the stored min and max values from the E and keep the minimal value \min(\min (E-min, E-max), min). This will be a minimal distance between instruction and the host's start and end nodes. Or an insn's "run-time position".
+
+I could use this table to select the address whose counter has a maximal value (this is similar to what Whale did), but what would happen upon the next run of the host? What if user would type "program --help"? The next time the executed instruction would be different and most likely the virus could not get control at all!
+
+So, my virus will trace the program several times, keeping the number of passes for each address and average position of the instruction. Look at the following example:
+
+0	    1					      9
+_start ---- checks args --- ... main program path --- exit
+0	    1	|
+	    2	print help
+            	|    
+	    3	exit
+There are two different paths with different lengths and counter values. Averaging them is like adding apples to oranges. So the position values (d) must be normalized (dn). I will scale them to the range of unsigned short. There the 0 will represent first instruction, 65535 - the most distant instruction, no matter of the real values:
+
+dn = d / E * 65535
+
+Since we cannot gather all data at one pass, the school formula of the average A = \frac {\sum_{i=1}^n a_i} {n} should be rewritten to the "incremental" form:
+
+A_{n+1} = A_n + \frac {a - A_n} {n + 1}
+
+Now I could tell you what is my best assumption about the "middle of the program" (from the POV of dynamic analysis). The middle of the program is an address with a maximum average of normalized run-time-distances. I could add the "DON'T PANIC" words in a large and friendly letters, but if you read the previous lines carefully you really don't need to. So I will move on and comment the inplementation.
+
+Tracing under Lin32
+There are several facilities for debugging in Linux (I will discuss the available options in the final chapter) and I choose a slow, but simple single-stepping with ptrace(2). Here is the core of the single-step debugger:
+
+        if ((pid = fork()) == -1)
+        	/* fork failed, return to virus and host */
+        	return;
+        if (pid == 0) {
+        	/* child process (virus' tail and victim) */
+        	ptrace(PTRACE_TRACEME, 0, 0, 0);
+       		kill(getpid(), SIGINT);
+        } else {
+        	/* parent process (tracer) */
+		for (;;) {
+			wait(&status);
+			if (WIFEXITED(status))
+				/* child exited */
+				break;
+			/* get the child's regs including EIP */
+			ptrace(PTRACE_GETREGS, pid, 0, ®s);
+			...
+			ptrace(PTRACE_SINGLESTEP, pid, 0, 0);
+		}
+		exit(0); /* or virus and victim will be executed twice */
+	}
+Harvesting the data
+One could use any data structure to keep the values. It could be linked list and bitmap (to check for already visited insns), this time I choose array of structures (At) and hash table (Ah):
+
+		Ah	At
+		|   |	|         |
+		+---+	|         |
+	H(addr)	|   |-->+---------+
+		+---+	| addr	  |
+		|   |	| min, max|
+			| chain   | ----+ next address
+			+---------+	| with the same
+			...........	| hash value
+			+---------+ <---+
+			|	  |
+To collect the data from the current run, the virus will:
+
+Setup the single step tracer
+for each instruction in the analyzed addresses range
+increase the counter
+do we have this address in table?
+no,
+add to table
+min = max = counter
+yes, max = counter
+And now select the minimum value and normalize it:
+
+	/* counter now holds value for the exit node */
+	for (i = 0; i < N; i++) {
+		uint32_t x;
+		x = counter - At[i].min;
+		if (x < At[i].min)
+			At[i].min = x;
+		x = counter - At[i].max;
+		if (x < At[i].min)
+			At[i].min = x;
+		At[i].min = (unsigned short)
+			(((float)At[i].min / counter) * 65535.0);
+	}
+Ok, we have our table from the one pass of the program. It's time to save it and wait for the user to run the infected host again. But where to store the temporary result?
+
+Elven tricks
+The most obvious place for the temporary virus data is the infected executable itself. But the system locked it and any attempt to write(2) to it will fail with ETXTBSY error. There is a work-around. You must unmap all text and data segment's pages from memory. And this is where the trick begin.
+
+The code for the "unmapper" and data which have to be written must be located somewhere (but clearly not in the text or data segments). The traditional way is to use the stack [5] (or [6]) for the example of such cleanup routine), but in modern Linux systems the stack is non-executable for ages and I will not bother to remove the protection. The "table dumper" will:
+
+Find the Program Header Table of the current process
+Collect addresses and sizes of all loadable segments (p_type == PT_LOAD) (address, size), (address, size), 0
+Prepare the series of patches in the form (offset, data size, data), (offset,...),...,0 and the filename of the executable and store all these values to local variable (in stack).
+Allocate one page of memory with mmap(2)
+Copy the low-level dumper routime there
+Make this page executable
+Call the dumper, which will:
+munmap all segments, with system call (not library function; NOTE: the code could be relocated, but that's not fucking worthy)
+open executable for writing
+apply patches (lseek, write)
+truncate the file to the desired size
+exit() - we must exit anyway, there is no code, no data, and nothing left to do
+I also want to tell a few words about segment's addresses and sizes. The munmap(2) will fail if the address you are going to free is not page aligned, so my routine is acting in the same way as elf_map() from fs/binfmt_elf.c in kernel [7]:
+
+	addr = phdr[i].p_vaddr & 0xffff000; /* ELF page start */
+	/* the second term in the folowing expression is page offset */
+	size = phdr[i].p_filesz + (phdr[i].p_vaddr - addr)
+This is important thing, because if the file would have mmaped pages the open(2) will still return ETXTBSY.
+
+The assemblage point
+And finally I have to merge the result from the current run with the previous results. Because the virus temporary data has its own segment, they are already loaded to memory and ready to use. The table holds address, number of passes, and position for all instrcutions which were checked by the virus during previous passes. The merge is easy:
+
+for each instrcution from the table (get addr, min - position and count - number of passes)
+do we have such address in our current table?
+no, just add it to the table
+yes,
+	a->count = count + 1;
+	a->min = min + (a->min - min) / (int)a->count;
+	if (a->count > max_count)
+		max_count = a->count;
+If the virus doesn't reached some predefined number of passes, then it will dump the table and exit, otherwise, it's time to re-infect the executable with obscured entry point. Just run the qsort on table (At), sorting by number of passes and min values in the descending order. The At[0].addr is the desired location. The virus should save the old bytes, patch this location with a jump to virus body and restore original entry point.
+
+Conclusion and further work
+The proposed method allows to "consciously" place the obscured call to virus entry somewhere deep in the infected program. It's sensitive to the way in which the owner of the system will use his or her programs and the virus entry would likely be located on the most often used path. Let me show it. In the following example I ran "date --help" several times until virus reinfected it, and the virus entry was placed on the short path (entry - usage - exit):
+
+$ ./date --help
+[ Entering tracer
+Work's done.
+
+Virus is OK!] Usage: ./date [OPTION]... [+FORMAT]
+Now, I just ran "date" without arguments:
+
+$ ./date
+Mon Jul 25 [ Entering tracer
+Work's done.
+
+Virus is OK!] 10:24:36 EEST 2011
+The virus splits the date output in a half. What could be better? :-)
+
+The method I've used (ptrace) has several limitations (some of them related to the ptrace itself), including extremely slow speed. One of the ways to improve it is to use hardware breakpoints. The rough algorithm which could be used is following:
+
+disassemble all instructions from current until (jmp / call / ret)
+set the break-point at the end of basic block and run the program
+emulate control-transfer instruction
+repeat from 1)
+It is possible and may be even desirable to select the optimal EPO position without debugging. In order to do this, one should build the call graph of the executable and find articulation point on this graph or on the longest path from entry to exit nodes (I assume here that the longest path in the program is what the program was written for). There are a severe problems with the static analysis of the executables (including recognition of the callback pointers, passed to host's subroutines or even library calls, case branches, pointers to the code from the data and so on). It was prooved that the proper disassembly/decompilation of the program is undecidable, but I do believe that all these problems could be resolved for many particular cases (especially for a programs compiled from HLL (C) by the known compiler (gcc)). I didn't accomplished this task yet, but I hope that there would be the part two of this tutorial explaining the "static approach" to the same problem.
+
+References
+Tiberio Degano "Easy to Infect Hard to Detect", Decepticons #1, 2009
+Silvio Cesare "Shared library call redirection using ELF PLT infection", 1999
+Z0mbie "Tracing under Win32", 2000
+Whale "Борьба с антивирусами - новый этап. Отладка в вирусах", ("Fighting anti-viruses - a new stage. Debugging in viruses") 2003
+T. Duff "Experience with Viruses on UNIX Systems", Computing Systems, v.2, n.2, 1989
+herm1t "Tribute to PDP-11/UNIX, UNIX.Dawn virus", 2007
+herm1t "Off-by-page error while unmapping", 2011

