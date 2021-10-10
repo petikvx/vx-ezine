@@ -1,0 +1,366 @@
+#	$Id: cdwrite.c.diff,v 1.2 1997/02/23 15:46:59 eric Rel $	
+*** cdwrite.c.~1~	Mon Nov 20 20:58:51 1995
+--- cdwrite.c	Fri Dec 13 11:03:21 1996
+***************
+*** 27,32 ****
+--- 27,34 ----
+  #endif
+  const char *default_dev = DEFAULT_DEV;
+  
++ #define MULTI_SESS	1
++ 
+  #include <stdio.h>
+  #include <stdlib.h>
+  #include <stdarg.h>
+***************
+*** 43,53 ****
+--- 45,62 ----
+  #include <limits.h>
+  
+  #include <linux/version.h>
++ #include <linux/cdrom.h>
++ 
+  #ifndef LINUX_VERSION_CODE	/* Very old kernel? */
+  #define LINUX_VERSION_CODE 0
+  #endif
+  #if LINUX_VERSION_CODE >= 0x01031a /* <linux/scsi.h> introduced in 1.3.26 */
++ #if LINUX_VERSION_CODE >= 0x020000 /* <scsi/scsi.h> introduced somewhere. */
++ /* Need to fine tune the ifdef so we get the transition point right. */
++ #include <scsi/scsi.h>
++ #else
+  #include <linux/scsi.h>
++ #endif
+  #else
+  #define __KERNEL__
+  #include <linux/fs.h>
+***************
+*** 124,129 ****
+--- 133,139 ----
+    unsigned char bytes[100];
+  };
+  
++ #define FIRST_WRITABLE_ADDRESS	0xE2
+  #define RESERVE_TRACK	0xE4
+  #define WRITE_TRACK	0xE6
+  #define LOAD_UNLOAD	0xE7	/* Philips/IMS/Kodak, HP */
+***************
+*** 131,136 ****
+--- 141,154 ----
+  #define FIXATION	0xE9	/* Write table of contents */
+  #define RECOVER		0xEC
+  
++ /*
++  * Bitmasks for word 8 of the fixate command.
++  */
++ #define FIXATE_ONP	0x8
++ #define FIXATE_TOC_DA	0x0
++ #define FIXATE_TOC_ROM	0x1
++ #define FIXATE_TOC_XA1	0x2
++ #define FIXATE_TOC_XA2	0x3
+  /* Forward declarations */
+  
+  int
+***************
+*** 220,233 ****
+  }
+  
+  int
+! write_data_track (int fd, int *reply_len, struct sg_reply *rep) {
+     *reply_len = sizeof(struct sg_reply);
+     return send_request (fd, "write_data_track", reply_len, rep, 10,
+  			WRITE_TRACK,	/* 0 */
+  			0,		/* 1 */
+  			0,0,0,		/* 2..4 */
+  			0,	        /* 5: track number (0=new) */
+! 			1,		/* 6: data track, mode 1 */
+  			0,0,0		/* 7..9 */);
+  }
+  
+--- 238,273 ----
+  }
+  
+  int
+! write_data_track (int fd, int *reply_len, struct sg_reply *rep,
+! 		  int multi_sess) 
+! {
+!   int	track_mode;
+! 
+!   /*
+!    * For non-multi-session discs, mode 1 is good enough.  If we want
+!    * multi-session, we really want mode 2 instead.
+!    */
+!   if( multi_sess )
+!     {
+!       track_mode = 2;
+!     }
+!   else
+!     {
+!       track_mode = 1;
+!     }
+! 
+     *reply_len = sizeof(struct sg_reply);
++ 
++    /*
++     * Mode 2 is required for multi-session to work properly.
++     * Mode 1 works for single-session discs.
++     */
+     return send_request (fd, "write_data_track", reply_len, rep, 10,
+  			WRITE_TRACK,	/* 0 */
+  			0,		/* 1 */
+  			0,0,0,		/* 2..4 */
+  			0,	        /* 5: track number (0=new) */
+! 			track_mode,	/* 6: data track, mode 1/2 */
+  			0,0,0		/* 7..9 */);
+  }
+  
+***************
+*** 557,562 ****
+--- 597,649 ----
+  }
+  
+  int
++ read_tochdr (int fd, int *reply_len, struct sg_reply *rep) {
++   
++   *reply_len = sizeof( struct sg_reply );
++   return send_request (fd, "read_tochdr", reply_len, rep, 10,
++ 		       READ_TOC,	/* 0 */
++ 		       0,		/* 1 */
++ 		       0,0,		/* 2..3 */
++ 		       0,		/* 4 */
++ 		       0,		/* 5 */
++ 		       0,		/* 6 */
++ 		       0,		/* 7 */
++ 		       12,		/* 8 */
++ 		       0		/* 9 */);
++ }
++ 
++ int
++ read_tocentry (int fd, int track, int *reply_len, struct sg_reply *rep) {
++    *reply_len = sizeof( struct sg_reply );
++    return send_request (fd, "read_tocentry", reply_len, rep, 10,
++ 			READ_TOC,	/* 0 */
++ 			0,		/* 1 */
++ 			0,0,		/* 2..3 */
++ 			0,		/* 4 */
++ 			0,		/* 5 */
++ 			track,		/* 6 */
++ 			0,		/* 7 */
++ 			12,		/* 8 */
++ 			0		/* 9 */);
++ }
++ 
++ int
++ first_writable_address (int fd, int *reply_len, struct sg_reply *rep) {
++   
++   *reply_len = sizeof( struct sg_reply );
++   return send_request (fd, "read_tochdr", reply_len, rep, 10,
++ 		       FIRST_WRITABLE_ADDRESS,	/* 0 */
++ 		       0,		/* 1 */
++ 		       0,1,		/* 2..3 */
++ 		       0,		/* 4 */
++ 		       0,		/* 5 */
++ 		       0,		/* 6 */
++ 		       0,		/* 7 */
++ 		       12,		/* 8 */
++ 		       0		/* 9 */);
++ }
++ 
++ int
+  synchronize_cache (int fd, int *reply_len, struct sg_reply *rep) {
+     *reply_len = sizeof( struct sg_reply );
+     return send_request (fd, "synchronize_cache", reply_len, rep, 10,
+***************
+*** 577,588 ****
+  }
+  
+  int
+! fixation (int fd, int *reply_len, struct sg_reply *rep, int cdrom) {
+     *reply_len = sizeof( struct sg_reply );
+     return send_request (fd, "fixation", reply_len, rep, 10,
+  			FIXATION,       /* 0 */
+  			0,0,0,0,0,0,0,  /* 1..7 */
+! 			cdrom ? 1 : 0,	/* 8: TOC type */
+  			0		/* 9 */);
+  }
+  
+--- 664,706 ----
+  }
+  
+  int
+! fixation (int fd, int *reply_len, struct sg_reply *rep, int cdrom,
+! 	  int multi_session) 
+! {
+!    int	toc_type;
+! 
+     *reply_len = sizeof( struct sg_reply );
++ 
++    /*
++     * Fixation type 0 means audio.
++     *	       type 1 means vanilla non-XA cdrom.
++     *	       type 2 means XA with first track in mode 1.
++     *	       type 3 means XA with first track in mode 2.
++     */
++    if( !cdrom )
++      {
++        /*
++ 	* Audio disc.
++ 	*/
++        toc_type = FIXATE_TOC_DA;
++      }
++    else if (multi_session)
++      {
++        toc_type = FIXATE_ONP | FIXATE_TOC_XA2;
++      }
++    else
++      {
++        /*
++ 	* For a single-session disc, we are not opening a new
++ 	* program area, and we can write a vanilla non-XA track.
++ 	*/
++        toc_type = FIXATE_TOC_ROM;
++      }
++ 
+     return send_request (fd, "fixation", reply_len, rep, 10,
+  			FIXATION,       /* 0 */
+  			0,0,0,0,0,0,0,  /* 1..7 */
+! 			toc_type,	/* 8: TOC type */
+  			0		/* 9 */);
+  }
+  
+***************
+*** 912,917 ****
+--- 1030,1036 ----
+    {"--eject", 'e'},
+    {"--device", 'D'},
+    {"--philips", 1001},
++   {"--multi", 'm'},
+    {"--ims", 1001},
+    {"--kodak", 1001},
+    {"--yamaha", 1002},
+***************
+*** 943,948 ****
+--- 1062,1068 ----
+     int tracks = 0;
+     int do_eject = 0;
+     int cdrom = 0;
++    int do_multi_info = 0;
+     struct track_info_t track_info[MAX_TRACKS];
+     struct track_info_t trackopt;
+     const char *cd_writer = default_dev;
+***************
+*** 1013,1018 ****
+--- 1133,1144 ----
+  	   
+  	       switch(optchar)
+  		 {
++ 		 case 'm':
++ 		   /*
++ 		    * Enable information gathering mode for cdwrite.
++ 		    */
++ 		   do_multi_info = 1;
++ 		   break;
+  		 case 'b':	/* -b, --bytes */
+  		   trackopt.bytes = atoi(argv[++i]);
+  		   break;
+***************
+*** 1119,1125 ****
+     if ( verbose )
+       printf("cdwrite %s\n", version);
+  
+!    if ( !tracks && !do_eject )
+       {
+         /* If no tracks specified, only auxilliary actions */
+  
+--- 1245,1251 ----
+     if ( verbose )
+       printf("cdwrite %s\n", version);
+  
+!    if ( !tracks && !do_eject && !do_multi_info )
+       {
+         /* If no tracks specified, only auxilliary actions */
+  
+***************
+*** 1238,1243 ****
+--- 1364,1403 ----
+  	      Manufacturer, Model, Revision, type_name[cdwriter_type]);
+       }
+     
++    if( do_multi_info )
++      {
++        int	last_track;
++        int	vol_start;
++        int	next_writable_address = 0;
++        /*
++ 	* If the user simply wants an information gathering to take
++ 	* place so that multi-session works, then do it.
++ 	*/
++        read_tochdr(fd, &reply_len, &reply);
++        last_track = reply.bytes[3];
++ 
++        read_tocentry(fd, last_track, &reply_len, &reply);
++        vol_start = (reply.bytes[8] << 24) 
++ 	 | (reply.bytes[9] << 16) 
++ 	 | (reply.bytes[10] << 8) 
++ 	 | reply.bytes[11];  
++ 
++ 
++        first_writable_address(fd, &reply_len, &reply);
++        next_writable_address = (reply.bytes[1] << 24) 
++ 	 | (reply.bytes[2] << 16) 
++ 	 | (reply.bytes[3] << 8) 
++ 	 | reply.bytes[4];  
++        
++        /*
++ 	* These are the two numbers that mkisofs wants to see.  For now,
++ 	* it is just hacked together so that people can use it, but
++ 	* in the future the integration will be tighter and cleaner.
++ 	*/
++        printf("%d,%d",vol_start, next_writable_address);
++        exit(0);
++      }
++ 
+     /* Do mode-dependent adjustments here */
+  
+     if ( speed_factor == 0 && cdwriter_type != type_hp )
+***************
+*** 1275,1281 ****
+  	   if ( track_info[i].audio )
+  	     write_audio_track (fd, &reply_len, &reply, track_info[i].preemp);
+  	   else
+! 	     write_data_track (fd, &reply_len, &reply);
+  	   
+  	   pipe_to_cd (&track_info[i], fd, &reply_len, &reply);
+  	   synchronize_cache (fd, &reply_len, &reply);
+--- 1435,1441 ----
+  	   if ( track_info[i].audio )
+  	     write_audio_track (fd, &reply_len, &reply, track_info[i].preemp);
+  	   else
+! 	     write_data_track (fd, &reply_len, &reply, MULTI_SESS);
+  	   
+  	   pipe_to_cd (&track_info[i], fd, &reply_len, &reply);
+  	   synchronize_cache (fd, &reply_len, &reply);
+***************
+*** 1283,1290 ****
+  
+         if ( verbose )
+  	 printf("Fixating...\n");
+!        fixation(fd, &reply_len, &reply, cdrom);
+!        
+         if (cdwriter_type != type_yamaha)
+  	 {
+  	   /* Possibly unneeded, but doesn't hurt */
+--- 1443,1456 ----
+  
+         if ( verbose )
+  	 printf("Fixating...\n");
+! 
+!        /*
+! 	* The last parameter must be non-zero if we *ever* want to write
+! 	* another session on this disc.  If we use a 0 here, it is
+! 	* effectively like breaking off a write-protect tab on the disc.
+! 	*/
+!        fixation(fd, &reply_len, &reply, cdrom, MULTI_SESS);
+! 
+         if (cdwriter_type != type_yamaha)
+  	 {
+  	   /* Possibly unneeded, but doesn't hurt */

@@ -1,0 +1,329 @@
+<!doctype html public "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+<title></title>
+<meta name="author" content="DiA">
+<meta name="generator" content="Ulli Meybohms HTML EDITOR">
+
+<link rel="stylesheet" href="../css/style_all.css">
+</head>
+
+<body>
+<pre>
+
+                                                /   \
+ _                                      )      ((   ))     (
+(@)                                    /|\      ))_((     /|\
+|-|                                   / | \    (/\|/\)   / | \                                   (@)
+| | ---------------------------------/--|-voV---\`|'/--Vov-|--\----------------------------------|-|
+|-|                                       '^`   (o o)  '^`                                       | |
+| |                                             `\Y/'                                            |-|
+|-|                                  -- System Calls under Linux --                              | |
+| |                                                                                              |-|
+|-|                                                by Cyneox/RRLF [2005]                         | |
+| |                                                                                              |-|
+|_|______________________________________________________________________________________________| |
+(@)                             l  /\ /         ( (       \ /\   l                             `\|-|
+                               l /   V            \ \       V  \ l                               (@)
+                             l/                  _) )_          \I
+                                                `\ /'
+
+       :~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~:
+       :   1.0 What the fuck are system calls/syscalls ?    :
+       :     1.1 The system call table                      :
+       :                                                    :
+       :   2.0 Basic idea of system calling                 :
+       :     2.1 System call parameters                     :
+       :     2.2 Mapping the system                         :
+       :                                                    :
+       :   3.0 System call substituting                     :
+       :                                                    :
+       :   4.0 Outro                                        :
+       :~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~:
+
+
+        @ 1.0 What the fuck are system calls/syscalss ?
+   =======================================================================================\
+     Well most of already know that. Or pretend to know it. I'll try to explain how        \
+     programmers really define those calls and what they really represent from their        \
+     point of view.                                                                          \
+                                                                                             |
+     Most modern processors support runinning in several privilege modes. Mostly there
+     are two modes supported: the user mode and the supervisor mode. Some processors,
+     like Intel 386 or greater processors, support more modes, but most of the operating
+     systems use only two of them. User processes (even processes running as the
+     superuser) run in user mode while kernel applications/routines run in supervisor
+     mode.
+
+     This mode distinction allows the operating system to force user processes to
+     access hardware ressources etc. only through the operatin system's interfaces. This
+     has a great advantage and is very important for the virtual memory, multitasking and
+     hardware access subsystems.
+
+     The method by which a user requests service from the operating system is done by the
+     system call. System calls are used by :
+
+                  a) file operations ( read(),write(),open(),close() ) ;
+             b) process operations ( fork(),exec(),signal() );
+             c) network operations ( socket(), bind() , connect(),listen(),accept() );
+             d) other low-level system applications.
+
+     System calls are typically listed in:
+                  a) /usr/include/asm/unistd.h or
+             b) /usr/include/bits/syscall.h
+
+      --> a)
+          #ifndef _ASM_I386_UNISTD_H_
+                    #define _ASM_I386_UNISTD_H_
+
+                    /*
+                     * This file contains the system call numbers.
+                    */
+
+                    #define __NR_restart_syscall      0
+                    #define __NR_exit                 1
+                    #define __NR_fork                 2
+                    #define __NR_read                 3
+                    #define __NR_write                4
+                    #define __NR_open                 5
+                    #define __NR_close                6
+                    #define __NR_waitpid              7
+                    #define __NR_creat                8
+                    #define __NR_link                 9
+                    #define __NR_unlink              10
+                    #define __NR_execve              11
+                    #define __NR_chdir               12
+                    #define __NR_time                13
+                    #define __NR_mknod               14
+                    #define __NR_chmod               15
+                    #define __NR_lchown              16
+                    #define __NR_break               17
+                    #define __NR_oldstat             18
+          #define __NR_lseek               19
+          #define __NR_getpid              20
+                    ......
+
+
+           --> b)
+          /* Generated at libc build time from kernel syscall list.  */
+
+                    #ifndef _SYSCALL_H
+                    # error "Never use &lt;bits/syscall.h> directly; include &lt;sys/syscall.h> instead."
+                    #endif        # system call handler stub
+
+                    #define SYS__llseek __NR__llseek
+                    #define SYS__newselect __NR__newselect
+                    #define SYS__sysctl __NR__sysctl
+                    #define SYS_access __NR_access
+                    #define SYS_acct __NR_acct
+                    #define SYS_adjtimex __NR_adjtimex
+                    #define SYS_afs_syscall __NR_afs_syscall
+                    #define SYS_alarm __NR_alarm
+                    #define SYS_bdflush __NR_bdflush
+                    ......
+
+   @ 1.1 The system call table
+   ====================================================================================================
+      In kernel system calls are stored in a table (array of pointers). The file                       \
+      arch/kernel/entry.S in the kernel sources describes how a system call works. We'll study          \
+      that more carefully.                                                                               \
+                                                                                                          \
+           --> /usr/src/linux/arch/i386/kernel/entry.S                                                    |
+
+          .....
+          # system call handler stub
+                    ENTRY(system_call)
+                    pushl %eax                      # save orig_eax
+                    SAVE_ALL
+                    GET_THREAD_INFO(%ebp)
+
+          # system call tracing in operation
+                    testb $(_TIF_SYSCALL_TRACE|_TIF_SYSCALL_AUDIT),TI_flags(%ebp)
+                    jnz syscall_trace_entry
+                    cmpl $(nr_syscalls), %eax
+                    jae syscall_badsys
+
+          syscall_call:
+                                        call *sys_call_table(,%eax,4)
+                                        movl %eax,EAX(%esp)             # store the return value
+                    syscall_exit:
+                                        cli                             # make sure we don't miss an interrupt
+                                                                        # setting need_resched or sigpending
+                                                                        # between sampling and the iret
+                                        movl TI_flags(%ebp), %ecx
+                                        testw $_TIF_ALLWORK_MASK, %cx   # current->work
+                                        jne syscall_exit_work
+                    restore_all:
+                                        RESTORE_ALL
+          .....
+
+     The location in the kernel a process can jump to is called `system_call`.
+     The procedure at that location checks the system call number, which tells the kernel what
+     service the process requested. Then, it looks at the table of system calls (sys_call_table)
+     to see the address of the kernel function to call. Then it calls the function, and after it
+     returns, does a few system checks and then return back to the process (or to a different
+     process, if the process time ran out).
+
+
+   @ 2.0 Basic idea of system calling
+   ==================================================================================================
+       _User mode_________________________________________________________________________________   \
+      /    1.                                          2.                                    3.   \   \
+      .__________.             .____________________________________________.       ._______________.  \
+       | Programm |  >>>>>     |   API (Application Programming Interface   |  >>>> | system_call() |   \
+      .__________.             .____________________________________________.       ._______________.   |
+                                                                                                |
+                                                                                                |
+                                                                                                |
+                                                                                                |
+             5.                                               4.                                |
+      .____________________.                ._____________________________________________.     |
+      | transfer execution |    &lt;&lt;&lt;&lt;&lt;&lt;      | store system call number and the parameters | &lt;&lt;&lt;-|
+      | to kernel.         |                | somewhere the kernel can find them          |
+      .____________________.                ._____________________________________________.
+
+      \__Supervisor mode__________________________________________________________________/
+
+
+
+     Using a software interrupt you can call a system call from the user mode. These interrupts
+     are similar to the well-known hardware interrupts and are coded during boot. Linux uses
+     80h or 0x80 as interrupt number for syscalls and the system call number is stored in the
+     EAX register before the system call is called.
+
+
+        /* include/asm-i386/hw_irq.h */
+         #define SYSCALL_VECTOR              0x80
+
+        /* arch/i386/kernel/traps.c */
+          set_system_gate(SYSCALL_VECTOR,&system_call);
+
+     Like I said the basic command or the basic ingredient is the assembler instruction `int 0x80`.
+     This causes a programm exception or an interrup and calls the "system_call" routine.
+
+
+         --> /usr/src/linux/arch/i386/kernel/entry.S
+
+        (1)  ENTRY(system_call)
+                  pushl %eax                                           # save orig_eax
+             (2)  SAVE_ALL
+                  GET_THREAD_INFO(%ebp)
+                                                                       # system call tracing in operation
+             (3)  testb $(_TIF_SYSCALL_TRACE|_TIF_SYSCALL_AUDIT),TI_flags(%ebp)
+                  jnz syscall_trace_entry
+             (4)  cmpl $(nr_syscalls), %eax
+                  jae syscall_badsys
+                  syscall_call:
+             (5)                        call *sys_call_table(,%eax,4)
+                                        movl %eax,EAX(%esp)             # store the return value
+
+
+     After transfering execution to "system_call" the kernel must save the original value of the EAX
+     register (1) which is the number of the system call.
+     The CPU switches to ring 0 after receiving an "int 0x80" and pushes all registers on the
+     stack (2). After saving all the other registers the kernel must verify if the programm is being
+     traced (3).
+
+     Then we'll have to check if the system call number is valid and that it is within range (4).
+     After preliminary checking is done, it calls the actual sytem call (5). Each entry in the system
+     call table is 4 bytes long and the exact memory location can be found using following calculation
+     method:
+
+             TABLE_OFFSET + EAX_VALUE * 4 = MEMORY_POINTER
+
+          And then this memory just needs to be executed. Quite simple , isnt it ? ,)
+
+
+   @ 2.1 System call parameters
+   =========================================================================================================
+     On i386, the parameters of a system call are transported via registers. The system call number goes    \
+     into %eax, the first parameter in %ebx, the second in %ecx, the third in %edx, the fourth in %esi,      \
+     the fifth in %edi, the sixth in %ebp.                                                                    \
+                                                                                                               \
+     The assembler for a call with 0 parameters (on i386) :                                                    |
+
+               #define _syscall0(type,name) \
+                    type name(void) \
+                    { \
+                       long __res; \
+                       __asm__ volatile ("int $0x80" \
+                                       : "=a" (__res) \
+                                       : "0" (__NR_##name)); \
+                     __syscall_return(type,__res); \
+                    }
+
+
+   @ 2.2 Mapping the system
+   =========================================================================================================
+     Ok...Now we now how those fucking system calls work. Lets have a look at the system call table:        \
+                                                                                                             \
+         --> /usr/src/linux/arch/i386/kernel/entry.S                                                          \
+                                                                                                               \
+        .data                                                                                                  |
+             ENTRY(sys_call_table)
+                    .long sys_restart_syscall       /* 0 - old "setup()" system call, used for restarting */
+                    .long sys_exit
+                    .long sys_fork
+                    .long sys_read
+                    .long sys_write
+                    .long sys_open          /* 5 */
+                    .long sys_close
+          ....
+
+     As you see each system call table entry is 4 bytes long and they're all symbold declared in the data
+     segment. My question to you : "How does the kernel find the address of each symbol ?" Well thats
+     quite simple : using System.map. Hm... Most of you might say: "What the heck is that ?" That file
+     consists of a list of all symbols in the kernel binary and it is needed by the kernel since it
+     the kernel doesnt know where to put every symbol definition. Thats why it uses that list to get
+     the offset of that symbol in the kernel.
+
+     For example we can find out at which offset the system call "sys_read()" is stored:
+
+             cyneox@rrlf:~> grep -r "sys_read" /boot/System.map-2.6.11
+             c0135680 T sys_readahead
+             c014f6e0 T sys_read        &lt;--- THERE !!! ;)
+             c014fbe0 T sys_readv
+
+     Well let me tell you something : You can substitute these symbols/syscalls with your owns. This is
+     quite usefull when you want to debug some syscalls etc but it might be also very dangerously. A
+     person (like me ;) ) could change the system calls to do something different as expected ;)
+
+
+   @ 3.0 System call substituting
+   =======================================================================================================
+     There are a lot of methods changing the system call table. I'll summarize to the well-known ones :   \
+                                                                                                           \
+        - using /dev/kmem      (check out Siilvov virus made by Silvio Cesare)                              \
+        - hard coding                                                                                        \
+        - using LKMs                                                                                         |
+
+
+
+          Scheme how redirected syscalls work :
+
+     |----------------------|                 |---------------------|          |---------------|
+     |     Programm #1      |-------------->  |  hacked_sys_read()  |--------> |   sys_read()  |
+     |----------------------|                 |---------------------|          |---------------|
+     |     Programm #2      |-----------|     |  hacked_sys_write() |--------> |   sys_write() |
+     |----------------------|           |     |---------------------|          |---------------|
+     |     Programm #n      |           |---> |  hacked_sys_execve()|--------> |   sys_execve()|
+     |----------------------|                 |---------------------|          |---------------|
+
+
+   @ 4.0 Outro
+        =======================================================================================================
+     I'd like to thank 2 :                                                                                     \
+                                                                                                                \
+     Caline (my girlfriend)                                                                                      \
+     SPTH (thx for your comments)                      ____ ___.__. ____   ____  _______  ___                     \
+     GOD (i know you're out there)                   _/ ___&lt;   |  |/    \_/ __ \/  _ \  \/  /                     |
+                                                     \  \___\___  |   |  \  ___(  &lt;_> >    &lt;
+                                                      \___  > ____|___|  /\___  >____/__/\_ \
+                                                          \/\/         \/     \/           \/
+     Date: 16.05.2005                                   ....::: http://cyneox.go.ro :::.....
+
+
+
+</pre>
+</body>
+</html>
