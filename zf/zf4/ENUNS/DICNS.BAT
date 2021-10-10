@@ -1,0 +1,1 @@
+@c:\jbuilder35\jdk1.2.2\bin\java -cp dicnsv2.jar dicns %1 %2 %3

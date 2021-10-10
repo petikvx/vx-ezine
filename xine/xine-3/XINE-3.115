@@ -1,0 +1,162 @@
+
+                                        /-----------------------------\
+                                        | Xine - issue #3 - Phile 115 |
+                                        \-----------------------------/
+
+
+
+
+
+
+Using Ptrace to intercept system calls under Linux.
+by Kernel Panic/iKX
+
+
+
+
+
+
+In this short note I'll present an interesting use of the ptrace system
+call. This is mainly used by debuggers to do their job. Unfortunately it is
+not very well documented. The man page is not very useful and you should have
+a look at the code presented below or some other utilites that make use of it,
+like strace or gdb.
+
+Here we use the ptrace call to intercept the communication between an
+application and the OS (Linux) and change the returned value. So we can fool
+the application about many system parameters. I've explored the time and the
+uname system calls, but I think there are many other useful tricks. 
+
+The program presented is useful to fool programs which expire after a certain
+date. First of all it forks itself: the child will become the process to be
+controlled. ptrace(PTRACE_TRACEME,0,1,0) stops it until the controlling
+process is ready and then the original program is executed with the right
+parameters.
+
+The father uses the wait syscall to wait until the orignal program has stopped
+and then issues commands via ptrace. Of course you must test results of wait to
+check if the program has exited. We used the following functions of ptrace:
+
+ptrace(PTRACE_SYSCALL,pid,1,0)
+  This runs the controlled program until the program has to enter a syscall
+  and soon after it ended it. The tricky point is that is true for all
+  syscalls except fork. So it's a bit tedious to bookkeep if we are before or
+  after a system call.
+
+eax=ptrace(PTRACE_PEEKUSR,pid,4*EAX,0)
+  This read the content of a register (the macros are defined in
+  sys/ptrace.h). A special register is ORIG_EAX which keeps the number of the
+  last syscall.
+
+ptrace(PTRACE_POKEUSR,pid,4*EAX,1)
+  Like previous but changes the value of a register.
+
+now=ptrace(PTRACE_PEEKDATA,pid,ebx,0)
+ptrace(PTRACE_POKEDATA,pid,ebx,now)
+  With these functions of ptrace we read from and write to program data
+  segment. Of course we must first get a meaningful address before using
+  this. In this case ebx contains the location of a int variable in program
+  memory. 
+
+Another important point to keep in mind is the calling convention of Linux
+system calls. The number of the call can be fetched from ORIG_EAX, EAX
+contains the return value, the parameters to the syscalls are in EBX, ECX,
+EDX, ESI, EDI (in this order).
+
+Now we can understand the presented program: it basically waits for syscalls
+and looks for the time syscall (number 13). Then it alters both the return
+value and the value pointed by the first parameter of time (read man time for
+more information).
+
+Enough for now, I hope you enjoyed this article.
+
+Bye, Bye!
+
+--------8<---------------------------------------------------------------------
+/* standard include files we need under Linux */
+
+#include <unistd.h>
+
+#include <sys/ptrace.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+
+#include <stdlib.h>
+#include <stdio.h>
+
+/* here we define the time offset and the pathname of the real program */
+
+#define RTIME 882391810
+#define REALEXE "original.real"
+
+void main(int argc, char* argv[]) {
+  pid_t pid;		   /* pid of the real program */
+  time_t dt;		   /* time interval to be subtracted */
+  int stat;		   /* return value of the wait call */
+  int now;		   /* current time (real!) */
+  int eax,ebx;		   /* where to keep registers */
+  char* targv[50];	   /* copy of the parameters passed to our program */
+  int i;			     
+
+/* prepare parameters for the real program. please note that also argv[0] is
+copied, so the real name is preserved. */
+  for(i=0;i<argc;i++) targv[i]=argv[i];
+  targv[argc]=NULL;
+  
+  if (pid=fork()) {
+/* here is the controlling process */
+/* calculate the time to be subtracted */
+    dt=time(NULL)-RTIME;
+/* wait for real program process to become ready and run it until next system
+   call */
+    waitpid(pid,&stat,0);
+    if (WIFEXITED(stat)) exit(0);
+    ptrace(PTRACE_SYSCALL,pid,1,0);
+    while (1) {
+/* wait until we got system call. note that we get here twice: before and
+   after a system call except for fork. this is not a problem and so we ignore
+   this, otherwise we would have a bad time handling forks (strace has
+   problems either). */
+      waitpid(pid,&stat,0);
+/* test if program isn't finished. if it happens exit */
+      if (WIFEXITED(stat)) exit(0);
+      errno=0;
+      eax=ptrace(PTRACE_PEEKUSR,pid,4*ORIG_EAX,0);
+/* read eax and test for errors */
+      if (eax == -1 && errno) {                                               
+	printf("error: ptrace(PTRACE_PEEKUSR, ... )\n");                 
+      }
+      else {
+	if (eax==13) {
+/* 13 is the syscall code for time. have a look at /usr/include/asm/unistd.h
+   and keep in mind the calling conventions for the linux system calls */
+	  eax=ptrace(PTRACE_PEEKUSR,pid,4*EAX,0);
+/* the prototype for the syscall is time_t time(time_t *t), so ebx is the
+   address of t */
+	  ebx=ptrace(PTRACE_PEEKUSR,pid,4*EBX,0);
+	  if (ebx) {
+/* read the returned time, apply correction and change both the return value
+   and the parameter value (if it isn't NULL) */
+	    now=ptrace(PTRACE_PEEKDATA,pid,ebx,0);
+	    ptrace(PTRACE_POKEUSR,pid,4*EAX,now-dt);
+	    ptrace(PTRACE_POKEDATA,pid,ebx,now-dt);
+	  }
+	  else {
+/* here we need to change only the return value */
+	    now=eax;
+	    ptrace(PTRACE_POKEUSR,pid,4*EAX,now-dt);
+	  }
+	}
+      }
+/* next syscall */
+      ptrace(PTRACE_SYSCALL,pid,1,0);
+    }		
+  } else {
+/* waiting for the control process */
+    ptrace(PTRACE_TRACEME, 0, 1, 0);
+/* exec the real program */
+    execv(REALEXE,targv);
+  }
+}    
+--------8<---------------------------------------------------------------------
+

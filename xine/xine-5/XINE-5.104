@@ -1,0 +1,342 @@
+
+
+                                             ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                                             ³ Xine - issue #5 - Phile 104 ³
+                                             ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+
+
+
+
+The darkener philosophy...
+--------------------------
+
+"The best way for war leaders to be unpredictable
+        is to decide with dice..."
+
+"To defeat your ennemy, you must understand him..."
+
+!       Intro :
+
+I think sad that most virii released in the wild are destinated to an end...
+Everything must finish some say. The only way would you say for a virus
+for not being added to AVP bases is to remains hidden from the world, so
+inactive :( Or, better, to select the files to infect; but AVers did always
+smooth that problem. What I should do, is to make my virus a black box,
+something that only I understand...
+
+If an AVer open an infected file and see "cmp   [...],'EP'", he will
+understand directly; some new virusses make "... ,'EP' xor MyNumber",
+it's better, but always spottable. The way to hide it should be then to
+crypt it, so that instructions must be decrypted b4 analysis; better
+but always solvable. If it is crypted, there always remains some possibility
+to copy your decrypt routine and to execute it on the raw-virus and then
+search that decrypted one. It's time to make AVers' life harder.
+
+!       viva poly :
+
+If you make some polymorphic engine, something that creates a crypt/decrypt
+routine, randomly, randoms numbers will be generated with a 'seed', so
+the same 'seed' give the same random numbers - and the same crypt/decrypt
+routines. The way should be then, when you infect :
+
+create a crypter routine (cA) with SeedA
+crypt your virus (without poly engine) with cA
+create a crypter and decrypter (cB & dB) routine with SeedB
+encrypt the poly engine with cB
+write in infected file:
+        dB
+        crypted poly
+        SeedA
+        crypted vir
+
+So, when virus is executed, it just have to:
+        execute dB and decrypt poly
+        use SeedA and decrypted poly to create dA
+        decrypt virus with dA
+        ...
+
+There remains a lot of stuff to add, why not crypt SeedA with CryptC or
+whatever you want.
+
+This kind of virus can already make suffer an AVer for a half day, or perhaps
+a whole day, but there is again some points to improve...
+
+The purpose of that kind of stuff is that the AVer cannot see your pure
+code passively (with IDA or some other disassembler) but must execute it
+step by step to get a moment your decrypted code. If he execute it, we
+have a chance... take it!
+
+!       Fooler stuffs :
+
+1       Code mixing.
+
+Function1:
+        ...
+        ret
+
+Function2:
+        ...
+        jmp     LblA
+LblB:   ...
+        ret
+Var1    dd      ?
+LblA:   ...
+        jmp     LblB
+
+is exactly the same as
+
+Var1    dd      ?
+Function1:
+        ...
+        ret
+LblA:   ...
+        jmp     LblB
+
+Function2:
+        ...
+        jmp     LblA
+LblB:   ...
+        ret
+
+Even if Label trip from one function to another, the only difference is that
+the code is no more divided logically, and is quite harder to understand if
+we go further in complexity.
+What I did:
+In my code, after each JMP, each RET and each variable declaration, I write
+on a new line ";cut-", and I made a short VB program, that open a text file,
+divide it into blocs (blocs of lines enclosed by "cut-") and rewrite this
+blocs in a random order in a new file... Even in sources, code can become
+hard to understand.
+
+2       Relocation changes.
+
+When relocations are used, you often have something like [ebp+offset MyVar],
+I just advice that, instead of
+
+        call    SetEBP
+SetEBP: pop     ebp
+        sub     ebp,offset SetEBP
+
+        ...     [ebp+offset MyVar]
+
+we could use something like :
+
+        call    SetEBP
+RelocationBase = $
+        ...
+SetEBP: pop     ebp
+
+        ...     [ebp+offset MyVar-RelocationBase]
+
+First, the offset in memory operands can be a byte, so [ebp+00401000] take 3
+bytes more than [ebp+05].
+
+Secondly, it allow you to change your relocation base frequently, so that
+[ebp+05] can mean something different depending on when you are in your code.
+If even your code is mixed up, [ebp+5] can mean anything different from one
+line to another.
+
+3       Code variables.
+
+An old good trick to avoid some long [ebp+...-...], it's always useful
+to replace :
+        ...
+        mov     [ebp+offset myVariable],ebx
+        ...
+        mov     eax,[ebp+offset myVariable]
+        ...
+
+by :    
+
+        ...
+        mov     [ebp+offset myVariable],ebx
+        ...
+        mov     eax,12345678h
+myVariable = $-4
+        ...
+
+In fact, I should prefer to use :
+
+        ...
+        mov     [ebp+offset myVariable],ebx
+        ...
+        db      0b8h            ;mov    eax,imm32
+myVariable      dd      ?
+        ...
+
+because with that you can write stuff like "mov  [ebp+imm32A],imm32B"
+But it's just a question of preference.
+note - you must have ring0 or have patched sections descs to be able to
+ write the code section.
+There are also some coded variables more difficult to catch when debugging,
+imagine you have:
+
+Function1:
+;Parametter:    al = 0 => ...
+;               al = 1 => ...
+        mov     [ebp+ParamAL],al
+        ...
+Loop:   ...
+        cmp     [ebp+ParamAL],0
+        jz      somewhere
+        ...
+        => Loop
+        ...
+
+replace it by:
+
+Function1:
+        or      al,al
+        jz      SetToJMP
+        mov     [ebp+offset CndJmp-RelocBase],9090h     ;nop    ;nop
+        jmp     ConditionSet
+;cut-
+SetToJMP:
+        mov     [ebp+offset CndJmp-RelocBase], _
+                                (offset somewhere - AfterCmdJmp) shl 8 + 0ebh
+                ;0ebh = jmp rel8
+ConditionSet:
+        ...
+Loop:   ...
+CndJmp  db      2 dup (?)
+AfterCmdJmp = $
+        ...
+        => Loop
+        ...
+
+This can be interesting here where it takes one more byte for the variable
+and some more time in the loop, but even if it optimize your code, it make it
+less understandable.
+( Note that here the code is not that optimized, cuz the JZ/JMP pair can be  )
+( replaced by a CMOVZ and that a cmp/jz don't take that many bytes )
+
+4       Fooled functions
+
+For the example, I'll use the IFSMgr_Ring0_FileIO that always take a byte
+for function in ah, that often become:
+
+        ...
+        mov     ebx,[ebp+offset FileHandle-RelocBase]
+        xor     eax,eax
+        mov     ah,FctNum
+        ...
+
+This can become something interesting like:
+
+        ...
+        call    SetEaxEbxForIFS
+        db      FctNum
+        ...
+
+SetEaxEbxForIFS:
+        mov     ebx,[ebp+offset FileHandle-RelocBase]
+        xor     eax,eax
+        xchg    esi,[esp]
+        lodsb
+        xchg    esi,[esp]
+        xchg    ah,al
+        ret
+
+Like you see, creating a function for that was perhaps not necessary,
+but will forbid the easy code analysis by some disassembler... the
+"db FctNum" will become some strange op-code, and the code won't
+be followed like that, or it can make the AVer work harder.
+
+!       Code keep on :
+
+There are a lot of ways to run a program step by step. The worst, the most
+complicated and the most hidden is to use the DebugRegister (dr0..dr3)
+to set a breakpoint on the next op-code. You could get ring0 and use them
+(even in ring3 under win9x) or verify them, but if the debuger is well-done
+enough, you won't see anything.
+
+The next way is quite the same, it's to set TF (Trap Flag) to 1, that's
+a flag like CF, ZF, ... that, if set, raise an INT 1 b4 each op-code
+executed. Like b4, if well-done enough, you won't see it. Note that this
+way of doing avoid things like "step over", that mean execute a function
+without getting inside, or execute "rep movsb" in only one step even
+if ecx = 1000h
+
+The last way, and the most used i think (but always less) is to change
+the op-code that must raise a break-point with something like 0cch (int 3)
+or 0f1h (int 1)... I think soft-ice use this with 0f1h (opcode often named
+Ice-BreakPoint). If the debugger use this, a lot of chances open to us...
+
+Imagine first that our fooled function (cf upper) is executed with a
+"StepOver", what will happend? The byte folliwing the call (a parametter)
+will be changed (into 0cch or 0f1h) so, 1st- code won't be broken, execution
+will keep on, the AVer pushed the F8 key for step over, and the code is quite
+well launched! What happend also is that, our argument (in our example
+FctNum) will have a value of 0cch or 0f1h (or whatever), so, it will
+have changed!
+wahow! I'm executing my stuff, the AVer can't do anything against it
+(don't forget that code is executed in less than 10-ý sec.) and I know I'm
+debugged! Be creative!
+Note: try to verify it quickly and to use some code never used (to destroy
+something or likes) and that look like data (so AVer haven't put any
+BreakPoint in it ), your code must be trapped from everywhere !
+
+!       Nuthin can stop you :
+
+When you create a decrypt routine with your poly, you will then have a loop
+that look like :
+
+        cld
+        mov     edi,CryptedDataBegin
+        mov     ecx,CryptedDataLenght
+DecryptLoop:
+        mov     al,[edi]
+        ...
+        stosb
+        loop    DecryptLoop
+CryptedDataBegin = $
+
+First, the debugger will execute the first loop, without getting further,
+the first byte after the loop is decrypted, we can put a breakpoint on it.
+So, let it be :
+
+        std
+        mov     edi,CryptedDataBegin+CryptedDataLenght-1
+        mov     ecx,CryptedDataLenght
+DecryptLoop:
+        mov     al,[edi]
+        ...
+        stosb
+        loop    DecryptLoop
+CryptedDataBegin = $
+
+Now, imagine that:
+        mov     edi,CryptedDataBegin+CryptedDataLenght-1
+        mov     ecx,CryptedDataLenght
+        mov     al,Init_AL
+DecryptLoop:
+        ...
+        xchg    al,[edi]
+        dec     edi
+        loop    DecryptLoop
+CryptedDataBegin = $
+
+With this system, you must have Init_AL, but that value is the value of
+AL at the end of cryption, not that hard. The good point of this system is
+that the first byte after the loop is useless (wow would you say, great! ;-)
+but it mean that, at the end of decryption, AL will contain that byte (and
+that byte will be what it must be, decrypted data, whatever it was),
+So, if it has been changed by a break point, it won't change the code
+execution, but will change AL value... and the expected AL value is the
+one of before cryption (logic)...
+Hereis another fool trap.
+------------------
+Ethic part
+
+Like u c, i'm for a bit of destructive part, but i only suggest defensive
+destruction, i mean the one that'll kill an AVer to avoid his interest fer
+my work. Even for this i should advice carefulness and we should prefer
+to use a gud code tht avoid virus analysis by any other way than destruction,
+why not disinfect a puter and mark it as "AVer one" so that it cannot acces
+my vir any more... The only limit is our imagination...
+------------------
+Notes:
+1st - That tutorial was made by n0ph on the 19-12-99, for IKX, for XINE5.
+2nd - If you find other tricks or objections please write n0ph@ikx4ever.org...
+3rd - That's all folks!

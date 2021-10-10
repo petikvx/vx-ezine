@@ -1,0 +1,1232 @@
+
+
+                                             ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                                             ³ Xine - issue #5 - Phile 303 ³
+                                             ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+
+
+
+
+' [ ULZ by ULTRAS/MATRiX ]
+'
+' Engine Name    : Ultra Lempel-Ziv (ULZ)
+' Engine Version : 1.2
+' Release Date   : 6 semptember
+' Origin         : Russia
+' Language       : Visual Basic (5.0-6.0)
+' Features       :
+'                  + fast compression & decompression algorithm
+'                  + not using windoze api
+'                  + optimizated
+'                  + the reduced version
+'
+' Greetz to ppl  :
+'                  mort - greetings to your gf, my czech bro
+'                  anaktos - huffman engine kewl....
+'                  NBK - good work...
+'                  Lord Dark - LME kewl, i test it...
+'                  Benny - czech beer kewl
+'                  Del_Armg0 - pif nice idea
+'                  Z0MBiE - u are best coder
+'                  Bhunji - come back to #virus
+'                  Billy Belcebu - i like u tutes.. kewl.
+'                  N0 - forgive me... plz
+'                  Knowdeth - hlp viewer not beautiful
+'                  DarkBeer - forgive that has not arrived
+'                  StarZer0 - later on #virus
+'                  Vecna - u w0rk kewl...
+'                  LifeWire - life4ever
+'                  T2000 - later on #virus
+'                  LordJulus - u huffman engine g00d
+'                  SSR - come back to irc!
+'                  Janush - t0pdevice lushi ezine
+'                  Rajaat - vbspoly kewl
+'                  Murkry - email me... plz
+'                  CyberShadow - what about macro faq?
+'
+' Group greetz   : iKX, lz0, n0p, IR, FS, SMF, 29A
+'
+' Thanx          : my friend - for translation
+'                  vengr - correct my english & vb code
+'                  russia web page devoted to visual basic
+'                  SMT & Deviator - for the description and source
+'
+' url: www.matrixvx.org or www.coderz.net/matrix
+' e-mail: ultras@matrixvx.org
+' irc: Undernet channel: #virus, #vir, #mtx
+'      EFNet channel: #virus, #coders.ru
+'      nickname: [ULTRAS] or ULTRAS
+'
+'
+' [ Introduction ]
+'
+' LZ compression, also known as sliding window compression, uses redundancy to
+' compress data.
+' As input data is read, a dictionary of previous data is kept in memory. If a
+' string of characters in the input data matches an entry in the dictionary, a
+' code pointing to the  dictionary entry is written  to the output. If a match
+' is not found in the dictionary the plain character is sent to the output.
+
+' [ Description ]
+'
+' The algorithm is quite simple: Keep a  ring buffer, which initially contains
+' "space"  characters  only.  Read  several  characters  from  the file to the
+' buffer. Then  search the  buffer  for the  longest string  that  matches the
+' characters just read, and send its length and position in the buffer.
+
+' If the buffer size is 4096 bytes, the position can be encoded in 12 bits. If
+' we represent the match length in four bits, the <position, length>  pair  is
+' two bytes long. If the longest match is no more than two characters, then we
+' send just one character without encoding, and restart the process with the
+' next letter. If  the match is  three characters  long or longer,  we  send a
+' <position, length>  pair. Given  this, the longest match we can represent is
+' 18 characters. Four bits hold a maximum value of 15, but we  know we are not
+' going to encode  anything  less than  three  bytes. Therefore, we  can use 0
+' through  15 to  represent a match  length of 3  through 18. A  flag byte  is
+' written  at the  beginning of  every eight characters or  <position, length>
+' pairs. In this implementation, a 1 indicates the entry is a plain character,
+' while a zero indicates the entry is a <position, length> pair.
+'
+' [ About Algorithm ]
+'
+' This algorithm  I have written for the  very large time. It was has  written
+' for  three months certainly  in this algorithm  is bugz and mistakes, but he
+' works.  The  algorithm I has  tried to  make by more  universal in him  were
+' the ideas  from  different LZ of algorithms are used... A lot of code I took
+' from the book and that that on web page and that that wrote itself.
+'
+'
+' [ Source ]
+'
+' Events
+' This event is raised during file compression and decompression.The parameter
+' sngPercentage is a number between 0 and 1 representing the percentage of the
+' file processed
+
+Public Event FileProgress(sngPercentage As Single)
+Private m_strInputFileName As String
+Private m_strOutputFileName As String
+Private mintInputFile As Integer
+Private mintOutputFile As Integer
+Private Const mcintWindowSize As Integer = &H1000
+Private Const mcintMaxMatchLen As Integer = 18
+Private Const mcintMinMatchLen As Integer = 3
+Private Const mcintNull As Integer = &H1000
+Private Const mcintByteNotify As Integer = &H1000
+Private mabytWindow(mcintWindowSize + mcintMaxMatchLen) As Byte
+Private maintWindowNext(mcintWindowSize + 1 + mcintWindowSize) As Integer
+Private maintWindowPrev(mcintWindowSize + 1) As Integer
+Private mintMatchPos As Integer
+Private mintMatchLen As Integer
+
+' *******************************************
+' This is for writing the bytes out to a file
+' *******************************************
+
+Private mabytOutputBuffer(17) As Byte
+Private mbytByteCodeWritten As Byte
+Private mbytBitCount As Byte
+' LZ signature
+Private Const mcstrSignature As String = "FMSLZ1"
+Public Property Get InputFileName() As String
+' Returns the input file name
+InputFileName = m_strInputFileName
+End Property
+
+Public Property Let InputFileName(ByVal strValue As String)
+'strValue: Set the input file name
+m_strInputFileName = strValue
+End Property
+
+Public Property Get OutputFileName() As String
+'Returns the output file name
+OutputFileName = m_strOutputFileName
+End Property
+
+Public Property Let OutputFileName(ByVal strValue As String)
+'strValue: Set the output file name
+m_strOutputFileName = strValue
+End Property
+
+Public Sub Compress()
+
+'***********************************************************
+'This procedure compresses the input file to the output file
+'***********************************************************
+
+Dim intBufferLocation As Integer
+Dim intMaxLen As Integer
+Dim bytByte As Byte
+Dim lngBytesRead As Long
+Dim lngFileLength As Long
+On Error GoTo PROC_ERR
+' Get the next free file id
+mintInputFile = FreeFile
+'Openz the input file
+Open m_strInputFileName For Binary Access Read As mintInputFile
+'Try to delete the output file. If it doesn't exist an error is raised
+On Error Resume Next
+Kill m_strOutputFileName
+On Error GoTo PROC_ERR
+' Get the next free file id
+mintOutputFile = FreeFile
+' Open the output file
+Open m_strOutputFileName For Binary As mintOutputFile
+' Initialize the search buffers
+CompressionInitialize
+intBufferLocation = 0
+intMaxLen = 0
+lngFileLength = LOF(mintInputFile)
+' write header
+Put mintOutputFile, , mcstrSignature
+Put mintOutputFile, , lngFileLength
+' Prefill the end of the buffer with the first characters in the file
+Do While (intMaxLen < mcintMaxMatchLen) And Not EOF(mintInputFile)
+Get mintInputFile, , bytByte
+mabytWindow(intMaxLen) = bytByte
+mabytWindow(intMaxLen + mcintWindowSize) = mabytWindow(intMaxLen)
+intMaxLen = intMaxLen + 1
+lngBytesRead = lngBytesRead + 1
+Loop
+' While there is a match in the buffer
+Do While (intMaxLen)
+' Find the next match
+FindMatch (intBufferLocation)
+If (mintMatchLen > intMaxLen) Then
+   mintMatchLen = intMaxLen
+End If
+' -> If the match is less than the minimum length, just write out the byte
+If (mintMatchLen < mcintMinMatchLen) Then
+mintMatchLen = 1
+WriteByte mabytWindow(intBufferLocation)
+  Else
+WriteEntry mintMatchPos, mintMatchLen
+End If
+' Update the window for each character in the match
+Do While (mintMatchLen > 0)
+' Remove the current position from the search tables
+DeletePosition ((intBufferLocation + mcintMaxMatchLen) And (mcintWindowSize - 1))
+intMaxLen = intMaxLen - 1
+If Not EOF(mintInputFile) Then
+ Get mintInputFile, , bytByte
+' Update the window
+mabytWindow((intBufferLocation + mcintMaxMatchLen) And (mcintWindowSize - 1)) = bytByte
+' Special handling for updating the end of the buffer
+If (intBufferLocation + mcintMaxMatchLen >= mcintWindowSize) Then
+mabytWindow(intBufferLocation + mcintMaxMatchLen) = bytByte
+End If
+lngBytesRead = lngBytesRead + 1
+intMaxLen = intMaxLen + 1
+End If
+' Update the search tables
+InsertPosition (intBufferLocation)
+intBufferLocation = (intBufferLocation + 1) And (mcintWindowSize - 1)
+mintMatchLen = mintMatchLen - 1
+' Raise the progress event
+If (lngBytesRead Mod mcintByteNotify) = 0 Then
+ RaiseEvent FileProgress(lngBytesRead / lngFileLength)
+End If
+Loop
+' Raise the progress event
+If (lngBytesRead Mod mcintByteNotify) = 0 Then
+ RaiseEvent FileProgress(lngBytesRead / lngFileLength)
+End If
+Loop
+' Finish writing the output file
+WriteFinish
+RaiseEvent FileProgress(1)
+' Close the files we opened
+Close mintOutputFile
+Close mintInputFile
+U_ext:
+Exit Sub
+' if error show message box
+PROC_ERR:
+MsgBox "Error: Compress", vbCritical, "ULZ"
+Resume U_ext
+End Sub
+
+Public Function CompressString(strInput As String) As String
+
+' *****************************************
+' This procedure compresses an input string
+' *****************************************
+
+' Parametrz:
+' strInput - The string to compress
+' Returns the compressed string
+
+Dim intBufferLocation As Integer
+Dim intMaxLen As Integer
+Dim bytByte As Byte
+Dim abytInput() As Byte
+Dim lngBytesProcessed As Long
+Dim lngBytesWritten As Long
+Dim lngInputLength As Long
+On Error GoTo PROC_ERR
+' Initialize the search buffers
+CompressionInitialize
+intBufferLocation = 0
+intMaxLen = 0
+abytInput = strInput
+lngInputLength = UBound(abytInput)
+
+' The output buffer will be at most as long as the input buffer plus the  size
+' of the header
+ReDim abytOutput(lngInputLength + 11) As Byte
+' write header
+abytOutput(lngBytesWritten) = Asc("F")
+lngBytesWritten = lngBytesWritten + 1
+abytOutput(lngBytesWritten) = Asc("M")
+lngBytesWritten = lngBytesWritten + 1
+abytOutput(lngBytesWritten) = Asc("S")
+lngBytesWritten = lngBytesWritten + 1
+abytOutput(lngBytesWritten) = Asc("L")
+lngBytesWritten = lngBytesWritten + 1
+abytOutput(lngBytesWritten) = Asc("Z")
+lngBytesWritten = lngBytesWritten + 1
+abytOutput(lngBytesWritten) = Asc("1")
+lngBytesWritten = lngBytesWritten + 1
+abytOutput(lngBytesWritten) = HiByte(HiWord(lngInputLength))
+lngBytesWritten = lngBytesWritten + 1
+abytOutput(lngBytesWritten) = LoByte(HiWord(lngInputLength))
+lngBytesWritten = lngBytesWritten + 1
+abytOutput(lngBytesWritten) = HiByte(LoWord(lngInputLength))
+lngBytesWritten = lngBytesWritten + 1
+abytOutput(lngBytesWritten) = LoByte(LoWord(lngInputLength))
+lngBytesWritten = lngBytesWritten + 1
+  
+' Prefill the end of the buffer with the first characters in the string
+Do While (intMaxLen < mcintMaxMatchLen) And lngBytesProcessed < lngInputLength
+bytByte = abytInput(lngBytesProcessed)
+lngBytesProcessed = lngBytesProcessed + 1
+'Get mintInputFile, , bytByte
+mabytWindow(intMaxLen) = bytByte
+mabytWindow(intMaxLen + mcintWindowSize) = mabytWindow(intMaxLen)
+intMaxLen = intMaxLen + 1
+Loop
+' While there is a match in the buffer
+Do While (intMaxLen)
+' Find the next match
+FindMatch (intBufferLocation)
+If (mintMatchLen > intMaxLen) Then
+mintMatchLen = intMaxLen
+End If
+' If the match is less than the minimum length, just write out the byte
+If (mintMatchLen < mcintMinMatchLen) Then
+mintMatchLen = 1
+WriteBufferByte abytOutput, lngBytesWritten, mabytWindow(intBufferLocation)
+Else
+WriteBufferEntry abytOutput, lngBytesWritten, mintMatchPos, mintMatchLen
+End If
+' Update the window for each character in the match
+Do While (mintMatchLen > 0)
+' Remove the current position from the search tables
+DeletePosition ((intBufferLocation + mcintMaxMatchLen) And (mcintWindowSize - 1))
+intMaxLen = intMaxLen - 1
+If lngBytesProcessed < lngInputLength Then
+bytByte = abytInput(lngBytesProcessed)
+lngBytesProcessed = lngBytesProcessed + 1
+' Update the window
+mabytWindow((intBufferLocation + mcintMaxMatchLen) And (mcintWindowSize - 1)) = bytByte
+' Special handling for updating the end of the buffer
+If (intBufferLocation + mcintMaxMatchLen >= mcintWindowSize) Then
+mabytWindow(intBufferLocation + mcintMaxMatchLen) = bytByte
+End If
+intMaxLen = intMaxLen + 1
+End If
+'Update the search tables
+InsertPosition (intBufferLocation)
+intBufferLocation = (intBufferLocation + 1) And (mcintWindowSize - 1)
+mintMatchLen = mintMatchLen - 1
+'Raise the progress event
+If (lngBytesProcessed Mod mcintByteNotify) = 0 Then
+RaiseEvent FileProgress(lngBytesProcessed / lngInputLength)
+End If
+Loop
+' Raise the progress event
+If (lngBytesProcessed Mod mcintByteNotify) = 0 Then
+RaiseEvent FileProgress(lngBytesProcessed / lngInputLength)
+End If
+Loop
+WriteBufferFinish abytOutput, lngBytesWritten
+ReDim Preserve abytOutput(lngBytesWritten) As Byte
+' Return the compressed string
+CompressString = abytOutput
+RaiseEvent FileProgress(1)
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: Compress the String", vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Public Sub Decompress()
+
+'*************************************************************
+'This procedure decompresses the input file to the output file
+'*************************************************************
+
+Dim intCounter As Integer
+Dim bytHiByte As Byte
+Dim intBufferLocation As Integer
+Dim bytLoByte As Byte
+Dim bytLength As Byte
+Dim intWindowPosition As Integer
+Dim bytByte As Byte
+Dim intFlags As Integer
+Dim lngBytesRead As Long
+Dim lngBytesWritten As Long
+Dim strSignature As String * 6
+Dim lngOriginalFileLen As Long
+ 
+On Error GoTo PROC_ERR
+' Get the next free file id
+mintInputFile = FreeFile
+' Open the input file
+Open m_strInputFileName For Binary Access Read As mintInputFile
+' Try to delete the output file. If it doesn't exist an error is raised
+On Error Resume Next
+Kill m_strOutputFileName
+On Error GoTo PROC_ERR
+' Get the next free file id
+mintOutputFile = FreeFile
+' Open the output file
+Open m_strOutputFileName For Binary As mintOutputFile
+' get header
+Get mintInputFile, , strSignature
+Get mintInputFile, , lngOriginalFileLen
+' Check the signature to see if this file is compressed
+If strSignature = mcstrSignature Then
+' While there is still data to decompress
+Do While lngBytesWritten < lngOriginalFileLen
+intFlags = Shri(intFlags, 1)
+' If the flag byte has been processed, get the next one
+If (intFlags And 256) = 0 Then Get mintInputFile, , bytByte
+lngBytesRead = lngBytesRead + 1
+intFlags = LongToInt(CLng(bytByte) Or &HFF00&)
+End If
+' If this byte is not compressed
+If (intFlags And 1) Then
+' Read from the input and write to the output
+Get mintInputFile, , bytByte
+lngBytesRead = lngBytesRead + 1
+Put mintOutputFile, , bytByte
+lngBytesWritten = lngBytesWritten + 1
+' Update the window
+mabytWindow(intWindowPosition) = bytByte
+intWindowPosition = intWindowPosition + 1
+intWindowPosition = intWindowPosition And (mcintWindowSize - 1)
+Else
+' This byte is compressed
+' Get the window position and length of the match
+Get mintInputFile, , bytHiByte
+lngBytesRead = lngBytesRead + 1
+Get mintInputFile, , bytLoByte
+lngBytesRead = lngBytesRead + 1
+intBufferLocation = BufPosition(bytHiByte, bytLoByte)
+bytLength = BufLength(bytLoByte)
+intCounter = 0
+' Read the data from the window and write to the output
+Do While intCounter < bytLength
+bytByte = mabytWindow((intBufferLocation + intCounter) And (mcintWindowSize - 1))
+Put mintOutputFile, , bytByte
+lngBytesWritten = lngBytesWritten + 1
+mabytWindow(intWindowPosition) = bytByte
+intWindowPosition = intWindowPosition + 1
+intWindowPosition = intWindowPosition And (mcintWindowSize - 1)
+intCounter = intCounter + 1
+' Raise the progress event
+If (lngBytesWritten Mod mcintByteNotify) = 0 Then
+RaiseEvent FileProgress(lngBytesWritten / lngOriginalFileLen)
+End If
+Loop
+End If
+' Raise the progress event
+If (lngBytesWritten Mod mcintByteNotify) = 0 Then
+RaiseEvent FileProgress(lngBytesWritten / lngOriginalFileLen)
+End If
+Loop
+RaiseEvent FileProgress(1)
+End If
+' Close the files we opened
+Close mintOutputFile
+Close mintInputFile
+U_ext:
+Exit Sub
+PROC_ERR:
+MsgBox "Error: Decompress", vbCritical, "ULZ"
+Resume U_ext
+End Sub
+
+Public Function DecompressString(strInput As String) As String
+
+'************************************
+'this procedure decompresses a string
+'************************************
+
+'Parametrz:
+
+'strInput - The string to decompress
+' Returns the decompressed string
+Dim intCounter As Integer
+Dim bytHiByte As Byte
+Dim intBufferLocation As Integer
+Dim bytLoByte As Byte
+Dim bytLength As Byte
+Dim intWindowPosition As Integer
+Dim bytByte As Byte
+Dim intFlags As Integer
+Dim lngBytesRead As Long
+Dim lngBytesWritten As Long
+Dim lngOriginalStringLen As Long
+Dim abytInput() As Byte
+On Error GoTo PROC_ERR
+abytInput = strInput
+' verify header before attempting to decompress
+If UBound(abytInput) > 10 Then
+If abytInput(0) = Asc("F") And abytInput(1) = Asc("M") And abytInput(2) = Asc("S") And abytInput(3) = Asc("L") And abytInput(4) = Asc("Z") And abytInput(5) = Asc("1") Then
+lngBytesRead = 6
+' Reconstruct the  original  string length. This is  stored in the  first four
+' bytes after the signature
+lngOriginalStringLen = abytInput(lngBytesRead)
+lngBytesRead = lngBytesRead + 1
+lngOriginalStringLen = Shll(lngOriginalStringLen, 8) Or abytInput(lngBytesRead)
+lngBytesRead = lngBytesRead + 1
+lngOriginalStringLen = Shll(lngOriginalStringLen, 8) Or abytInput(lngBytesRead)
+lngBytesRead = lngBytesRead + 1
+lngOriginalStringLen = Shll(lngOriginalStringLen, 8) Or abytInput(lngBytesRead)
+lngBytesRead = lngBytesRead + 1
+' redim the output to the length of the input
+ReDim abytOutput(lngOriginalStringLen) As Byte
+' While there is data to decompress
+Do While lngBytesWritten < lngOriginalStringLen
+intFlags = Shri(intFlags, 1)
+' If the flag byte has been processed, get the next one
+If (intFlags And 256) = 0 Then
+bytByte = abytInput(lngBytesRead)
+lngBytesRead = lngBytesRead + 1
+intFlags = LongToInt(CLng(bytByte) Or &HFF00&)
+End If
+' If this byte is not compressed
+If (intFlags And 1) Then
+' Read from the input and write to the output
+bytByte = abytInput(lngBytesRead)
+lngBytesRead = lngBytesRead + 1
+abytOutput(lngBytesWritten) = bytByte
+lngBytesWritten = lngBytesWritten + 1
+' Update the window
+mabytWindow(intWindowPosition) = bytByte
+intWindowPosition = intWindowPosition + 1
+intWindowPosition = intWindowPosition And (mcintWindowSize - 1)
+Else
+' This byte is compressed
+' Get the window position and length of the match
+bytHiByte = abytInput(lngBytesRead)
+lngBytesRead = lngBytesRead + 1
+bytLoByte = abytInput(lngBytesRead)
+lngBytesRead = lngBytesRead + 1
+intBufferLocation = BufPosition(bytHiByte, bytLoByte)
+bytLength = BufLength(bytLoByte)
+intCounter = 0
+' Read the data from the window and write to the output
+Do While intCounter < bytLength
+bytByte = mabytWindow((intBufferLocation + intCounter) And (mcintWindowSize - 1))
+abytOutput(lngBytesWritten) = bytByte
+lngBytesWritten = lngBytesWritten + 1
+mabytWindow(intWindowPosition) = bytByte
+intWindowPosition = intWindowPosition + 1
+intWindowPosition = intWindowPosition And (mcintWindowSize - 1)
+intCounter = intCounter + 1
+' Raise the progress event
+If (lngBytesWritten Mod mcintByteNotify) = 0 Then
+RaiseEvent FileProgress(lngBytesWritten / lngOriginalStringLen)
+End If
+Loop
+End If
+' Raise the progress event
+If (lngBytesWritten Mod mcintByteNotify) = 0 Then
+RaiseEvent FileProgress(lngBytesWritten / lngOriginalStringLen)
+End If
+Loop
+RaiseEvent FileProgress(1)
+End If
+End If
+DecompressString = abytOutput
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: Decompress the String", vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Private Sub BitSetByte(bytNumber As Byte, bytBitNumber As Byte)
+'*********************************************
+' This procedure sets a bit in a byte variable
+'*********************************************
+' Parameterz:
+'bytNumber - The byte variable to set the bit in. The result is also returned
+' in this parameter
+'bytBitNumber - The bit number to clear
+On Error GoTo PROC_ERR
+bytNumber = bytNumber Or Shlb(1, bytBitNumber)
+U_ext:
+Exit Sub
+PROC_ERR:
+MsgBox "Error: Bit Set Byte", vbCritical, "ULZ"
+Resume U_ext
+End Sub
+
+Private Function BufLength(bytLoByte As Byte) As Byte
+
+'********************************************
+'This function returns the length of an entry
+'********************************************
+
+' Parameterz
+' bytLoByte - The low byte of the entry
+' Returnz the length of the entry
+
+On Error GoTo PROC_ERR
+BufLength = (bytLoByte And &HF) + mcintMinMatchLen
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: Buffeer Leghth", , vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Private Function BufPosition(bytHiByte As Byte, bytLoByte As Byte) As Integer
+'******************************************************
+' This function returns the window position of an entry
+'******************************************************
+' bytHiByte - The high byte of the entry
+' bytLoByte - The low byte of the entry
+' Returnz   : The position of the entry
+Dim intPosition As Integer
+' if error then show message
+On Error GoTo PROC_ERR
+intPosition = Shli(bytLoByte And &HF0, 4) + bytHiByte
+intPosition = intPosition And &HFFF
+BufPosition = intPosition
+U_ext:
+' exit
+Exit Function
+PROC_ERR:
+' error message
+MsgBox "Error: Buffer Position", vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Private Sub CompressionInitialize()
+
+' **************************************************************************
+' This procedure initializes the module variables for  the compression  and
+' decompression routines
+' **************************************************************************
+Dim intCounter As Integer
+On Error GoTo PROC_ERR
+' Initialize the window to spaces
+For intCounter = 0 To mcintWindowSize + mcintMaxMatchLen - 1
+mabytWindow(intCounter) = Asc(" ")
+Next intCounter
+For intCounter = 0 To mcintWindowSize + mcintWindowSize
+maintWindowNext(intCounter) = mcintNull
+Next intCounter
+For intCounter = 0 To mcintWindowSize
+maintWindowPrev(intCounter) = mcintNull
+Next intCounter
+'Reset write buffer
+mabytOutputBuffer(0) = 0
+mbytByteCodeWritten = 1
+mbytBitCount = 0
+U_ext:
+' exit
+Exit Sub
+PROC_ERR:
+' error message
+MsgBox "Error: Initialize", vbCritical, "ULZ"
+Resume U_ext
+End Sub
+
+Private Function dblToLong(ByVal dblNumber As Double) As Long
+' *****************************************************************************
+' This routine does an unsigned conversion from a double Value to a long Value.
+' This procedure correctly handles any double value
+' *****************************************************************************
+'Parameterz
+' dblNumber - the double value to convert to a long
+' long returnz
+Dim dblDivisor As Double
+Dim dblTemp As Double
+On Error GoTo PROC_ERR
+' Visual basic does not allow you enter the value &H100000000 directly,
+' so we enter &H7FFFFFFF, double it and add two to create it.
+dblDivisor = &H7FFFFFFF
+dblDivisor = (dblDivisor * 2) + 2
+'if the number is larger than a long can store, then truncate it
+If dblNumber > dblDivisor Or dblNumber < 0 Then
+dblTemp = dblNumber - (Int(dblNumber / dblDivisor) * dblDivisor)
+Else
+dblTemp = dblNumber
+End If
+' if the number is greater than a signed long, convert it to a negative
+If dblTemp > &H7FFFFFFF Then
+dblToLong = dblTemp - dblDivisor
+ElseIf dblTemp < 0 Then
+' If the number is negative
+dblToLong = dblDivisor + dblTemp
+Else
+dblToLong = dblTemp
+End If
+U_ext:
+'exit
+Exit Function
+PROC_ERR:
+MsgBox "Error: dbltoLong", vbExclamation, "ULZ"
+Resume U_ext
+End Function
+
+Private Sub DeletePosition(intCurBufIndex As Integer)
+
+' **************************************************
+' This procedure removes a character from the window
+' **************************************************
+
+' Parameterz:
+' intCurBufIndex - The index of the byte in the window to delete
+
+Dim intNext As Integer
+Dim intPrev As Integer
+On Error GoTo PROC_ERR
+  
+' If this position has been previously assigned
+If (maintWindowPrev(intCurBufIndex) <> mcintNull) Then
+' Update the next character array with the previous value
+intPrev = maintWindowPrev(intCurBufIndex)
+intNext = maintWindowNext(intCurBufIndex)
+maintWindowNext(intPrev) = intNext
+maintWindowPrev(intNext) = intPrev
+maintWindowNext(intCurBufIndex) = mcintNull
+maintWindowPrev(intCurBufIndex) = mcintNull
+End If
+U_ext:
+Exit Sub
+PROC_ERR:
+MsgBox "Error: DeletePosition", vbExclamation, "ULZ"
+Resume U_ext
+End Sub
+
+Private Sub FindMatch(intCurBufIndex As Integer)
+' *************************************************
+' This procedure searches for a match in the window
+' *************************************************
+' intCurBufIndex - The current position in the window
+Dim intPos As Integer
+Dim intKey As Integer
+Dim intCounter As Integer
+On Error GoTo PROC_ERR
+mintMatchPos = 0
+mintMatchLen = mintMatchPos
+'calculate position
+intKey = (mabytWindow(intCurBufIndex) + Shli(mabytWindow(intCurBufIndex + 1), 8) And &HFFF&) + mcintWindowSize + 1
+' If we have encountered this two letter combination before, intPos will hold
+' the position at which we last last encountered it
+intPos = maintWindowNext(intKey)
+intCounter = 0
+Do While (intPos <> mcintNull) And (intCounter <> mcintMaxMatchLen)
+'Find a match in the window
+intCounter = 0
+Do While intCounter < mcintMaxMatchLen And mabytWindow(intPos + intCounter) = mabytWindow(intCurBufIndex + intCounter)
+intCounter = intCounter + 1
+Loop
+' If this is the best match so far, keep track of it
+If (intCounter > mintMatchLen) Then
+mintMatchLen = intCounter
+mintMatchPos = (intPos) And (mcintWindowSize - 1)
+End If
+' Retrieve the next index into the window
+intPos = maintWindowNext(intPos)
+Loop
+If (intCounter = mcintMaxMatchLen) Then
+DeletePosition (intPos)
+End If
+U_ext:
+Exit Sub
+PROC_ERR:
+MsgBox "Error: FindMatch", vbCritical, "ULZ"
+Resume U_ext
+End Sub
+
+Private Function HiByte(ByVal intNumber As Integer) As Byte
+' *******************************************
+' Returns the high byte of the passed integer
+' *******************************************
+' intNumber - integer to return the high byte of
+' Return the byte
+On Error GoTo PROC_ERR
+HiByte = Int((IntToLong(intNumber) / &H100&)) And &HFF&
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: HiByte", vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Private Function HiWord(lngNumber As Long) As Integer
+' *******************************************
+' Returns the high integer of the passed long
+' *******************************************
+' lngNumber - long value to return the high integer of
+' Return the integer
+On Error GoTo PROC_ERR
+HiWord = LongToInt(Int((lngNumber / &H10000)))
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: HiWord", vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Private Sub InsertPosition(intCurBufIndex As Integer)
+' **************************************************
+' This procedure inserts a character into the window
+' **************************************************
+' intCurBufIndex - The index of the byte in the window to insert
+' What the function returns or 'Nothing'
+Dim intNextChar As Integer
+Dim intKey As Integer
+On Error GoTo PROC_ERR
+' Calculate hash key based on the current byte and the next byte
+intKey = (mabytWindow(intCurBufIndex) + Shli(mabytWindow(intCurBufIndex + 1), 8) And &HFFF&) + mcintWindowSize + 1
+'Get the last position pointed to by this key
+intNextChar = maintWindowNext(intKey)
+' Set the position in the lookup buffer to the current position in the window
+maintWindowNext(intKey) = intCurBufIndex
+' keep track of the last position pointed to by this key
+maintWindowPrev(intCurBufIndex) = intKey
+' point the current position in the next window to the key position in the next
+' buffer
+maintWindowNext(intCurBufIndex) = intNextChar
+' If there was a previous character
+If (intNextChar <> mcintNull) Then
+maintWindowPrev(intNextChar) = intCurBufIndex
+End If
+U_ext:
+Exit Sub
+PROC_ERR:
+MsgBox "Error: InsertPosition", vbCritical, "ULZ"
+Resume U_ext
+End Sub
+
+Private Function IntToByte(ByVal intNumber As Integer) As Byte
+
+' ************************************************************************
+' This routine does an unsigned conversion from an integer value to a byte
+' value. This procedure correctly handles any integer value
+' ************************************************************************
+
+' intNumber - the integer value to convert to a byte
+' return the Byte
+On Error GoTo PROC_ERR
+IntToByte = intNumber And &HFF&
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: IntToByte", vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Private Function IntToLong(ByVal intNumber As Integer) As Long
+
+' ****************************************************************************
+' This routine converts an integer value to a long value, treating the integer
+' as unsigned
+' ****************************************************************************
+
+' Parameters: intNumber - the integer to convert to long
+'  retiurn the long
+On Error GoTo PROC_ERR
+' This routine converts an integer value to a long value
+If intNumber < 0 Then
+IntToLong = intNumber + &H10000
+Else
+IntToLong = intNumber
+End If
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: IntToLong", vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Private Function LoByte(ByVal intNumber As Integer) As Byte
+' ******************************************
+' Returns the low byte of the passed integer
+' ******************************************
+
+' intNumber - integer to return the low byte of
+' rEturn the byte
+On Error GoTo PROC_ERR
+LoByte = intNumber And &HFF&
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: LoByte"
+Resume U_ext
+End Function
+
+Private Function LongToInt(ByVal lngNumber As Long) As Integer
+' ******************************************************************************
+' This routine does an unsigned conversion from a long value to an integer value.
+' This procedure correctly handles any long value
+' ******************************************************************************
+
+' lngNumber - the long value to convert to an integer
+' returnz the Integer
+On Error GoTo PROC_ERR
+' This routine converts a long value to an integer
+lngNumber = lngNumber And &HFFFF&
+If lngNumber > &H7FFF Then
+LongToInt = lngNumber - &H10000
+Else
+LongToInt = lngNumber
+End If
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: LongToInt", vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Private Function LoWord(ByVal lngNumber As Long) As Integer
+' ******************************************
+' Returns the low integer of the passed long
+' ******************************************
+' lngNumber - long to return the low integer of
+' Returnz the integer
+
+On Error GoTo PROC_ERR
+LoWord = LongToInt(lngNumber And &HFFFF&)
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: LoWord", vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Private Function Shlb(ByVal bytValue As Byte, ByVal bytPlaces As Byte) As Byte
+' ********************************************************
+' Shifts a numeric value left the specified number of bits.
+' *********************************************************
+' bytValue - byte value to shift
+' bytPlaces - number of places to shift
+' Returnz the Shifted value
+
+Dim lngMultiplier As Long
+On Error GoTo PROC_ERR
+' if we are shifting 8 or more bits, then the result is always zero
+If bytPlaces >= 8 Then
+Shlb = 0
+Else
+lngMultiplier = 2 ^ bytPlaces
+Shlb = IntToByte(LongToInt(bytValue * lngMultiplier))
+End If
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: Shlb", vbCritical, "ULZ kewl"
+Resume U_ext
+End Function
+
+Private Function Shli(ByVal intValue As Integer, ByVal bytPlaces As Byte) As Integer
+' **********************************************************************************
+' Shifts a numeric value left the specified number of bits. Left shifting can be
+' defined as a multiplication operation. For the number of bits we want to shift a
+' value to the left, we need to raise two to that power, then multiply the result by
+' our original value.
+' **********************************************************************************
+' intValue - integer value to shift
+' bytPlaces - number of places to shift
+' reeturn Shifted value
+Dim lngMultiplier As Long
+On Error GoTo PROC_ERR
+' if we are shifting 16 or more bits, then the result is always zero
+If bytPlaces >= 16 Then
+Shli = 0
+Else
+lngMultiplier = 2 ^ bytPlaces
+Shli = LongToInt(intValue * lngMultiplier)
+End If
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: Shli", vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Private Function Shll(ByVal lngNumber As Long, ByVal bytPlaces As Byte) As Long
+' *********************************************************
+' Shifts a numeric Value left the specified number of bits.
+' *********************************************************
+' lngNumber - long Value to shift
+' bytPlaces - number of places to shift
+' Returnz the Shifted Value
+Dim dblMultiplier As Double
+On Error GoTo PROC_ERR
+' if we are shifting 32 or more bits, then the result is always zero
+If bytPlaces >= 32 Then
+Shll = 0
+Else
+dblMultiplier = 2 ^ bytPlaces
+Shll = dblToLong(lngNumber * dblMultiplier)
+End If
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: Shll", vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Private Function Shri(ByVal lngValue As Long, ByVal bytPlaces As Byte) As Integer
+' *******************************************************
+' Shifts a long Value right the selected number of places
+' *******************************************************
+' lngValue - integer Value to shift
+' bytPlaces - number of places to shift
+' Returnz the Shifted value
+
+Dim lngDivisor As Long
+On Error GoTo PROC_ERR
+' if we are shifting 16 or more bits, then the result is always zero
+If bytPlaces >= 16 Then
+Shri = 0
+Else
+lngDivisor = 2 ^ bytPlaces
+Shri = Int(IntToLong(lngValue) / lngDivisor)
+End If
+U_ext:
+Exit Function
+PROC_ERR:
+MsgBox "Error: Shri", vbCritical, "ULZ"
+Resume U_ext
+End Function
+
+Private Sub WriteBufferByte(abytOutput() As Byte, lngBytesWritten As Long, bytValue As Byte)
+' ********************************************************
+' This procedure writes a single byte to the output buffer
+' ********************************************************
+' abytOutput - The output buffer
+' lngBytesWritten - The current position in the output buffer
+' bytByte - The byte to write to the buffer
+Dim intCounter As Integer
+On Error GoTo PROC_ERR
+' If eight bytes have been written, write the output buffer
+If mbytBitCount = 8 Then
+For intCounter = 0 To mbytByteCodeWritten - 1
+abytOutput(lngBytesWritten) = mabytOutputBuffer(intCounter)
+lngBytesWritten = lngBytesWritten + 1
+Next intCounter
+' Reset the write variables
+mbytByteCodeWritten = 1
+mbytBitCount = 0
+mabytOutputBuffer(0) = 0
+End If
+' Update the output buffer
+mabytOutputBuffer(mbytByteCodeWritten) = bytValue
+' Increment the number of bytes written
+mbytByteCodeWritten = mbytByteCodeWritten + 1
+' Indicate that this byte is not compressed
+BitSetByte mabytOutputBuffer(0), mbytBitCount
+'Increment the number of entries written
+mbytBitCount = mbytBitCount + 1
+U_ext:
+'exit
+Exit Sub
+PROC_ERR:
+' error message
+MsgBox "Error: WriteBufferByte", vbCritical, "Huffman"
+Resume U_ext
+End Sub
+
+Private Sub WriteBufferEntry(abytOutput() As Byte, lngBytesWritten As Long, intPos As Integer, intLen As Integer)
+'*********************************************************
+'this procedure writes a window entry to the output buffer
+'*********************************************************
+' Parameterz:
+' abytOutput - The output buffer
+' lngBytesWritten - The current position in the output buffer
+' intPos - The position of the entry
+' intLen - The length of the entry
+
+Dim intCounter As Integer
+On Error GoTo PROC_ERR
+' If eight bytes have been written, write the output buffer
+If mbytBitCount = 8 Then
+For intCounter = 0 To mbytByteCodeWritten - 1
+abytOutput(lngBytesWritten) = mabytOutputBuffer(intCounter)
+lngBytesWritten = lngBytesWritten + 1
+Next intCounter
+' Reset the output varables
+mbytByteCodeWritten = 1
+mbytBitCount = 0
+mabytOutputBuffer(0) = 0
+End If
+  
+' The first byte contains the loword of the position in the window
+mabytOutputBuffer(mbytByteCodeWritten) = IntToByte(intPos)
+' Increment the number of bytes written
+mbytByteCodeWritten = mbytByteCodeWritten + 1
+' The second byte of an entry contains the 4 hi bits of the position, and the
+' lower four bits contain the length of the match
+mabytOutputBuffer(mbytByteCodeWritten) = IntToByte(((Shri(intPos, 4) And &HF0&) Or intLen - mcintMinMatchLen))
+' Increment the number of bytes written
+mbytByteCodeWritten = mbytByteCodeWritten + 1
+' Increment the number of entries written
+mbytBitCount = mbytBitCount + 1
+
+U_ext:
+'exit the procedure
+Exit Sub
+PROC_ERR:
+' errror message
+MsgBox "Error: WriteBufferEntry", vbCritical, "ULZ"
+Resume U_ext
+End Sub
+
+Private Sub WriteBufferFinish(abytOutput() As Byte, lngBytesWritten As Long)
+
+' **************************************************************
+' This procedure flushes any remaining data to the output buffer
+' **************************************************************
+
+' Parameters
+' abytOutput - The output buffer
+' lngBytesWritten - The current position in the output buffer
+
+Dim intCounter As Integer
+On Error GoTo PROC_ERR
+For intCounter = 0 To mbytByteCodeWritten - 1
+abytOutput(lngBytesWritten) = mabytOutputBuffer(intCounter)
+lngBytesWritten = lngBytesWritten + 1
+Next intCounter
+U_ext:
+'exit
+Exit Sub
+PROC_ERR:
+'error message
+MsgBox "Error: WriteBufferFinish", vbCritical, "ULZ"
+Resume U_ext
+End Sub
+
+Private Sub WriteByte(bytByte As Byte)
+
+'*******************************************************
+' This procedure writes a single byte to the output file
+'*******************************************************
+
+' Parameterz:
+' bytByte - The byte to write to the file
+
+Dim intCounter As Integer
+On Error GoTo PROC_ERR
+' If eight bytes have been written, write the output buffer
+If mbytBitCount = 8 Then
+For intCounter = 0 To mbytByteCodeWritten - 1
+Put mintOutputFile, , mabytOutputBuffer(intCounter)
+Next intCounter
+' Reset the write variables
+mbytByteCodeWritten = 1
+mbytBitCount = 0
+mabytOutputBuffer(0) = 0
+End If
+  
+' Update the output buffer
+ mabytOutputBuffer(mbytByteCodeWritten) = bytByte
+' Increment the number of bytes written
+mbytByteCodeWritten = mbytByteCodeWritten + 1
+' Indicate that this byte is not compressed
+BitSetByte mabytOutputBuffer(0), mbytBitCount
+' Increment the number of entries written
+mbytBitCount = mbytBitCount + 1
+
+U_ext:
+'exit
+Exit Sub
+
+PROC_ERR:
+' show messagebox
+MsgBox "Error: Write Byte", vbCritical, "ULZ"
+Resume U_ext
+End Sub
+
+Private Sub WriteEntry(intPos As Integer, intLen As Integer)
+
+'*******************************************************
+'This procedure writes a window entry to the output file
+'*******************************************************
+' Parameterz:
+'intPos - The position of the entry
+'intLen - The length of the entry
+
+Dim intCounter As Integer
+On Error GoTo PROC_ERR
+' If eight bytes have been written, write the output buffer
+If mbytBitCount = 8 Then
+For intCounter = 0 To mbytByteCodeWritten - 1
+Put mintOutputFile, , mabytOutputBuffer(intCounter)
+Next intCounter
+    
+' Reset the output varables
+mbytByteCodeWritten = 1
+mbytBitCount = 0
+mabytOutputBuffer(0) = 0
+End If
+  
+' The first byte contains the loword of the position in the window
+mabytOutputBuffer(mbytByteCodeWritten) = IntToByte(intPos)
+' Increment the number of bytes written
+mbytByteCodeWritten = mbytByteCodeWritten + 1
+' The second byte of an entry contains the 4 hi bits of the position, and the
+' lower four bits contain the length of the match
+mabytOutputBuffer(mbytByteCodeWritten) = IntToByte(((Shri(intPos, 4) And &HF0&) Or intLen - mcintMinMatchLen))
+' Increment the number of bytes written
+mbytByteCodeWritten = mbytByteCodeWritten + 1
+  
+' Increment the number of entries written
+mbytBitCount = mbytBitCount + 1
+  
+U_ext:
+'exit
+Exit Sub
+
+PROC_ERR:
+'show message box "error"
+MsgBox "Error: Write Entry", vbCritical, "ULZ"
+Resume U_ext
+End Sub
+
+Private Sub WriteFinish()
+'*************************************************************
+' This procedure flushes any remaining data to the output file
+'*************************************************************
+Dim intCounter As Integer
+On Error GoTo PROC_ERR
+For intCounter = 0 To mbytByteCodeWritten - 1
+Put mintOutputFile, , mabytOutputBuffer(intCounter)
+Next intCounter
+U_ext:
+'exit
+Exit Sub
+PROC_ERR:
+MsgBox "Error: Write Finish", vbCritical, "ULZ"
+Resume U_ext
+End Sub
+
+
+
+
+
+
+

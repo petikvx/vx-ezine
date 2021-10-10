@@ -1,0 +1,211 @@
+
+                                        /-----------------------------\
+                                        | Xine - issue #4 - Phile 102 |
+                                        \-----------------------------/
+
+
+APIs.txt
+-------------------------------------------------------
+As you know, Virus have to open files, read/write, close it, search files,
+allocate memory, etc... I hope I don't learn anything to ya by that!
+As you know, all functions in the windows' world are imports, that are
+made in the .EXE executing... Here, I also hope...
+Then, if I have a virus that infect "X.exe", and he have to open a file,
+does he have to import "CreateFile" ? If so, he have to import
+"ReadFile", "WriteFile", "CloseHandle", "GetFileSize", .....
+So, what a mess to add so much imports to an import section of any file!
+So, the possibility is to only import "LoadLibraryA" and
+"GetProcAddress".
+But, that's still annoying to change the import section... let's try
+something else.
+
+Ya know that win32 progs don't have to call "ExitProcess" to terminate,
+they also can make a simple "ret" ( "ExitProcess" is only there if you
+have to do that in a procedure, so that you don't know where you are w/
+your stack ), your prog is like a subroutine of windows ;)
+
+If Explorer launch your prog, it's like that:
+
+Explorer:                Kernel32:           Your prog:
+        |               /"CreateProcess:"   /       |
+        |              /               |   /        |
+        |             /                |  /         |
+call "CreateProcess" /         call Prog /          |
+                                       <----------ret
+
+So, if a ret at the beggining of the prog launch you to the middle
+of "CreateProcess", you have a pointer in a location in kernel32
+kewl...
+Kernel32.dll is, in fact, a DLL. So, like an EXE, there is a MZ header,
+a PE header, etc. So, there is the kernel "base" in memory where you
+have the "MZ" of kernel. So, at kernel base + 3ch, you have a "pointer",
+so that "MZ" + word ptr ["MZ" + 3ch] = "PE"
+( nb: either you believe me, either you look for any PE format file )
+So, at "PE" + 34h you have a dword, specifying the "Prefered RVA base"
+of the file, in other words, the position of the "MZ" ;)
+So, if edx = Kernel base:
+
+set ebx = [edx+3ch]
+[edx+ebx+34h] == edx :)
+
+So, you have a pointer in Kernel ( somewhere ) and a condition that is
+true
+ONLY if a pointer is the kernel base; so, if you want the kernel base,
+you have to decrement the pointer until the condition is true...
+
+likeThis:
+        mov     edx,[esp]
+        dec     edx
+        mov     ebx,[edx+03ch]
+        cmp     edx,[edx+ebx+34h]
+        jnz     likeThis
+;edx = Kernel base
+
+Yup! Now, you have the kernel base ("MZ")... I hope so.
+
+Now, we have to import:
+
+1st - Get the import table
+
+So, look in any PE descriptor: the Export table RVA is at address "PE"
++ 78h
+Note: an RVA is a relative address. for example, in [edx+3ch], there is
+the RVA to "PE": that's a pointer in the file...
+Suppose edx contain Kernel "MZ", let get Export table address in ebx.
+
+        mov     ebx,edx                         ;ebx=MZ PTR
+        add     ebx,[ebx+3ch]                   ;ebx=PE PTR
+        mov     ebx,[ebx+78h]                   ;ebx=Export tables RVA
+        add     ebx,edx                         ;ebx=Export tables PTR
+
+Now, look in a Export table description: at address 20h ( in Export
+table )
+is a RVA to a table of RVA to asciiz names, and at address 18h, a dword
+number, specifying the number of names
+
+Export table:       Table:-RVA1 ------------> "Function1"
+|                  /      -RVA2 ------------> "Hello"
+|                 /       -RVA3 ------------> "IMAFunction"
+18h: 3           /
+20h: RVA -------/
+|
+
+Now, I let ya imagine a "Search function":
+
+RVAPtr = RVA1
+CompareString( RVAPtr, FunctionToImport )
+IfEqual => Found!
+RVAPtr++
+IfNotLast => Next!
+
+Yeah, we have a pointer to the RVA to that function name ( or, either,
+the
+number of that function: if it's the 1st, the 2nd, ... )
+Now, let's take that number ( it's the 16th for example ) and take
+that 16th
+exported function entry point: RVA to table of RVA to functions entry
+points
+is at 1ch, and number of exported functions is at 14h...
+So, let's take the RVA nø16 in that table ( which RVA is at 1ch ),
+put that RVA to fct EP in edi, for example, add edi,edx : edi is an RVA,
+edx is kernel base so, edi = ptr to function EP, and call edi ;)
+
+I hope you followed me...
+
+Because that's not finished!
+
+My system work quite well for any DLL, but not for kernel ;)
+So, I had to "guess" what the problem was ( it call a wrong function )
+and I'm laughing of you, telling you the number of names is at 18h, and
+the number of exported function is at 14h, because there are not
+always the same ( and they are not in kernel )
+So, What are that unnamed functions ( because there is more functions
+than
+names, I hope ya guessed ;) )?
+That are functions that are only exported by their cardinal... hehe.
+So, that functions are placed BEFORE the named functions! Imagine
+you found that the function you wanna import is the 16th, and that there
+is 20 names and 25 exported functions: the function you have to reach
+is the
+16+(25-20) = 21th function! ( did you follow? cuz now it's finished )
+
+There is the sources:
+
+GetKrnlExport   proc
+;No reloc
+;In:    edx = kernel base
+;       esi = db[] name, 0
+;Out:   eax = PTR -> RVA of fct
+;Just do 'mov eax,[eax]' 'add eax,edx' 'call eax' to use the fct
+        mov     ebx,edx                         ;ebx=MZ PTR
+        add     ebx,[ebx+3ch]                   ;ebx=PE PTR
+        mov     ebx,[ebx+78h]                   ;ebx=Export tables RVA
+        add     ebx,edx                         ;ebx=Export tables PTR
+
+        mov     edi,[ebx+20h]                   ;edi=Names table RVA
+        lea     edi,[edi+edx-4]                 ;edi=Names table PTR - 4
+                                                ; cuz + 4 after
+        push    edi
+        push    esi
+ESLoop:
+        mov     edi,[esp+4]
+        mov     esi,[esp]
+        add     edi,4                           ;Next name
+        mov     [esp+4],edi
+        mov     edi,[edi]
+        add     edi,edx                         ;RVA->Ptr
+ESStrLoop:
+        lodsb
+        cmp     al,[edi]
+        jnz     ESLoop                          ;Not equal, then next
+        inc     edi
+        or      al,al
+        jz      ESFound                         ;0=end of string
+        jmp     ESStrLoop
+ESFound:
+        pop     esi
+        pop     edi                             ;edi=PTR -> fct name
+        sub     edi,[ebx+20h]                   ;edi=Fct# * 4 + Kernel
+        sub     edi, edx                        ;edi=Fct# * 4
+
+        mov     eax,[ebx+1ch]                   ;eax=RVA -> export table
+
+        mov     ecx,[ebx+14h]                   ;ecx=Nbr exprtd fcts
+        sub     ecx,[ebx+18h]                   ;ecx-=Nbr names
+        add     eax,edx                         ;eax=PTR -> export table
+        lea     eax,[eax+4*ecx]                 ;eax=PTR -> named fcts
+        add     eax,edi                         ;eax=PTR -> RVA of
+looked fct
+
+        ret
+GetKrnlExport   endp
+
+GetKrnlBase     proc
+;No reloc
+;In:    edx = begin [esp]
+;Out:   edx = kernel base
+        push    ebx
+GetKrnlBaseLoop:
+        xor     ebx,ebx
+        dec     edx
+        mov     bx,[edx+03ch]
+        test    bx,0f800h       ;Max 7ffh!
+        jnz     GetKrnlBaseLoop
+        cmp     edx,[edx+ebx+34h]
+        jnz     GetKrnlBaseLoop
+        pop     ebx
+        ret
+GetKrnlBase     endp
+
+------------------
+Notes:
+1st - That tutorial was made by n0ph on the 26-02-98, for IKX, for
+XINE4.
+2nd - If you find another way to do better, or anything else, write me
+at
+        n0ph@HotMail.Com...
+3rd - Visit "members.xoom.com/n0ph" !
+4th - That's all folks!
+
+
+

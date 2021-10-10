@@ -1,0 +1,419 @@
+
+                                        /-----------------------------\
+                                        | Xine - issue #2 - Phile 013 |
+                                        \-----------------------------/
+
+                       ____________________________
+                       \TBAV CRC files demystified/
+                        \        b0z0/iKx        /
+                         \______________________/
+
+0) First of all :)
+------------------
+ With this small txt i would like to demostrate how exactly (well, i'll try
+to do the best ;) ) TBAV (yea, i know that TBAV is the entire package and the
+part for CRCs is TBSetup, but i'll refeer in the text to the CRC generator
+with any name i can come out :) ) creates the CRC files.
+ Untill today generally retro viruses quite always simply deleted the
+CRC files (chmod + unlink) indifferently at any virus infection if a CRC
+file was present in the directory. As you will notice if you continue reading
+deleting is maybe the simplest and fastest way to do the dirty work, but on
+the other side it isn't very polite and professional :) So with this small
+doc i would like to try to open your eyes to new frontiers of retro actions
+and armor features against CRC files.
+ If you are in a hurry or if you aren't interested in the exact form of the
+ANTI-VIR.DAT (it may seems boring and stupid, but i must say that it can
+bring you some really interesting ideas for future tricks and
+implementations) skip the first part and go to part 2 (section "So what?")
+and to part 3 where you will find some interesting tricks.
+ This text and all it's code is based on TBAV 7.07 but it has been
+succesfully tested also on versions 7.06, 7.05 and also on versions
+6.05, 6.12 ,6.34 and also (rumble rumble :) ) on TBAV 5.01!
+ I suppose that the TBAV CRC file format has remained unchanged (except
+for an encryption value of which we will talk later) from version 5.xx
+(or maybe from an older one :) but i don't have older ones! Frans please
+send some ;-) ).
+
+1) Format of ANTI-VIR.DAT:
+--------------------------
+ The ANTI-VIR.DAT has at the start a 80h bytes long header, where copyright
+notice and so on is stored. Apart from this stuff at offset 56h there is an
+important word, that is used for the encryption of the various CRC data
+(on all 7.x versions the value seems to be 1992h, on the 6.34 is for example
+197Ah, on 6.11 is 1936h but anyway we will just read it from here ;)).
+ After the 80h bytes there are 40h bytes of data for every file (executable
+of course) that is present in the current directory. And now here we are at
+the interesting infos :)
+ The first 12d bytes are reserved for the filename and extension of the file
+of that block. The filename of the file is always unencrypted, so as you
+may have already noticed you can see it with a normal file viewer ;) If the
+filename+extension is shorter than 12d bytes then the remaining bytes will
+be filled with zeros.
+ All the informations about the file that TBAV stores after the filename
+(from byte 0Ch to 20h of the file entry) are encrypted. The encryption of
+this is rather simple. Let's look finally at some source ;)
+
+;
+; It is assumed that DI points to space where ANTI-VIR.DAT was readed to
+; (so at DI you will see the TBAV message and so on... so we will be able
+; to get the decryption value from DI+56h).
+; It is assumed that SI points to encrypted part of the file entry in
+; ANTI-VIR.DAT that we are going to decrypt. (that is after the undecrypted
+; filename).
+;
+; This routine will decrypt the contents and will put the decrypted bytes
+; in the same place where we readed them from.
+;
+
+        mov     dx,1ah                          ; words to decrypt
+        mov     cx,word ptr ds:[di+56h]         ; decryption value from the
+                                                ; header at offset 56h
+        xor     cx,word ptr ds:[si-0Ch]         ; xor the encryption value
+                                                ; with the first word of
+                                                ; the filename
+decrypt_loop:
+        mov     ch,cl
+        dec     cx                              ; action on key
+        and     cl,0fh
+
+        mov     ax,word ptr ds:[si]             ; get a word to decrypt
+
+        xor     ax,cx
+        rol     ax,cl                           ; decryption stage
+        sub     ax,cx
+        xor     ax,word ptr ds:[di+56h]
+
+        mov     word ptr ds:[si],ax             ; store decrypted
+        inc     si
+        inc     si                              ; point to next word
+        dec     dx                              ; dec counter
+        jnz     decrypt_loop
+
+ As you may see it is quite simple, just a couple of math operations (xor,
+rol, sub, xor). Nothing special, really, but after this decryption we will
+have a bounch of interesting informations. Let's see...
+ Further the offsets will be intended as refeering from the start of the
+file entry. So for example 00h is the first letter of the filename and
+0Bh is the last space for filename and extension. So:
+
+Offset 0Ch      - here we find a word that contains the low part of the
+                  file lenght. The second part (the high word) is founded
+                  at offset 36h. Of course if the file is a COM file the
+                  entire lenght will be as a word in this place.
+Offset 0Eh      - from offset 0Eh up to offset 2Dh TBAV will store the first
+                  20h bytes of the file. As you may fastly notice TBAV
+                  will be able to reconstruct an infected file only if the
+                  changes are in the first 20h bytes.
+Offset 2Eh      - here we find one part of the checksum (the DX result one).
+                  The checksum algorithm will be explained later.
+Offset 30h      - from offset 30h up to offset 35h TBAV will store six bytes
+                  from the real (or more probable) entry point of the file.
+                  If the file is an .EXE then TBAV will calculate the entry
+                  point from the header (cs,ip,header lenght) and then store
+                  6 bytes here starting from the calculated lenght. If the
+                  file is a COM then TBAV will check the first byte of the
+                  file. If this byte is equal to 0E8h (CALL), to 0E9h (a JMP)
+                  or to 0EBh (a JMP SHORT) then TBAV will save the 6 bytes
+                  that are pointed from this instructions (of course it will
+                  look the word (or byte) after one of this bytes, this is
+                  the offset of the jump). If the first byte of the COM isn't
+                  equal to 0E9h,0E8h or 0EBh this six bytes will be set to
+                  zero.
+Offset 36h      - contains the high word of the lenght. Combining this to
+                  the word at offset 0Ch you'll get the lenght of the file.
+                  Of course if the file is a COM this will be zero.
+Offset 38h      - here we find another part of the checksum (AX value).
+                  The checksum algorithm will be explained later.
+Offset 3Ah      - contains a word with the flags for the file. This refeers
+                  to the suspicious flags issued by TBScan for some normal
+                  files. Get a look to TBSETUP.DAT. For example MSCDEX.EXE
+                  (which is normally a good file) has this flags set to
+                  0011h (as documented). Of course TBAV does just a name
+                  check, not a more detailed check. So is you rename MSCDEX.EXE
+                  the flags won't be there. Also for the meaning of the
+                  various bits in this word give a look to TBSETUP.DAT intro.
+Offset 3Ch      - always a zero word.
+Offset 3Eh      - contains a validation value for this file entry. So TBAV
+                  will be able to say if someone changed the CRC file without
+                  recalculating this value. The routine for doing this will
+                  be explained later.
+
+Checksum Calculation
+--------------------
+ The checksum that TBAV calculates and stores as two words on 2Eh and 38h
+is done on the _entire_ file. TBAV specifically does this by chunks of 8000h
+bytes, but you may do this as you like.
+
+
+;
+; It is assumed that AX and DX contains the CRC value of the previous block.
+; For the first block of course the values will be AX=0 and DX=0. As you may
+; see the routine isn't dependant by the block lenght, since AX and DX are
+; carryed from the previous block unmodified.
+; We suppose also that DS:SI points to the buffer where the file (or a part
+; of the file, this is a block) is situated. Of course before you have to
+; open it, read and so on...
+;
+
+
+        mov     di,cx                   ; CX = lenght of this block.
+                                        ; of course this may be a value from
+                                        ; 1 up to 8000.
+        shr     di,1                    ; how many words
+startit:
+        test    ah,80h
+        jz      krad1
+        xor     ax,0A097h
+krad1:
+        test    dh,80h
+        jz      krad2
+        xor     dx,0A097h
+krad2:
+        mov     bx,ax
+        add     bx,ax
+        mov     cx,dx
+        add     cx,dx
+        lodsw                           ; get a word from file buffer
+        mov     dl,ah
+        add     ax,bx
+        mov     ah,bh                   ; do the work
+        add     dx,cx
+        mov     dh,ch
+        dec     di                      ; dec counter
+        jnz     startit
+
+;
+; On exit DX and AX carryes the calculated value that will be used in the
+; next loop or, when the entire file will be passed, will be stored at
+; offset 2Eh and 38h
+;
+
+
+
+Validation Calculation
+----------------------
+ To prevent a fast and simple modification of the data in a ANTI-VIR.DAT
+entry TBAV creates also a validation value for each entry, so when TBClean
+is run it will first of all try to determinate if the entry in ANTI-VIR.DAT
+is corrupted by doing the calculation in the reverse order as it was done
+when created. This validation is done of course on the decrypted data. The
+validation word is also encrypted with the same loop as other data.
+ This validation is very simple and is based on the contents of the first
+03Eh bytes of the just created ANTI-VIR.DAT data (i mean the decrypted
+one). Let's see some source:
+
+;
+; Assuming SI points to the start of the file entry in ANTI-VIR.DAT (this
+; is at offset 00h, on the first letter of the filename)
+;
+
+        xor     ax,ax                   ; clear value
+        mov     cx,03eh                 ; how many bytes we will calculate,
+                                        ; this is the lenght of the file
+                                        ; entry minus one word for this
+                                        ; check
+pkt_loop:
+        add     ax,ax
+        add     al,byte ptr ds:[si]     ; the main routine
+        inc     si
+do_the_xor:
+        xor     ax,0a097h
+        js      do_the_xor
+        loop    pkt_loop
+
+ At the end we will find in AX the value for the validation of this entry
+in the ANTI-VIR.DAT file.
+
+Entry encryption
+----------------
+ Well, as we have decrypted it we must also encrypt it at the end. The
+way is the same, just start from the other end ;) Want code? Get code...
+
+;
+; As before: SI points on offset 0Ch of our entry (that which will be
+; encrypted). DI points on the start of ANTI-VIR.DAT in memory.
+;
+
+
+        mov     dx,1ah                  ; words to encrypt
+        mov     cx,word ptr ds:[di+56h] ; decryption value from the
+                                        ; header at offset 56h
+        xor     cx,word ptr ds:[si-0Ch] ; xor the encryption value
+                                        ; with the first word of
+                                        ; the filename
+encrypt_loop:
+        mov     ch,cl
+        dec     cx                      ; modify key as needed
+        and     cl,0fh
+
+        mov     ax,word ptr ds:[si]     ; get a word
+
+        xor     ax,word ptr ds:[di+56h]
+        add     ax,cx
+        ror     ax,cl                   ; do the operations in the reverse
+        xor     ax,cx                   ; order as for decryption
+
+        mov     word ptr ds:[si],ax     ; store it there
+        inc     si                      ; on next word
+        inc     si
+        dec     dx                      ; dec counter
+        jnz     encrypt_loop
+
+
+Entry Point data
+----------------
+ The rest of bytes as i said in the entry are the first 20h bytes (well,
+i won't tell you how to get them, heh ;) ) and the 6 entry point bytes
+(if present). As for the entry point the things aren't really difficoult
+to do. TBAV just gets the offset (+03h) after the jump (call...) for COMs
+and calculates the place in the file using CS:IP and header lenght for
+EXEs. TBAV will do this in the middle of the CRC routine (of course to make
+the calculation of the data a little faster), but there isn't really anything
+so difficoult and you can figure out yourself how it is done ;)
+
+
+CRC File creation
+-----------------
+ It is also interesting how TBAV (Tbsetup) looks and reads for/from files
+when needed. To get the list of the avaiable executables in the directory
+TBAV will simply use the classic 4Eh/4Fh (findfirst/findnext). Searched
+files are .EXE, .COM, .SYS and .BIN (wtf are you searching BINs Frans? ;) )
+Once TBAV has found one suitable file it will open it with the normal DOS
+Open int21h call. It will just use int 21h with 3D40h (AH=3D open file,
+AL=40h=01000000 means readonly and for sharing allow full access by others).
+Also the read/close are the most standard ones (3Fh and 3Eh).
+
+
+2) So what?
+-----------
+ As i already said the classic and most used method is deleting CRC files
+at each succesfull infection. Yea, this is the fastest, easyest and shortest
+method, but the user may notice that TBSetup is adding the same files in
+the directory a little too often :) What can we do? Lets see:
+
+Ask TBSetup to work for you
+---------------------------
+ Since, as i explained before, TBAV uses normal DOS Open (AH=3D) we may just
+hook this option and when TBSetup will calculate its data it will at the
+same time it will infect all the files with our virus (and will also put
+the right checksum, lenght and so on... heheheh). So we may infect always
+on 3Dh or if you like you may turn the virus to a fast-infector when
+TBSetup is run. The only problem is that TBAV gets the lenght of the file
+from the DTA block of the previous findfirst/findnext session. Definitely
+we must also hook findfirst 4Eh and 4Fh. You may then select if directly
+infecting on 4Eh and 4Fh or you may infect on 3Dh and just modify the lenght
+in the DTA with the other 4Eh/4Fh hook. That's up to you. You may opt to
+make with the 4Eh/4Fh just the size increase and with 3Dh the infection,
+so you will also be able to infect correctly when PKZIP is run (more about
+this in VLAD7).
+ Of course there is just a little problem: what to do if the ANTI-VIR.DAT
+is already present in the directory? Of course we must delete it, but when?
+If the CRC file contains the CRCs with our virus and so on we don't want to
+delete it, we want to delete it just when the original contents are still
+there.
+ This is rather simple to do, here are some suggestion:
+  - Delete the ANTI-VIR.DAT at the first time just before TBSetup is runned.
+    Of course then mark that you already deleted it in this directory
+    somewhere (for example you may set a special time or attribute to
+    the ANTI-VIR.DAT file when it will be written or you may put a mark
+    to its directory entry). Of course if you do this you must then infect
+    *all* the executable files in the directory so the right infected CRCs
+    will be calculated and stored. So when TBSetup is being runned (hook on
+    exec - 4Bh):
+      + If mark (put it where you want ;) ) is present then the ANTI-VIR.DAT
+        is up to /virus/ date :) So just activate the fast infection, so if
+        there are some new files (we are sure that all the old ones are really
+        infected) then they will be infected
+      + If not, delete ANTI-VIR.DAT and activate all infection functions
+      + At the end of execution set the mark
+      * This method is quite reailable, fast and easy to implement.
+ Pay attention that TBSetup by default searches recursively also in the
+dirs. So delete the CRC files also in the subdirs or add a "nosub" to the
+TBSetup command line.
+
+Help TBSetup
+------------
+ In another way you may just help TBSetup :) When you infected a file you
+may check for ANTI-VIR.DAT. If it is present then you may change the
+entry for the just infected file, or alternatively you may add a new entry
+in the file. The steps are the same, just the pointer where we will write
+in ANTI-VIR.DAT is different. So to create your own entry in a buffer:
+  - Calculate the CRC on the entire infected file and store them to the
+    right offset in the buffer.
+  - Copy the new first 20h bytes to the buffer.
+  - Copy the new 6 entrypoint bytes (the virus head :) )
+  - Put the lenght in the right offset
+  - Put the filename+extensions+00h pad bytes
+  - Calculate the validation value of the newly created entry and put it
+    as the last word in the entry
+  - Encrypt the entry starting from offset 0Ch
+  - Copy (or append) the entry where needed.
+ This way is quite professional :) The bad news is the implementation. I
+done a small proggy (well, that is just a copy/paste of the routines
+explained above with some more open/close/read from the files) that may
+do this and it took about 400 bytes. Well it was totally _unoptimized_,
+but anyway it is maybe a little too long for some coders considering
+also that this is TBAV only oriented. But hey, it worked ok ;)
+
+Don't delete it all
+-------------------
+ Instead of deleting the entire CRC file (for example if you have an EXE
+infector we don't need to delete also CRCs for COM and SYS files) you may
+delete just the entry of the file we have just infected/changed. This is
+very simple to do and i am sure that it will decrease the probability of
+being noticed. Infact the user may not even notice that TBSetup wrote that
+one (or a few) entry has been added, since the scrolling may be quite fast.
+On the other side if TBSetup will write the message for all the files in the
+directory the user may be warned. Expecially if you have a slow infector
+this may be very usefull.
+ Let's see:
+   - Find the entry for our file (search for filename) in the ANTI-VIR.DAT.
+   - If the entry is the last one in the file then just truncate the file
+     at this position.
+   - If the entry isn't the last one then copy the last one over the ours,
+     rewrite the file and truncate the last entry (this is the last 40h bytes)
+ This is very simple, fast and short. As for an addon feature you may, instead
+of hardcoding the lenght of an entry as 40h, check for the entry lenght by
+doing a few compares. This will make the code larger, but will guarantee
+the compatibility with future versions of TBAV :)
+
+3) "I don't want to change or delete ANTI-VIR.DAT"
+--------------------------------------------------
+ Since not all viruses have to delete/change/do_something with CRC files,
+at least *ALL* viruses must do something to try to fool disinfection using
+CRC files. We must find some way so the CRC disinfection won't be able to
+restore the file.
+ If you readed the entire text you may now already know what your virus must
+do, but anyway here are some notes:
+  - since TBAV stores just the first 20h bytes of the file (+ the 6 entry
+    point bytes as i already said) you may just change something out of that
+    area. For example you may put your infection check somewhere in the middle
+    or in some specific area of the file (this is very simple for COMs and is
+    done for example by Sailor_Pluto which put the marker in a random place
+    in the first 200h bytes. Of course for a better implementation it may
+    put the check from 20h up to 220h, but that is just a choice of the VW),
+    or you may encrypt or just excange some bytes of the original file and
+    restore them just when needed.
+     As for EXEs you may just check if there is some unused space in the
+    EXE header (this is very probable... you need just one byte) and if
+    there is some (you _must_ be sure of this :) ) change just one byte
+    (or if you like some more ;) ) in there and CRC check/reconstruction
+    will fail!
+  - as with the first 20h bytes you may do quite the same (modifications,
+    encryption or something) on the entry point. Just modify some more bytes
+    there and TBAV will have a difficoult life ;) For example you may check
+    if the first byte of the COM file is a jump (call or something) and then
+    instead of putting (as usual) the jump to your virus from the head you
+    may put the virus jump (and some more bytes so you will screw the original
+    6 bytes storage) in the position where the real first victim jump points
+    to.
+  - midfile infection. I don't think that more text is needed for this :)
+ This last section doesn't only apply to TBAV CRC files, but rather generally
+to all kind of CRC based systems, since that mainly any of those have a
+limited set of saved bytes, so keep an eye on this last section even if you
+don't absolutely care about my TBAV CRC file creation method :)
+ Also this may heavily raise the complexity of the disinfection algorithm if
+used in conjunction with a good poly or even with good antidebug/antiemulator
+tricks. Even the most carefull user that wastes time to do a CRC on every file
+won't be able to survive ];)
+

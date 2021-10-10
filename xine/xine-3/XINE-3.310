@@ -1,0 +1,775 @@
+
+                                        /-----------------------------\
+                                        | Xine - issue #3 - Phile 310 |
+                                        \-----------------------------/
+
+
+;
+;   -* Mini Conway game of life emulator *-
+; 
+; Writed and commented by [StarZer0/ikx] a drunk night 
+;
+; Double 64 ko segment to fix up speed 
+; Vga sync mutation , just to be visible for eye
+; Lif file format 1.05 detected & suported
+; Support Ascii lif format
+; Use ESC to quit the game
+;
+;
+
+.model tiny
+.code
+.286
+
+org 100h
+  
+start:
+
+	call	allocate			; allocate 64k segment
+	mov	word ptr cs:[binbuffer],ax	; save value placed in ax
+	call	clearzone
+
+	call	allocate			; allocate 64k segment
+	mov 	word ptr cs:[segbuffer],ax	; save value placed in ax 
+	call	clearzone
+
+	call	analyse				; analyse the command line
+						; open the file and put it
+					;  on the buffer , display comment
+	xor 	ax,ax
+	int 	16h				; wait for a keyboard reaction
+
+	mov	ax,0013h
+	int	10h				; Video Function CalL
+	
+	call 	segtobin			; display the file to screen
+	call 	bintovid
+
+	xor 	ax,ax
+	int 	16h				; wait for keyboard reaction
+
+rendergen: 
+
+	mov	ax,word ptr cs:[binbuffer]
+	call	clearzone			; clear teh binary buffer
+
+	push 	word ptr cs:[segbuffer]
+	push 	word ptr cs:[binbuffer]
+	pop 	es
+	pop 	ds 
+	call	nextgeneration			; render next generation state
+						; result placed in bin
+	call	bintoseg			; copy binary into seg
+	call	bintovid			; copy bin to video
+
+	xor	ax,ax
+	inc	ah
+	int 	16h				; test if ax = ESC
+
+	jz 	rendergen			;if so quit , else the continue
+
+	xor 	ax,ax
+	int 	16h
+
+	cmp 	al,27
+	jne 	rendergen
+
+	mov 	ah,03h				; restore video format 80x25x16
+	int	10h
+
+finish: call	delocate			; restore segments
+	call	delocate
+	ret					; quit!
+
+segtobin:
+
+	push 	es				; push datas on the segbuffer
+	push	ds				; on the binbuffer
+	
+	push 	word ptr cs:[segbuffer]
+	pop	ds
+
+	push 	word ptr cs:[binbuffer]
+	pop	es
+	
+	jmp repzit
+
+bintoseg: 					; put datas on the bin buffer
+						; into the segbuffer
+	push	es
+	push 	ds
+
+	push	word ptr cs:[binbuffer]
+	pop	ds 
+
+	push 	word ptr cs:[segbuffer]
+	pop 	es
+
+	jmp	repzit
+
+bintovid: 					; put datas in the bin buffer
+						; into Bios video (0A000h)
+	push 	es 
+	push 	ds 
+
+	push 	0A000h
+	pop 	es 
+
+	push 	word ptr cs:[binbuffer]
+	pop 	ds
+
+repzit: mov	cx,64000			; the copier
+	xor	si,si
+	xor	di,di
+	repz	movsb
+		
+	pop	ds
+	pop	es 
+	
+	ret	
+
+nextgeneration: 			; rendering next generation
+
+	xor	ax,ax
+	mov	cx ,0ffffh
+
+cxsaver: 
+
+	push 	cx
+	call	rendersquare		; render for the entire segment
+	pop	cx 
+	inc 	si 
+	 
+	loop	cxsaver
+	
+	ret	
+
+rendersquare: 					; here we render if the case
+						; died or rest alive
+	mov	cx,3				; we render 9 square , 3 upper
+	xor 	bx,bx				; 3 center , 3 low
+	push 	si				; -1 
+	sub 	si,320+1
+
+mytype: 
+
+	add 	bl,byte ptr ds:[si]
+	inc 	si
+
+	add 	bl,byte ptr ds:[si]
+	inc 	si
+
+	add 	bl,byte ptr ds:[si]
+	inc 	si
+
+	add 	si,320-3
+
+	loop 	mytype			; render 3 times successive 3 block 
+
+	pop	si 
+	sub 	bl,byte ptr ds:[si]	; sub the center block
+
+	cmp 	bl,02h
+	je	restquare			; rest in life
+
+	cmp 	bl,03h
+	jne	setasdeath			; if different then die
+
+	mov	byte ptr es:[si],01h		; set alive
+	ret
+
+restquare: 					; 
+
+	mov	al,byte ptr ds:[si]		; change nothing
+	mov 	byte ptr es:[si],al
+	ret
+
+setasdeath: 
+
+	mov 	byte ptr es:[si],0		; kill the life
+	ret
+
+clearzone: 					; put a max of zero into the 
+						; ax segment
+	push 	es
+	mov 	es,ax
+	xor	di,di
+	xor 	ax,ax
+	mov 	cx,0ffffh
+	repz 	stosw
+	pop	es
+	ret
+
+allocate: 					; memory allocator , 64k seg
+
+	push 	cs 
+	push	cs
+	mov 	ah,4ah
+	mov	bx,0ffffh
+	int 	21h				
+	mov 	ah,4ah
+	sub 	bx,0ffffh/16+2
+	int 	21h
+	mov	ah,48h
+	mov 	bx,0ffffh/16+1
+	int 	21h
+	pop	es
+	pop 	ds
+
+	ret
+
+delocate: 					; delocate 
+
+	mov 	ah,49h
+	int	21h
+	ret
+
+analyse: 
+
+	mov	si,82h
+	mov	cx,13				;
+
+	cmp 	byte ptr [si-1],0dh		; if no command line
+	jne 	analyseloop
+
+	mov	bp,offset trademark		; display trademark
+	mov	cx,endoftrade-trademark		; and quit
+	call 	display0
+
+	pop	ax
+	jmp 	finish
+
+analyseloop:					; put a zero after the file 
+						; in the command line
+	cmp	byte ptr [si],0dh
+	jz	endanalyseloop
+	inc si
+	loop analyseloop
+
+endanalyseloop:
+
+	mov 	byte ptr [si],0
+
+	mov 	ax,3d00h			; open this file
+	xor 	cx,cx
+	push	cs
+	pop	ds
+	mov	dx,82h
+	int 	21h
+
+	xchg 	ax,bx
+	jnc 	noproblem			; if error then display msg & 
+						; quit
+	mov	bp,offset filenoexist
+	mov	cx,endoffile-filenoexist
+	call 	display0
+
+	pop	ax
+	jmp 	finish
+
+noproblem: 
+
+	mov	ax,4202h			; go to the end
+	xor 	cx,cx
+	xor	dx,dx
+	int 	21h
+
+	push	ax				; save file size
+	push	ax
+
+	mov 	ax,4200h			; go to the begin
+	xor 	cx,cx
+	xor	dx,dx
+	int 	21h
+
+	mov 	ah,3fh				; read cx bytes in the files
+	pop	cx
+	mov 	dx,offset filebuffer
+	int 	21h
+
+	mov	ah,3eh				; close the file
+	int 	21h
+
+	mov	si,offset filebuffer		; si = 
+
+	cmp 	word ptr [si],'L#'		; set if the file begin '#L' 
+	je 	lifanalyzor			; then lif file detected
+
+	mov	si,offset filebuffer		; analyse the file
+	mov	di,(320*50)+160
+	pop 	cx				; cx = size
+
+	xor	bp,bp
+
+	push	ds
+
+	push	word ptr cs:[segbuffer]
+	pop	ds
+
+analyseloop2: 
+
+	mov	ah,byte ptr cs:[si]
+	cmp	ah,0ah				; detect if end of line 
+	jne 	analyseloop2bis			; if so then goto at the next
+						; line
+	sub 	di,bp
+	add 	di,320
+	xor 	bp,bp
+
+analyseloop2bis: 
+
+	cmp 	ah,48				;  
+	jb 	dontputit			; if not 0 and 1 then skip it
+	cmp 	ah,49				; 
+	ja	dontputit
+
+	sub	ah,30h				; ah = 1 or 0
+	mov	byte ptr ds:[di],ah		; put it into the buffer
+
+	inc	bp
+	inc	di
+
+dontputit:
+
+	inc 	si
+	loop	analyseloop2
+
+	pop	ds				; restore ds
+	ret					; and return
+
+lifanalyzor:
+
+        mov     si,offset filebuffer
+        pop     cx
+
+        inc     cx
+
+        call verifyversion			; verify if compatible version
+
+midlooping:
+
+        cmp     word ptr [si],'C#'		; detect if comment line
+        je      putcommentonlife
+
+        cmp     word ptr [si],'D#'
+        je      putcommentonlife		; detect if comment line
+
+        cmp     word ptr [si],'R#'		; detect if new rules 
+        je      setrules			; never used
+
+        cmp     word ptr [si],'N#'		; Normal conway rules
+        je      setconwayrules			; never used
+
+        cmp     word ptr [si],'P#'		; start of datas
+        je      putdatas
+
+        inc     si
+
+        loop    midlooping
+
+invalidLif:
+
+	jmp finish_and_display			; display error message
+
+putcommentonlife:
+
+        push    cx
+
+        call    getendofline			; get end of line (0A0Bh)
+						; bx return length
+        push    si
+        add     si,2
+
+        push    bx
+        push    bx
+
+        mov     ah,03h				; print the comment 
+        xor     bx,bx
+        int     10h
+
+        mov     ax,1301h
+        mov     bx,7
+        pop     cx
+        sub     cx,2				; skip the #D or #C
+
+        mov     bp,si
+        int     10h
+
+        pop     bx
+        pop     si
+
+        add     si,bx				; go to next si
+        pop     cx				; and sub cx
+        sub     cx,bx
+
+        jmp     midlooping			; continue loop
+
+putdatas:
+
+        call    analysedatas			; continue alayzing
+        ret
+
+setrules:					; analyze rules
+
+        push    cx
+
+        call    getendofline
+        push    bx
+        push    si
+
+        xor     bx,bx
+        mov     cx,8
+
+thiscx0:
+
+        mov     ah,byte ptr [si+bx+3]
+
+        cmp ah,'/'
+        je      nixloop
+
+        sub     ah,30h
+        mov     byte ptr [settable1+bx],ah		; put rest in life
+        inc     bx					; rules into settable
+
+        loop    thiscx0
+
+nixloop:
+
+        add     si,bx
+        mov     cx,8
+
+thiscx1:
+
+        mov     ah,byte ptr [si+bx+1]			; put born rules into
+        cmp     ah,0dh					; settable2
+        je      endofnix
+
+        sub     ah,30h
+        mov     byte ptr [settable2+bx],ah
+        inc     bx
+
+        loop    thiscx1
+
+endofnix:
+
+        add     si,bx
+
+        pop     si
+        pop     bx
+        pop     cx
+
+        add     si,bx				; goto next line
+        sub     cx,bx				; continue looping
+
+        jmp     midlooping		
+
+setconwayrules:
+
+        mov     byte ptr [conwayflag],1		; set switch on
+	add 	si,4
+	sub 	cx,4
+        jmp 	midlooping			; and continue looping
+
+verifyversion:					; verify if version = 1.05
+
+        push    cx
+
+        cmp     byte ptr [si+6],'1'
+        ja      invalid_version
+
+        mov     ax,word ptr [si+6+2]
+        sub     ax,3030h
+        xchg    ah,al
+        cmp     ax,05h
+        ja      invalid_version
+
+        call    getendofline
+
+        add     si,bx
+
+        pop     cx
+        sub     cx,bx
+
+        ret
+
+invalid_version:
+
+        pop     ax
+        jmp     invalidlif
+
+getendofline:					; we scan the string for an 
+						; 0D0Ah
+        push    si
+        push    cx
+
+        mov     cx,80
+        xor     bx,bx
+
+founded:
+
+        cmp     word ptr [si],0a0dh
+        je      endfounded
+        inc     bx
+        inc     si
+        loop    founded
+
+endfounded:
+
+        inc     bx
+        inc     bx
+
+        pop     cx
+        pop     si
+
+        ret
+
+analysedatas:				; analyse if we need to change location
+					; or put datas on buffer
+        push    cx
+
+analysedatas0:
+
+        pop     cx
+
+        cmp     word ptr [si],'P#'
+        jne     analyse2bis		; change location code
+
+        call    analyseposition
+
+analyse2bis:
+
+        call    putlineonbuffer		; else we put datas on buffer (*.)
+
+        push    cx
+
+	dec 	cx
+	pushf
+	jc	analyseOver
+	popf
+        jnz     analysedatas0
+	pushf
+
+analyseOver:
+
+	popf
+        pop     ax
+
+        ret
+
+putlineonbuffer:
+
+        push    cx
+        call    getendofline
+        push    si
+        push    bx
+
+        push    es
+
+        push    word ptr [segbuffer]		; set put on the buffer
+        pop 	es
+
+        xor     bp,bp
+        mov     cx,bx
+        sub     cx,2
+
+looponbuffer:
+
+        mov     ah,byte ptr [si]
+        cmp     ah,'*'
+        je      putaone			; if any * the put 01h on buffer
+
+        mov     ah,byte ptr [si]
+        cmp     ah,'.'
+        je      nothingtoput
+
+        dec     di
+
+        jmp     nothingtoput
+
+putaone:
+
+        mov     byte ptr es:[di],01
+
+nothingtoput:
+
+        inc     di
+        inc     si
+        inc     bp
+
+loop looponbuffer 
+
+        cmp     byte ptr [si],'.'	; if last byte equal . the next line is
+        je      skipcount		; concatenate
+
+        add     di,320
+        sub     di,bp
+
+skipcount:
+
+        pop     es
+        pop     bx
+        pop     si
+        pop     cx
+
+        add     si,bx
+        sub     cx,bx
+
+        ret
+
+analyseposition:
+
+        push    cx
+        call    getendofline
+        push    bx
+        push    si
+
+        add     si,3
+
+        xor     ax,ax
+        xor     dx,dx
+        xor     bp,bp			; bp = negative flag
+
+stoof1:
+
+        mov     dl,byte ptr [si]
+
+        cmp     byte ptr [si+1],32
+        je      endofstoof1
+
+        cmp     dl,'-'				; negative number
+        jne     positivecounter0
+
+        inc     bp
+        inc     si
+        jmp     stoof1
+
+positivecounter0:
+	
+        sub     dl,30h				; analyse number with base 10
+        add     ax,dx				; 1234 = 
+        mov     bx,10				; ((((1)*10)+2)*10)+3)*10)+4)
+        mul     bx
+        inc     si
+        jmp     stoof1				; loop until space detected
+
+endofstoof1:
+
+        sub     dl,30h
+        add     ax,dx
+        mov     bx,320
+        mul     bx
+        mov     dx,(320*100)			; do it over vertical position
+        cmp     bp,0
+        je      okaymag1			; for negative counter
+
+        sub     dx,ax
+        sub     dx,ax
+
+        okaymag1:
+        add     dx,ax
+
+        push    dx
+
+        add     si,2
+
+        xor     dx,dx
+        xor     ax,ax
+        xor     bp,bp
+
+stoof2:						; the same thing than upper 
+						; but for vertical postion
+        mov     dl,byte ptr [si]
+
+        cmp     byte ptr [si+1],0dh
+        je      endofstoof2
+
+        cmp     dl,'-'
+jne positivecounter
+
+        inc     bp
+        inc     si
+
+        jmp     stoof2
+
+positivecounter:
+
+        sub     dl,30h
+        add     ax,dx
+        mov     bx,10
+        mul     bx
+        inc     si
+
+jmp stoof2
+
+endofstoof2:
+
+        sub     dl,30h
+
+        add     ax,dx
+        pop     di
+	add	di,160
+        cmp     bp,0
+
+        je      okaymag2
+        sub     di,ax
+        sub     di,ax
+
+okaymag2:
+
+        add     di,ax
+
+        pop     si
+        pop     bx
+        pop     cx
+
+        sub     cx,bx					; get next line
+        add     si,bx					; sub the counter
+
+        ret
+
+finish_and_display:					; display error mess.
+
+	mov 	bp,offset errormsg
+	mov	cx,endoferrormsg-errormsg
+	call	display0
+
+	pop 	ax
+	pop	ax
+	jmp 	finish
+
+display0:						; display string on 
+							; screen
+	push	cx
+        mov     ah,03h
+        xor     bx,bx
+        int     10h
+	pop	cx
+
+        mov     ax,1301h
+        mov     bx,7
+        int     10h
+
+ret
+
+trademark:	db ' Mini Conway Game emulator version &0.5 ',10,13
+		db ' By StarZer0 , Ikx(C) 1998 - Sourceware ' ,10,13
+		db 10,13
+		db ' use : lifegame filename.lif ' ,10,13
+endoftrade:
+
+errormsg:	db 10,13
+		db ' *** Invalid Lif format or unrecognized version',10,13
+endoferrormsg:
+
+filenoexist:	db ' File not found ',10,13
+endoffile:
+
+conwayflag:	db 0
+settable1:	db 9 dup (9)
+settable2:	db 9 dup (9)
+binbuffer:	dw ?
+segbuffer:	dw ?
+filebuffer:	db ?
+
+end start
+

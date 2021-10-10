@@ -1,0 +1,444 @@
+
+                                        /-----------------------------\
+                                        | Xine - issue #2 - Phile 009 |
+                                        \-----------------------------/
+
+; GetProcAdd for Kernel32 - finding Kernel32 API's
+; by jhb
+
+;  One of the major hurdles for Virii writers who want to extend there selves
+; to Win95 virii, is the ability to call the Win95 API. But the usual way to
+; call these API is to have them already link and in the import area of the PE
+; file. So how do you call the API if you do not have them linked at run time?
+;   Well VLAD show us we can hard code the API address's but if Win95 changes 
+; the kernel location ,we have a problem.  Next VLAD shows us a way to "patch"
+; the import area to get getproccaddress and loadlibrary, this allows us to get
+; the address of all the import by name API. Another way is demo'ed in this
+; code by assuming one thing the kernel address (0BFF70000h) we can use the 
+; info in the PE file format of the Kernel32 to locate any API named/ordinal.
+; This means we can have access to any API that is Exported... Well a modified
+; form of the routine is used in the Puma virus to import all the need API.
+; The only problem is the hardcoded Kernel32 address. Well after I wrote this
+; code I found that if the program imported any kernel32 routine then the 
+; address was located in the entry of the Kernel32 in the import area.
+;   Here is a diagram that hopefully illustrates what I am poorly explaining
+;  an entry in the import table is like so:
+;
+;   offset            b4 runtime                         runtime
+;   0            rva Pnter to first API imported         same
+;
+;   4            000000                                  timedate of DLL
+;
+;   8            000000                                  load address of
+;                                                        the dll 
+;
+;   C            rva pnter to dll name                   same
+;
+;   10           rva Pnter to first API imported         address to jmp
+;                                                        tble to API
+;
+;  Well to some this is still nonsense, read the PE format docs and it mite
+; make more sense ;),  The important thing is that the Dll address is there
+; and can be used. Problem here if the file does not have a Kernel API,
+; doubtful since to even end the file you use ExitProcess. Second problem
+; if the file is "Binded" this means the file has the import address already
+; loaded into it, Basically this can be checked b4 runtime offset 4 already
+; have a date and time offset 8 has FFFFFFF in it, but change the date time
+; field and then all is ok, the file is no longer "binded". This way would
+; just setup a routine to get the kernal address and then run the regular
+; routine here to get the Address of whatever kernel we need.
+;  Anyway this routine is just a simple example I use to get the address of
+; routines I want to test ideas on.  Getting the CallVxd0 or ordinal 1
+; of the Kernel this gives us access to  VXD routines like Vwin32_int21Dispatch
+; so with one routine you could infect the a file using int 21 calls. Well 
+; this should work in theory. Well I hope this routine helps others understand
+; the writing of Virii in Win95.
+;
+; Yes I know that if the ordinal is the last routine found there is garbage
+; in the title of the box but oh well you fix it it demos the idea ok
+; jhb 1/97
+
+;   The main idea is to find the Kernel32 loaded address which is the
+; number we will need to add to all the rva to get the actual location in
+; memory now located the import data area by using  the info in the data
+; directory the import data is located at the 78h bytes into the PE header
+; now we take this rva add the kernel and we have the import segment.
+; now we get the pointers to the 3 arrays nameindex, functionindex,
+; AddressofFunction we also need the ordinal base but thats easy also
+; Each index is a pointer to the next bit of info to find the Address of the
+; function. First take the Name and find which string it matches to now use
+; this number as an index into the ordinals now use the ordinal as an index
+; into the Array of Funcutions address then ya got it. Well I doubt that made
+; sense I hope but doubt my comments in the code help
+;
+;
+; To compile:
+;  tasm32 /ml /m3 getadd,,;
+;  tlink32 /Tpe /aa /c getadd,getadd,, import32.lib
+;
+
+
+; just trying to visualize how i am storing all the data on the stack
+;
+;               -14h
+;               -10h
+;               -0Ch
+;holders        -10
+;ret_address    -8
+;old_bp         -4
+Export_rva      equ     0
+kern1           equ     Export_rva + 4 
+baseF           equ     kern1 + 4 
+AddFunc         equ     baseF + 4
+AddName         equ     AddFunc + 4
+Nindex          equ     AddName + 4 
+AddOrd          equ     Nindex + 4
+limit           equ     AddOrd + 4        
+Where           equ     limit + 4
+Looking         equ     Where + 4
+worksp          equ     Looking + 4
+
+.386
+locals
+jumps
+.model flat ,stdcall
+
+
+;Working version of a get address routine ends with di containing the
+;address of the process
+;set to work with KERNEl32.dll and nothing else
+;will only look till there is no more names to check 
+;
+
+;Define the needed external func tions and constants here.
+
+extrn           ExitProcess:PROC
+extrn           MessageBoxA:PROC                ;note in the user32.dll
+ 
+
+.data                                        ;the data area
+title1          db      'this is a title',0
+mess            db      'this is a message',0
+storage         dd      4 dup(0)       
+
+.code                                   ;executable code starts here
+
+HOST:
+       
+                jmp     OverData
+;fake data
+kern            dd      0BFF70000h      ;must add to all rva's
+
+;ok below is the functions we are going to look for
+;format is the standard end in 0 if you pass an ordinal
+; give me the ascii = of the number in the first 2 bytes then
+; the number in hex you looking for. 
+LookFor         db      'ReadFile',0
+                db      'ExitProcess',0
+                db      39h, 30h, 90d          ;'AllocLSCallback',0
+last            db      30h, 31h, 01d 
+                db      0Bh
+                db      0
+
+
+OverData:
+        mov     esi,offset LookFor              ;where the list of functions
+                                                ;is
+
+        mov     eax,4                           ;how many functions
+         
+
+        call    GetProcAdd                      ;on return the stack wil
+                                                ;have addresses in it
+                                                ;last request first pop
+                                                ;format  LIFO ;)
+
+
+;-
+
+        ;edi = the address of the function in question
+        ;for this test case we will use a dialog box and show the
+        ;the last function found and its address
+ 
+
+Box_it:
+
+;=====================================================================
+;this simply makes the value in edi converted to a ascii string with a null
+; 0 at the end Borlands version was too long
+
+
+        push    edi
+        mov     edi,offset mess
+        mov     cx,1ch
+
+digit_loop:
+        pop     eax
+        push    eax
+        
+        shr     eax,Cl
+        and     ax,000fh
+        sub     cx,4
+        cmp     al,9
+        jle     number
+
+        sub     al,0ah
+        add     al,41h
+        jmp     letter
+
+number:
+        or      al,30h
+letter:
+        stosb
+        cmp     cx,0fffCh
+        jne     digit_loop
+        mov     al,0
+        stosb
+
+        pop     edi
+
+;now we call the MenuBox API
+;------------------------------------------------------------------------
+        mov     eax, -1
+        push    eax
+
+        mov     eax, offset last                        ;
+        push    eax                                     ;
+
+        mov     eax,offset mess                         ;
+        push    eax                                     ;
+
+        mov     eax,0
+        push    eax
+
+        call    MessageBoxA
+
+;just some playing around
+        ;push    offset return_here
+
+        ;push    0bff638d9h
+        ;ret
+
+;return_here:
+        
+
+
+fini:           ;left over from a Teacher who use to teach me C++
+
+        push    LARGE -1
+        ;call    dword ptr edi          ;when I used the routine to locate
+                                        ;the ExitProcess address
+        call    ExitProcess             ;this simply terminates the program
+
+;===========================================================================
+GetProcAdd:
+;edi = where to place the address ;Where
+;esi = the list of address's   delimited by Zero end in 0Bh ;Looking
+;
+
+        pop     ebx                             ;set up and save
+                                                ;some storage for the
+        shl     eax,2                           ;routine
+        sub     esp,eax                         ;
+        mov     edi, esp                        ;
+                                                ;
+        push    ebx                             ;
+                                                ;
+        push    ebp                             ;
+        sub     esp,worksp                      ;
+        mov     ebp,esp                         ;
+         
+
+        mov     [ebp +  Where],edi              ;save where will store them 
+        mov     [ebp + Looking],esi             ;save which ones looking fo
+
+        mov     esi,dword ptr [kern]
+
+        lodsw
+        cmp     ax,'ZM'                ;we assume Bff70000h for location
+        jne     Not95                  ;of the Kernel
+
+        xor     eax,eax                ;ok its the start of a exe file
+        add     esi,3Ah                ;get pointer to the PE start
+        lodsw
+
+        mov     esi,dword ptr [kern]   ;if this is not true get out
+        add     esi,eax                ;now load that word
+        lodsd                          ;
+
+        cmp     ax,'EP'                ;same thing if this is not true
+        jne     Not95                  ;something is wrong
+
+;found the PE header
+;        sub     esi,4           ;back up si to the PE header
+;                                ;        
+
+        mov     [ebp + kern1],eSI ;save the address of the PE header
+                                  ; no reason thouht i might need it      
+
+        add     esi,74h         ;should be 78h but the last lodsw
+        lodsd                   ;should be rva to the .edata
+
+        mov     ebx, dword ptr [kern]
+
+        add     eax,ebx                 ;should be the .edata area
+                                        ;offset to the to name of dll
+        add     eax,10h                 ;
+        mov     esi,eax                 ;get us to the base
+                                        ;
+; ok found the .export area now get the info we need to find
+; the address
+
+        lodsd
+        mov     [ebp + baseF],eax       ;this is the starting ordinal that
+                                        ;that all must be added to
+                                        ;usualy 1 for kernel32
+
+        lodsd                           ;total number of exported functions
+                                        ;by name and ordinal
+
+        lodsd
+        mov     [ebp + limit],eax       ;how many functions are exported
+                                        ;by name this is the limit of how
+                                        ;many we will search for        
+
+;the next three are all RVA's to the
+;fields so we need to add the offset
+;them
+        lodsd                           ;this is the address to
+        add     eax,dword ptr [kern]    ;an array of pointers to the
+        mov     [ebp + AddFunc],eax     ;entry point rva's of each 
+
+        lodsd                           ;this is the RVA to ascii names
+        add     eax,dword ptr [kern]    ;of each named exported fuction
+        mov     [ebp + AddName],eax     ;
+
+        lodsd                           ; rva points to  array of words 
+        add     eax,dword ptr [kern]    ;which are the export ordinals
+        mov     [ebp + AddOrd],eax      ; - the base
+
+;ok we have everthing we need to go ahead and locate the address's of the
+;KERNEL32.dll functions
+
+        mov     ebx,[ebp + Looking]     ;get address of the first name
+
+
+
+LookLoop:
+        mov     esi,[ebp + AddName]     ;get the first rva pointer to a name
+        mov     [ebp + Nindex],esi      ;
+
+        mov     edi,[esi]               ;now make it a true pointer to the
+        add     edi,[kern]              ;name by adding the offset
+
+        mov     ecx,0                   ;sets the counter to 0
+ 
+
+TryAgain:
+        mov     esi,ebx                 ;what function we are looking for
+                                        ;now simple cmp strs
+
+                  
+        test    byte ptr [ebx], 00110000b    ; check if we have a ordinal  
+        jne      UseOrdinal                  ;instead of a String here
+
+
+MatchByte:
+        cmpsb
+        jne      NextOne                ;not it try next nameof fucntion
+
+        cmp     byte ptr [edi],0        ;if equal to 0 we found a match
+        je      GotIt                   ;
+
+        jmp     MatchByte               ;nope try next byte
+
+NextOne:
+       inc      cx
+       cmp      cx,[ebp + limit]
+       jge      not_found
+
+       add      dword ptr [ebp + Nindex],4      ;get the next pointer rva
+       mov      esi,[ebp + Nindex]              ;and try again
+       mov      edi,[esi]                       ;
+       add      edi,[kern]                      ;
+       jmp       TryAgain                       ;
+
+;---------------------------------------------------------------------
+GotIt:
+;note if not a match is found the all other from then on in are blank
+;in other words dont mispell ,or ask for for a function that is not in
+; KERNEL32
+;esi = the 0 at the end of the name of the strings given to us to look for
+;
+;cx = the index into the AddOrd
+;take Nindex * 4 + [AddOrd] = Ordinal
+;Ordinal * 4 + [AddFunc] should be the rva to the fuction
+
+        mov     ebx,esi         ;get set for next search routine
+        inc     ebx             ;
+
+        shl     ecx,1           ;*2 looking into a word array
+        mov     Esi,[ebp + AddOrd]
+        add     Esi,ecx
+        xor     eax,eax
+        mov     ax,word ptr [esi]
+
+        jmp     GotOrdinal
+;here ax equals the ordinal - the base
+;if ordinal is passed to hear then we should be able to skip
+;searching for a name and hit here
+;not sure of course but it tested on a few that I tried
+;
+
+UseOrdinal:
+
+           mov  al, byte ptr [ebx + 2]         ;I do not check for
+           cbw                                 ;bad ordinals so this
+           cwde                                ;may return wrong anwsers
+           inc ebx                             ;if wrong ordinal sent
+           inc ebx
+           inc ebx
+           
+
+GotOrdinal:
+        shl     eax,2                ;*4 looking into a dword array
+        mov     esi,[ebp + AddFunc]
+        add     Esi,eax
+
+        mov     Edi,dword ptr [esi]
+        add     Edi,[kern]
+
+        push    ebp
+
+        mov     esi, [ebp + Where]
+        mov     ebp,esi
+        mov     [ebp ],edi
+
+        pop     ebp
+        add     dword ptr [ebp + Where],4
+
+        cmp     byte ptr [ebx],0bh
+        jne     LookLoop
+
+        jmp     over_error
+        
+Not95:
+        xor     esi,esi                 ;if the header of the kernel
+                                        ;is not there forget it, its not
+                                        ; the Win95 we know and love ;)        
+
+not_found:                              ; String pass to us is not a 
+        xor     edi,edi                 ; valid fucntion name
+
+over_error:
+                
+        ADD     ESP,worksp
+        pop     ebp
+
+        ret
+;----------------------------------------------------------------------------
+
+
+         end     HOST
+
+

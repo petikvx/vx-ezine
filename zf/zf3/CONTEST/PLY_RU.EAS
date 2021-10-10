@@ -1,0 +1,720 @@
+Buf     equ     4000                    ; Для Хедера
+Buf1    equ     Buf+1ah                 ; Для выря
+Buf2    equ     Buf1+0d21h              ; Для сигнатуры
+Buf3    equ     30000                   ; Для копирования
+
+a       proc
+        cld
+        xor     cx,cx
+        xor     ax,ax                   ; Если спецификаторы диска
+                                        ; в строке параметров неправильные,
+                                        ; то AX<>0
+        mov     si,82h
+        mov     di,si
+                                        
+loop1:                                  
+        lodsb                           
+        cmp     al,0dh                   
+        jz      off                     ; Тут мы/я разделяем слова
+                                        ; в строке параметров нолями
+        or      al,al
+        jz      off
+
+        cmp     al,' '
+        jnz     n_zero
+
+        xor     al,al
+        and     byte ptr flag,07fh
+n_zero:
+        cmp     ax,100h                 ; Это выглядит так:
+        ja      dal                     ; AH=0, AL<>0 - значит новое слово
+                                        ; AH<>0 => AX> 100h
+        cmp     al,'-'
+        jz      param
+
+        mov     cx,di
+        and     byte ptr flag,7fh
+        jmp     short not_parameter
+
+param:
+        or      byte ptr flag,80h
+
+dal:
+        cmp     byte ptr flag,80h
+        jc      not_parameter
+
+        and     al,11011111b            ; маленькие в большие
+
+        cmp     al,'C'                  ; Cure
+        jnz     dal1
+
+        or      byte ptr flag,1
+
+dal1:
+        cmp     al,'A'                  ; Ask Recurse Directories
+        jnz     dal2
+
+        mov     byte ptr ReDi+1,0
+
+dal2:
+        cmp     al,'N'                  ; No Vaccine at all
+        jnz     not_vacc1
+
+        add     byte ptr vaccine+1,offset not_vacc-vacc
+        mov     al,'V'
+
+not_vacc1:
+        cmp     al,'V'
+        jnz     not_parameter
+
+        or      byte ptr flag,10h
+
+not_parameter:
+        stosb                           
+        mov     ah,al                   
+        jmp     short loop1
+
+dd:
+        mov     dx,offset SigMustBePresent
+        call    message
+no_param:
+        ret
+
+off:
+        xor     ax,ax
+        stosb                           ; Это забиваем 0D нулем
+
+        mov     dx,offset help
+        call    message
+
+        jcxz    no_param
+
+        mov     bp,cx                   ; Теперь BP->Путь и маска
+                                        ;             для тестирования
+
+        mov     dx,offset sig
+        mov     ax,3d00h
+        int     21h
+        jc      dd
+
+        mov     bx,ax
+        mov     ah,3fh
+        mov     cx,5000
+        mov     dx,Buf2
+        int     21h
+
+        mov     cl,3
+        div     cl
+        xor     ah,ah
+        mov     word ptr siz1,ax        ; Размер сигнатуры/3
+
+        mov     ah,3eh
+        int     21h
+
+        call    findslash
+
+        mov     si,di
+        mov     di,offset maska         ;) спрячу-ка я маску куда нить по-дальше
+        mov     cx,13
+rep     movsb
+
+        mov     dx,offset dta
+        mov     cx,1
+
+find_all_files:
+        push    cx
+        push    dx
+        mov     ah,1ah                          ; Set DTA
+        int     21h
+
+        call    findslash
+
+        push    di                              ; DI->последний '\'
+        mov     si,offset maska
+        mov     cx,13
+rep     movsb
+        pop     di
+        mov     dx,bp
+
+        mov     cx,2fh                          ; Find All except Directories
+        mov     ah,4eh                          ; Find 1st
+        int     21h
+
+        pop     si                              ; SI->DTA
+        jc      oo
+again:
+        push    si
+        push    di
+
+        add     si,1eh                          ; File just found
+        mov     cx,13
+rep     movsb
+
+        call    checkfile
+        call    ask_kbd
+
+        mov     ah,4fh
+        int     21h
+
+        pop     di
+        pop     si
+        jnc     again
+
+oo:
+        mov     [di],'.*'
+        mov     word ptr [di+2],'*'
+
+        mov     cx,3fh
+
+        mov     ah,4eh
+        int     21h                             ; '.'
+
+        pop     cx
+        mov     dx,si
+
+        mov     ah,4fh
+        int     21h                             ; '..'
+
+find_dir:
+        mov     ah,4fh
+        int     21h
+        jc      no_more
+
+        test    byte ptr [si+15h],00010000b     ; 10h - Directory
+        jz      find_dir                        ;      Hidden, System, или еще
+                                                ;       кто...
+        push    di
+        push    si
+        add     si,1eh
+loop8:                                          ; Дописываем имя каталога
+        lodsb                                   ; в конец строки параметров...
+        stosb
+        or      al,al
+        jnz     loop8
+
+        pop     si
+        xor     al,1                            ; CLZ ;-)
+ReDi:
+        jmp     short Re_Dir
+
+        mov     word ptr [di-1],'$\'
+
+        push    dx
+
+        mov     dx,bp
+        call    message
+
+        mov     dx,offset Ask_Recurse
+        call    ask
+
+        pop     dx
+
+        call    input
+
+        cmp     al,'0'
+
+Re_Dir:
+        mov     word ptr [di-1],'\'             ; ...и завершаем его слэшем
+
+        pop     di
+        jz      find_dir
+
+        inc     cx                              ; увеличим число итераций
+        add     dx,2ch                          ; а вот и новое смещение DTA
+
+        jmp     find_all_files                  ; Сформировать новый DTA
+
+no_more:
+        sub     dx,2ch                          ; Вычисляем DTA предыдущего
+        mov     ah,1ah                          ; каталога
+        int     21h
+
+        call    findslash
+
+        mov     byte ptr [di-1],0               ; Затрем последний слэш -
+                                                ; мне нужен предпоследний
+        call    findslash
+
+        mov     si,dx
+        mov     byte ptr [ di ],0
+
+        call    ask_kbd
+
+        loop    find_dir
+
+        ret
+a       endp
+
+ask_kbd proc
+        mov     ah,1
+        int     16h
+        jz      no_key
+
+        xor     ax,ax
+        int     16h
+
+        cmp     al,1bh
+        jnz     no_key
+
+        int     20h
+no_key:
+        ret
+ask_kbd endp
+
+key     db      0
+inp     proc
+k1:     mov     ah,1
+        int     16h
+        jz      k1
+
+        xor     ax,ax
+        int     16h
+
+        cmp     al,1bh
+        jnz     __ret
+        mov     key,al
+
+__ret:
+        ret
+inp     endp
+
+
+input   proc
+
+ask_again:
+        call    ask_kbd
+        jz      ask_again
+
+        ret
+input   endp
+
+findslash proc
+        mov     si,bp
+
+        mov     di,si
+ll:
+        lodsb
+        or      al,al
+        jz      off_ll
+
+        xor     al,'\'
+        jnz     ll
+
+        mov     di,si
+        jmp     short ll
+
+off_ll:
+        ret
+findslash endp
+
+
+flag    db      0
+; +- 7 -+- ... -+- 4 -+- ... -+- 0 -+
+; |     |       |     |       |     -> 1: лечить автоматически
+; +- | -+- ... -+- | -+- ... -+-----+
+;    |             |
+;    |             +-----------------> 1: вакцинировать автоматически
+;    |
+;    +-------------------------------> используется при считывании строки параметров
+
+checkfile proc
+; процедура проверки файла
+; Вход: DX => 'полный путь и имя файла для тестирования',0
+; Выход: DX => 'полный путь и имя файла для тестирования',0  ;-)
+
+        push    dx
+        mov     ax,3d00h
+        int     21h                     
+        jc      not_exe1
+
+        xchg    ax,bx
+        mov     cx,1ah
+        mov     ah,3fh
+        mov     dx,Buf
+        int     21h
+
+        push    ax
+
+        mov     ah,3eh
+        int     21h
+
+        pop     ax
+        cmp     ax,cx
+        jz      exe1                    ; Слишком короткий файл
+
+not_exe1:
+        pop     dx
+        ret
+exe1:
+        mov     si,dx
+        lodsw
+        cmp     ax,'MZ'
+        jz      exe
+
+        cmp     ax,'ZM'
+        jnz     not_exe1
+exe:
+        pop     si                      ; SI->путь и имя филе
+        push    si
+        push    dx
+
+        push    si
+
+find_z:
+        lodsb
+        or      al,al
+        jnz     find_z
+
+        dec     si
+        mov     byte ptr [si],'$'
+        pop     dx
+
+        call    message
+        mov     byte ptr [si],0
+
+        mov     dx,offset CRLF
+        call    message
+
+        pop     si
+
+        pop     dx
+        push    dx
+
+        mov     ax,4300h                        ; Get Attr
+        int     21h
+
+        push    cx
+
+        xor     cx,cx
+        mov     ax,4301h
+        int     21h                             ; Set Attr
+
+        mov     ax,3d02h
+        int     21h
+
+        xchg    ax,bx
+        mov     ax,5700h                        ; Time stamp
+        int     21h
+        push    cx
+        push    dx
+
+        and     byte ptr flag,7fh
+
+        cmp     word ptr [si+12h],2020h         ; ChkSum; Сигнатура выря
+        jnz     vaccinate
+
+        push    bx
+
+        xor     di,di
+        mov     bx,[si+8]                       ; HdrSize
+        mov     cx,4
+
+l1:
+        shl     bx,1                    ; на случай если размер Headerа
+        rcl     di,1                    ; больше 64К ( в принципе такое
+                                        ; возможно: иначе зачем размер
+        loop    l1                      ; в параграфах? )
+
+        mov     cx,10h
+        mov     ax,[si+16h]
+        xor     dx,dx
+
+        mul     cx
+        add     ax,[si+14h]
+        adc     dx,0
+        mov     cx,dx
+        mov     dx,ax
+        add     dx,bx
+        adc     cx,di
+
+        pop     bx
+
+        mov     word ptr siz,dx                 ; CX:DX - истинный размер филе
+        mov     word ptr siz+2,cx
+
+        mov     ax,4200h
+        int     21h
+
+        mov     dx,Buf1
+        mov     cx,0d21h                        ; специально на 1 больше
+        mov     ah,3fh
+        int     21h
+
+        or      byte ptr flag,80h
+        sub     cx,ax
+        dec     cx
+        jnz     vacc                            ; Там не вырь. Похоже, вакцина
+; файл именно нужной длины, не больше и не меньше
+        call    check
+vaccinate:
+        cmp     byte ptr flag,10h
+vaccine:
+        jae     vacc
+
+        mov     dx,offset Ask_Vaccine
+        call    ask
+
+        call    inp                             ; На этой стадии его низзя
+                                                ; прерывать! MZ еще не сохранен!
+                                                ; Потому не CALL INPUT
+        cmp     al,1bh
+        jz      not_vacc
+        cmp     al,'0'
+        jz      not_vacc
+vacc: 
+        mov     word ptr [si+12h],2020h
+not_vacc:
+
+        mov     ax,4200h
+        xor     cx,cx
+        xor     dx,dx
+        int     21h
+
+        mov     dx,si
+        mov     cx,1ah
+        mov     ah,40h
+        int     21h
+
+        pop     dx
+        pop     cx
+        mov     ax,5701h
+        int     21h
+
+        mov     ah,3eh
+        int     21h
+
+        pop     cx
+
+        pop     dx
+        mov     ax,4301h
+        int     21h
+
+        cmp     byte ptr key,1bh
+        jnz     _ret
+
+        int     20h
+not_exe:
+        pop     dx
+_ret:
+        ret
+checkfile endp
+
+check   proc
+
+        push    si
+
+        mov     si,Buf1+3
+        mov     di,Buf2
+        mov     cx,word ptr siz1
+l2:
+
+        xor     ax,ax
+        push    di
+        push    si
+
+        cmp     byte ptr [si],0e8h
+        jz      _add
+
+        cmp     byte ptr [si],0e9h
+        jnz     nex
+
+_add:
+        add     si,3
+        add     si,[si-2]
+        cmp     si,Buf1+48ch
+        jae     nex
+
+        pop     si                      ; Call или Jmp не INSTRUCTION_BUFFER
+        push    si
+nex:
+        call    _xor
+
+        pop     si
+        pop     di
+        add     si,3
+        add     di,3
+
+        loop    l2
+
+        test    byte ptr flag,1
+        jnz     cure
+
+        mov     dx,offset Ask_Curing
+        call    ask
+
+        call    inp
+
+        cmp     al,'0'
+        jz      not_vir
+
+cure:
+        xor     byte ptr flag,80h
+
+        mov     dx,offset tmp
+        push    dx
+        mov     cx,20h
+        mov     ah,3ch
+        int     21h
+        xchg    ax,si
+        call    _xchg
+
+        mov     ah,3eh
+        int     21h
+
+        mov     bx,si
+        mov     dx,bp
+        mov     cx,20h
+        mov     ah,3ch
+        int     21h                             ; Rewrite Checked file
+        xchg    ax,si
+        call    _xchg
+
+        mov     ah,3eh
+        int     21h                             ; Close Tmp
+        mov     bx,si
+
+        pop     dx
+        mov     ah,41h
+        int     21h                             ; Delete
+
+        mov     si,offset Buf1+46eh
+        mov     di,Buf
+        mov     cx,1ah
+rep     movsb
+not_vir:
+        pop     si
+        ret
+check   endp
+
+_xchg   proc
+; Процедура копирования файлов
+; Вход: BX = Handle файла источника
+;       SI = Handle файла получателя
+
+        push    bp
+        mov     bp,word ptr siz
+        mov     di,word ptr siz+2
+
+        xor     cx,cx
+        xor     dx,dx
+        mov     ax,4200h
+        int     21h
+
+        mov     dx,Buf3
+copy:
+        mov     ah,3fh
+        mov     cx,32000
+        or      di,di
+        jnz     cop1
+
+        cmp     cx,bp
+        jc      cop1
+
+        mov     cx,bp
+cop1:
+        int     21h
+
+        mov     cx,ax
+        sub     bp,ax
+        sbb     di,0
+
+        xchg    bx,si
+        mov     ah,40h
+        int     21h
+        xchg    bx,si
+
+        push    di
+        or      di,bp
+        pop     di
+        jnz     copy
+
+        pop     bp
+        ret
+_xchg   endp
+
+_xor    proc
+        mov     ax,[si]
+        cmp     al,90h
+        jnz     _xx1
+
+        cmp     ah,0ebh
+        jz      _inc
+        and     ah,0f0h
+
+        cmp     ah,70h
+        jnz     _xx1
+_inc:
+        inc     byte ptr [si+2]
+_xx1:
+        push    cx
+        mov     cx,3
+
+_xloop:
+        mov     ah,[di]
+        inc     di
+        cmp     ah,90h
+        jz      _xloop
+
+_xl1:
+        lodsb
+        cmp     al,90h
+        jz      _xl11
+
+        xor     al,ah
+        jz      _xx2
+
+        pop     ax                      ; Это был CX
+        pop     ax                      ; А это IP
+        pop     ax                      ; Это SI
+        pop     ax                      ; Это DI
+        jmp     short not_vir
+_xx2:
+        loop    _xloop
+        pop     cx
+        ret
+
+_xl11:  loop    _xl1
+        pop     cx
+        ret
+_xor    endp
+
+ask     proc
+        call    message
+        mov     dx,offset question
+
+ask     endp
+
+message proc
+        mov     ah,9
+        int     21h
+        ret
+message endp
+
+
+maska:                                  ; Смело используем место от Хелпа
+
+
+help    db      'PLY 3360 антивирус. (c) 1997 Пасека Inc.',0dh,0ah,0ah
+        db      'Использование:  PLY0D20.COM < [ путь ] маска > [ -[A][C][V] ]',0dh,0ah
+siz     db      '            -A : Спрашивать рекурсию каталогов',0dh,0ah
+siz1    db      '            -C : Лечить',0dh,0ah
+        db      '            -V : Вакцинировать',0dh,0ah
+        db      '            -N : Не вакцинировать ни за что',0dh,0ah,0ah
+        db      ' Дави [ ESC ], когда надоест'
+CRLF    db      0dh,0ah,'$'
+
+tmp     db      'PLY0D20.TMP',0
+
+SigMustBePresent:
+sig     db      'PLY0D20.SIG',0
+        db      'должен присутствовать в текущем каталоге.',0dh,0ah,'$'
+
+Ask_Vaccine db  'Вакцинировать этот файл?$'
+Ask_Curing  db  7,'Обнаружен вирус! Лечить этот файл?$'
+Ask_Recurse db  0dh,0ah,'Проверить этот каталог?$'
+
+question db     ' (0) - Нет,  ЛюбаяДругаяКлавиша - Да'
+        db      0dh,0ah,'$'
+
+dta:
+        end

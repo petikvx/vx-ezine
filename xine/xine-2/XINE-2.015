@@ -1,0 +1,193 @@
+
+                                        /-----------------------------\
+                                        | Xine - issue #2 - Phile 015 |
+                                        \-----------------------------/
+
+General introduction to Amigas by Beol
+--------------------------------------
+
+In this doc I try to figure out the main differences between Amiga and
+other computers. If someone is interested in Amiga hacking, he should
+get a M680x0-Manual, the os-include files, and example sources.
+
+CPU & Assembler
+---------------
+
+The Amiga uses the Motorolla 680x0 CPU family which is quite different
+from the 80x86 family. I don't know much about the Intel-CPUs but
+I'll try to point out the major differences:
+
+ * Real 32-bit cpu. (8bits are called byte, 16 bits word and 32 bits longword)
+
+ * 8 32-bit wide multiple-purpose data-registers (d0-d7). Unlike the 80x86
+   family, there is no instruction, wich forces you to use a special
+   data register (like mul on intel). You are allways free to use the
+   register you want.
+   Operations on dataregisters can usually have byte, word or longword
+   size. Byte and word operations only affect the least significant part
+   of the register. (Unlike intel al/ah)
+
+ * 8 32-bit wide address-registers. (a0-a7) These especially used for
+   addresscalculation, but good asm-hackers can abuse their properties
+   to produce smaller code.
+   Operations on address registers may have word or longword size, but
+   word-operators will ALLWAYS be sign extended to longword! So operations
+   will allways affect the whole addressregister.
+   Register a7 has a special meaning: it's the stackpointer. Some operations
+   (pea=push effective address or jsr=jump to subroutine will directly
+   affect a7 (I think this is called implicit addressing ?)). On the
+   other hand, you can use a7 just like every other addressregister.
+   (Infact there is no push or pop operation like on most other CPUs,
+   just use normal move operations!!)
+   Operations on address registers never change flags (this can be useful
+   for hackers!). Exception: cmp ea,ax and tst ax. (tst ax only available
+   on 68020+)
+
+ * Some other registers:
+   PC = Programmcounter (32 bit)
+   SR = Statusregister this is a 16 bit register split in to bytes:
+        the userbyte containing the usual flags (Carry,Overflow,Neg,
+        Zero and the X-Flag) and a systembyte containing information about
+        the processorstate (TraceMode,Supervisor-/User-mode,Interrupt mask).
+        The systembyte can only be accessed in supervisormode. Any attempt
+        to do so in user mode will create a privilege-fault exception.
+        Note that the X-Flag is something very special to the 680x0-family.
+        It's primary use is to do operations on operands bigger than 32 bits.
+   USP= User stack pointer. In usermode this is directly connected to a7.
+        In supervisor mode, you can use this to control the stack of a
+        user-programm. (Interesting for task-switching etc.)
+   SSP= Supervisor stack pointer. In supervisor mode this is connected to a7.
+   VBR= Vector Base Register. Only available on 68010+. This points to the
+        Exception-Vectors. On 68000 the Exception vectors allways start at
+        address 0. This register can only be accessed in supervisor mode.
+        If you want to patch exception vectors, you have to do this:
+        Check if processor is 68000 (ExecBase->AttnFlags). If yes, you can
+        directly patch the vector. If not you must go to supervisormode
+        (using a OS-function) get the VBR patch the vector and return to
+        usermode. (Note that you MUST return to usermode, because there
+        will be no task scheduling as long as you are in supervisormode!!
+        Never be in supervisor mode for a longer time!)
+   CACR=Cache control register. Not interesting, as this changes with every
+        processor and there are OS-routines for controling caches.
+   SFC,DFC=Only available on some processors and not interesting at all.
+
+ * No segmentation: No stupid segmentation like on intel. A 32bit address
+   just represents the bits that will be pushed on the address bus.
+   (Unless ofcourse the MMU is enabled).
+
+ * The format of an instruction is:
+   opcode[.size] src,dest
+   size is either .l for longwords .w for words and .b for bytes.
+   If the size is ommited, the default size is taken (.w for data
+   registers and .l for address registers (this is assembler-dependant!))
+   Some commands don't have a .size, because they only support one size
+   (e.g. pea) or they don't work on operands (e.g. nop).
+   Note that it's src,dest and not dest,src like on most other CPUs.
+
+ * Numeric constants:
+   12453 => decimal
+   $12ab => hex
+   %0110 => bin
+
+ * Addressing Modes:
+   There's a lot of addressing modes. The most important ones are:
+
+   Immediate: #constant (Normally 8,16, or 32 bit depending on command
+   Absolute: address.size
+   Dataregister direct: dx
+   Addressregister direct: ax (Only word and longword)
+   Addressregister indirect: (ax)
+   Addressregister indirect with postincrement: (ax)+ (nice for copying)
+   Addressregister indirect with predecrement: -(ax)
+   Addressregister indirect with addressdistance: ($xxxx,ax)
+   Addressregister indirect with index and addressdistance: ($xx,ax,Rx.s)
+     Rx=Address or data register .s=.W or .L
+   Programcounter relativ: ($xxxx,pc)
+     This one is very important for virusprogrammers as viruses have
+     to be pc-relativ. This is often used with labels. e.g.:
+
+        lea    (NewLoadSeg,pc),a0       ;get address of our patch
+        move.l a0,(_LVOLoadSeg+2,a6)    ;Patch library
+        [...]
+     LoadSeg:                           ;LoadSeg patch
+        [...]
+        rts
+   Programcounterrelativ with addressdistance: ($xx,PC,Rx.s)
+
+   The 68020+ CPUs feature some more Addressing Modes.
+   e.g.: move.w ([16,a0,d0.w*4],100),d0 Computes an address by
+   taking a0, adding 16 adding, 4*d0 (only the lower word), gets
+   the longword at this address, adds 100 to this longword, gets
+   the word at this new address and stores it in d0 (!!) On other
+   CPUs you would need 6 or more instructions to perform this!
+   You could even do:
+   move.w ([16,a0,d0.w*4],100),([40,a2,d1.l*8],4444)   ;(!!!!!)
+
+
+AmigaOS
+-------
+
+   * The Amiga-OS differs completely from most other OSes: On one hand
+   it is a very modern OS (Preemptive Multitasking, Libraries, Devices,
+   Datatypes,...), on the other hand it totally lacks memory-protection
+   and recource tracking, making it the ideal OS for viruswriters.
+
+   * There is only one fixed address in the system: $00000004 contains the
+   address of the exec.library.
+
+
+   * The OS-functions are accessed by libraries. Before using the functions,
+   you have to open the library. (Exception: exec.library). The user can
+   add his own libraries to the system.
+   Calling a library function is easy: load the libraryaddress (or base)
+   to a6 (you MUST use a6!) and jump to the offset of the funtion.
+   e.g. to call dos.library/Output() you would do this:
+        move.l  DOSBase(pc),a6      ;address of dos.library => a6
+        jsr     _LVOOutput(a6)      ;Call Output (LVO=Library Vector Offset)
+
+   All parameters for OS-libraries are passed over registers. No
+   OS-library-function gets parameters over stack!
+
+   All libraries follow the same register-conventions:
+   d0,d1,a0,a1 are scratchregisters and may be destroyed!
+   d2-d7,a2-a5 are preserved.
+   a6 must contain the librarybase and is preserved.
+   Only exception is dos.library, wich uses d2 and d3 as scratch too.
+
+
+   * devices are used for IO (e.g. keyboard.device, scsi.device, ...).
+   Unlike libraries, you don't call devices, but you send them
+   messages. Of course, before using devices you must open them (with
+   exec.library/OpenDevice()).
+
+   filehandlers are used for file operations. Programmers only use them
+   for two reasons: Async-IO and viruses. Otherwise you would use
+   dos.library functions.
+
+
+   * Multitasking makes virus writing much more interesting (in my opinion).
+   You can abuse the way the multitasking is implemented on Amiga, but
+   you allways have to make sure your virus is reentrant! This needs
+   some practice! Task switching can happen anytime anywhere (except
+   in interrupts, in supervisor mode or in Forbid()-mode), so manipulation
+   of shared data must be done very carefully!
+
+
+dos.library
+-----------
+
+    The dos part of the Amiga-OS was written in a great hurry and does not
+    fit at all to the rest. AmigaDOS is just _disgusting_! It was written
+    in BCPL. This has some drawbacks:
+       * BCPL-data must be aligned to 32-bit boundaries. So everytime
+         working with DOS, you MUST make sure that all structs are
+         longword-aligned!! This can lead to very subtle bugs, when
+         creating structures on stack...
+       * BCPL pointers (called BPTRs) point to the longword-address, not
+         to the byte-address!! So when having a BPTR, you must shift it
+         2 bits to the left!
+         To make the situation even more confusing, dos uses sometimes
+         BPTRs and sometimes normal C-style pointers!!!!
+       * BCPL strings are like pascal-strings: 1st byte=length, rest=data.
+         Same problem: dos mixes C-style and BCPL-style strings!!!
+         (When an include says BSTR, this is a BCPL-pointer to a BCPL-string)

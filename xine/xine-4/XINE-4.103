@@ -1,0 +1,316 @@
+
+                                        /-----------------------------\
+                                        | Xine - issue #4 - Phile 103 |
+                                        \-----------------------------/
+
+
+I WANNA FOOL SoftICE !!!
+------------------------------------------------------------------
+Under the protected mode, for example with win32, when you have an
+address, that is a "logical" address, like seg:off. So, with it, you can
+acces the "linear" address, by taking the base of seg and adding the offset.
+But, the linear address is not by default the physical address, this is not
+if the paging system is enabled ( like with win32 for example ;-) )
+So, let's talk about "logical" to "linear" conversion. A segment register
+contain an index in a table of segment descriptors and some infos:
+
+XXXX XXXX XXXX XXXX
+IIII IIII IIII ITRR
+
+I: Index ( and a segment descriptor is 8 bytes lenght, then you have just
+ to AND the value of the segment register with 0fff8h to get the position
+ in the table )
+T: table to use: 0 mean global (GDT) and 1 mean local (LDT)
+R: ring ( and now, I hope it's 00 ;-) )
+
+So, you must the have the base of GDT or LDT ( it depend which it use ),
+with SGDT ( or SLDT )... Look for that example:
+
+        mov     dx,.s   ;.=cdefgs
+        push    eax     ;sub esp,4
+        test    dx,4            ;Table indicator
+        jnz     UseLDT
+        sgdt    [esp-2]
+        jmp     EndIf
+UseLDT: sldt    [esp-2]
+EndIf:  pop     ebx             ;ebx = Table base
+
+So, after, you just have to take the index and take out your segment
+descriptor address
+
+        and     edx,0000fff8h   ;Keep only the index
+                        ;Your selector descriptor is at [ebx+edx]
+
+So, then, you will be able to know the base address of your descriptor, in
+order to know the linear address of anything ( for example, the linear
+address of cs:eip ), you will just have to add the offset used to the base
+of your segment.
+There is a good descriptor sheme, drawn from
+'INTEL 80386 PROGRAMMER'S REFERENCE MANUAL 1986'
+{
+  31                23                15                7               0
+ ษอออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออป
+ บ                 ณ ณ ณ ณAณ         ณ ณ     ณ ณ     ณ ณ                 บ
+ บ   BASE 31..24   ณGณXณOณVณ LIMIT   ณPณ DPL ณSณ TYPEณAณ  BASE 23..16    บ 4
+ บ                 ณ ณ ณ ณLณ 19..16  ณ ณ     ณ ณ     ณ ณ                 บ
+ บฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤมฤมฤมฤมฤมฤฤฤฤฤฤฤฤฤลฤมฤฤฤฤฤมฤมฤฤฤฤฤมฤมฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤบ
+ บ                                   ณ                                   บ
+ บ        SEGMENT BASE 15..0         ณ       SEGMENT LIMIT 15..0         บ 0
+ บ                                   ณ                                   บ
+ ศอออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออผ
+
+           A      - ACCESSED
+           AVL    - AVAILABLE FOR USE BY SYSTEMS PROGRAMMERS
+           DPL    - DESCRIPTOR PRIVILEGE LEVEL
+           G      - GRANULARITY
+           P      - SEGMENT PRESENT
+}
+A: mean if that selector is specified in any segment register
+AVL: Don't know but don't matter
+DPL: ring ( again, I think it's 00 )
+G: That's for limit. Suppose L1 is the limit given by the descriptor,
+ and L2 the real limit of that selector. note that L1 is only 20 bits long,
+ and L2 must be 32 bits long...
+ L1 = LLLLL     G=0 => L2 = 000LLLLL
+                G=1 => L2 = LLLLLfff
+P: if 0, using that segment will raise an exception, but I suppose it isn't
+X: 0 mean 16bits segment, 1 mean 32bits
+O: cf AVL ;)
+S: 0 mean system segment ( Task seg, page directory, tables, etc. )
+ 1 mean anything else ( code or data segment )
+TYPE: 3 bits: T?A with:
+                T = 0->Data, 1->Code
+                A = 0บRdOnlyบExcOnlyบ
+                    1บ RdWr บExcRd  บ
+                ? = ? ;)
+So, let's go!
+I have the address of my descriptor([ebx+edx]), and want the base ( in eax
+for example ), the poor difficulty is to merge the base rightly...
+        mov     ah,[ebx+edx+7]
+        mov     al,[ebx+edx+4]
+        shl     eax,16
+        mov     ax,[ebx+edx+2]
+                        ;eax = Segment base
+        mov     ebx,eax ;for after...
+
+So, you have a data in ds:esi, and you wanna know the linear address of your
+data, you got the segment base of ds, and add esi to it... I think there is
+no way to do easier than that! ;-)
+
+So but, how I said upward, the linear address is not the physical address.
+There remain the paging processing. Your linear address is divided in 3
+portions: 1 for a table index ( in the directory ), 1 for a page index ( in
+the table ) and 1 for the offset. like that:
+
+XXXX XXXX XXXX XXXX XXXX XXXX XXXX XXXX
+TTTT TTTT TTPP PPPP PPPP OOOO OOOO OOOO
+T: table index, in the directory pointed by CR3
+P: page index, in the table pointed by the entry in the directory
+O: offset in page
+So, let see the total address transformation abstraction from intel pr...:
+{
+      16                0 32                                  0
+    ษออออออออออออออออออออหอออออออออออออออออออออออออออออออออออออป LOGICAL
+    บ      SELECTOR      บ                 OFFSET              บ ADDRESS
+    ศออออออออออออออออออออสอออออออออออออออออออออออออออออออออออออผ
+ ฺฤฤฤฤฤฤฤู                                   ณ
+ ณ   DESCRIPTOR TABLE                         ณ
+ ณ  ษอออออออออออออออป                         ณ
+ ณ  บ               บ                         ณ
+ ณ  บ               บ                         ณ
+ ณ  บ               บ                         ณ
+ ณ  บ               บ                         ณ
+ ณ  ฬอออออออออออออออน                         ณ
+ ณ  บ   SEGMENT     บ         ษอออป           ณ
+ ภฤบ  DESCRIPTOR   บฤฤฤฤฤฤฤฤบ + บฤฤฤฤฤฤฤฤฤฤู
+    ฬอออออออออออออออน         ศอออผ
+    บ               บ           ณ
+    ศอออออออออออออออผ           ณ
+                                                              PAGE FRAME
+      LINEAR  ษอออออออออออหอออออออออออหออออออออออป         ษอออออออออออออออป
+      ADDRESS บ    DIR    บ   PAGE    บ  OFFSET  บ         บ               บ
+              ศอออออออออออสอออออออออออสออออออออออผ         บ               บ
+                    ณ           ณ           ณ              บ               บ
+      ฺฤฤฤฤฤฤฤฤฤฤฤฤฤู           ณ           ภฤฤฤฤฤฤฤฤฤฤฤฤฤบ    PHYSICAL   บ
+      ณ                         ณ                          บ    ADDRESS    บ
+      ณ   PAGE DIRECTORY        ณ      PAGE TABLE          บ               บ
+      ณ  ษอออออออออออออออป      ณ   ษอออออออออออออออป      บ               บ
+      ณ  บ               บ      ณ   บ               บ      บ               บ
+      ณ  บ               บ      ณ   บ               บ      ศอออออออออออออออผ
+      ณ  บ               บ      ณ   ฬอออออออออออออออน              
+      ณ  บ               บ      ภฤฤบ PG TBL ENTRY  บฤฤฤฤฤฤฤฤฤฤฤฤฤฤู
+      ณ  ฬอออออออออออออออน          ฬอออออออออออออออน
+      ภฤบ   DIR ENTRY   บฤฤฟ       บ               บ
+         ฬอออออออออออออออน  ณ       บ               บ
+         บ               บ  ณ       บ               บ
+         ศอออออออออออออออผ  ณ       ศอออออออออออออออผ
+                           ณ               
+ษอออออออป        ณ          ภฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤู
+บ  CR3  บฤฤฤฤฤฤฤฤู
+ศอออออออผ
+}
+So, I could now get a linear address from anything, if I can access the
+directory. The directory is pointed by CR3, but it's a physical address,
+and I use only linear address! So, just call the VxD service used for that:
+VxD0001h        VMM
+SN๘006ch        _MapPhysToLinear
+with the parms passed by the stack. A call look like that:
+        push    dword ptr 0     ;Flags: must be 0
+        push    dword ptr 1     ;Number of bytes: don't care!
+        push    eax             ;Physical address
+        int     20h
+        dd      0001006ch       ;_MapPhysToLinear
+        add     esp,3*4
+
+Note that a directory entry is not only a linear address, from bit 31 to 12,
+that are the high bits of linear address, and 11 to 0, that's useless stuff,
+so you will have to AND the linear address with 0fffff000h to have the right
+one.
+
+Now, I think I can explain you the purpose of my tutorial:
+ALL win32 stuff run in paging mode. So, if you disable paging mode
+(stronger bit of CR0), all the address windows usually use will change,
+then if a breakpoint come in your non-paged section, and that SoftICE
+(for example ;-) ) take back the control, without paging, but believing
+that paging is enabled: either it will hang the system, either it won't
+break your execution, so you will be able to detect if someone try to debug
+your stuff. I don't think that any debugger will be done for windows 95 and
+that will accept non-paging mode... It would be useless ;-)
+
+So, but swapping to non-paging mode is not easier than that. In theory,
+it look like that:
+
+        mov     eax,cr0
+        and     eax,7fffffffh   ;Clear PG ( stronger bit )
+        mov     cr0,eax
+
+but in practice, you were at linear address 004010a0 that mean, in fact,
+the physical address 02cd40a0 ( imagine... ), but after disabling paging,
+you will be at linear address 004010a0 that mean physical address 004010a0!
+So, it would be a great jump... That would be funny, but my tries lent to
+reboot of the machine. So, there is 2 possibility to avoid that problem:
+1 - arrange your pages so that, with paging, the linear address you are in
+  is the same than the physical address it mean.
+2 - Make a jump, just after the PG changed, to the correct adress.
+
+I will do that: the jump. So, it will be the same when you will come back to
+paging system ( because you will have to if you don't want to hang the
+machine ). Jumps will be like that:
+
+        mov     edi,LinearAdress(NoPaging)
+        mov     eax,cr0
+        and     eax,7fffffffh
+        mov     cr0,eax
+        jmp     edi
+NoPaging:...
+        .....
+
+        mov     edi,offset DoPaging
+        mov     eax,cr0
+        or      eax,80000000h
+        mov     cr0,eax
+        jmp     edi
+DoPaging:...
+        .....
+
+Also, before I forgot: you have to disable interrupt while doing that,
+because paging flag is shared between all tasks! Else, if an interrupt
+is called, it would launch a task without paging, etc...
+And, how to get linear address? He! I have explained it for 150 lines!
+
+Note: I've noticed since I wrote that, when you access memory w/out
+paging, I suppose the CPU have to reload the DS or any other segment
+( what he don't w/ CS ) and, the GDT pointer beeing a paged pointer,
+... I let ya imagine. Contact me if you found anything!!
+
+This is the code:
+
+;Here, I have ring0
+        mov     dx,cs
+        mov     eax,offset NoPage
+        call    Ln2Phs
+
+        cli
+        mov     edi,eax
+        mov     eax,cr0
+        and     eax,7fffffffh
+        mov     cr0,eax
+        jmp     edi
+        nop
+NoPage: ;Here I don't page
+        
+
+        mov     edi,offset DoPage
+        mov     eax,cr0
+        or      eax,80000000h
+        mov     cr0,eax
+        jmp     edi
+DoPage: ;Back!
+        sti
+
+Ln2Phs  proc
+;I:dx:eax=Logical
+;O:eax=Phs
+;I suppose DS is 0-based, so when I access a logical,
+;I access directly the linear
+        pusha                   ;[esp+1ch] = eax = logical
+
+        push    eax             ;sub esp,4
+        test    edx,4           ;Table indicator
+        jnz     L2P@UseLDT
+        sgdt    [esp-2]
+        jmp     L2P@EndIf
+L2P@UseLDT:
+        sldt    [esp-2]
+L2P@EndIf:
+        pop     ebx
+        and     edx,0000ff8h
+        mov     ah,[ebx+edx+7]
+        mov     al,[ebx+edx+4]
+        shl     eax,16
+        mov     ax,[ebx+edx+2]
+        add     [esp+1ch],eax           ;[esp+1ch] = Linear
+
+        mov     ebx,cr3                 ;ebx=Phs->DIR
+        call    Phs2Ln                  ;eax=Ln->DIR
+        mov     ecx,[esp+1ch]           ;
+        shr     ecx,16h                 ;
+        and     ecx,03ffh               ;ecx=Entry n๘ in DIR
+        mov     ebx,[eax+ecx*4]         ;
+        and     ebx,0fffff000h          ;ebx=Phs->TBL
+        call    Phs2Ln                  ;eax=Ln->TBL
+        mov     ecx,[esp+1ch]           ;
+        shr     ecx,0ch                 ;
+        and     ecx,03ffh               ;ecx=Entry n๘ in TBL
+        mov     ebx,[eax+ecx*4]         ;
+        and     ebx,0fffff000h          ;ebx=Phs->Pge
+        mov     ecx,[esp+1ch]           ;
+        and     ecx,0fffh               ;ecx=Off in Pge
+        lea     eax,[ebx+ecx]           ;eax=Phs
+        mov     [esp+1ch],eax
+        popa            ;eax<-[esp+1ch] ;-)
+        ret
+Ln2Phs  endp
+
+Phs2Ln  proc
+;I:ebx=Phs
+;O:eax=Ln
+        push    L 0             ;Flags: must be 0
+        push    L 1             ;nBytes
+        push    ebx
+        int     20h
+        dd      0001006ch       ;_MapPhysToLinear
+        add     esp,3*4
+        ret
+Phs2Ln  endp
+
+------------------
+Notes:
+1st - That tutorial was made by n0ph on the 18-02-98, for IKX, for XINE4.
+2nd - If you find another way to do better, or anything else, write me at
+        n0ph@HotMail.Com...
+3rd - Visit "members.xoom.com/n0ph" !
+4th - That's all folks!
+
+
+
