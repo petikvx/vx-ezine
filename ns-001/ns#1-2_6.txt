@@ -1,0 +1,341 @@
+ -=( ---------------------------------------------------------------------- )=-
+ -=( Natural Selection Issue #1 ---------------- Correct Exception Handling )=-
+ -=( ---------------------------------------------------------------------- )=-
+
+ -=( 0 : Contents --------------------------------------------------------- )=-
+
+ 0 : Contents
+ 1 : Exception Overview
+ 2 : Parsing SEH Chains
+ 3 : Inside The Handler
+ 4 : Assembling The SEH
+ 5 : Conclusion
+
+ -=( 1 : Exception Overview ----------------------------------------------- )=-
+
+ There have been two official articles  about SEH, one by Matt Pietrek  and one
+ by Jeremey Gordon.  Since then,  others have interpreted both these  works and
+ created smaller articles in an effort  to simplify them.  SEH macros are  also
+ given in virus magazines so that you don't even need to know how SEH works.
+
+ Here is a wakeup call.  Most of  those articles, and all of those macros,  and
+ every virus that uses SEH at the  moment, is doing it completely WRONG.  I  am
+ proud to say, that finally there  is this article to set the  record straight.
+ SEH is a very simple system.  Let's start at the beginning.
+
+        ; EAX = -1
+        MOV     EAX, [EAX]
+
+ This memory access through a bad  pointer which will generate a CPU  exception
+ which stores the current registers  into a CONTEXT structure and  calls Win32.
+ The CONTEXT.ControlWord holds masks that  tell which sets of registers  within
+ the CONTEXT are valid to access, as sometimes not all registers are saved.
+
+    CONTEXT_i386                EQU 00010000h
+    CONTEXT_i486                EQU 00010000h
+    CONTEXT_CONTROL             EQU CONTEXT_i386 OR 00000001h
+    CONTEXT_INTEGER             EQU CONTEXT_i386 OR 00000002h
+    CONTEXT_SEGMENTS            EQU CONTEXT_i386 OR 00000004h
+    CONTEXT_FLOATING_POINT      EQU CONTEXT_i386 OR 00000008h
+    CONTEXT_DEBUG_REGISTERS     EQU CONTEXT_i386 OR 00000010h
+    CONTEXT_FULL                EQU CONTEXT_CONTROL \
+                                 OR CONTEXT_INTEGER \
+                                 OR CONTEXT_SEGMENTS
+    MAXIMUM_SUPPORTED_EXTENSION EQU 512
+
+    FLOATING_SAVE_AREA          STRUCT
+        ControlWord             DW ?
+        StatusWord              DW ?
+        TagWord                 DW ?
+        ErrorOffset             DW ?
+        ErrorSelector           DW ?
+        DataOffset              DW ?
+        DataSelector            DW ?
+        registerArea            DB SIZE_OF_80387_REGISTERS DUP (?)
+        Cr0NpxState             DW ?
+    FLOATING_SAVE_AREA          ENDS
+
+    CONTEXT                     STRUCT
+        ContextFlags            DW ?
+        iDr0                    DW ?
+        iDr1                    DW ?
+        iDr2                    DW ?
+        iDr3                    DW ?
+        iDr6                    DW ?
+        iDr7                    DW ?
+        FloatSave               FLOATING_SAVE_AREA <>
+        regGs                   DW ?
+        regFs                   DW ?
+        regEs                   DW ?
+        regDs                   DW ?
+        regEdi                  DW ?
+        regEsi                  DW ?
+        regEbx                  DW ?
+        regEdx                  DW ?
+        regEcx                  DW ?
+        regEax                  DW ?
+        regEbp                  DW ?
+        regEip                  DW ?
+        regCs                   DW ?
+        regFlag                 DW ?
+        regEsp                  DW ?
+        regSs                   DW ?
+        Extendedregisters       DB MAXIMUM_SUPPORTED_EXTENSION DUP (?)
+    CONTEXT                     ENDS
+
+ -=( 2 : Parsing SEH Chains ----------------------------------------------- )=-
+
+ Each executing Thread has a  Thread Information Block starting at  FS:[0] that
+ stores the start of the SEH Chain in NT_TIB.ExceptionList.  The SEH Chain is a
+ series of  EXCEPTION_REGISTRATION structures,  each storing  a pointer  to the
+ previous EXCEPTION_REGISTRATION structure, and  a pointer to the  Handler code
+ to get executed when an Exception occurs.
+
+ The last EXCEPTION_REGISTRATION in the  chain will have a PreviousHandler  set
+ to -1, and  an ExceptionHandler routine  to show the  Illegal Operation window
+ and then closes the  process.  This is set  up automatically by Win32  when it
+ creates each process.
+
+    NT_TIB                      STRUCT
+        ExceptionList           DD ?
+        StackBase               DD ?
+        StackLimit              DD ?
+        SubSystemTib            DD ?
+        UNION
+            FiberData           DD ?
+            Version             DD ?
+        ENDS
+        ArbitraryUserPointer    DD ?
+        Self                    DD ?
+    NT_TIB                      ENDS
+
+    EXCEPTION_REGISTRATION      STRUCT
+        PreviousHandler         DD ?
+        ExceptionHandler        DD ?
+    EXCEPTION_REGISTRATION      ENDS
+
+ Win32 loops through  each EXCEPTION_REGISTRATION calling  the ExceptionHandler
+ with a set of arguments.   These give the ExceptionHandler the  information it
+ needs to attempt to fix the  Exception.  Note that the ExceptionHandler has  a
+ "C", so that the compiler will exit  the PROC with a simple RET, instead  of a
+ RET 10H [which is an "STDCALL"].  Win32 likes to POP its own arguments off.
+
+    ExceptionHandler            PROC C,
+                                pExceptionRecord  :DWORD,
+                                pEstablisherFrame :DWORD,
+                                pContextRecord    :DWORD,
+                                pDispatcherContext:DWORD
+
+ pExceptionRecord is  a pointer  to EXCEPTION_RECORD.   pEstablisherFrame is  a
+ pointer to the EXCEPTION_REGISTRATION structure that Win32 is working with  at
+ the moment.  pContextRecord is  a pointer to a  CONTEXT as saved earlier,  and
+ pDispatcherContext contains a value that isn't used on Intel CPUs.
+
+    EXCEPTION_RECORD STRUCT
+        ExceptionCode           DW ?
+        ExceptionFlags          DW ?
+        pExceptionRecord        DW ?
+        ExceptionAddress        DW ?
+        NumberParameters        DW ?
+        ExceptionInformation    DW EXCEPTION_MAXIMUM_PARAMETERS DUP (?)
+    EXCEPTION_RECORD ENDS
+
+ ExceptionCode shows what  sort of Exception  occured.  ExceptionFlags is  what
+ what your Handler  is expected to  do.  pExceptionRecord is  a pointer to  yet
+ another EXCEPTION_RECORD,  and is  used if  this Handler  causes an exception.
+ ExceptionAddress is  where the  Exception occured.   NumberParameters has  the
+ number of  entries in  ExceptionInformation.  ExceptionInformation  depends on
+ the type of Exception.
+
+    : ExceptionCode Structure       = TTCRXXXXXXXXXXXXXXXXXXXXXXXXXXX
+      TT                            = 00 = Success
+                                      01 = Information
+                                      10 = Warning
+                                      11 = Error
+      C                             = 0  = Microsoft
+                                      1  = Application
+      R                             = 0  = Reserved
+      XXXXXXXXXXXXXXXXXXXXXXXXXXX   = Exception Number
+    : For a list of ExceptionCodes see NTSTATUS.H in the Microsoft Platform SDK
+
+    : ExceptionFlags
+      EXCEPTION_CONTINUABLE         = 0 = Try to fix the problem
+      EXCEPTION_NONCONTINUABLE      = 1 = Clean up and exit only
+      EXCEPTION_UNWINDING           = 2 = Clean up and exit only
+
+    : ExceptionInformation (When ExceptionCode is STATUS_ACCESS_VIOLATION)
+      [0]                           = 0 = Read
+                                    = 1 = Write
+      [4]                           = Memory address being Read/Written
+
+ If ExceptionFlags  is EXCEPTION_CONTINUABLE,  our Handler  needs to  return an
+ ExceptionContinueExecution or ExceptionContinueSearch.  If  NONCONTINUABLE  or
+ UNWINDING, we may only return ExceptionContinueSearch.
+
+ When  Win32   receives  an   ExceptionContinueExecution,  it   will  do   some
+ internal house keeping,  then restore the  registers from the  CONTEXT.  These
+ include EIP, so  execution continues from  the original Exception  Address, or
+ from a different place if your Handler has changed this value.
+
+ When Win32  receives an  ExceptionContinueSearch, it  will go  to the Previous
+ Handler from your EXCEPTION_REGISTRATION structure, and continue until it  can
+ continue  with  ExceptionContinueExecution,  or  it  reaches  its  ExitProcess
+ Handler, or it reaches an -1 PreviousHandler, marking the end of the Chain, at
+ which time it generates another Exception and closes the Process.
+
+ -=( 3 : Inside the Handler ----------------------------------------------- )=-
+
+ Most viruses will point the  Handler field directly to where  execution should
+ continue, however this causes two problems.
+
+ Firstly, the SEH routines themselves  are left in an unknown  state.  Lots  of
+ state switches and memory  allocation has occured to  get SEH stated, and  the
+ routines to undo all of this are never called.  This alone is wrong.
+
+ Secondly, if the Exception occured  within a Win32 API, things  get worse,  as
+ even more handles  other critical internal  variables are left  hanging.  What
+ needs to happen in  this case, is an  Unwind, where each SEH  above yours that
+ didn't fix the problem gets to clean up before normal processing continues.
+
+ So let's look at what a proper  Handler needs to do to not cause  problems.  I
+ shouldn't need to remind you, but  don't modify any registers other than  EAX,
+ without restoring them on exit from your Handler.
+
+    IF  (EXCEPTION_RECORD.ExceptionFlags == EXCEPTION_CONTINUABLE) {
+        DO_UNWINDS;
+        FIXUP_CODE;
+        RETURN  ExceptionContinueExecution;
+    }   ELSE {
+        DO_CLEANUP;
+        RETURN  ExceptionContinueSearch;
+    }
+
+ Making an Unwind  occur involves a  call to an  RtlUnwind API in  the Kernel32
+ DLL.  It doesn't  save EBX, ESI,  or EDI registers,  so save them  beforehand.
+ Here's the API.
+
+    FARPROC RtlUnwind {
+        PEXCEPTION_REGISTRATION pEndFrame,
+        LPVOID                  ReturnEip,
+        PEXCEPTION_RECORD       pRecord,
+        DWORD                   ReturnEax
+    }
+
+ pEndFrame is  a pointer  to the  EXCEPTION_REGISTRATION where  RtlUnwind stops
+ processing.  ReturnEip is where you would like RtlUnwind to return to once  it
+ has  finished  processing,  although it  isn't used  in Win32  at the  moment.
+ pRecord is a pointer to the  EXCEPTION_RECORD structure you'd like to pass  to
+ each SEH, which is modified so that EXCEPTION_UNWIND Flag is set.  If you  use
+ a 0 here, an empty structure is created on the stack.  ReturnEax is the  value
+ you'd like RtlUnwind to give in EAX once it has finished processing.
+
+ RtlUnwind starts   at FS:[0],   and loops   through until   pEndFrame, calling
+ each SEH with EXCEPTION_RECORD, telling  it to Unwind.  While it  doesn't call
+ the pEndFrame, it does change FS:[0] to point to the PreviousHandler from that
+ structure once it has finished.
+
+ Our FIXUP_CODE will need  to change CONTEXT.regEip to  point to where we  want
+ code to continue executing in our virus, usually shared code at the end of the
+ crashed procedure, where handles are closed and values returned to the caller.
+ We may also need to replace ESP and EBP with valid values, because they  could
+ be pointing anywhere, especially if we crashed in the middle of an API call.
+
+ DO_CLEANUP is where handles and  threads should be closed, as  it's called  by
+ the system only  when multiple exceptions  within exceptions have  occured, as
+ indicated by the ExceptionFlags.
+
+ -=( 4 : Assembling the SEH ----------------------------------------------- )=-
+
+ Let's look at a situation that requires SEH.
+
+    PROC    {
+        SEH_INSTALL;        // Set up a local EXCEPTION_REGISTRATION structure
+        CREATE_HANDLES;     // Open files, allocate memory, etc
+        SENSITIVE_CODE;     // Code that may cause Exceptions, etc
+        SEH_REMOVAL;        // Remove EXCEPTION_REGISTRATION structure
+    SAFE:                   // If there was an Exception, continue here, as an
+                            // RtlUnwind has removed the Handler already
+        CLOSE_HANDLES;      // Close files, deallocate memory, etc
+    }
+
+    EXCEPTION_REGISTRATION structures are typically created on the stack, like:
+
+        PUSH    OFFSET HANDLER  // ExceptionHandler
+        PUSH    FS:[0]          // PreviousHandler
+        MOV     FS:[0],    ESP  // Point SEH to us
+
+ When our Handler is called,  it is given the pEstablisherFrame  argument which
+ points to our  EXCEPTION_REGISTRATION structure on  the stack.  We  can expand
+ EXCEPTION_REGISTRATION to store other things  we want to pass to  our Handler,
+ such as what to set CONTEXT.regEip  to, and important registers we might  want
+ to save, such as  EBP [for stack frames  or delta offsets].  These  can now be
+ accessed within the Handler as offsets to pEstablisherFrame.
+
+        // SEH_INSTALL;
+        PUSH    EBP             // A register we want to save
+        PUSH    OFFSET SAFE     // Safe address to resume execution, regEip
+        PUSH    OFFSET HANDLER  // ExceptionHandler
+        PUSH    FS:[0]          // PreviousHandler
+        MOV     FS:[0],    ESP  // Point SEH to us
+
+        CREATE_HANDLES;
+        SENSITIVE_CODE;
+
+        // SEH_REMOVAL;
+        POP     FS:[0]          // PreviousHandler
+        ADD     ESP, 12         // ExceptionHandler + Safe + register
+
+        // SAFE:
+        CLOSE_HANDLES;
+
+ Now, we only need  to create our Handler  routine.  This one piece  of code is
+ used for all SEH  we create, even nested  SEH within each other.   It sets the
+ regEip and regEbp  as stored in  our EXCEPTION_REGISTRATION structure.   It is
+ able to remove itself from the SEH Chain by using RtlUnwind and sets regEsp to
+ pEstablisherFrame + 16, as that's the top of the stack minus SEH data.
+
+    HANDLER                     PROC C                  \
+                                USES EBX ECX EDX ESI EDI,
+                                pExceptionRecord  :DWORD,
+                                pEstablisherFrame :DWORD,
+                                pContextRecord    :DWORD,
+                                pDispatcherContext:DWORD
+
+        MOV     EAX, [pExceptionRecord]
+        CMP     [EAX][EXCEPTION_RECORD.ExceptionFlags], EXCEPTION_CONTINUABLE
+        JNE     HANDLER_ABORT
+
+        LEA     EAX, @F
+        INVOKE  RtlUnwind, [pEstablisherFrame], EAX, [pExceptionRecord], \
+                [pEstablisherFrame]
+    @@: MOV     ESI, [pContextRecord]
+        PUSH    [EAX][8]
+        POP     [ESI][CONTEXT.regEip]
+        PUSH    [EAX][12]
+        POP     [ESI][CONTEXT.regEbp]
+        ADD     EAX, 16
+        MOV     [ESI][CONTEXT.regEsp], EAX
+        MOV     EAX, ExceptionContinueExecution
+        RET
+
+    HANDLER_ABORT:
+        MOV     EAX, ExceptionContinueSearch
+        RET
+
+    HANDLER                     ENDP
+
+ -=( 5 : Conclusion ------------------------------------------------------- )=-
+
+ It's hard enough to debug every  possible error in your virus, without  having
+ to check every memory reference through  a pointer, so that it doesn't  create
+ an Exception.
+
+ Thanks to SEH, this can all  now be guaranteed under all Win32  variants, with
+ just one Handler and  an SEH_INSTALL/SEH_REMOVAL macro around  important parts
+ of your code.
+
+ Give standard SEH code the finger.  Use Correct Exception Handling instead.
+
+ -=( ---------------------------------------------------------------------- )=-
+ -=( Natural Selection Issue #1 --------------- (c) 2002 Feathered Serpents )=-
+ -=( ---------------------------------------------------------------------- )=-

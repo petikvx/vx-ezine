@@ -1,0 +1,313 @@
+ -=( ---------------------------------------------------------------------- )=-
+ -=( Natural Selection Issue #1 ---------------------- Win32 Hints and Tips )=-
+ -=( ---------------------------------------------------------------------- )=-
+
+ -=( 0 : Contents --------------------------------------------------------- )=-
+
+ 0 : Contents
+ 1 : The MZ Header
+ 2 : PE Congruency
+ 3 : Multiple Infection Markers
+ 4 : Using TASM Parameters
+ 5 : Using Local Variables
+ 6 : Using The Stack
+ 7 : Miscellaneous
+
+ -=( 1 : The MZ Header ---------------------------------------------------- )=-
+
+ The MZ header has long been our friend.  In Windows files, however, the header
+ may no longer be there as we know it.  I came across an interesting EXE  which
+ looked like this:
+
+        4D 5A xx xx ³ xx xx xx xx ³ xx xx xx xx ³ 50 45 00 00
+        pe pe pe pe ³ pe pe pe pe ³ pe pe pe pe ³ pe pe pe pe
+        pe pe pe pe ³ pe pe pe pe ³ pe pe pe pe ³ pe pe pe pe
+        pe pe pe pe ³ pe pe pe pe ³ pe pe pe pe ³ 0C 00 00 00
+
+ This implies a few things of interest.
+
+ - As long as those three values (the MZ marker, the PE marker, and the  offset
+ to PE header) are valid, the rest of the MZ header does not need to be.
+
+ - A PE header  can be BEFORE the  offset at 3Ch which  specifies it's location
+ (0C in this case).
+
+ The later observation leads to more interesting observations.  To have a valid
+ EXE and  have the  PE before  offset 3C,  it can  only be  located in very few
+ spots, because, as you can see, 0000000C is now located inside the PE  header.
+ As such, the value must be set to something that is either unimportant to  the
+ loader or happens to be a value  that works. The only reasonable values I  can
+ see  which work  for offset  3C are  0000000C, 00000010,  and 00000034.   This
+ results in the following values containing the offset to the PE header instead
+ of   their   usual   values:    BaseOfData,   BaseOfCode,   and  DateTimeStamp
+ respectively.
+
+ The use of this?  Just something to put in the back of your mind.
+
+ -=( 2 : PE Congruency ---------------------------------------------------- )=-
+
+ Do you want to put  your virus in the last  section of a PE?  If  you do, then
+ you are probably  subtly corrupting the  PE Header and  Section Tables without
+ even knowing it.  These  slight changes can easily  reveal your best virus  in
+ any file just by checking the Header/Section Table.
+
+ Firstly, make sure you  are actually infecting a  correct PE Header with  some
+ simple tests.
+
+ IMAGE_NT_HEADERS.Signature          == IMAGE_NT_SIGNATURE
+ IMAGE_FILE_HEADER.Machine           == IMAGE_FILE_MACHINE_I386
+ IMAGE_FILE_HEADER.Characteristics   == IMAGE_FILE_32BIT_MACHINE     AND
+                                        IMAGE_FILE_BYTES_REVERSED_LO AND
+                                        IMAGE_FILE_EXECUTABLE_IMAGE  AND
+                                        NOT IMAGE_FILE_DLL
+ IMAGE_OPTIONAL_HEADER32.Magic       == IMAGE_NT_OPTIONAL_HDR32_MAGIC
+ IMAGE_OPTIONAL_HEADER32.NumberOfRvaAndSizes
+                                        == IMAGE_NUMBEROF_DIRECTORY_ENTRIES
+
+ Before we continue, I will give you the Formulas for Section calculations.
+
+ : Sections in a File
+   FileAlign        ( Bigger of VirtualSize / SizeOfRawData)
+ : Sections in Memory
+   SectionAlignment (Bigger of VirtualSize / SizeOfRawData)
+
+ Files can have  data past the  end of the  last Section that  is referenced by
+ fields in the PE  Header.  We must make  sure not to overwrite  these with the
+ virus code.  Also, Sections are allocated more memory than you realise, as you
+ see in the formula above.
+
+ : Virus Location    =
+   Bigger of FileSize / ((FileSize - Section in File) + Section in Memory)
+
+ Now  we can  update our  IMAGE_OPTIONAL_HEADER32 fields.   Using the  formulas
+ above, subtract the old  Section in Memory value,  and add the new  Section in
+ Memory file.   Don't forget  to update  the extra  Code/iData/uData fields, if
+ they are listed in the SECTION.Characteristics.
+
+ : SizeOfImage       =
+   ((SizeOfImage - Old Section Memory) + New Section Memory)
+ : SizeOfCode        =
+   ((SizeOfCode  - Old Section Memory) + New Section Memory)
+ : SizeOfInitializedData   =
+   ((SizeOfIntializedData - Old Section Memory) + New Section Memory)
+ : SizeOfUninitializedData =
+   ((SizeOfUninitializedData - Old Section Memory) + New Section Memory)
+
+ -=( 3 : Multiple Infection Markers --------------------------------------- )=-
+
+ One way in which  AVs can detect the  presence of a virus  is to look for  the
+ virus's own infection marker.  Unless you're writing something like  Commander
+ Bomber, then it's a necessary evil though.  This does not mean that you  can't
+ make it difficult for AVs though.  Simply have many possible infection markers
+ and select one of  them randomly for each  infected file. Then, to  see if the
+ file is infected, simply check for  the presence of all the infection  markers
+ and if  any one  of them  is found,  assume the  file is already infected.  It
+ becomes harder for  the AVs to  determine if the  file is infected  or not, it
+ will not cut down the number of possible hosts in any significant manner,  and
+ it's very easy to code.
+
+ -=( 4 : Using TASM Parameters -------------------------------------------- )=-
+
+ TASM provides ways to ensure that  calls to functions have the correct  number
+ of parameters.  As part of good form, and to help prevent bugs, you should use
+ them.  There are two ways to import APIs:
+
+        extrn   MapViewOfFile:PROC
+        MapViewOfFile   PROCDESC  :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
+
+ The first is the way most  people use, but the second allows  type-checking on
+ your parameters.  The following is legal for the first, but causes a deserving
+ error for the second:
+
+        call    MapViewOfFile, 1, 2, 3, 4       ; Error - too few parameters
+        call    MapViewOfFile, 1, 2, 3, 4, 5    ; ok
+        call    MapViewOfFile                   ; ok - 0 parameters is valid
+
+ TASM  even allows  type checking for  functions which are  imported at runtime
+ like those of a virus.  Simply define a procedure type by:
+
+        MapViewOfFile_t PROCTYPE  :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
+
+ Then for each call do the following, and your parameters will be type checked:
+
+        call    [MapViewOfFile_t ptr loc_MapViewOfFile+ebp], 1, 2, 3, 4, 5
+
+ It's simple, so why not use it.  It can help avoid some pretty ugly bugs.
+
+ -=( 5 : Using Local Variables -------------------------------------------- )=-
+
+ In any sufficiently complex virus you will need some variables.  Traditionally
+ they have been done as follows:
+
+        call    Delta
+ Delta:
+        pop     ebp
+        sub     ebp, offset Delta
+        ...
+        lea     eax, [ebp+String]
+        mov     dword ptr [ebp+Variable], 5
+        ...
+ Variable       dd ?
+ String         db 'blahblah',0
+
+ What's wrong with this picture?  Well:
+ 1) We have a delta offset calculation which is a dead giveaway
+ 2) The Variable is in the  code section - this requires that  whatever section
+ the virus is running in has read/write access.
+
+ What can  be done  to solve  these problems  is simple  - use  local variables
+ exactly  the same  way that  high level  languages  do by  putting  your local
+ variables onto the stack.  There are 2 ways to allocate space on the stack for
+ your variables:
+
+        enter   LocalsSize, 0
+        ...
+        leave
+
+ or, the manual equivalent way:
+
+        push    ebp
+        mov     ebp, esp
+        sub     ebp, LocalsSize
+        ...
+        mov     esp, ebp
+        pop     ebp
+
+ Note 1: In both cases, LocalsSize must be a multiple of 4 (pad it if needed).
+ Note 2: Both TASM and MASM have a compiler directive to do this for you.
+
+ (Technically the push/pop ebp are optional, but to keep it's common for  these
+ instructions to be in  this order [hence they  wont usually be part  of a scan
+ string],  while if  anything  else precedes  the  'mov ebp, esp'  it  would be
+ uncommon)
+
+ Now that you have  created space for all  your local variables you  can access
+ them relative to ebp by subtracting values from it.  For example if you want 3
+ local variables A, B, and C of sizes byte, dword, array of 20 bytes, then  you
+ could do this:
+
+        A equ -4             ; A should be dword aligned to align entire size
+        B equ -8             ; B will be the dword at [ebp-8]
+        C equ -28            ; C will be the array from [ebp-28] to [ebp-9]
+        enter   28, 0
+        mov     byte ptr [ebp+A], 1
+        mov     eax, [ebp+B]
+        lea     edi, [ebp+C]
+        leave
+
+ Simple, no?  No more writable code section. :-)
+
+ In TASM you can automate this by declaring around you virus a procedure by:
+
+        virus PROC
+        local A:BYTE, B:DWORD, C:BYTE:20
+                mov     A, 1
+                mov     eax, B
+                lea     edi, C
+        endp
+
+ There are 2 special cases in this though.  One is in the first example:
+
+        lea     eax, [ebp+String]
+        ...
+        String     db 'blahblah',0
+
+ Preset values  for variables  must be  either copied  onto the stack manually.
+ However, if  the values  never change  like in  a string  for example, you can
+ simply do:
+
+        call    PushString
+        db      'blahblah',0
+ PushString:
+        pop     eax             ; (usually you want to leave it on the stack)
+
+
+ The other problem is that  at some point in the  infector you will need to  do
+ something similar to:
+
+        mov     eax, offset VirusStart
+
+ At this point, you must calculate a delta offset in this case.  Use  something
+ like:
+
+        call    GetVirusStart
+ GetVirusStart:
+        pop     eax
+        sub     eax, offset GetVirusStart - offset VirusStart
+
+ This case does not need to show  up more than once deep inside the  virus body
+ however.
+
+ -=( 6 : Using The Stack -------------------------------------------------- )=-
+
+ A good way to get some temporary storage for a virus is to use the stack.  The
+ stack  has read/write  access and can  even run code  in windows.    There are
+ however,   a few important  caveats  when trying to  allocate more than 4kb of
+ space.   The stack is  defined in a  PE file with  two fields.   Here they are
+ complete with typical values for them:
+
+        Size Of Stack Reserve                   00100000
+        Size Of Stack Commit                    00002000
+
+ The first  number tells the  loader the  total size of  the stack,   while the
+ second is the  number of bytes the  loader should  initially allocate  for the
+ stack.   The stack can  grow up to the  "Stack Reserve"  Size before a program
+ crashes.   When a stack page that has not been allocated yet  is accessed,  an
+ exception is triggered and the OS automatically allocates the page and returns
+ control to your program - in theory.  But Windows is a bit quirky.
+
+ In the above  example,  there are a total of  256 pages  (100h at 1000h bytes)
+ with 2 of the pages already allocated.   Accessing any of the first 3 pages of
+ the stack works normally,  but a problem arises when trying to access the  4th
+ page  without first accessing the 3rd  -  i.e. the program crashes.   You see,
+ Windows  keeps a one page  buffer zone  immediately after the  allocated stack
+ memory.   Accessing the buffer page with a read or write allocates it and sets
+ the buffer page to the next page  (4 in this case).   Skipping past the buffer
+ page means the routine for allocating more stack pages is not called in the OS
+ and as a consequence, you're trying to access unavailable memory and crash.
+
+ In short, the following is a no-no:
+        sub     esp, 8500h      ; allocate 8500h of stack space
+        push    eax             ; This will access mem page past buffer zone
+
+ Instead,  when using the stack  to get  more than  1000h bytes,  make sure you
+ access each page at least  once before writing to  the top of the stack.   Use
+ something like the following instead:
+
+        mov     ecx, 8          ; allocates 8000h bytes on stack
+ here:
+        sub     esp, 1000h      ; 1000h bytes in a page - gotta catch'em all
+        mov     [esp], ecx      ; random write allocates the page
+        loop    here
+        sub     esp, 500h       ; Allocate rest of 8500h bytes of stack
+        push    eax             ; The push is now fine
+
+ Remember to keep the stack  4 byte aligned.   Special thanks to an  IRC friend
+ for the debate.
+
+ -=( 7 : Miscellaneous ---------------------------------------------------- )=-
+
+ Writing string comparison routines  in ASM sucks.  So  why not use a  good API
+ that  is  built specifically  for  this purpose?   The  CompareStringA API  in
+ Kernel32.DLL can do both cased  and uncased comparisons on strings  and ASCIIZ
+ strings.
+
+ Instead  of wasting  time  (and  introducing  bugs)  trying to  remember which
+ registers to  saving and  unsave for  each API  call, wrap  your  calls   in a
+ macro  that saves  all  registers on  entry, and   pops EAX  on return.    API
+ rarely  modify the  other registers with useful values.
+
+ Split your virus into  proper procedures.  Nobody is  going to notice the  few
+ extra bytes except you, when you go back to look at it a few months later  and
+ try to unravel the mess.  People appreciate style over size :)
+
+ Trying to find what the numeric value for KEY_SET_VALUE or some other constant
+ mentioned in your help files?   If the value is not present in one of the many
+ include files available, then you may have to find the value yourself.   To do
+ this,  get a Windows C/C++  compiler (like Visual C++).   These compilers come
+ with  .h include that have the  complete definitions  for all structures,  and
+ constants that you will ever need - all you need to do is convert them to asm.
+
+ -=( ---------------------------------------------------------------------- )=-
+ -=( Natural Selection Issue #1 --------------- (c) 2002 Feathered Serpents )=-
+ -=( ---------------------------------------------------------------------- )=-

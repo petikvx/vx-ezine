@@ -1,0 +1,481 @@
+ -=( ---------------------------------------------------------------------- )=-
+ -=( Natural Selection Issue #1 ------------------ Random Number Generation )=-
+ -=( ---------------------------------------------------------------------- )=-
+
+ -=( 0 : Contents --------------------------------------------------------- )=-
+
+ 0 : Contents
+ 1 : Introduction
+ 2 : Good vs Bad
+ 3 : Counters
+ 4 : Pseudo-random numbers
+ 5 : Conclusion
+
+ -=( 1 : Introduction ----------------------------------------------------- )=-
+
+ When windows started running user programs  in ring3, it became only a  matter
+ of time before the  age old method of  getting random numbers, namely  "in al,
+ 40" , would be no more as  windows disables port access.  Sure enough, by  NT,
+ this method no longer works.  No  matter.  What doesn't kill us only  makes us
+ stronger, right?  Since good random numbers  can be important to a virus,  and
+ essential to a  polymorphic/metamorphic engine, this  article examines how  to
+ generate random numbers.
+
+ People  have tried  various things  to get  random numbers  in their  viruses,
+ including such awful  methods as reading  values from undefined  registers and
+ memory,  and  getting a  "random"  number from  GetTickCount.  Hopefully, this
+ article  will show  that there  exists such  a thing  as good  and bad  random
+ numbers, and it's in  your best interest to  take advantage of them.   I'll go
+ through a few method  some viruses use and  erroneously believe that they  are
+ getting random values, and suggest a few others.
+
+ -=( 2 : Good vs Bad ------------------------------------------------------ )=-
+
+ A bad  random number  generator can  cause your  carefully crafted polymorphic
+ engine  to  have fixed  strings,  and not  create  one third  of  the possible
+ decryptors that the engine is  capable of generating.  Since, as  described in
+ the  cruncher  article, the  AV  are not  interested  in all  the  theoretical
+ variants of a virus, opting instead to create a large pool of infected  files,
+ they just look at what your virus generates.  A polymorphic section of code is
+ considered unsafe, but they'll probably use it to scan string you if they have
+ no other choice.
+
+ To test various random  number generators, first you  need to make yourself  a
+ little test program so try a few things.  This works nicely:
+
+        .386
+        .model flat, stdcall
+
+        include w32.inc       ; Or some other good inc file
+
+        extrn   GetTickCount:PROC
+        extrn   GetSystemTime:PROC
+        extrn   _lcreat:PROC
+        extrn   _lwrite:PROC
+        extrn   _lclose:PROC
+
+        BufSize equ 10000               ; Size of output file
+
+        .data
+        FileName db 'out.dat',0         ; Name of output file
+        buffer   db BufSize dup (0)     ; Buffer for random numbers
+        Random_Seed     DD      0       ; Random number seed (if needed)
+
+        .code
+        Start:
+           call    GetTickCount            ; Initialize random seed.
+           and     eax, 7FFFffffh          ; (some like positive seeds )
+           mov     Random_Seed, EAX        ; This can be anything.
+           xor     ebp, ebp                ; (no delta needed)
+
+           call    _lcreat, offset FileName, 0
+           push    eax
+
+           mov     ecx, BufSize
+           lea     edi, buffer
+        rnd_fillbuf:
+           push    ecx
+           push    edi
+           call    Random
+           pop     edi
+           stosb
+           pop     ecx
+           loop    rnd_fillbuf
+
+           pop     ebx
+           call   _lwrite, ebx, offset buffer, BufSize
+           call   _lclose, ebx
+           call   ExitProcess, NULL
+
+        Random:
+        ;___________________________________________________________________
+        ; Random Number code goes here:
+
+        ;___________________________________________________________________
+
+           ret
+        end Start
+
+ This example program  (included), calls the  random number generator  that you
+ are testing 10,000 times, each time storing the low byte into an array.   When
+ done, it writes that array to a file called out.dat
+
+ People often fall under the impression that calling GetTickCount whenever need
+ a random number  is fine.  Let's  test that theory,  by adding the  line "call
+ GetTickCount"  between the  two lines  in the  example program.   A  Hex  Dump
+ reveals very startling results:
+
+        58 58 58 58 ³ 58 58 58 58 ³ 58 58 58 58 ³ 58 58 58 58
+        58 58 58 58 ³ 58 58 58 58 ³ 58 58 58 58 ³ 58 58 58 58
+        58 58 58 58 ³ 58 58 58 58 ³ 58 58 58 58 ³ 58 58 58 58
+        58 58 58 58 ³ 58 58 58 58 ³ 58 58 58 58 ³ 58 58 58 58
+        58 58 58 58 ³ 58 58 58 58 ³ 58 58 58 58 ³ 58 58 58 58
+        58 58 58 58 ³ 58 58 58 58 ³ 58 58 58 58 ³ 58 58 58 58
+        ...
+
+ "What happened?" you ask?  The computer is too  quick for the Counter  to keep
+ up.  Hence ALL the numbers are the  same. "But it's always worked great in  my
+ debugger!" you might say. Turbo debugger doesn't bother stopping the  internal
+ clock of  the computer.  That means  while you're  tracing, the  clock happily
+ continues  on.  SoftIce  stops  the  clock,  but  it  simulates  a  clock tick
+ occasionally leading to the same kind of misunderstanding.
+
+ Maybe this isn't the best way for an asm to get random numbers :)
+
+ This being the case, you might be  tempted to find any old algorithm from  the
+ net, and blindly inserting it into your  work.  Here's a hex dump from one  of
+ the simpler algorithms I found while searching:
+
+        3B 28 19 5E ³ 07 24 C5 FA ³ 93 20 B1 D6 ³ DF DC 9D 72
+        AB 98 C9 4E ³ 37 94 B5 EA ³ C3 D0 A1 86 ³ 0F CC 0D 62
+        DB 48 F9 7E ³ A7 84 65 9A ³ 73 00 D1 B6 ³ BF FC BD 92
+        8B F8 E9 2E ³ 17 74 55 CA ³ A3 B0 81 E6 ³ EF AC 2D 82
+        3B A8 19 9E ³ 47 24 85 7A ³ 53 20 F1 16 ³ 5F 1C 1D F2
+        ...
+
+ As you can see,  it's not a very  good generator.  The numbers  alternate from
+ odd to even, and looking at the columns you find that the all the last  digits
+ are the same, meaning that  every 16 bytes, the low  4 bits are the same.  The
+ moral here  is that  good random  number generators  really are  hard to find.
+ Even when you find something that is  "good", you should test it to see  if it
+ will measure up to your needs and expectations.
+
+ In some cases,  the patterns may  not be as  obvious as in  the example above.
+ This yields a need to get some  way to test if numbers appear random.  Luckily
+ for  us,  the mathematicians  have  gone through  the  work for  us,  and have
+ developed products that help analyze  whether a given bit stream  looks random
+ or not.
+
+ One  such  program  is  called  ENT.EXE  (included,  but  also  available from
+ http://www.fourmilab.ch/random/).  Another product is DIEHARD (available  from
+ http://stat.fsu.edu/~geo/diehard.html), but since DIEHARD  is just a tad  hard
+ to use (it does not provide much  information as to what the results mean),  I
+ will use ENT to analyze the random number generators.
+
+ These  collects  statistics  about how  random the  numbers appear  to be  and
+ returns them  for you.   For example,  for the  full data  file for  the above
+ generates ENT generates:
+
+        Entropy = 7.999666 bits per byte.
+
+        Optimum compression would reduce the size
+        of this 100000 byte file by 0 percent.
+
+        Chi square distribution for 100000 samples is 46.27, and randomly
+        would exceed this value 99.99 percent of the times.
+
+        Arithmetic mean value of data bytes is 127.4814 (127.5 = random).
+        Monte Carlo value for Pi is 3.157566303 (error 0.51 percent).
+        Serial correlation coefficient is -0.001300 (totally uncorrelated = 0.0).
+
+ What does all this  mean?  I'll go over  the important parts and  you can read
+ about the rest in the documentation for the exe:
+
+ Chi square - The only real  important value here.  Basically it tells  you how
+ random the data looks.  The thing you're interested in is the percentage.  The
+ percentages mean: 0-1%  or 99-100%  - Almost certainly not random
+                   1-5%  or 95-99%   - sequence is suspect
+                   5-10% or 90-95%   - almost suspect
+                   10-90%            - good (with 50 being the best of values)
+                   at 99.99%, the example is not very random...
+
+ Entropy -   The information  density.  Simply  put, how  many of  the bits are
+ "important".  Unfortunately, the number does not take into account patterns in
+ the data, so the  number is usually high.  This makes the optimum  compression
+ stat meaningless, as I used pkzip to get this 100,000 byte file down to 53,583
+ bytes.
+
+ Arithmetic Mean Value - The average of the bytes.  The value should be  around
+ 127.5 to make sure you have an even balance of high and low random numbers.
+
+ To see what a  good random sequence should  look like, check out  the included
+ file hotbits.dat or get output from  one of the good random number  generators
+ listed later.
+
+ So with all the tools in place, lets start.
+
+ -=( 3 : Counters --------------------------------------------------------- )=-
+
+ There are several system calls that monitor one counter or another.  These can
+ naturally be used to get a random number.  Using them exclusively as a  source
+ of random numbers is  not a good idea  though as we saw  with the GetTickCount
+ example above. These are used in a lot of viruses and include:
+
+        GetTickCount
+          ; Accepts:  no parameters
+          ; Returns:  The number of milliseconds since windows was started
+
+        GetCurrentTime
+          ; Accepts:  no parameters
+          ; Returns:  The number of milliseconds since windows was started
+          ; (same function as above, different name)
+
+        GetSystemTime
+          ; Accepts:  - Pointer to a SYSTEMTIME struct
+          ; Returns:  The struct filled with data
+          ;
+          ; SYSTEMTIME              struct
+          ;  st_wYear          dw      0             ;current year
+          ;  st_wMonth         dw      0             ;current month (1..12)
+          ;  st_wDayOfWeek     dw      0             ;day of week (0 = sunday)
+          ;  st_wDay           dw      0             ;current day of the month
+          ;  st_wHour          dw      0             ;current hour
+          ;  st_wMinute        dw      0             ;current minute
+          ;  st_wSecond        dw      0             ;current second
+          ;  st_wMilliseconds  dw      0             ;current millisecond
+          ; SYSTEMTIME              ends
+
+        GetSystemTimeAsFileTime
+          ; Accepts:  - Pointer to a FILETIME struct
+          ; Returns:  The struct filled with number of 100-nanosecond
+          ;           intervals since January 1, 1601.  Since the internal
+          ;           clock is to coarse to deal with this, the very bottom
+          ;           5 bits of the LowDate, will always be 0
+          ;
+          ; FILETIME                struct
+          ;  ft_dwLowDateTime  dd     0             ;low-order 32 bits
+          ;  ft_dwHighDateTime dd     0             ;high-order 32 bits
+          ; FILETIME                ends
+
+ It should hopefully be obvious  from the GetTickCount example -  which shocked
+ even  me  (I  wasn't expecting  it to  be  THAT bad)  -  that using  the other
+ functions to get  a series of  numbers is just  a futile.  These  counters are
+ simply too slow.  All these calls in out test program result in a file  filled
+ with only 1 character.
+
+ So, what if we used a faster counter.  Inserting the instruction "in al,  40h"
+ into out test program achieves two things:
+ 1) The program is Win9x dependant - it wont run on NT, and
+ 2) Generating the data file is SLOW.    The reason for this I suspect is  that
+    since win9x is emulating the port read,  there are a lot of changes between
+    privilege levels (ring3 to ring0 and back) which simply crawls.
+
+ And the result from our effort?  Putting it into our test program and  running
+ ENT we get the following results:
+
+        Entropy = 7.766376 bits per byte.
+
+        Optimum compression would reduce the size
+        of this 100000 byte file by 2 percent.
+
+        Chi square distribution for 100000 samples is 29440.75, and randomly
+        would exceed this value 0.01 percent of the times.
+
+        Arithmetic mean value of data bytes is 112.9990 (127.5 = random).
+        Monte Carlo value for Pi is 3.449657986 (error 9.81 percent).
+        Serial correlation coefficient is -0.032950 (totally uncorrelated = 0.0).
+
+ And a Chi Square  percentage of 0.01% really  sucks, and visual inspection  of
+ the data confirms it.
+
+ Another really fast count  in the computer is  the timer inside the  CPU which
+ increments at every CPU  clock cycle.  You can  peak at this counter  with the
+ RDTSC instruction which has the opcode: db 0Fh, 31h
+
+ This RDTSC instruction  returns the current  value in EDX:EAX.  Inserting this
+ instruction into our test program yields the ENT result of:
+
+        Entropy = 7.999744 bits per byte.
+
+        Optimum compression would reduce the size
+        of this 10000 byte file by 0 percent.
+
+        Chi square distribution for 10000 samples is 3.56, and randomly
+        would exceed this value 99.99 percent of the times.
+
+        Arithmetic mean value of data bytes is 127.4572 (127.5 = random).
+        Monte Carlo value for Pi is 3.274909964 (error 4.24 percent).
+        Serial correlation coefficient is 0.008557 (totally uncorrelated = 0.0).
+
+ Although to the human eyes the data looks fairly good, the 99.99% result tells
+ us otherwise.  On top of this, there are a few things you need to be weary  of
+ when using RDTSC:
+
+ - It's an Pentium Instruction.   Viruses should be as compatible  as possible,
+ so if you're going  to use it, use  a SEH handler or  have a backup method  of
+ some type.
+
+ - The instruction can be disabled by a bit in the CR4 register from being used
+ in user mode.  To date,  no version of windows disabled  it to the best of  my
+ knowledge but who knows about future versions.  Add a SEH handler or something
+ just in case.
+
+ - Intel says:
+ "The RDTSC instruction  is not a  serializing instruction.  Thus,  it does not
+ necessarily  wait until  all previous  instruction have  been executed  before
+ reading the counter.  Similarly,  subsequent instructions may begin  execution
+ before the read operation is performed."
+
+
+ Translation in English:
+ The instruction does not have to  return the time after the instruction  above
+ it or below it has been executed.  This means that the sequence:
+
+              rdtsc
+              mov   ebx, eax
+              rdtsc
+              sub   eax, ebx
+
+ will  not always  necessarily return  the same  number in  eax.  In  fact,  in
+ theory, both  rdtsc instructions  could return  exactly the  same number. This
+ does NOT  mean the  2nd rdtsc  can overwrite  the value  of the "sub eax, ebx"
+ instruction.  In short, it cannot be  used for timing down to the  clock cycle
+ - not a problem for us, but it deserves mention none the less.
+
+
+ Despite all their faults in trying  to generate a random sequence of  numbers,
+ any of  these can  be used  to generate  a single  random number  very nicely,
+ however. To generate a random sequence, we need something else.
+
+ -=( 4 : Pseudo Random Numbers -------------------------------------------- )=-
+
+ Pseudo  random  numbers  is  a sequence  of  SEEMINGLY  random  numbers.  This
+ sequence of numbers is different depending on the number used to initialize it
+ (called a seed).   Since we can  get a single  random number without  too much
+ difficulty by using one of the above methods, this is a good thing. In  short,
+ you have as many distinct sequences as you have seeds. For example:
+
+        A seed of 1 may produce the sequence:
+            1 10 5 7 7 2 1 0 4 ...
+        A seed of 5 however may produce the following:
+            5 9 8 10 4 2 1 3 3 ...
+
+ These  sequences  are  generated   by  algorithms  which  typically   do  some
+ division/modulus of some numbers and adds some others in.  For example the one
+ that generated the  second hex dump  in section 2  above was created  with the
+ following C algorithm:
+
+        random() {
+                seed = ( seed * multiplier + increment ) % modulus;
+        return seed;
+        }
+        where the multiplier 9301, the increment 49297, and the modulus 233280.
+
+ As you recall, it did not produce very good results at all, but the  algorithm
+ is nice and simple to show how it works.
+
+ Before calling random, you  initialize the seed to  some random value -  let's
+ say by using the rdtsc instruction.  Now, each time you call random, the  seed
+ will  be modified  and  returned.   The next  time you  call it,  the modified
+ version of  the seed  will be  used, and  a new  number will be produced.  The
+ sequence of  numbers returned  will hopefully  'look' random  depending on the
+ values for multiplier, increment and modulus used.
+
+ Finding other similar algorithms and finding good values for them, can be more
+ than a  little bit  tricky.  If  you divide  by the  wrong number, you can get
+ numbers that alternate between even and odd, are always some multiple of  some
+ number or about a  hundred other pitfalls, that  some viruses fell into.   The
+ best  policy  is  to  grab  an  existing  random  number  generator,  test  it
+ rigorously, and  then decide  if you  should keep  looking -  even some of the
+ commercially available ones are really bad.
+
+ There are a few good ones out there however.  For example:
+
+        Random:
+              mov     eax, Random_Seed
+              cdq
+              mov     ecx, 44488
+              idiv    ecx
+              push    edx
+              mov     ecx, 3399
+              mul     ecx
+              xchg    eax, ebx
+              pop     eax
+              mov     ecx, 48271
+              mul     ecx
+              sub     eax, ebx
+              mov     Random_Seed, eax
+              jnl     short RandTooLow
+              add     eax, 7FFFFFFFh
+        RandTooLow:
+              dec     eax
+              ret
+
+        ; Dr. Park's algorithm published in the Oct. '88 ACM
+        ; "Random Number Generators: Good Ones Are Hard To Find"
+        ; This is called a   Lehmer Generator
+
+        Entropy = 7.998249 bits per byte.
+
+        Optimum compression would reduce the size
+        of this 100000 byte file by 0 percent.
+
+        Chi square distribution for 100000 samples is 243.38, and randomly
+        would exceed this value 50.00 percent of the times.
+
+        Arithmetic mean value of data bytes is 127.3756 (127.5 = random).
+        Monte Carlo value for Pi is 3.145565823 (error 0.13 percent).
+        Serial correlation coefficient is 0.000791 (totally uncorrelated = 0.0).
+
+        The algorithm used in "Dream" by Prizzy also yields excellent results.
+
+        random:
+            mov     eax,0BFF71234h
+            push    ecx 33
+            pop     ecx
+        @@r:add     eax,eax
+            jnc     $+4
+            xor     al,197
+            loop    @@r
+            mov     dword ptr [ebp+random+1],eax
+            pop     ecx
+            ret
+
+        Entropy = 7.999811 bits per byte.
+
+        Optimum compression would reduce the size
+        of this 1000000 byte file by 0 percent.
+
+        Chi square distribution for 1000000 samples is 261.03, and randomly
+        would exceed this value 50.00 percent of the times.
+
+        Arithmetic mean value of data bytes is 127.4387 (127.5 = random).
+        Monte Carlo value for Pi is 3.138516554 (error 0.10 percent).
+        Serial correlation coefficient is -0.000390 (totally uncorrelated = 0.0).
+
+ Since most of the time,  you when you do a  search for an engine, you  will be
+ encountering  C code,  you you'll  have to  start  converting  it to  assembly
+ yourself (test to  see if it's  any good can  be done in  C of course though).
+ Thus, you'll be seeing algorithms like:
+
+        double uniform ()
+        {
+         long k,Z;      // and s1 and s2 being seeds.
+
+         k= s1 / 53668;
+         s1= 40014 * (s1 - k * 53668) - k * 12211;
+         if (s1 < 0) s1+= 2147483563;
+         k= s2 / 52774;
+         s2= 40692 * (s2 - k * 52774) - k * 3791;
+         if (s2 < 0) s2+= 2147483399;
+         Z= s1-s2;
+         if (Z < 1) Z+= 2147483562;
+
+         return Z*4.656613e-10;
+        }
+
+ Mathematicians don't seem to care  about the fact that floating  point numbers
+ are so  much more  annoying to  work with  than integers,  and like  to return
+ values of x, such that 0 <= x < 1.  In this case, however, since the number is
+ not getting changed into a floating point until the end, if you omit the final
+ multiplication, it does not change the randomness of the numbers in this  case
+ much.  Doing that, make  the code a little  nicer, and also yields  a high Chi
+ Squared value (25-50%).  If you're too lazy to convert set the correct options
+ on your compiler and let it do the work for you :-)
+
+ -=( 5 : Conclusion ------------------------------------------------------- )=-
+
+ In conclusion, I'd like  to note one more  thing.  During my tests  of various
+ random  number  generators in  my  research for  this  article, I  found  that
+ combining  algorithms  with  Counter  functions  like  RDTSC,  created strange
+ results for the Chi Squared values.  The values just went nuts not being  able
+ to make up their mind if they  wanted to be 0.01% or 50%.  Also  noteworthy is
+ that the  more methods  you combined  to get  random numbers,  the better  the
+ generator was, so don't be shy about combining them.
+
+ I hope  that this  document has  encouraged you  to think  about using  a good
+ random number generator for whatever you're doing.
+
+ -=( ---------------------------------------------------------------------- )=-
+ -=( Natural Selection Issue #1 --------------- (c) 2002 Feathered Serpents )=-
+ -=( ---------------------------------------------------------------------- )=-

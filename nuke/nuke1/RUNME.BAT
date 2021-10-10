@@ -1,0 +1,9 @@
+@Echo off
+CLS
+ECHO Extracting Data files...
+DATA.EXE -o > NUL
+ECHO Loading Infojournal..
+NK-INFO1.EXE
+ECHO   Deleting Data files...
+DEL TEXT*.TXT
+ECHO A [NuKE] and NUKE WaReZ 91 Release. Thank you...
