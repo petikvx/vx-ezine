@@ -1,0 +1,1 @@
+rar a ring0.rar *.*

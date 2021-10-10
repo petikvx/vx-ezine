@@ -1,0 +1,2623 @@
+Insane Reality issue #8 - (c)opyright 1996 Immortal Riot/Genesis - REALITY.028
+
+Article: Tracer
+Author: CyberGOD
+
+% Tracer by CyberGOD %
+______________________
+
+Here's an excellent contribution called Tracer, from a person named CyberGOD.
+I'll let Rajaat explain.
+
+  % Tracer : An introduction % - by Rajaat
+
+Tracer was sent to me by someone using an anonymous remailer. At first I
+thought it would be a rip-off of ART, a very nice utility to trace to
+the DOS entrypoint of int 21h. After I have examined it more closely, I
+am happy to say it's not a rip-off. This program can do much more than
+just tracing, it can be used as a simple debugger, a monitor, a tracer,
+a surface engine (hi, Qark!) or whatever idea you have that relies on
+tracing. Interestingly is the fact that it does it's tracing by
+executing the instructions in a protected environment, just like ART.
+But Tracer goes beyond that. You can trace anything with it, it's not
+limited to the int 21h chain. The monitor provided with the tracer even
+emulates it's own TSR exit. Also, if you want to trace a program that
+uses int 1 to detect programs in memory, Tracer will skip it's own
+segment. Also most 386 and 486 instructions work and it won't be tricked by
+stack checks, like Thunderbyte does. The Tracer itself is only 1262
+bytes. This program can be used in so many things that I decided it
+would be perfect for inclusion in Genesis #1. [* Now IR8 - sep. *] 
+							
+
+% Files Included %
+__________________________________
+
+ TRACER.DOC, MAKEFILE, TRACER.ASM, 
+ MONITOR.ASM, DISASM.ASM, IO.ASM, 
+ TERM.ASM
+
+Thank You CyberGOD!
+
+- _Sepultura_
+
+;=[BEGIN TRACER.DOC]=========================================================
+
+This tracer is 1262 bytes code, it can trace trough Lock Master 9. This
+is an protection program that uses many tricks like setting the Trap flag
+to go single stepping itself, it uses may Int 1 and Int 3 opcodes in it's
+code, it makes sure that the tracer cannot use the Lock Masters stack segment
+(so stack checking code, like in tbdriver, doesn't work).
+
+Then I should thank Antigen for his inspiring source ART22.ASM. He gave me
+the idea this was possible. His idea was perfect, only the code written to
+realize it wasn't that good. His code 1407 bytes, lacked the support for
+single stepping. This is a very quick and simple way to detect ART22.ASM.
+If you start single stepping, the return address of int 1 will be pointing
+at the ART code and not to the anti tunneling code.
+
+I hope you enjoy using this code.
+
+Greetings CyberGOD.
+
+
+Public symbols in segment code:
+
+        StartTrace      far     Call this label and the tracer will start
+                                tracing at the return address using the
+                                values in the CPU registers, not the SavedXX
+                                variables.
+
+        StartAtCSIP     near    Jump to this label and the tracer will start
+                                tracing at the SavedCSIP address using the
+                                values in the CPU registers, not the SavedXX
+                                variables.
+
+        CodeSegment     word    Just contains the value of the tracers code
+                                segment. Used to switch stacks. Cannot use
+                                push cs, pop ss for this because it will
+                                corrupt the stack and you can also use int 1
+                                with the same results.
+
+        TraceStack      abs     When switching stacks, the sp register is set
+                                to this value and then the pushf, pusha,
+                                push ds, push es instructions are executed
+                                to save the registers in the SavedXX variables.
+
+        SavedFlags      word    When the monitor routine is called, the SavedXX
+                                variables contain the register values, the
+                                SavedFlags contains the saved flags register.
+
+        SavedIP         word    \
+        SavedAX         word     \
+        SavedBX         word      \
+        SavedCX         word       \
+        SavedDX         word        \
+        SavedSP         word         \
+        SavedBP         word          > See SavedFlags for more information
+        SavedSI         word         /
+        SavedDI         word        /
+        SavedES         word       /
+        SavedCS         word      /
+        SavedSS         word     /
+        SavedDS         word    /
+
+        SavedCSIP       dword   A combination of the CS and IP registers,
+                                you can use this for a LDS or LES instruction.
+        SavedSSSP       dword   Same as SavedCSIP but for the SS and SP
+                                registers.
+
+
+External symbols in segment code:
+
+        Monitor         near    The program using this tracer must have
+                                a public symbol call Monitor. This routine
+                                is called before every instruction is executed.
+                                The SavedXX registers contain the saved
+                                CPU registers. You can show this to a user
+                                in a debugger or use them for an ending
+                                condition in a virus.
+
+                                The monitor routine should return CF=1 (STC)
+                                when it wants to stop tracing and an CF=0 when
+                                it wants to continue tracing.
+
+If u use this code, include this as the last oject file, because it will
+include 512 bytes of 00 bytes that the tracer uses as it's uninitialized
+data.
+
+;=[END TRACER.DOC]===========================================================
+
+
+
+
+;=[BEGIN MAKEFILE]===========================================================
+
+make: tracer.exe term.exe
+
+tracer.exe: monitor.obj tracer.obj disasm.obj io.obj
+  tlink /v monitor tracer disasm io, tracer, nul
+
+term.exe: term.obj io.obj
+  tlink /v term io, term, nul
+
+monitor.obj: monitor.asm
+  tasm /m9 /zi monitor
+
+tracer.obj: tracer.asm
+  tasm /m9 /l /zi tracer
+
+disasm.obj: disasm.asm
+  tasm /m9 /zi disasm
+
+io.obj: io.asm
+  tasm /m9 /zi io
+
+term.obj: term.asm
+  tasm /m9 /zi term.asm
+
+;=[END MAKEFILE]=============================================================
+
+
+
+
+;=[BEGIN TRACER.ASM]=========================================================
+
+.286
+
+;
+; One way to detect this tracer: "MOV  CS,AX" works!!!!
+;
+
+code segment public use16 'code'
+                assume  cs:code, ds:code, ss:code
+
+                public  StartTrace, StartAtCSIP, SavedFlags, TraceStack
+                public  SavedIP, SavedAX, SavedBX, SavedCX, SavedDX
+                public  SavedSP, SavedBP, SavedSI, SavedDI, SavedES
+                public  SavedCS, SavedSS, SavedDS, SavedCSIP, SavedSSSP
+                public  CodeSegment
+
+                extrn   Monitor: near
+
+;==============================================================================
+;
+; Constants
+;
+
+bpSavedES       equ     word  ptr [bp + SavedES       - BasePtr]
+bpSavedDS       equ     word  ptr [bp + SavedDS       - BasePtr]
+bpSavedDI       equ     word  ptr [bp + SavedDI       - BasePtr]
+bpSavedSI       equ     word  ptr [bp + SavedSI       - BasePtr]
+bpSavedBP       equ     word  ptr [bp + SavedBP       - BasePtr]
+bpSavedSP       equ     word  ptr [bp + SavedSP       - BasePtr]
+bpSavedBX       equ     word  ptr [bp + SavedBX       - BasePtr]
+bpSavedDX       equ     word  ptr [bp + SavedDX       - BasePtr]
+bpSavedCX       equ     word  ptr [bp + SavedCX       - BasePtr]
+bpSavedAX       equ     word  ptr [bp + SavedAX       - BasePtr]
+bpSavedFlags    equ     word  ptr [bp + SavedFlags    - BasePtr]
+
+bpSavedCSIP     equ     dword ptr [bp + SavedCSIP     - BasePtr]
+bpSavedIP       equ     word  ptr [bp + SavedIP       - BasePtr]
+bpSavedCS       equ     word  ptr [bp + SavedCS       - BasePtr]
+
+bpSavedSSSP     equ     dword ptr [bp + SavedSSSP     - BasePtr]
+bpSavedSP       equ     word  ptr [bp + SavedSP       - BasePtr]
+bpSavedSS       equ     word  ptr [bp + SavedSS       - BasePtr]
+bpSavedDS       equ     word  ptr [bp + SavedDS       - BasePtr]
+
+bpStartOpcode   equ     word  ptr [bp + StartOpcode   - BasePtr]
+bpExceptionIP   equ     word  ptr [bp + ExceptionIP   - BasePtr]
+bpSegIndex      equ     word  ptr [bp + SegIndex      - BasePtr]
+bpInterrupt     equ     word  ptr [bp + Interrupt     - BasePtr]
+bpIntXX_IP      equ     word  ptr [bp + IntXX_IP      - BasePtr]
+bpIntXX_CS      equ     word  ptr [bp + IntXX_CS      - BasePtr]
+bpUpdateSeg     equ     word  ptr [bp + UpdateSeg     - BasePtr]
+bpOverrideOfs   equ     word  ptr [bp + OverrideOfs   - BasePtr]
+bpCounter       equ     byte  ptr [bp + Counter       - BasePtr]
+bpSegOverride   equ     byte  ptr [bp + SegOverride   - BasePtr]
+bpTraceFlags    equ     byte  ptr [bp + TraceFlags    - BasePtr]
+bpDebugFlag     equ     byte  ptr [bp + DebugFlag     - BasePtr]
+
+flgUsesES       equ     01h
+flgUsesCS       equ     02h
+flgUsesOther    equ     04h
+flgUsesDS       equ     08h
+flgAddressSize  equ     10h
+flgOperandSize  equ     20h
+flgIntHooked    equ     40h
+flgDontCallInt1 equ     80h
+
+;==============================================================================
+;
+; The tables this tunneler can't work without
+;
+; The JumpTable is an array of 32 words
+;
+
+_01             equ     OneByte         - StartTracerCode
+_04             equ     FourBytes       - StartTracerCode
+_XX             equ     Invalid         - StartTracerCode
+_G3             equ     Group3          - StartTracerCode
+_G5             equ     Group5          - StartTracerCode
+_2B             equ     TwoByteEscape   - StartTracerCode
+_AS             equ     AddressSize     - StartTracerCode ; Address Size
+_OS             equ     OperandSize     - StartTracerCode ; Operand Size
+_PR             equ     Opcode          - StartTracerCode ; Opcode
+_O0             equ     OverrideES      - StartTracerCode ; ES:
+_O1             equ     OverrideCS      - StartTracerCode ; CS:
+_O2             equ     OverrideOther   - StartTracerCode ; SS:
+_O3             equ     OverrideDS      - StartTracerCode ; DS:
+_O4             equ     OverrideOther   - StartTracerCode ; FS:
+_O5             equ     OverrideOther   - StartTracerCode ; GS:
+_MS             equ     MovSeg          - StartTracerCode ; mov   r/m,seg
+_SM             equ     MovSeg          - StartTracerCode ; mov   seg,r/m
+_RM             equ     Memory          - StartTracerCode ; ???   r/m,???
+_IB             equ     ByteImm         - StartTracerCode
+_MB             equ     MemByteImm      - StartTracerCode
+_IW             equ     WordImm         - StartTracerCode
+_MW             equ     MemWordImm      - StartTracerCode
+_OI             equ     ImmOffset       - StartTracerCode
+_1X             equ     UsesES          - StartTracerCode ; movs, cmps
+_1D             equ     Return          - StartTracerCode ; outs, lods, xlat
+_1E             equ     UsesES          - StartTracerCode ; ins, stos, scas
+_U0             equ     UsesES          - StartTracerCode ; push/pop es
+_U1             equ     UsesCS          - StartTracerCode ; push     cs
+_U2             equ     UsesOther       - StartTracerCode ; push     ss
+_U3             equ     UsesDS          - StartTracerCode ; push/pop ds
+_C2             equ     PopSS           - StartTracerCode ; pop      ss
+_JS             equ     JumpShort       - StartTracerCode
+_JN             equ     JumpNear        - StartTracerCode
+_JF             equ     JumpFar         - StartTracerCode
+_CN             equ     CallNear        - StartTracerCode
+_CF             equ     CallFar         - StartTracerCode
+_AM             equ     TrapAAM         - StartTracerCode
+_TB             equ     TrapBound       - StartTracerCode
+_IO             equ     IntoCall        - StartTracerCode
+_I3             equ     Int3Call        - StartTracerCode
+_II             equ     IntCall         - StartTracerCode
+_IR             equ     IntReturn       - StartTracerCode
+_RI             equ     ReturnImm       - StartTracerCode
+_R0             equ     Return_0        - StartTracerCode
+_FL             equ     PushfPopf       - StartTracerCode
+_LD             equ     LoadDS          - StartTracerCode
+_LE             equ     LoadES          - StartTracerCode
+
+                ;        0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
+                ;
+OpcodeTable     db      _RM,_RM,_RM,_RM,_IB,_IW,_U0,_U0,_RM,_RM,_RM,_RM,_IB,_IW,_U1,_2B ; 0
+                db      _RM,_RM,_RM,_RM,_IB,_IW,_U2,_C2,_RM,_RM,_RM,_RM,_IB,_IW,_U3,_U3 ; 1
+                db      _RM,_RM,_RM,_RM,_IB,_IW,_O0,_01,_RM,_RM,_RM,_RM,_IB,_IW,_O1,_01 ; 2
+                db      _RM,_RM,_RM,_RM,_IB,_IW,_O2,_01,_RM,_RM,_RM,_RM,_IB,_IW,_O2,_01 ; 3
+                db      _01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_01 ; 4
+                db      _01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_01 ; 5
+                db      _01,_01,_TB,_XX,_O4,_O5,_OS,_AS,_IW,_MW,_IB,_MB,_1D,_1D,_1E,_1E ; 6
+                db      _JS,_JS,_JS,_JS,_JS,_JS,_JS,_JS,_JS,_JS,_JS,_JS,_JS,_JS,_JS,_JS ; 7
+                db      _MB,_MW,_MB,_MB,_RM,_RM,_RM,_RM,_RM,_RM,_RM,_RM,_MS,_RM,_SM,_RM ; 8
+                db      _01,_01,_01,_01,_01,_01,_01,_01,_01,_01,_CF,_01,_FL,_FL,_01,_01 ; 9
+                db      _OI,_OI,_OI,_OI,_1X,_1X,_1X,_1X,_IB,_IW,_1E,_1E,_1D,_1D,_1E,_1E ; A
+                db      _IB,_IB,_IB,_IB,_IB,_IB,_IB,_IB,_IW,_IW,_IW,_IW,_IW,_IW,_IW,_IW ; B
+                db      _MB,_MB,_RI,_R0,_LE,_LD,_MB,_MW,_04,_01,_RI,_R0,_I3,_II,_IO,_IR ; C
+                db      _RM,_RM,_RM,_RM,_AM,_IB,_XX,_1D,_RM,_RM,_RM,_RM,_RM,_RM,_RM,_RM ; D
+                db      _JS,_JS,_JS,_JS,_IB,_IB,_IB,_IB,_CN,_JN,_JF,_JS,_01,_01,_01,_01 ; E
+                db      _PR,_XX,_PR,_PR,_01,_01,_G3,_G3,_01,_01,_01,_01,_01,_01,_RM,_G5 ; F
+
+;==========================================================================================
+;
+; Tunnel code
+;
+
+StartTracerCode equ     $
+
+FourBytes:      movsw
+                movsb
+                ret
+
+CallNear:       push    si
+                mov     ax,2
+                call    Call_0
+                pop     si
+JumpNear:       lodsw
+                add     si,ax
+                jmp     ClearOpcode
+
+CallFar:        push    si
+                mov     ax,4
+                call    Call_0
+                pop     si
+JumpFar:        lds     si,ds:[si]
+                jmp     ClearOpcode
+
+IntReturn:      call    Ret_1
+PushfPopf:      jmp     Flags_0
+
+AddressSize:    mov     al,66h xor flgOperandSize xor flgAddressSize
+OperandSize:    xor     al,66h xor flgOperandSize
+                dec     di
+                test    al,bpTraceFlags
+                jnz     Opcode
+OrTraceFlag:    or      bpTraceFlags,al         ; 386-Opcode size
+                inc     di
+Opcode:         lodsb
+                stosb
+                mov     ah,0
+                mov     bx,ax
+                mov     bl,cs:OpcodeTable[bx]
+                add     bx,offset StartTracerCode
+                push    bx
+                xor     cx,cx
+                xor     bx,bx
+Return:         ret
+
+OverrideDS:     inc     cx
+OverrideOther:  inc     cx
+OverrideCS:     inc     cx
+OverrideES:     xchg    cl,bpSegOverride
+                lea     bx,[di-1]
+                or      cl,cl
+                js      FirstOverride
+                mov     bx,bpOverrideOfs
+                mov     es:[bx],al
+                dec     di
+FirstOverride:  mov     bpOverrideOfs,bx
+                jmp     short Opcode
+
+PopSS:          push    offset ChangesSS
+                jmp     short UsesOther
+
+LoadES:         push    offset Memory
+                jmp     short UsesES
+
+LoadDS:         push    offset Memory
+UsesDS:         inc     cx
+UsesOther:      inc     cx
+UsesCS:         inc     cx
+UsesES:         dec     bx
+StoreSegInfo:   mov     ch,1
+                cmp     cl,ch
+                jne     NotCodeSeg
+                add     bx,di
+                mov     bpUpdateSeg,bx
+NotCodeSeg:     shl     ch,cl
+                or      bpTraceFlags,ch
+                ret
+
+IntCall:        jmp     Int_1
+
+Int3Call:       mov     bl,3    ; mov   bx,3
+                jmp     Int_2
+
+IntoCall:       mov     bl,4    ; mov   bx,4
+                jmp     Int_2
+
+TrapBound:      mov     bl,5    ; mov   bx,5
+Trap:           call    Memory
+Exeption:       mov     cx,offset HookedExeption
+                jmp     HookInt
+
+TrapAAM:        movsb
+                jmp     short Exeption
+
+MovSeg:         mov     ah,al
+                mov     al,ds:[si]
+                and     al,38h
+                cmp     ax,8e10h
+                jne     Seg_1
+                push    offset ChangesSS
+Seg_1:          shr     al,3
+                cmp     al,4
+                jae     Memory
+                xchg    ax,cx
+                call    StoreSegInfo
+Memory:         lodsb
+                jmp     Mem_0
+
+Group3:         test    byte ptr ds:[si],30h
+                jpo     Memory
+                jnz     Trap
+                test    al,1
+                jz      MemByteImm
+MemWordImm:     call    Memory
+WordImm:        mov     cl,flgOperandSize
+Imm_1:          movsw
+                test    cl,bpTraceFlags
+                jz      Imm_2
+                movsw
+Imm_2:          ret
+
+ImmOffset:      mov     cl,flgAddressSize
+                jmp     short Imm_1
+
+MemByteImm:     call    Memory
+ByteImm:        movsb
+OneByte:        ret
+
+Group5:         mov     al,ds:[si]
+                test    al,30h
+                jpe     Memory
+                and     al,38h
+                cmp     al,20h
+                je      IndJumpNear
+                ja      IndJumpFar
+                cmp     al,10h
+                je      IndCallNear
+                jmp     short IndCallFar
+
+Invalid:        sti
+                call    Monitor
+                jmp     Invalid
+
+JumpShort:      lodsb
+                cbw
+                jmp     Cond_1
+
+ReturnImm:      mov     cx,ds:[si]
+Return_0:       jmp     short Ret_1
+
+TwoByteEscape:  lodsb
+                stosb
+                cmp     al,4
+                jb      Memory
+                cmp     al,22
+                je      Memory
+                cmp     al,80h
+                jb      Invalid
+                cmp     al,90h
+                jb      CondJumpNear
+                cmp     al,0a0h
+                jb      Memory
+                cmp     al,0afh
+                jb      Opcode_2
+                je      Memory
+                cmp     al,0c0h
+                jae     Invalid
+Opcode_1:       test    al,06h
+                jz      Invalid
+                cmp     al,0bah
+                je      JmpMemByteImm
+                jmp     short Memory
+Opcode_2:       test    al,06h
+                jz      OneByte
+                jpe     Invalid
+                test    al,01h
+                jnz     Memory
+                test    al,03h
+                jnz     Invalid
+JmpMemByteImm:  jmp     MemByteImm
+
+;==============================================================================
+
+Ret_1:          mov     bx,ds
+                lds     si,bpSavedSSSP
+                test    al,8
+                lodsw
+                xchg    ax,bx
+                jz      Ret_2
+                lodsw
+Ret_2:          add     si,cx
+                mov     bpSavedSP,si
+                mov     ds,ax
+                mov     si,bx
+                xor     ax,ax
+ClearOpcode:    mov     di,bpStartOpcode
+                ret
+
+IndCallNear:    mov     cl,2
+IndJumpNear:    mov     al,8bh
+                jmp     short IndJump
+
+IndCallFar:     mov     cl,4
+IndJumpFar:     xor     ax,ax
+                cmp     al,bpSegOverride
+                sbb     al,-0c5h
+IndJump:        dec     di
+                stosb
+                lodsb
+                and     al,0c7h
+                call    Mem_0
+                jcxz    NoReturn
+                xchg    ax,cx
+                call    Call_1
+NoReturn:       mov     dx,offset SetNewIP - 2
+                mov     si,bpSavedAX
+                or      bpTraceFlags,flgUsesCS
+                ret
+
+CondJumpNear:   sub     al,10h
+                dec     di
+                dec     di
+                stosb
+                lodsw
+Cond_1:         xchg    ax,bx
+                mov     ax,0e903h
+                stosw
+                mov     ax,dx
+                sub     ax,di
+                stosw
+                mov     al,02eh
+                stosb
+                mov     ax,6c7h
+                stosw
+                mov     ax,offset SavedIP
+                stosw
+                lea     ax,[bx+si]
+                stosw
+                ret
+
+Flags_0:        push    ds
+                lds     bx,bpSavedSSSP
+                cmp     al,9ch
+                jne     Flags_1
+                dec     bx
+                dec     bx
+                mov     ax,bpSavedFlags
+                or      ah,bpDebugFlag
+                mov     ds:[bx],ax
+                jmp     short Flags_2
+Flags_1:        mov     ax,ds:[bx]
+                and     ax,100h
+                mov     bpDebugFlag,ah
+                xor     ax,ds:[bx]
+                mov     bpSavedFlags,ax
+                inc     bx
+                inc     bx
+Flags_2:        mov     bpSavedSP,bx
+                pop     ds
+                jmp     short ClearOpcode
+
+Call_0:         add     si,ax
+Call_1:         push    es
+                push    di
+                sub     bpSavedSP,ax
+                les     di,bpSavedSSSP
+                cmp     al,4
+                mov     ax,si
+                stosw
+                jb      Call_2
+                mov     ax,ds
+                stosw
+                je      Call_2
+                mov     ax,bpSavedFlags
+                or      ah,1
+                stosw
+Call_2:         pop     di
+                pop     es
+                ret
+
+Mem_0:          stosb
+                cmp     al,0c0h
+                jae     Mem_5
+                test    bpTraceFlags,flgAddressSize
+                jz      Mem_1
+                mov     ah,al
+                xor     ax,403h
+                test    ah,7
+                jnz     Mem_1
+                lodsb
+                stosb
+                xor     al,3
+                and     ax,0c007h
+                or      al,ah
+Mem_1:          test    al,0c0h
+                js      Mem_2
+                jnz     Mem_4
+                and     al,0c7h
+                cmp     al,006h
+                jne     Mem_5
+Mem_2:          test    bpTraceFlags,flgAddressSize
+                jz      Mem_3
+                movsw
+Mem_3:          movsb
+Mem_4:          movsb
+Mem_5:          ret
+
+Int_1:          lodsb
+                stosb
+                mov     bl,al
+Int_2:          mov     cx,offset HookedIntrpt
+HookInt:        push    ds
+                xor     ax,ax
+                mov     ds,ax
+                rol     bx,2
+                mov     bpInterrupt,bx
+                xchg    cx,ds:[bx]
+                mov     bpIntXX_IP,cx
+                mov     cx,cs
+                xchg    cx,ds:[bx+2]
+                mov     bpIntXX_CS,cx
+                or      bpTraceFlags,flgIntHooked
+                pop     ds
+                ret
+
+ChangesSS:      mov     ax,8300h
+                cmp     al,bpCounter
+                jne     SS_2
+                inc     bpCounter
+                push    si
+                push    di
+                push    bpOverrideOfs
+                xchg    al,bpTraceFlags
+                xchg    ah,bpSegOverride
+                push    ax
+                mov     bpStartOpcode,di
+                call    Opcode
+                pop     ax
+                push    ax
+                or      bpTraceFlags,al
+                call    UpdateCS
+                pop     ax
+                pop     bpOverrideOfs
+                mov     bpSegOverride,ah
+                mov     bpUpdateSeg,0
+                jnc     SS_1
+                add     sp,4
+                ret
+SS_1:           mov     bpTraceFlags,al
+                pop     di
+                pop     si
+SS_2:           ret
+
+Instruction:    mov     bpExceptionIP,si
+                call    Opcode
+UpdateCS:       mov     ax,100h
+                mov     cl,bpSegOverride
+                and     cl,3
+                shl     ah,cl
+                or      ah,bpTraceFlags
+                mov     bpTraceFlags,ah
+                test    ah,flgUsesCS
+                jz      CS_4
+                mov     al,-8
+                xor     bx,bx           ; mov  di,(SavedES - BasePtr)
+                test    ah,flgUsesES
+                jz      CS_1
+                mov     al,10h
+                inc     bx
+                inc     bx              ; mov  di,(SavedDS - BasePtr)
+                test    ah,flgUsesDS
+                jnz     CS_5
+CS_1:           push    bx
+                mov     bx,bpUpdateSeg
+                or      bx,bx
+                jz      CS_2
+                add     cs:[bx],al
+CS_2:           cmp     cl,1
+                jne     CS_3
+                mov     bx,bpOverrideOfs
+                add     cs:[bx],al
+CS_3:           pop     bx
+CS_4:           stc
+CS_5:           ret
+
+;==============================================================================
+
+HookedIntrpt:   xchg    ax,cs:SavedIP
+                mov     cs:ExceptionIP,ax
+                jmp     short Hooked
+
+HookedExeption: mov     cs:SavedIP,ax
+Hooked:         pop     ax
+                pop     ax
+                pop     ax
+                pushf
+                and     ah,not 1
+                or      cs:TraceFlags,flgDontCallInt1
+                or      ah,cs:DebugFlag
+                mov     cs:DebugFlag,0
+                popf
+                push    ax
+                mov     ax,cs:IntXX_CS
+                xchg    ax,cs:SavedCS
+                push    ax
+                push    cs:ExceptionIP
+                mov     ax,cs:IntXX_IP
+SetNewIP:       xchg    ax,cs:SavedIP
+                jmp     short Tracer
+
+;==============================================================================
+;
+; The main tracer procedure, to start tracing use a far call to the tracer. It
+; will start tracing at the return address and stop when Monitor returns
+; C-flag = 1.
+;
+
+CodeSegment     dw      0
+
+StartTrace      label   far
+                pop     cs:SavedIP
+                pop     cs:SavedCS
+StartAtCSIP:    mov     cs:DebugFlag,0
+                mov     cs:TraceFlags,flgDontCallInt1
+                mov     cs:CodeSegment,cs
+Tracer:         mov     cs:SavedSS,ss
+                mov     cs:SavedSP,sp
+                mov     ss,cs:CodeSegment
+                mov     sp,offset TraceStack
+                pushf
+                pusha
+                push    ds
+                push    es
+                mov     bp,sp
+                mov     ah,bpDebugFlag
+                mov     al,0
+                or      bpSavedFlags,ax
+                mov     al,bpTraceFlags
+                test    al,flgUsesCS
+                jz      SegmentsOK
+                mov     di,bpSegIndex
+                mov     cx,[bp+di]
+                xchg    cx,bpSavedCS
+                mov     [bp+di],cx
+SegmentsOK:     test    al,flgIntHooked
+                jz      InterruptsOK
+                xor     ax,ax
+                mov     ds,ax
+                mov     bx,bpInterrupt
+                mov     ax,bpIntXX_IP
+                mov     ds:[bx],ax
+                mov     ax,bpIntXX_CS
+                mov     ds:[bx+2],ax
+InterruptsOK:   call    Monitor
+CarryOK:        mov     bpSegOverride,83h
+                mov     bpUpdateSeg,0
+                mov     dx,offset Tracer - 2
+                lds     si,bpSavedCSIP
+                push    cs
+                pop     es
+                mov     di,offset TheBuffer
+                mov     bpStartOpcode,di
+                cld
+                jc      TraceEnd
+CannotEnd:      mov     ax,flgDontCallInt1
+                xchg    al,bpTraceFlags
+                test    al,flgDontCallInt1
+                jz      CallInt1
+                cmp     ah,bpDebugFlag
+                je      DontCallInt1
+                mov     bpTraceFlags,ah
+DontCallInt1:   mov     bpCounter,ah
+                call    Instruction
+                mov     cx,ds
+                mov     bpSavedIP,si
+                cmp     al,0
+                jz      CodeNotUsed
+                mov     bpSegIndex,bx
+                mov     si,bx
+                xchg    cx,[bp+si]
+CodeNotUsed:    mov     bpSavedCS,cx
+                mov     al,0e9h
+                stosb
+                xchg    ax,dx
+                sub     ax,di
+                stosw
+RestoreRegs:    and     bpSavedFlags,not 100h
+                mov     sp,bp
+                pop     es
+                pop     ds
+                popa
+                popf
+                mov     ss,cs:SavedSS
+                mov     sp,cs:SavedSP
+                jmp     TheBuffer
+
+CallInt1:       mov     bx,1
+                mov     cx,offset HookedIntrpt
+                call    HookInt
+                mov     ax,1cdh
+                stosw
+                jmp     short RestoreRegs
+
+TraceEnd:       cmp     bpDebugFlag,0
+                jnz     CannotEnd
+                mov     al,0eah
+                stosb
+                mov     ax,si
+                stosw
+                mov     ax,ds
+                stosw
+                jmp     short RestoreRegs
+
+;==============================================================================
+;
+; Uninitialized Data
+;
+
+                even
+
+DataSize        equ     (TraceData - BasePtr)
+TheBuffer:      dw      (200h - DataSize) / 2 dup(?)
+
+BasePtr         equ     $               ;       mov   bp,sp
+SavedES         dw      ?               ;       push  es
+SavedDS         dw      ?               ;       push  ds
+SavedDI         dw      ?               ; \
+SavedSI         dw      ?               ;  \
+SavedBP         dw      ?               ;   \
+                dw      ?               ;    \  pusha
+SavedBX         dw      ?               ;    /
+SavedDX         dw      ?               ;   /
+SavedCX         dw      ?               ;  /
+SavedAX         dw      ?               ; /
+SavedFlags      dw      ?               ;       pushf
+TraceStack      equ     $               ;       mov   sp,offset TraceStack
+
+SavedCSIP       label   dword
+SavedIP         dw      ?
+SavedCS         dw      ?
+
+SavedSSSP       label   dword
+SavedSP         dw      ?
+SavedSS         dw      ?
+
+Interrupt       dw      ?
+IntXX_IP        dw      ?
+IntXX_CS        dw      ?
+
+StartOpcode     dw      ?
+ExceptionIP     dw      ?
+SegIndex        dw      ?
+UpdateSeg       dw      ?
+OverrideOfs     dw      ?
+Counter         db      ?
+SegOverride     db      ?
+TraceFlags      db      ?
+DebugFlag       db      ?
+TraceData       equ     $
+
+code ends
+
+end
+
+;=[END TRACER.ASM]===========================================================
+
+
+
+;=[BEGIN MONITOR.ASM]========================================================
+
+.286
+
+code segment public use16 'code'
+                assume  cs:code, ds:code, ss:code
+
+                public  Monitor
+
+                ;
+                ;       Externals from TRACER.ASM
+                ;
+                extrn   StartTrace: far, StartAtCSIP: near, SavedFlags: Word
+                extrn   SavedIP: word, SavedAX: word, SavedBX: word
+                extrn   SavedCX: word, SavedDX: word, SavedSP: word
+                extrn   SavedBP: word, SavedSI: word, SavedDI: word
+                extrn   SavedES: word, SavedCS: word, SavedSS: word,
+                extrn   SavedDS: word, SavedCSIP: dword, SavedSSSP: dword
+                extrn   TraceStack: near, CodeSegment: Word
+
+                ;
+                ;       Externals from DISASM.ASM
+                ;
+                extrn   Disassemble: near
+
+                ;
+                ;       Externals from IO.ASM
+                ;
+                extrn   PrintString: near, PrintChar: Near, PrintCrLf: near
+                extrn   KeyPressed: near, ReadKey: near, FlushBuffer: near
+                extrn   InitSerial: near
+
+HistSize        equ     200h
+
+_Ofs            equ     word ptr [0]
+_Seg            equ     word ptr [2]
+
+Main:           call    InitSerial      ; Set COM2 to 19200, 8N1
+                call    InitInt6        ; Initialize "Invalid Opcode" int.
+                call    StartTrace      ; Start Tracer
+
+                mov     ax,3100h        ; Terminate & Stay Resident
+                mov     dx,800h         ; Keep 32K of memory
+                int     21h             ; Do it
+
+Action          dw      offset Input
+
+Monitor:        push    cs
+                pop     ds
+                mov     bx,HistPtr
+                inc     HistPtr
+                and     bx,HistSize - 1
+                shl     bx,2
+                mov     ax,SavedIP
+                mov     History[bx]._Ofs,ax
+                mov     ax,SavedCS
+                mov     History[bx]._Seg,ax
+                jmp     Action
+
+NewCount        dw      ?
+
+NewCode:        mov     ax,SavedIP
+                mov     dx,SavedCS
+                cmp     dx,CodeSegment
+                jb      Execute
+                cmp     dx,0a000h
+                jae     Execute
+                mov     cx,HistSize - 1
+                mov     si,HistPtr
+ScanNext:       mov     bx,si
+                and     bx,HistSize - 1
+                shl     bx,2
+                cmp     ax,word ptr History[bx]
+                jne     ScanDif
+                cmp     dx,word ptr History[bx+2]
+                je      Execute
+ScanDif:        inc     si
+                loop    ScanNext
+                dec     NewCount
+                jz      BreakOut
+                call    PrintStatus
+                jmp     Execute
+
+SkipBreakCheck: mov     Action,offset Execute
+                jmp     short Execute
+
+BreakPoint:     mov     cx,BreakCount1
+                jcxz    SkipBreakCheck
+                push    cs
+                pop     es
+                mov     ax,SavedIP
+                mov     dx,SavedCS
+                mov     si,offset BreakPoints
+                cld
+NextBrkPnt:     mov     di,si
+                scasw
+                jne     AddrDiffirent
+                xchg    ax,dx
+                scasw
+                je      BreakOut
+                xchg    ax,dx
+AddrDiffirent:  add     si,4
+                loop    NextBrkPnt
+Execute:        call    KeyPressed
+                jnz     Breakout
+                mov     ax,SavedAX
+                cmp     ax,4b00h
+                jne     NotDosExec
+                les     bx,SavedCSIP
+                cmp     word ptr es:[bx],21cdh
+                jne     NotDosExec
+                mov     ExecFlag,-1
+                jmp     short DontBreak
+NotDosExec:     cmp     ExecFlag,0
+                je      DontBreak
+                mov     ax,SavedCS
+                mov     dx,cs
+                cmp     ax,dx
+                jb      DontBreak
+                cmp     ax,0a000h
+                jae     DontBreak
+                mov     ExecFlag,0
+                jmp     short Breakout
+DontBreak:      clc
+                ret
+
+ExecFlag        db      0
+
+Breakout:       mov     cs:Action,offset Input
+                mov     ax,cs:BreakCount2
+                mov     cs:BreakCount1,ax
+Input:     ;     sti
+                mov     ax,cs:SavedIP
+                mov     cs:DisasmAddr._Ofs,ax
+                mov     cs:DumpAddr._Ofs,ax
+                mov     ax,cs:SavedCS
+                mov     cs:DisasmAddr._Seg,ax
+                mov     cs:DumpAddr._Seg,ax
+                call    FlushBuffer
+                call    PrintStatus
+Prompt:         mov     al,'-'
+                call    PrintChar
+AnotherKey:     call    ReadKey
+                cmp     al,'R'
+                je      _R
+                cmp     al,'Q'
+                je      _Q
+                cmp     al,'G'
+                je      _G
+                cmp     al,'U'
+                je      _U
+                cmp     al,'D'
+                je      _D
+                cmp     al,'P'
+                je      _P
+                cmp     al,'T'
+                je      _T
+                cmp     al,'B'
+                je      _B
+                cmp     al,'H'
+                je      _H
+                cmp     al,'C'
+                je      _C
+                cmp     al,'N'
+                je      _N
+                jmp     AnotherKey
+
+_R:             jmp     R_Command
+_Q:             jmp     Q_Command
+_G:             jmp     G_Command
+_U:             jmp     U_Command
+_D:             jmp     D_Command
+_P:             jmp     P_Command
+_T:             jmp     T_Command
+_B:             jmp     B_Command
+_H:             jmp     H_Command
+_C:             jmp     C_Command
+_N:             jmp     N_Command
+
+N_Command:      call    PrintChar
+                xor     ax,ax
+                call    ReadAddress
+                jc      N_1
+                or      dx,dx
+                jnz     N_1
+                cmp     ax,1
+                jb      N_1
+                cmp     ax,100h
+                jbe     N_2
+N_1:            mov     ax,1
+N_2:            mov     NewCount,ax
+                mov     Action,offset NewCode
+                clc
+                ret
+
+C_Command:      call    PrintChar
+                call    PrintCrLf
+                mov     BreakCount1,0
+                mov     BreakCount2,0
+                jmp     Prompt
+
+R_Command:      call    PrintCrLf
+                call    PrintStatus
+                mov     ax,cs:SavedIP
+                mov     cs:DisasmAddr._Ofs,ax
+                mov     cs:DumpAddr._Ofs,ax
+                mov     ax,cs:SavedCS
+                mov     cs:DisasmAddr._Seg,ax
+                mov     cs:DumpAddr._Seg,ax
+                jmp     Prompt
+
+Q_Command:      call    PrintChar
+                call    PrintCrLf
+                stc
+                ret
+
+G_Command:      call    PrintChar
+                mov     ax,SavedCS
+                call    ReadAddress
+                jc      G_1
+                mov     di,BreakCount1
+                cmp     di,MaxBreakPoint
+                jae     G_1
+                inc     BreakCount1
+                shl     di,2
+                mov     word ptr BreakPoints[di],ax
+                mov     word ptr BreakPoints[di+2],dx
+G_1:            mov     Action,offset BreakPoint
+                clc
+                ret
+
+U_Command:      call    PrintChar
+                mov     ax,SavedCS
+                call    ReadAddress
+                jc      U_1
+                mov     DisasmAddr._Ofs,ax
+                mov     DisasmAddr._Seg,dx
+U_1:            mov     cx,10
+                lds     si,DisasmAddr
+U_2:            push    cx
+                call    PrintDisasm
+                pop     cx
+                loop    U_2
+                push    cs
+                pop     ds
+                mov     DisasmAddr._Ofs,si
+                jmp     Prompt
+
+D_Command:      call    PrintChar
+                mov     ax,SavedDS
+                call    ReadAddress
+                jc      D_1
+                mov     DumpAddr._Ofs,ax
+                mov     DumpAddr._Seg,dx
+D_1:            mov     cx,8
+                lds     si,DumpAddr
+D_2:            push    cx
+                call    PrintDump
+                pop     cx
+                loop    D_2
+                push    cs
+                pop     ds
+                mov     DumpAddr._Ofs,si
+                jmp     Prompt
+
+P_Command:      push    ax
+                les     bx,SavedCSIP
+                mov     al,es:[bx]
+                cmp     al,0cdh
+                je      TwoBytes
+                cmp     al,0e8h
+                je      ThreeBytes
+                jmp     CantProceed
+ThreeBytes:     inc     bx
+TwoBytes:       inc     bx
+                inc     bx
+                mov     di,BreakCount1
+                cmp     di,MaxBreakPoint
+                jae     CantProceed
+                inc     BreakCount1
+                shl     di,2
+                mov     word ptr BreakPoints[di],bx
+                mov     word ptr BreakPoints[di+2],es
+                mov     Action,offset BreakPoint
+CantProceed:    pop     ax
+T_Command:      call    PrintChar
+                call    PrintCrLf
+                clc
+                ret
+
+B_Command:      call    PrintChar
+                cmp     BreakCount1,MaxBreakPoint
+                jae     B_1
+                mov     ax,SavedCS
+                call    ReadAddress
+                jc      B_1
+                mov     di,BreakCount1
+                inc     BreakCount1
+                inc     BreakCount2
+                shl     di,2
+                mov     word ptr BreakPoints[di],ax
+                mov     word ptr BreakPoints[di+2],dx
+B_1:            push    cs
+                pop     es
+                xor     ax,ax
+                mov     cx,BreakCount1
+                jcxz    B_3
+                mov     si,offset BreakPoints
+B_2:            push    ax
+                push    cx
+                push    si
+                mov     di,offset BreakString + 6
+                call    HexByte
+                add     di,3
+                mov     ax,ds:[si+2]
+                call    HexWord
+                inc     di
+                mov     ax,ds:[si]
+                call    HexWord
+                mov     si,offset BreakString
+                call    PrintString
+                pop     si
+                pop     cx
+                pop     ax
+                inc     ax
+                add     si,4
+                loop    B_2
+B_3:            jmp     Prompt
+
+H_Command:      call    PrintChar
+                call    PrintCrLf
+                mov     cx,HistSize
+H_1:            push    cx
+                mov     bx,HistPtr
+                inc     HistPtr
+                and     bx,HistSize - 1
+                shl     bx,2
+                lds     si,History[bx]
+                call    PrintDisasm
+                push    cs
+                pop     ds
+                pop     cx
+                loop    H_1
+                jmp     Prompt
+
+HistPtr         dw      ?
+History         dd      HistSize dup(?)
+
+DisasmAddr      dd      ?
+DumpAddr        dd      ?
+
+BreakString     db      'BREAK 00 = 0000:0000',13,10,0
+
+;==============================================================================
+
+InputBuffer     db      51h dup(0)
+AddressOfs      dw      ?
+AddressSeg      dw      ?
+
+ReadAddress:    mov     AddressOfs,0
+                mov     AddressSeg,ax
+                mov     al,' '
+                call    PrintChar
+                xor     bx,bx
+                xor     cx,cx
+Address_1:      call    ReadKey
+                cmp     al,8
+                jne     Address_2
+                or      bx,bx
+                jz      Address_1
+                dec     bx
+                mov     InputBuffer[bx],0
+                call    PrintChar
+                mov     al,' '
+                call    PrintChar
+                mov     al,8
+                call    PrintChar
+                jmp     Address_1
+Address_2:      cmp     al,13
+                je      Address_3
+                cmp     al,20h
+                jbe     Address_1
+                cmp     al,7fh
+                jae     Address_1
+                cmp     bx,50h
+                jae     Address_1
+                mov     InputBuffer[bx],al
+                inc     bx
+                mov     InputBuffer[bx],0
+                call    PrintChar
+                jmp     Address_1
+Address_3:      cmp     al,13
+                jne     Address_1
+                or      bx,bx
+                jz      Address_8
+                push    bx
+                push    AddressSeg
+                push    AddressOfs
+                xor     bx,bx
+Address_4:      call    ReadWord
+                jc      Address_7
+                add     AddressOfs,ax
+                mov     al,InputBuffer[bx]
+                inc     bx
+                cmp     al,'+'
+                je      Address_4
+                cmp     al,':'
+                jne     Address_6
+                xor     ax,ax
+                xchg    ax,AddressOfs
+                mov     AddressSeg,ax
+Address_5:      call    ReadWord
+                jc      Address_7
+                add     AddressOfs,ax
+                mov     al,InputBuffer[bx]
+                inc     bx
+                cmp     al,'+'
+                je      Address_5
+Address_6:      add     al,-1
+Address_7:      mov     ax,AddressOfs
+                mov     dx,AddressSeg
+                pop     AddressOfs
+                pop     AddressSeg
+                pop     bx
+                jnc     Address_8
+                jmp     Address_1
+Address_8:      push    ax
+                push    dx
+                call    PrintCrLf
+                pop     dx
+                pop     ax
+                cmp     bx,1
+                ret
+
+ReadWord:       mov     ax,word ptr InputBuffer[bx]
+                add     bx,2
+                cmp     ax,"XA"
+                jne     Read_AX
+                mov     ax,SavedAX
+                ret
+Read_AX:        cmp     ax,"XB"
+                jne     Read_BX
+                mov     ax,SavedBX
+                ret
+Read_BX:        cmp     ax,"XC"
+                jne     Read_CX
+                mov     ax,SavedCX
+                ret
+Read_CX:        cmp     ax,"XD"
+                jne     Read_DX
+                mov     ax,SavedDX
+                ret
+Read_DX:        cmp     ax,"PS"
+                jne     Read_SP
+                mov     ax,SavedSP
+                ret
+Read_SP:        cmp     ax,"PB"
+                jne     Read_BP
+                mov     ax,SavedBP
+                ret
+Read_BP:        cmp     ax,"IS"
+                jne     Read_SI
+                mov     ax,SavedSI
+                ret
+Read_SI:        cmp     ax,"ID"
+                jne     Read_DI
+                mov     ax,SavedDI
+                ret
+Read_DI:        cmp     ax,"PI"
+                jne     Read_IP
+                mov     ax,SavedIP
+                ret
+Read_IP:        cmp     ax,"SD"
+                jne     Read_DS
+                mov     ax,SavedDS
+                ret
+Read_DS:        cmp     ax,"SE"
+                jne     Read_ES
+                mov     ax,SavedES
+                ret
+Read_ES:        cmp     ax,"SS"
+                jne     Read_SS
+                mov     ax,SavedSS
+                ret
+Read_SS:        cmp     ax,"SC"
+                jne     Read_CS
+                mov     ax,SavedCS
+                ret
+Read_CS:        dec     bx
+                mov     cx,bx
+                dec     bx
+                xor     ax,ax
+Read_1:         mov     dx,ax
+                test    dh,0f0h
+                jnz     Read_3
+                mov     al,InputBuffer[bx]
+                sub     al,'0'
+                jb      Read_3
+                cmp     al,9
+                jbe     Read_2
+                sub     al,7
+                cmp     al,9
+                jbe     Read_3
+                cmp     al,15
+                ja      Read_3
+Read_2:         inc     bx
+                cbw
+                shl     dx,4
+                add     ax,dx
+                jmp     Read_1
+Read_3:         xchg    ax,dx
+                cmp     bx,cx
+                ret
+
+MaxBreakPoint   equ     10
+BreakCount1     dw      0
+BreakCount2     dw      0
+BreakPoints     dd      MaxBreakPoint dup(?)
+
+;==============================================================================
+;
+; Print Status
+;
+
+StatusMsg       db      'AX=0000  BX=0000  CX=0000  DX=0000  SP=0000  BP=0000  SI=0000  DI=0000',13,10
+                db      'DS=0000  ES=0000  SS=0000  CS=0000  IP=0000  FLAGS=O D I T S Z A P C ',13,10,0
+DisasmMsg       db      '0000:0000 ',70 dup(?),13,10,0
+DumpMsg         db      '0000:0000 00 00 00 00 00 00 00-00 00 00 00 00 00 00 00 00 ................',13,10,0
+
+RegPointers     dw      SavedAX, SavedBX, SavedCX, SavedDX, SavedSP, SavedBP, SavedSI, SavedDI
+                dw      SavedDS, SavedES, SavedSS, SavedCS, SavedIP
+
+FlagMasks       dw      800h,'oO',400h,'dD',200h,'iI',100h,'tT'
+                dw      080h,'sS',040h,'zZ',010h,'aA',004h,'pP',001h,'cC'
+
+PrintStatus:    push    cs
+                pop     es
+                mov     cx,13
+                mov     si,offset RegPointers
+                mov     di,offset StatusMsg + 3
+                cld
+PrintNxtReg:    lodsw
+                xchg    ax,bx
+                mov     ax,ds:[bx]
+                call    HexWord
+                add     di,5
+                loop    PrintNxtReg
+                mov     cx,9
+                mov     si,offset FlagMasks
+                add     di,3
+                mov     dx,SavedFlags
+PrintNxtFlag:   lodsw
+                test    dx,ax
+                lodsw
+                jnz     FlagSet
+                xchg    al,ah
+FlagSet:        mov     ah,' '
+                stosw
+                loop    PrintNxtFlag
+                mov     si,offset StatusMsg
+                call    PrintString
+                lds     si,SavedCSIP
+                call    PrintDisasm
+                push    cs
+                pop     ds
+                ret
+
+PrintDisasm:    push    cs
+                pop     es
+                mov     di,offset DisasmMsg
+                cld
+                mov     ax,ds
+                call    HexWord
+                inc     di
+                mov     ax,si
+                call    HexWord
+                inc     di
+                push    di
+                mov     ax,'  '
+                mov     cx,10
+                rep     stosw
+                call    Disassemble
+                push    cx
+                mov     al,0
+                mov     cx,-1
+                repne   scasb
+                dec     di
+                mov     al,13
+                mov     ah,10
+                stosw
+                mov     al,0
+                stosb
+                pop     cx
+                pop     di
+                cmp     cx,10
+                jcxz    ZeroBytes
+                jbe     PrintNxtByte
+                mov     cx,10
+PrintNxtByte:   lodsb
+                call    HexByte
+                loop    PrintNxtByte
+ZeroBytes:      push    ds
+                push    si
+                push    cs
+                pop     ds
+                mov     si,offset DisasmMsg
+                call    PrintString
+                pop     si
+                pop     ds
+                ret
+
+PrintDump:      push    cs
+                pop     es
+                mov     di,offset DumpMsg
+                mov     ax,ds
+                call    HexWord
+                inc     di
+                mov     ax,si
+                call    HexWord
+                inc     di
+                mov     cx,10h
+DumpByte:       lodsb
+                call    HexByte
+                inc     di
+                loop    DumpByte
+                mov     cx,10h
+                sub     si,cx
+DumpChar:       lodsb
+                cmp     al,20h
+                jb      DumpDot
+                cmp     al,7fh
+                jb      DumpIt
+DumpDot:        mov     al,'.'
+DumpIt:         stosb
+                loop    DumpChar
+                push    ds
+                push    si
+                push    cs
+                pop     ds
+                mov     si,offset DumpMsg
+                call    PrintString
+                pop     si
+                pop     ds
+                ret
+
+HexWord:        push    ax
+                mov     al,ah
+                call    HexByte
+                pop     ax
+HexByte:        push    ax
+                shr     al,4
+                call    HexDigit
+                pop     ax
+                and     al,0fh
+HexDigit:       add     al,'0'
+                cmp     al,'9'
+                jbe     DigitOK
+                add     al,7
+DigitOK:        stosb
+                ret
+
+;==============================================================================
+;
+; Initialize routines
+;
+
+InitInt6:       cli
+                xor     ax,ax
+                mov     ds,ax
+                mov     ax,offset InvalidOpcode
+                mov     ds:[18h],ax
+                mov     ds:[1ah],cs
+                sti
+                ret
+
+;==============================================================================
+;
+; Exeption handling
+;
+
+InvalidMsg      db      'Invalid opcode (0000:0000)',13,10,0
+InvalidAddr     dd      ?
+
+InvalidOpcode:  pop     cs:InvalidAddr._Ofs
+                pop     cs:InvalidAddr._Seg
+                pop     cs:SavedFlags
+                mov     cs:SavedSS,ss
+                mov     cs:SavedSP,sp
+                mov     ss,cs:CodeSegment
+                mov     sp,offset TraceStack
+                and     cs:SavedFlags,not 100h
+                mov     cs:Action,offset Input
+                push    cs:SavedFlags
+                pusha
+                push    ds
+                push    es
+                push    cs
+                pop     ds
+                push    cs
+                pop     es
+                mov     di,offset InvalidMsg + 16
+                mov     ax,InvalidAddr._Seg
+                call    HexWord
+                inc     di
+                mov     ax,InvalidAddr._Ofs
+                call    HexWord
+                mov     si,offset InvalidMsg
+                call    PrintString
+                pop     es
+                pop     ds
+                popa
+                popf
+                mov     ss,cs:SavedSS
+                mov     sp,cs:SavedSP
+                jmp     StartAtCSIP
+
+code ends
+
+end Main
+
+;=[END MONITOR.ASM]==========================================================
+
+
+
+;=[BEGIN DISASM.ASM]=========================================================
+
+.286
+
+code segment public 'code'
+                assume  cs:code, ds:code, ss:code
+
+                public  Disassemble
+
+;==============================================================================
+;
+; Disassemble:  ds:si -> Code
+;               es:di -> Buffer (48 bytes)
+;
+;      Return:  cx    =  Size of Instruction
+;               ds:si -> Saved
+;               es:di -> filled (ASCIIZ)
+;
+
+SegOverride     db      ?
+AddrOprSize     db      ?
+
+
+Disassemble:    push    ax
+                push    bx
+                push    dx
+                push    si
+                push    di
+                cld
+                mov     bx,offset Opcodes1
+                mov     cs:SegOverride,-1
+                mov     cs:AddrOprSize,0
+LoadOpcode:     lodsb
+                mov     ah,0
+                mov     dl,al
+                mov     dh,ds:[si]
+                xlat    cs:[bx]
+CopyMnemonic:   cmp     al,22
+                jae     MnemonicOK
+                call    TestOprSize
+                jz      MnemonicOK
+                inc     ax
+MnemonicOK:     cmp     al,0e0h
+                jae     Special
+                cmp     dl,0f0h
+                jb      NoPrefix
+                cmp     dl,0f4h
+                jbe     NoPrefix
+                pop     di
+                push    di
+NoPrefix:       push    si
+                mov     si,offset Mnemonics
+                add     ax,ax
+                add     si,ax
+                add     ax,ax
+                add     si,ax
+                db      2eh
+                movsw
+                db      2eh
+                movsw
+                db      2eh
+                movsw
+                mov     ax,'  '
+                stosw
+                pop     si
+                cmp     dl,0f0h
+                jb      Operands
+                cmp     dl,0f4h
+                jb      LoadOpcode
+Operands:       inc     bh
+                mov     al,dl
+                mov     ah,0
+                add     bx,ax
+                add     bx,ax
+                mov     ax,dx
+                call    word ptr cs:[bx]
+DisasmDone:     mov     al,0
+                stosb
+                mov     cx,si
+                pop     di
+                pop     si
+                sub     cx,si
+                pop     dx
+                pop     bx
+                pop     ax
+                ret
+
+TestAddrSize:   test    cs:AddrOprSize,1
+___:            ret
+
+TestOprSize:    test    cs:AddrOprSize,2
+                ret
+
+Special:        cmp     al,0e8h
+                jb      GroupOpcode
+                cmp     al,0eeh
+                jb      OverrideSeg
+                cmp     al,0f0h
+                jb      OverrideSize
+                ja      InvalidOpcode
+                mov     bx,offset Opcodes2
+                jmp     LoadOpcode
+
+OverrideSeg:    sub     al,0e8h
+                mov     cs:SegOverride,al
+                jmp     LoadOpcode
+
+OverrideSize:   sub     al,0eeh - 1
+                or      cs:AddrOprSize,al
+                mov     bx,offset Opcodes1
+                jmp     LoadOpcode
+
+InvalidOpcode:  mov     ax,'??'
+                stosw
+                stosb
+                mov     ax,'  '
+                stosb
+                stosw
+                stosw
+                jmp     Operands
+
+GroupOpcode:    push    bx
+                mov     bx,offset Opcodes3
+                sub     al,0e0h
+                shl     ax,3
+                add     bx,ax
+                mov     al,ds:[si]
+                and     ax,38h
+                shr     ax,3
+                xlat    cs:[bx]
+                pop     bx
+                jmp     CopyMnemonic
+
+
+_G3Eb:          call    _Eb
+                test    dl,30h
+                jnz     ___
+                jmp     Comma_Ib
+
+_G3Ev:          call    _Ev
+                test    dl,30h
+                jnz     ___
+                jmp     Comma_Iv
+
+_G4             equ     _Eb
+
+_G5:            test    al,30h
+                jpo     _G51
+                jmp     _Ev
+_G51:           test    al,08h
+                jz      _G52
+                jmp     _Mp
+_G52:           jmp     _Ev
+
+HexDWord:       push    ax
+                mov     ax,cx
+                call    HexWord
+                pop     ax
+HexWord:        push    ax
+                mov     al,ah
+                call    HexByte
+                pop     ax
+HexByte:        push    ax
+                shr     al,4
+                call    HexDigit
+                pop     ax
+HexDigit:       and     al,0fh
+                add     al,'0'
+                cmp     al,'9'
+                jbe     DigitOK
+                add     al,7
+DigitOK:        stosb
+                ret
+
+Comma:          mov     byte ptr es:[di],','
+                inc     di
+                ret
+
+_gs:            mov     al,4
+                jmp     short _Rs
+_fs:            mov     al,5
+                jmp     short _Rs
+
+Comma_Sr:       call    Comma
+_Sr:            mov     al,dh
+                shr     al,3
+                jmp     short _Rs
+
+_Rs18:          shr     al,3
+                and     al,3
+_Rs:            mov     bx,ax
+                and     bx,7
+                add     bx,bx
+                mov     ax,word ptr cs:SegRegs[bx]
+                stosw
+                ret
+
+Comma_al:       call    Comma
+_al:            xor     ax,ax
+                jmp     short _Rb
+
+Comma_ax:       call    Comma
+_ax:            xor     ax,ax
+_Rv:            call    TestOprSize
+                jz      _Rw
+_Rd:            mov     byte ptr es:[di],'E'
+                inc     di
+_Rw:            mov     bx,ax
+                and     bx,7
+                add     bx,bx
+                mov     ax,word ptr cs:WordRegs[bx]
+                stosw
+                ret
+
+_R:             test    dl,1
+                jnz     _Rv
+_Rb:            mov     bx,ax
+                and     bx,7
+                add     bx,bx
+                mov     ax,word ptr cs:ByteRegs[bx]
+                stosw
+                ret
+
+_Mp:            call    TestAddrSize
+                jz      _Ed
+                mov     al,'F'
+                stosb
+                jmp     short _Ew
+
+_Eb:            cmp     dh,0c0h
+                jae     _M
+                mov     ax,'YB'
+                stosw
+                mov     ax,'ET'
+                jmp     short _ptr
+
+_Ev:            call    TestOprSize
+                jz      _Ew
+_Ed:            cmp     dh,0c0h
+                jae     _M
+                mov     al,'D'
+                stosb
+_Ew:            cmp     dh,0c0h
+                jae     _M
+                mov     ax,'OW'
+                stosw
+                mov     ax,'DR'
+_ptr:           stosw
+                mov     ax,'P '
+                stosw
+                mov     ax,'RT'
+                stosw
+                mov     al,' '
+                stosb
+                jmp     _M
+
+Comma_M:        call    Comma
+_M:             mov     al,cs:SegOverride
+                cmp     al,-1
+                je      _M00
+                call    _Rs
+                mov     al,':'
+                stosb
+_M00:           lodsb
+                cmp     al,0c0h
+                jae     _R
+                mov     byte ptr es:[di],'['
+                inc     di
+                call    TestAddrSize
+                jz      _M10
+                mov     ah,al
+                and     ax,0c007h
+                or      al,20h
+                cmp     ax,25h
+                je      _M05
+                cmp     al,24h
+                jne     _M01
+                lodsb
+                push    ax
+                and     ax,0c007h
+                cmp     ax,5
+                pop     ax
+                jne     _M01
+                or      ah,80h
+                jmp     _M02
+_M01:           push    ax              ; base register
+                call    _Rd
+                pop     ax
+                or      ah,1
+_M02:           push    ax              ; test for no index
+                and     al,38h
+                cmp     al,20h
+                pop     ax
+                je      _M05
+                test    ah,1
+                jz      _M03
+                push    ax
+                mov     al,'+'
+                stosb
+                pop     ax
+_M03:           push    ax              ; scale factor
+                shr     al,6
+                mov     cl,al
+                mov     al,1
+                shl     al,cl
+                cmp     al,1
+                je      _M04
+                add     al,'0'
+                mov     ah,'*'
+                stosw
+_M04:           pop     ax
+                push    ax              ; index register
+                shr     al,3
+                call    _Rd
+                pop     ax
+                or      ah,1
+_M05:           test    ah,1
+                jz      _M06
+                mov     al,'+'
+                stosb
+_M06:           test    ah,0c0h
+                jz      _M99
+                test    ah,080h
+                jz      _M07
+                lodsw
+                xchg    ax,cx
+                lodsw
+                xchg    ax,cx
+                jmp     _M08
+_M07:           lodsb
+                cbw
+                cwd
+_M08:           call    HexDWord
+_M09:           jmp     _M99
+_M10:           push    ax
+                and     al,0c7h
+                cmp     al,6
+                pop     ax
+                je      _M13
+                push    ax
+                and     ax,7
+                mov     bx,ax
+                add     bx,ax
+                mov     ax,word ptr cs:FirstEAReg[bx]
+                stosw
+                cmp     al,4
+                jae     _M11
+                mov     al,'+'
+                stosb
+                mov     ax,word ptr cs:SecondEAReg[bx]
+                stosw
+_M11:           pop     ax
+_M12:           test    al,0c0h
+                jz      _M99
+                mov     al,'+'
+                stosb
+                js      _M13
+                lodsb
+                cbw
+                jmp     _M14
+_M13:           lodsw
+_M14:           call    HexWord
+_M99:           mov     al,']'
+                stosb
+                ret
+
+_aldx:          call    _al
+Comma_dx:       call    Comma
+_dx:            mov     ax,'XD'
+                stosw
+                ret
+
+_alIb:          call    _al
+                jmp     Comma_Ib
+
+_alOb:          call    _al
+                jmp     Comma_Ob
+
+_axdx:          call    _ax
+                jmp     Comma_dx
+
+_axIb:          call    _ax
+                jmp     Comma_Ib
+
+_axOv:          call    _ax
+                jmp     Comma_Ov
+
+_axRv:          call    _ax
+                call    Comma
+                mov     ax,dx
+                jmp     _Rv
+
+_dxal:          call    _dx
+                jmp     Comma_al
+
+_Ibal:          call    _Ib
+                jmp     Comma_al
+
+_dxax:          call    _dx
+                jmp     Comma_ax
+
+_Ibax:          call    _Ib
+                jmp     Comma_ax
+
+_axIv:          call    _ax
+                jmp     Comma_Iv
+
+_3:             mov     al,'3'
+                stosb
+                ret
+
+_Ap:            lodsw
+                push    ax
+                lodsw
+                call    HexWord
+                mov     al,':'
+                stosb
+                pop     ax
+                jmp     HexWord
+
+Comma_Cd:       call    Comma
+_Cd:            mov     ax,'RC'
+_Cd1:           stosw
+                mov     al,dh
+                shr     al,3
+                and     al,7
+                add     al,'0'
+                stosb
+                ret
+
+_CdRd:          call    _Cd
+                call    Comma
+                jmp     _Rd
+
+Comma_Dd:       call    Comma
+_Dd:            mov     ax,'RD'
+                jmp     _Cd1
+
+_DdRd:          call    _Dd
+                call    Comma
+                jmp     _Rd
+
+_Eb1:           call    _Eb
+Comma_1:        call    Comma
+                mov     al,'1'
+                stosb
+                ret
+
+_Ebcl:          call    _Eb
+Comma_cl:       call    Comma
+                mov     ax,'LC'
+                stosw
+                ret
+
+_EbIb:          call    _Eb
+                jmp     Comma_Ib
+
+_EbGb:          call    _M
+                jmp     Comma_Gb
+
+_Ev1:           call    _Ev
+                jmp     Comma_1
+
+_EvIb:          call    _Ev
+                jmp     Comma_Ib
+
+_Evcl:          call    _Ev
+                jmp     Comma_cl
+
+_EvGv:          call    _M
+                jmp     Comma_Gv
+
+_EvGvIb:        call    _M
+                call    Comma_Gv
+                jmp     Comma_Ib
+
+_EvGvcl:        call    _M
+                call    Comma_Gv
+                jmp     Comma_cl
+
+_EvIv:          call    _Ev
+                jmp     Comma_Iv
+
+_EwGw:          call    _M
+                jmp     Comma_Gw
+
+_EwSr:          mov     dl,1
+                call    _M
+                jmp     Comma_Sr
+
+Comma_Gb:       call    Comma
+_Gb:            mov     al,dh
+                shr     al,3
+                jmp     _Rb
+
+_GbEb:          call    _Gb
+                call    Comma
+                jmp     _M
+
+_GvEb:          call    _Gv
+                call    Comma
+                jmp     _M
+
+Comma_Gv:       call    Comma
+_Gv:            mov     al,dh
+                shr     al,3
+                jmp     _Rv
+
+_GvEw:          call    _Gv
+                call    Comma
+                jmp     _Ew
+
+_GvEv:          call    _Gv
+                call    Comma
+                jmp     _M
+
+_GvEvIv:        call    _Gv
+                call    Comma
+                call    _M
+                jmp     Comma_Iv
+
+_GvEvIb:        call    _Gv
+                call    Comma
+                call    _M
+                jmp     Comma_Ib
+
+_GvM:           call    _Gv
+                jmp     Comma_M
+
+_GvMa           equ     _GvM
+_GvMp           equ     _GvM
+
+Comma_Gw:       call    Comma
+_Gw:            mov     al,dh
+                shr     al,3
+                jmp     _Rw
+
+Comma_Ib:       call    Comma
+_Ib:            lodsb
+                jmp     HexByte
+
+
+_Iw:            lodsw
+                jmp     HexWord
+
+_IwIb:          call    _Iw
+                jmp     Comma_Ib
+
+Comma_Iv:       call    Comma
+_Iv:            call    TestOprSize
+                jz      _Iv1
+                lodsw
+                xchg    ax,cx
+                lodsw
+                xchg    ax,cx
+                jmp     HexDWord
+_Iv1:           lodsw
+                jmp     HexWord
+
+_Jb:            lodsb
+                cbw
+                add     ax,si
+                jmp     HexWord
+
+_Jv:            lodsw
+                add     ax,si
+                jmp     HexWord
+
+Comma_Ob:       call    Comma
+_Ob:            mov     al,cs:SegOverride
+                cmp     al,-1
+                je      _Ob0
+                call    _Rs
+                mov     al,':'
+                stosb
+_Ob0:           mov     al,'['
+                stosb
+                call    TestAddrSize
+                jz      _Ob1
+                lodsw
+                xchg    ax,cx
+                lodsw
+                xchg    ax,cx
+                call    HexDWord
+                jmp     _Ob2
+_Ob1:           lodsw
+                call    HexWord
+_Ob2:           mov     al,']'
+                stosb
+                ret
+
+_Obal:          call    _Ob
+                jmp     Comma_al
+
+Comma_Ov        equ     Comma_Ob
+_Ov             equ     _Ob
+
+_Ovax:          call    _Ov
+                jmp     Comma_ax
+
+_RbIb:          call    _Rb
+                jmp     Comma_Ib
+
+_RdCd:          call    _Rd
+                jmp     Comma_Cd
+
+_RdDd:          call    _Rd
+                jmp     Comma_Dd
+
+_RdTd:          call    _Rd
+                jmp     Comma_Td
+
+_RvIv:          call    _Rv
+                jmp     Comma_Iv
+
+_SrEw:          call    _Sr
+                call    Comma
+                mov     dl,1
+                jmp     _M
+
+Comma_Td:       call    Comma
+_Td:            mov     ax,'RT'
+                jmp     _Cd1
+
+_TdRd:          call    _Td
+                call    Comma
+                jmp     _Rd
+
+;==============================================================================
+;
+; Errr... The tables
+;
+
+Mnemonics       db      'PUSHF PUSHFDPOPF  POPFD CBW   CWDE  CWD   CDQ   '
+                db      'INSW  INSD  OUTSW OUTSD MOVSW MOVSD CMPSW CMPSD '
+                db      'STOSW STOSD LODSW LODSD SCASW SCASD ADD   PUSH  '
+                db      'POP   OR    ADC   ARC   SBB   AND   AAA   SUB   '
+                db      'AAS   XOR   CMP   INC   DEC   PUSHA POPA  BOUND '
+                db      'ARPL  IMUL  INSB  OUTSB JO    JNO   JB    JAE   '
+                db      'JZ    JNZ   JBE   JA    JS    JNS   JPE   JPO   '
+                db      'JL    JGE   JLE   JG    TEST  XCHG  MOV   LEA   '
+                db      'NOP   CALL  WAIT  SAHF  LAHF  MOVSB CMPSB STOSB '
+                db      'LODSB SCASB RETN  LES   LDS   ENTER LEAVE RETF  '
+                db      'INT   INTO  IRET  AAM   AAD   XLAT  ESC   LOOPNZ'
+                db      'LOOPZ LOOP  JCXZ  IN    OUT   JMP   LOCK  REPNE '
+                db      'REPE  HLT   CMC   CLC   STC   CLI   STI   CLD   '
+                db      'STD   LAR   LSL   CLTS  SETO  SETNO SETB  SETAE '
+                db      'SETZ  SETNZ SETBE SETA  SETS  SETNS SETPE SETPO '
+                db      'SETL  SETGE SETLE SETG  BT    SHLD  BTS   SHRD  '
+                db      'LSS   BTR   LFS   LGS   MOVZX BTC   BSF   BSR   '
+                db      'MOVSX ROL   ROR   RCL   RCR   SHL   SHR   SAR   '
+                db      'NOT   NEG   MUL   DIV   IDIV  SLDT  STR   LLDT  '
+                db      'LTR   VERR  VERW  SGDT  SIDT  LGDT  LIDT  SMSW  '
+                db      'LMSW  '
+
+Opcodes1        db      016h,016h,016h,016h,016h,016h,017h,018h
+                db      019h,019h,019h,019h,019h,019h,017h,0F0h
+                db      01Ah,01Ah,01Ah,01Ah,01Ah,01Bh,017h,018h
+                db      01Ch,01Ch,01Ch,01Ch,01Ch,01Ch,017h,018h
+                db      01Dh,01Dh,01Dh,01Dh,01Dh,01Dh,0E8h,01Eh
+                db      01Fh,01Fh,01Fh,01Fh,01Fh,01Fh,0E9h,020h
+                db      021h,021h,021h,021h,021h,021h,0EAh,01Eh
+                db      022h,022h,022h,022h,022h,022h,0EBh,020h
+                db      023h,023h,023h,023h,023h,023h,023h,023h
+                db      024h,024h,024h,024h,024h,024h,024h,024h
+                db      017h,017h,017h,017h,017h,017h,017h,017h
+                db      018h,018h,018h,018h,018h,018h,018h,018h
+                db      025h,026h,027h,028h,0ECh,0EDh,0EFh,0EEh
+                db      017h,029h,017h,029h,02Ah,008h,02Bh,00Ah
+                db      02Ch,02Dh,02Eh,02Fh,030h,031h,032h,033h
+                db      034h,035h,036h,037h,038h,039h,03Ah,03Bh
+                db      0E0h,0E0h,0E0h,0E0h,03Ch,03Ch,03Dh,03Dh
+                db      03Eh,03Eh,03Eh,03Eh,03Eh,03Fh,03Eh,018h
+                db      040h,03Dh,03Dh,03Dh,03Dh,03Dh,03Dh,03Dh
+                db      004h,006h,041h,042h,000h,002h,043h,044h
+                db      03Eh,03Eh,03Eh,03Eh,045h,00Ch,046h,00Eh
+                db      03Ch,03Ch,047h,010h,048h,012h,049h,014h
+                db      03Eh,03Eh,03Eh,03Eh,03Eh,03Eh,03Eh,03Eh
+                db      03Eh,03Eh,03Eh,03Eh,03Eh,03Eh,03Eh,03Eh
+                db      0E1h,0E1h,04Ah,04Ah,04Bh,04Ch,03Eh,03Eh
+                db      04Dh,04Eh,04Fh,04Fh,050h,050h,051h,052h
+                db      0E1h,0E1h,0E1h,0E1h,053h,054h,0F1h,055h
+                db      056h,056h,056h,056h,056h,056h,056h,056h
+                db      057h,058h,059h,05Ah,05Bh,05Bh,05Ch,05Ch
+                db      041h,05Dh,05Dh,05Dh,05Bh,05Bh,05Ch,05Ch
+                db      05Eh,0F1h,05Fh,060h,061h,062h,0E2h,0E2h
+                db      063h,064h,065h,066h,067h,068h,0E3h,0E4h
+
+Operands1       dw      _EbGb,  _EvGv,  _GbEb,  _GvEv,  _alIb,  _axIv,  _Rs18,  _Rs18
+                dw      _EbGb,  _EvGv,  _GbEb,  _GvEv,  _alIb,  _axIv,  _Rs18,  ___
+                dw      _EbGb,  _EvGv,  _GbEb,  _GvEv,  _alIb,  _axIv,  _Rs18,  _Rs18
+                dw      _EbGb,  _EvGv,  _GbEb,  _GvEv,  _alIb,  _axIv,  _Rs18,  _Rs18
+                dw      _EbGb,  _EvGv,  _GbEb,  _GvEv,  _alIb,  _axIv,  ___,    ___
+                dw      _EbGb,  _EvGv,  _GbEb,  _GvEv,  _alIb,  _axIv,  ___,    ___
+                dw      _EbGb,  _EvGv,  _GbEb,  _GvEv,  _alIb,  _axIv,  ___,    ___
+                dw      _EbGb,  _EvGv,  _GbEb,  _GvEv,  _alIb,  _axIv,  ___,    ___
+                dw      _Rv,    _Rv,    _Rv,    _Rv,    _Rv,    _Rv,    _Rv,    _Rv
+                dw      _Rv,    _Rv,    _Rv,    _Rv,    _Rv,    _Rv,    _Rv,    _Rv
+                dw      _Rv,    _Rv,    _Rv,    _Rv,    _Rv,    _Rv,    _Rv,    _Rv
+                dw      _Rv,    _Rv,    _Rv,    _Rv,    _Rv,    _Rv,    _Rv,    _Rv
+                dw      ___,    ___,    _GvMa,  _EwGw,  ___,    ___,    ___,    ___
+                dw      _Iv,    _GvEvIv,_Ib,    _GvEvIb,___,    ___,    ___,    ___
+                dw      _Jb,    _Jb,    _Jb,    _Jb,    _Jb,    _Jb,    _Jb,    _Jb
+                dw      _Jb,    _Jb,    _Jb,    _Jb,    _Jb,    _Jb,    _Jb,    _Jb
+                dw      _EbIb,  _EvIv,  _EbIb,  _EvIb,  _EbGb,  _EvGv,  _EbGb,  _EvGv
+                dw      _EbGb,  _EvGv,  _GbEb,  _GvEv,  _EwSr,  _GvM,   _SrEw,  _Ev
+                dw      ___,    _axRv,  _axRv,  _axRv,  _axRv,  _axRv,  _axRv,  _axRv
+                dw      ___,    ___,    _Ap,    ___,    ___,    ___,    ___,    ___
+                dw      _alOb,  _axOv,  _Obal,  _Ovax,  ___,    ___,    ___,    ___
+                dw      _alIb,  _axIv,  ___,    ___,    ___,    ___,    ___,    ___
+                dw      _RbIb,  _RbIb,  _RbIb,  _RbIb,  _RbIb,  _RbIb,  _RbIb,  _RbIb
+                dw      _RvIv,  _RvIv,  _RvIv,  _RvIv,  _RvIv,  _RvIv,  _RvIv,  _RvIv
+                dw      _EbIb,  _EvIb,  _Iw,    ___,    _GvMp,  _GvMp,  _EbIb,  _EvIv
+                dw      _IwIb,  ___,    _Iw,    ___,    _3,     _Ib,    ___,    ___
+                dw      _Eb1,   _Ev1,   _Ebcl,  _Ebcl,  _Ib,    _Ib,    ___,    ___
+                dw      _M,     _M,     _M,     _M,     _M,     _M,     _M,     _M
+                dw      _Jb,    _Jb,    _Jb,    _Jb,    _alIb,  _axIb,  _Ibal,  _Ibax
+                dw      _Jv,    _Jv,    _Ap,    _Jb,    _aldx,  _axdx,  _dxal,  _dxax
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    _G3Eb,  _G3Ev
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    _G4,    _G5
+
+WordRegs        db      'AXCXDXBXSPBPSIDI'
+ByteRegs        db      'ALCLDLBLAHCHDHBH'
+SegRegs         db      'ESCSSSDSFSGS????'
+FirstEAReg      db      'BXBXBPBPSIDIBPBX'
+SecondEAReg     db      'SIDISIDI'
+
+ 
+Opcodes2        db      0E5h,0E6h,069h,06Ah,0F1h,0F1h,06Bh,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      03Eh,03Eh,03Eh,03Eh,03Eh,0F1h,03Eh,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      02Ch,02Dh,02Eh,02Fh,030h,031h,032h,033h
+                db      034h,035h,036h,037h,038h,039h,03Ah,03Bh
+                db      06Ch,06Dh,06Eh,06Fh,070h,071h,072h,073h
+                db      074h,075h,076h,077h,078h,079h,07Ah,07Bh
+                db      017h,018h,0F1h,07Ch,07Dh,07Dh,0F1h,0F1h
+                db      017h,018h,0F1h,07Eh,07Fh,07Fh,0F1h,029h
+                db      0F1h,0F1h,080h,081h,082h,083h,084h,084h
+                db      0F1h,0F1h,0E7h,085h,086h,087h,088h,088h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+
+Operands2       dw      ___,    ___,    _GvEw,  _GvEw,  ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      _CdRd,  _DdRd,  _RdCd,  _RdDd,  _TdRd,  ___,    _RdTd,  ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      _Jv,    _Jv,    _Jv,    _Jv,    _Jv,    _Jv,    _Jv,    _Jv
+                dw      _Jv,    _Jv,    _Jv,    _Jv,    _Jv,    _Jv,    _Jv,    _Jv
+                dw      _Eb,    _Eb,    _Eb,    _Eb,    _Eb,    _Eb,    _Eb,    _Eb
+                dw      _Eb,    _Eb,    _Eb,    _Eb,    _Eb,    _Eb,    _Eb,    _Eb
+                dw      _fs,    _fs,    ___,    _EvGv,  _EvGvIb,_EvGvcl,___,    ___
+                dw      _gs,    _gs,    ___,    _EvGv,  _EvGvIb,_EvGvcl,___,    _GvEv
+                dw      ___,    ___,    _Mp,    _EvGv,  _Mp,    _Mp,    _GvEb,  _GvEw
+                dw      ___,    ___,    _EvIb,  _EvGv,  _GvEv,  _GvEv,  _GvEb,  _GvEw
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+                dw      ___,    ___,    ___,    ___,    ___,    ___,    ___,    ___
+
+Opcodes3        db      016h,019h,01Ah,01Ch,01Dh,01Fh,021h,022h
+                db      089h,08Ah,08Bh,08Ch,08Dh,08Eh,0F1h,08Fh
+                db      03Ch,0F1h,090h,091h,092h,029h,093h,094h
+                db      023h,024h,0F1h,0F1h,0F1h,0F1h,0F1h,0F1h
+                db      023h,024h,041h,041h,05Dh,05Dh,017h,0F1h
+                db      095h,096h,097h,098h,099h,09Ah,0F1h,0F1h
+                db      09Bh,09Ch,09Dh,09Eh,09Fh,0F1h,0A0h,0F1h
+                db      0F1h,0F1h,0F1h,0F1h,07Ch,07Eh,081h,085h
+
+code ends
+
+end
+
+;=[END DISASM.ASM]===========================================================
+
+
+
+
+;=[BEGIN IO.ASM]=============================================================
+code segment public 'code'
+                assume  cs:code, ds:code, ss:code
+
+                public  PrintString, PrintCrLf, PrintChar, KeyPressed
+                public  ReadKey, FlushBuffer, InitSerial
+
+;==============================================================================
+;
+; IO_Device:    0    = CONSOLE
+;               3f8h = SERIAL PORT 1
+;               2f8h = SERIAL PORT 2
+;               3e8h = SERIAL PORT 3
+;               2e8h = SERIAL PORT 4
+;
+
+IO_Device       equ     2f8h
+
+;==============================================================================
+;
+; Not device specific routines
+;
+
+PrintString:    lodsb
+                or      al,al
+                je      EndOfString
+                call    PrintChar
+                jmp     PrintString
+EndOfString:    ret
+
+PrintCrLf:      mov     al,13
+                call    PrintChar
+                mov     al,10
+                jmp     PrintChar
+
+FlushBuffer:    call    KeyPressed
+                jz      BufferEmpty
+                call    ReadKey
+                jmp     FlushBuffer
+BufferEmpty:    ret
+
+;==============================================================================
+;
+; Specialized for CONSOLE input/output
+;
+
+if IO_Device eq 0
+
+PrintChar:      push    bx
+                mov     ah,0eh
+                mov     bx,7
+                int     10h
+                pop     bx
+                ret
+
+KeyPressed:     mov     ah,1
+                int     16h
+                ret
+
+ReadKey:        mov     ah,0
+                int     16h
+                cmp     al,'a'
+                jb      UpperCase
+                cmp     al,'z'
+                ja      UpperCase
+                sub     al,20h
+UpperCase:      ret
+
+InitSerial:     ret
+
+;==============================================================================
+;
+; Specialized for serial input/output
+;
+
+else
+
+KeyBufSize      equ     20h
+
+KeyBuffer       db      KeyBufSize dup(?)
+KeyInPtr        dw      0
+KeyOutPtr       dw      0
+Pause           db      0
+
+PrintChar:      cmp     al,19
+                je      DontPrint
+                push    dx
+                push    ax
+                mov     dx,IO_Device + 5
+WaitReady:      in      al,dx
+                test    al,20h          ; Transmitter empty
+                jz      WaitReady
+WaitPause:      call    KeyPressed
+                cmp     cs:Pause,0
+                jne     WaitPause
+                pop     ax
+                mov     dx,IO_Device
+                out     dx,al
+                pop     dx
+DontPrint:      ret
+
+KeyPressed:     push    dx
+                mov     dx,IO_Device + 5
+                in      al,dx
+                test    al,1
+                jz      NoData
+                mov     dx,IO_Device
+                in      al,dx
+                cmp     al,19
+                jne     NotXOFF
+                mov     cs:Pause,-1
+                jmp     short NoData
+NotXOFF:        cmp     al,17
+                jne     NotXON
+                mov     cs:Pause,0
+                jmp     short NoData
+NotXON:         push    bx
+                mov     bx,cs:KeyInPtr
+                and     bx,KeyBufSize - 1
+                mov     cs:KeyBuffer[bx],al
+                inc     cs:KeyInPtr
+                pop     bx
+NoData:         pop     dx
+                mov     ax,cs:KeyOutPtr
+                cmp     ax,cs:KeyInPtr
+                ret
+
+ReadKey:        call    KeyPressed
+                jz      ReadKey
+                push    bx
+                mov     bx,cs:KeyOutPtr
+                and     bx,KeyBufSize - 1
+                mov     al,cs:KeyBuffer[bx]
+                inc     cs:KeyOutPtr
+                pop     bx
+                cmp     al,'a'
+                jb      UpperCase
+                cmp     al,'z'
+                ja      UpperCase
+                sub     al,20h
+UpperCase:      ret
+
+InitSerial:     mov     dx,IO_Device + 3        ; Init COM2:
+                mov     al,83h
+                out     dx,al
+                mov     dx,IO_Device
+                mov     al,6
+                out     dx,al
+                mov     dx,IO_Device + 1
+                mov     al,0
+                out     dx,al
+                mov     dx,IO_Device + 3
+                mov     al,3
+                out     dx,al
+                mov     dx,IO_Device + 1
+                mov     al,0
+                out     dx,al
+                mov     dx,IO_Device + 2
+                mov     al,0c0h
+                out     dx,al
+                jmp     PrintCrLf
+
+endif
+
+code ends
+
+end
+
+;=[END IO.ASM]===============================================================
+
+
+
+;=[BEGIN TERM.ASM]===========================================================
+
+code segment public 'code'
+                assume  cs:code, ds:code, ss:code
+
+                ;
+                ;       Externals from IO.ASM
+                ;
+                extrn   PrintString: near, PrintChar: Near, PrintCrLf: near
+                extrn   KeyPressed: near, ReadKey: near, FlushBuffer: near
+                extrn   InitSerial: near
+
+Main:           call    InitSerial
+Repeat:         call    KeyPressed
+                jnz     Input
+                mov     ah,1
+                int     16h
+                jz      Repeat
+                mov     ah,0
+                int     16h
+                cmp     ax,2d00h
+                je      Exit
+                cmp     al,0
+                je      Repeat
+                call    PrintChar
+                jmp     Repeat
+
+Input:          call    Readkey
+                mov     ah,0eh
+                mov     bx,7
+                int     10h
+                jmp     Repeat
+
+Exit:           mov     ax,4c00h
+                int     21h
+
+code ends
+
+end Main
+
+;=[END TERM.ASM]=============================================================
+

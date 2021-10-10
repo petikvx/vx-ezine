@@ -1,0 +1,295 @@
+<html>
+<head><title>Infected VOICE #15 - Особенности вызова API</title></head>
+<body bgcolor=#F0F0F0 text=#000000 link=#1AA01A alink=#1AA01A vlink=#1AA01A>
+<p align=right><font face="System">|<a href="contents.htm#list">index</a>|<a href=#ex>пример</a>|</font></p>
+<h3>НАХОЖДЕНИЕ АДРЕСА API (на примере моей Windows'95)</h3>
+<p>
+Заранее известно, что адрес KERNEL32 в памяти  моей системы -  BFF70000.
+</p>
+<p>
+(1) <b>Export Table.</b> Поиск точки входа GetProcAddressA.
+Name Ptr Table RVA - 50C60. (RVA первого имени в таблице)
+GetProcAddressA" находится по смещению 52e96.
+Соответствующий ему указатель в таблице имен - 510A4.
+</p><pre>
+         510A4
+        -50c60
+         -----
+           444 / 4
+           -------
+               111
+</pre><p>
+(2) Ищем 111 элемент в <b>Ordinal Table:</b>
+Ordinal Table RVA = 51708, размер элемента - 2 байта
+Соответствующий GetProcAddress элемент:
+</p><pre>
+         51708
+        +  222  (111*2)
+         -----
+         5192A
+</pre>          
+<p>
+Номер функции GetProcAddressA = 0175
+</p><p>
+(3) Ищем RVA функции в <b>Address Table.</b> Address Table RVA =
+</p><pre>
+ 50028      Размер элемента - 4 байта (dd).
++ 05D4      (175*4=5D4)
+ -----
+ 505FC
+</pre>
+DWord по RVA=505FC равен          
+00006D5C
++ BFF70000                                 
+--------                                
+BFF76D5C - адрес процедуры.
+</pre><p>
+Далее нет необходимости сканировать эту уйму таблиц на другие имена, все адреса нам расскажет GetProcAddress.
+</p><pre>
+   push offset name_of_required_API
+   push 0BFF70000       ; ModuleHandle (стартовый адрес в памяти)
+   call 0BFF76D5C
+   В AX получаем адрес точки входа в нужную API (или 00000000 в  случае ошибки).
+</pre>
+<hr><h3>
+СПРАВКА ПО WINDOWS.API</h3>
+<pre>
+<b>GetProcAddress  (kernel32.dll)</b>
+Параметры вызова: (push par1/ push par2/ call)
+(dword)  адрес ASCIIZ строки с именем нужной API 
+(dword)  адрес DLL в памяти (aka ModuleHandle)
+Результат:
+EAX - адрес api или 0 в случае ошибки
+
+<b>LoadLibraryA (kernel32.dll)</b>
+Параметры вызова:
+(dword) адрес ASCIIZ строки с именем DLL,
+например,  <db 'USER32',0>
+Результат:
+EAX - адрес DLL в памяти или 0 в случае ошибки
+
+<b>MessageBoxA  (user32.dll)</b>
+Параметры вызова:
+(dword) хендл окна-владельца (0 - текущее)
+(dword) адрес ASCIIZ строки заголовка окна 
+(dword) адрес ASCIIZ строки сообщения
+(dword) стиль окна (0 - обычное)
+Результат: на экране ;)
+<hr>
+<a name=ex></a>
+<p align=right><font face="System">|<a href="contents.htm#list">index</a>|<a href="#top">up</a>|</font></p>
+<b>
+; Пример нахождения адреса 
+; GetProcAddress в области памяти           
+; KERNEL32.DLL</b>
+
+; Эффект: вывод на экран MessageBox
+; Программа выполнена в виде внедренного 
+; кода,  может использоваться в CM
+
+.386
+locals
+jumps
+.model flat,STDCALL
+.radix 16 ;по умолчанию все числа hex!
+;extrn MessageBoxA:PROC не надо - найдем сами !
+
+.data
+; начало <внедренного> кода - обычно СМ 
+; пишутся именно так - из сегмента .code идет
+;<JMP V0>
+ v0:
+; сохраним все регистры, т.к. нам еще 
+; передавать управление основной программе:
+  PUSHAD
+  PUSHF
+
+;  в EBP находится адрес начала нашего 
+; <внедренного> кода (будем использовать 
+; адресацию данных, как в СМ)
+
+  CALL NextOffset 
+NextOffset:
+  POP  EBP
+  SUB  EBP,(NextOffset-v0)   
+
+ ; Ищем KERNEL32.DLL в памяти
+  MOV  ESI,4 PTR [ESP+0A*4]        
+ ; адрес возврата из программы указывает
+ ; в область KERNEL32.DLL (внутрь какой-нибудь
+ ; API, завершающей процесс)
+
+  AND  ESI,0FFFF0000  
+ ; DLL грузятся в память, начиная с адресов,
+ ; кратных 64кб (10000h)
+
+  NEXT64k:
+   CMP  2 PTR [ESI],'ZM'    ; Заголовок DOS EXE  ?
+   JNE  GO_LOOP
+   MOV  EDI,[ESI+003C]  ; Заголовок WIN32('PE')?
+   ADD  EDI,ESI
+   CMP  4 PTR [EDI],00004550
+   JNE  GO_LOOP
+   TEST 2 PTR [EDI+16],2000   ; DLL ? 
+   JE   GO_LOOP
+
+   MOV  EDI,[EDI+78]        ; (Export Table RVA)
+   ADD  EDI,ESI
+   MOV  [EBP][lpExpTab-v0],EDI
+   MOV  EDI,[EDI+0C]        ; (RVA имени)
+   ADD  EDI,ESI                 
+   MOV  EAX,[EDI]
+   OR   EAX,20202020
+   CMP  EAX,'nrek'             ; имя 'kernel32' ?
+   JNE  GO_LOOP
+   MOV  EAX,[EDI+4]
+   OR   EAX,20202020
+   CMP  EAX,'23le'
+   JE   GOTCHA_KERNEL
+ GO_LOOP:    
+    ; не найдено, опускаемся на 10000h ниже
+   SUB  ESI,00010000
+   JMP  NEXT64k
+
+; kernel32 не может отсутствовать в памяти,
+; поэтому бессмысленно предусматривать эту 
+; возможность
+
+  GOTCHA_KERNEL:
+
+   MOV  [EBP][lpKernel-v0],ESI
+   ; Ищем имя "GetProcAddress" в таблице имен
+   MOV  EDI,[EBP][lpExpTab-v0]
+   MOV  ECX,[EDI+18]       ; кол-во элементов
+   ADD  ESI,[EDI+20] 
+ ; смещение таблицы указателей на строки имен
+
+   MOV  [EBP][lpNamePtrTab-v0],ESI
+   MOV  4 PTR [EBP][NamePtrNo-v0],0
+ ; порядковый номер имени в таблице
+
+  GET_NXT_NAME:
+   PUSH ESI ECX
+   ; смещение очередного имени
+   MOV  ESI,[ESI]   
+   ADD  ESI,[EBP][lpKernel-v0]      
+   LEA  EDI,[EBP][sGetProcAddress-v0]
+   MOV  ECX,szSGetProcAddress
+   CLD
+   REP  CMPSB
+   POP  ECX ESI
+   JZ   GOT_API_NAME
+
+   ADD  ESI,4
+   ADD  4 PTR [EBP][NamePtrNo-v0],2      ; index
+   LOOP GET_NXT_NAME
+
+   ; не найдено ? такого не бывает
+
+  GOT_API_NAME:     ; Найдено - а как же иначе
+   ; вычислим смещение от начала таблицы имен
+   MOV  EDI,[EBP][lpExpTab-v0]
+   MOV  ESI,[EDI+24]      
+ ; адрес таблицы <ordinals> - API кроме имени 
+ ;  имеет <порядковый> номер
+
+   ADD  ESI,[EBP][NamePtrNo-v0]
+   ADD  ESI,[EBP][lpKernel-v0]
+
+   XOR  EAX,EAX
+   MOV  AX,[ESI]            ; порядковый номер
+   SHL  EAX,2
+    ; получим адрес из таблицы адресов
+   MOV  ESI,[EBP][lpExpTab-v0]
+   MOV  ESI,[ESI+1C] 
+   ; смещение таблицы адресов
+   ADD  ESI,[EBP][lpKernel-v0]
+   ADD  ESI,EAX           ; + порядковый номер
+
+   MOV  EAX,[ESI]        ; API RVA
+   ADD  EAX,[EBP][lpKernel-v0]  ; API Entry Point
+
+   MOV  [EBP][lpGetProcAddress-v0],EAX 
+; GetProcAddress найден !
+; USER32, в котором содержится необходимая 
+; нам API <MessageBoxA>, не загружается 
+; автоматически, это должны сделать мы с 
+; помощью LoadLibraryA
+
+; вызов GetProcAddress для LoadLibraryA
+   LEA  EBX,[EBP][nameLoadLibraryA-v0]  
+   PUSH EBX
+   MOV  EBX,[EBP][lpKernel-v0]
+   PUSH EBX
+   MOV  EAX,[EBP][lpGetProcAddress-v0]
+   CALL EAX            ; call GetProcAddress
+; в EAX - адрес API или 0
+
+
+   OR   EAX,EAX
+   JZ   finish
+
+   LEA  EBX,[EBP][nameUser32-v0]
+   PUSH EBX
+   CALL EAX                     ; call LoadLibraryA
+   ;в EAX- адрес загруженной DLL или 0
+
+   OR   EAX,EAX
+   JZ   finish
+
+   LEA  EBX,[EBP][nameMessageBoxA-v0]
+   PUSH EBX
+   PUSH EAX         ; адрес загруженного USER32
+   CALL 4 PTR [EBP][lpGetProcAddress-v0]
+
+   OR   EAX,EAX
+   JZ   finish
+
+;А теперь - долбожданный MessageBox
+   PUSH 0
+   LEA  EBX,[EBP][TOMB_NAME-v0] ; титул окошка
+   PUSH EBX
+   LEA  EBX,[EBP][COFFIN_GRAFFITI-v0]
+   PUSH EBX        ; сам мессадж
+   PUSH 0
+   CALL EAX         ; call MessageBoxA
+
+finish:
+
+   POPF
+   POPAD
+   RET
+
+; данные
+lpExpTab   DD  0    ; адрес Kernel32 Export Table
+lpKernel     DD  0   ; адрес начала Kernel32 в 
+                           ;  памяти
+lpNamePtrTab DD  ?  ;адр. таблицы указателей 
+                               ; имен
+NamePtrNo  DD  0  ; № точки входа в таблице 
+                            ; имен
+lpGetProcAddress   DD  ?    ; адрес GetProcAddress
+
+; искомое имя API в Kernel32 и его размер
+  sGetProcAddress     DB 'GetProcAddress',0  
+  szSGetProcAddress  EQU $-offset sGetProcAddress
+; имя MessageBoxA, LoadLibraryA и DLL USER32 
+  nameMessageBoxA    DB 'MessageBoxA',0   
+  nameLoadLibraryA     DB 'LoadLibraryA',0    
+  nameUser32             DB 'USER32',0
+
+  TOMB_NAME              DB 'Mess Age Box Title',0  ;
+  COFFIN_GRAFFITI      DB 'Complete!',0
+
+;сегмент кода - отсюда стартует программа
+.code
+start:
+
+  call v0
+  ret
+
+end start
+</pre>
+<p align=right><font face="System">|<a href="contents.htm#list">index</a>|<a href="#top">up</a>|</font></p>
+</html>
+</body>
