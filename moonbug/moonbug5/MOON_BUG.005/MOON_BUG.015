@@ -1,0 +1,359 @@
+[TulaAnti&ViralClub] PRESENTS ...
+MooN_BuG, Issue 5, May 1998                                           file 015
+
+                      Два способа обхода дерева каталогов
+                                                        by All
+
+=== Cut ===............................................................Метод 1
+;
+;       Рекурсивный поиск файлов.
+;       (c) Ak Kort [SOS group]
+;       Microsoft Assembler 6.0
+;
+        .model tiny
+        .486
+        .code
+        .startup
+        org 100h
+        jmp beg
+
+msk     byte '*.exe',0  ; Какие файлы искать.
+pth     byte '\',0      ; Где искать.
+dsk     byte 2          ; на каком диске (сейчас - С)
+all     byte '*.*',0    ; Чтобы входить во все подкаталоги
+old     byte '..',0     ; предыдущий каталог
+oldpath byte 64 dup (0) ; старый каталог
+curpath byte 64 dup (0) ; текущий каталог
+
+beg:
+        mov ah,19h
+        int 21h
+        mov ah,0Eh
+        push ax
+        mov dl,dsk
+        int 21h
+        mov ah,47h
+        cwd
+        lea si,oldpath
+        push si
+        int 21h
+        lea dx,pth
+        call Recurse
+        pop dx
+        mov ah,3Bh
+        int 21h
+        pop ax
+        mov dl,al
+        int 21h
+        retn
+
+Recurse:
+        mov ah,3Bh      ; переходим в новый каталог
+        int 21h
+        sub sp,44       ; создаем локальную DTA
+        mov dx,sp       ; всего может быть не более 31 подкаталога => всего
+        mov si,dx       ; может потребоваться (44+4)*31=1488 байт стека
+        add si,1Eh      ; не так уж и много
+        mov ah,1Ah
+        int 21h
+        lea dx,msk      ; поиск файлов
+        xor cx,cx
+        mov ah,4Eh
+        int 21h
+        jc @1
+@2:     call PrintName  ; нашли!
+        mov ah,4Fh
+        int 21h
+        jnc @2
+@1:
+        mov cx,16       ; поиск всех каталогов
+        lea dx,all
+        mov ah,4Eh
+        int 21h
+        jc @3
+@5:
+        test byte ptr [si-9],16 ; подлая ms-dos вместе с каталогами выдает
+                                ; и файлы - будем отсекать
+        jz @4
+        cmp word ptr [si],'.'           ; корневая директория
+        jz @4
+        cmp word ptr [si],'..'          ; надкаталог
+        jz @4
+
+        push si
+        mov dx,si
+        call Recurse    ; рекурсивный вызов
+        lea dx,old      ; выодим из подкаталога
+        mov ah,3Bh
+        int 21h
+        pop si
+        lea dx,[si-1Eh] ; назначаем старую dta
+        mov ah,1Ah
+        int 21h
+@4:
+        mov ah,4Fh
+        int 21h
+        jnc @5
+@3:
+        add sp,44       ; удалаяем локальную dta
+        retn
+
+PrintName:
+        push si
+        mov al,dsk
+        add al,'A'
+        int 29h         ; int 29h - fast put char
+        mov al,':'
+        int 29h
+        mov al,'\'
+        int 29h
+        lea dx,curpath
+        mov ah,47h
+        mov si,dx
+        cwd
+        int 21h
+        call PrintStr
+        mov al,'\'      ; для файлов в корневухе напечатается два слеша,
+        int 29h         ; что в принципе не страшно
+        pop si
+        call PrintStr
+        mov al,13
+        int 29h
+        mov al,10
+        int 29h
+        retn
+
+PrintStr:
+        push si
+@6:     lodsb
+        or al,al
+        jz @7
+        int 29h
+        jmp @6
+@7:
+        pop si
+        retn
+
+end
+=== Cut ===
+
+
+=== Cut ===............................................................Метод 2
+;
+;       Нерекурсивный поиск файлов.
+;       (c) Constantin Sergeev 2:5085/21.13
+;       Microsoft Assembler 6.0
+;
+Hакалякал прогу.... Виснет зараза на некоторых машинах ...
+Посмотрите, может найдете багу ...
+
+Title           Qdir
+                Model Small
+                CodeSeg
+                .386
+                Org  0100h
+
+Dta_Str_Attr    Equ   Offset Dta + 15h
+Dta_Str_DaTi    Equ   Offset Dta + 16h
+Dta_Str_Size    Equ   Offset Dta + 1ah
+Dta_Str_Name    Equ   Offset Dta + 1eh
+Last_Char_Is    Equ   Offset Tmp_Mask+12
+Addr1_Stop      Equ   Offset Stop_Byte
+Addr2_Stop      Equ   Offset Stop_Byte+1
+Stack_Locate    Equ   Offset Stack_Prog+Size_Stack
+
+Begin:
+;Установим Видеомоду
+                Mov   Ax,3
+                Int   10h
+;Подготовим регистры
+                Push  Cs
+                Pop   Ds
+                Push  Cs
+                Pop   Es
+                Cli
+;Создадим стэк
+                Push  Cs
+                Pop   Ss
+                Mov   Ax,Stack_Locate
+                Mov   Sp,Ax
+                Sti
+; Занесем адресс запуска
+                Lea   Ax,Init
+                Push  Cs
+                Push  Ax
+                Retf
+
+Exit_Here:
+                Int   20h
+
+Scan_DDT:
+;Процедура находит конец пути
+                Cld
+                Lea   Di,Way2Found
+                Xor   Al,Al
+                Mov   Cx,72
+                Repne Scasb
+                Ret
+Modi_DDT:
+;Процедура сохраняет \*.*0х0
+                Dec   Di
+                Mov   Ax,'*\'
+                Stosw
+                Mov   Ax,'*.'
+                Stosw
+                Sub   Ax,Ax
+                Stosw
+                Ret
+
+Init            Equ   $
+;               1.2.1) Устанавливаем DTA
+                Mov   Ah,1ah
+                Lea   Dx,Dta
+                Int   21h
+;               1.2.2) Процедура обхода дерева и нахождения
+;Установим каталог и найдем 1й файл
+Change_Path:
+                Mov   Ah,4eh
+                Mov   Cx,31-8
+                Lea   Dx,Way2Found
+                Int   21h
+                Jc    Exit_Here
+Found_Next:
+;Это каталог ?
+                Test  Byte Ptr Dta_Str_Attr,16
+                Je    Is_Not_Dir
+;е поганцевые точки ?
+                Cmp   Byte Ptr [Dta_Str_Name],'.'
+                Je    Is_Not_Print
+;Сформируем новый путь
+                Call  Scan_DDT
+                Sub   Di,4
+                Mov   Si,Dta_Str_Name
+;Допишем его в конец текущего
+Cont_Append:
+                Lodsb
+                Stosb
+                Or    Al,Al
+                Jne   Cont_Append
+Store_Chars:
+                Call  Modi_DDT
+                Jmp   Change_Path
+Is_Not_Dir:
+;Печатаем найденное
+                Call  Print_Name
+Is_Not_Print:
+;Ищем следующие вхождения
+                Mov   Ah,4fh
+                Int   21h
+                Jnc   Found_Next
+;Проверим на не корневой каталог
+Scan_Lite:
+;Сдвинемся вверх на 1 уровень
+                Call  Scan_DDT
+;Сохраним ммя каталога во временной переменной
+                Sub   Di,2
+                Mov   Al,5ch
+;Тута выделяем имя каталога
+                Std
+                Repne Scasb
+                Repne Scasb
+                Cld
+                Cmp   Di,Addr1_Stop
+                Je    Exit_Here
+                Cmp   Di,Addr2_Stop
+                Je    Exit_Here
+                Add   Di,2
+                Push  Di
+                Push  Cx
+                Mov   Cx,12
+;Сохраняем и заодно обнуляем хвосты
+                Lea   Si,Tmp_Mask
+Cont_Store:
+                Mov   Al,Byte Ptr [Di]
+                Cmp   Al,'\'
+                Je    Break_Store
+                Inc   Di
+                Jmp   No_Way_Store
+Break_Store:
+                Mov   Al,0
+No_Way_Store:
+                Mov   Byte Ptr [Si],Al
+                Inc   Si
+                Loop  Cont_Store
+                Pop   Cx
+                Pop   Di
+                Call  Modi_DDT
+;Повторный поиск (начнем с корня)
+                Mov   Ah,4eh
+                Mov   Cx,31-8
+                Lea   Dx,Way2Found
+                Int   21h
+                Jc    Scan_Lite
+Found_Next_Mach:
+                Mov   Ah,4fh
+                Int   21h
+;ашли. о толи ?
+                Mov   Di,Dta_Str_Name
+                Push  Di
+                Mov   Cx,12
+                Mov   Al,0
+                Repnz Scasb
+                Rep   Stosb
+                Lea   SI,Tmp_Mask
+                Pop   Di
+                Cld
+                Mov   Cx,12
+                Repe  Cmpsb
+;Да ! Продолжим далее ...
+                Je    Is_Not_Print
+                Jmp   Found_Next_Mach
+
+; Чего-нить печатаем.
+Print_Name:
+                Pusha
+                Lea   Bx,Way2Found
+                Mov   Ah,2
+Cont_Print01:
+                Mov   Dl,Byte Ptr [Bx]
+                Inc   Bx
+                Cmp   Byte Ptr [Bx+2],0
+                Jz    Term_Print01
+                Int   21h
+                Jmp   Cont_Print01
+Term_Print01:
+                Mov   Bx,Dta_Str_Name
+Cont_Print:
+                Mov   Dl,Byte Ptr [Bx]
+                Inc   Bx
+                Or    Dl,Dl
+                Jz    Term_Print
+                Int   21h
+                Jmp   Cont_Print
+Term_Print:
+                Mov   Dl,13
+                Int   21h
+                Mov   Dl,10
+                Int   21h
+                Popa
+                Ret
+
+;Служебные метки
+Label_Presence  Db    'CrCt'
+Label_Version   Db    0,2
+;Красный флаг для сканера
+Stop_Byte       Db    '\\'
+;Здесь хранится путь к файликам
+Way2Found       Db    'C:\*.*',0
+                Db    73  Dup (0)
+;А здесь - ДТА
+Dta             Db    43  Dup (0)
+;Тута лежит имя для поиска в корне дерева
+Tmp_Mask        Db    12  Dup (0)
+                Db    0
+;А это  стэк.
+Stack_Prog      Db    256 Dup (0)
+Size_Stack      Equ   $-Stack_Prog
+                Ends
+                End  Begin
+=== Cut ===

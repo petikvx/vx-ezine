@@ -1,0 +1,245 @@
+С. Быликин
+
+Резидентный блокировщик доступа к директории
+
+
+Листинг
+
+;-----------------------------------------------
+; Резидентный блокировщик доступа к директории
+;-----------------------------------------------
+; DirProt:  Resident Directory Protector
+; Copyright (C) 1993 by Bylikin S.J., Moscow
+;-----------------------------------------------
+; Программа может свободно распространяться 
+; и использоваться в некоммерческих целях.
+; Автор: Быликин Сергей Юрьевич
+;-----------------------------------------------
+
+codesg  segment
+	assume	cs:codesg,ds:codesg,ss:codesg,es:codesg
+	org	100h
+
+begin:	jmp	install		;Переходим к транзитной части
+
+;-------------------------
+protect   db	12 dup(0)	;Имя блокируемой директории
+sublth    db    0               ;и его длина-1
+presence  db 	'jN24'		;Сигнатура присутствия 
+                                ;программы в памяти
+;-------------------------
+
+main	proc	far		;Точка входа в программу
+                                ;по int 21h
+	sti
+
+        cmp     ah,3Bh          ;Функция смены директории?
+	je	check
+        cmp     ah,4Eh          ;Функция поиска первого файла?
+	je	check
+        cmp     ah,56h          ;Функция переименования?
+	jne	continue	;Если ни одна из этих функций, то
+                                ;передаем управление по прежнему
+                                ;адресу обработчика int 21h
+
+check:				;Проверяем наличие имени блокируемой
+                                ;директории в ASCIIZ строке ds:dx
+	push 	ax cx si di es	;Сохраняем используемые регистры
+	push	ds
+	pop	es		;Сегмент строки,
+        mov     di,dx           ;смещение
+        mov     cx,64           ;и максимальная длина
+	mov	al,0
+	cld			;Сканируем слева направо
+        repne   scasb		;Ищем символ ASCII 0
+        neg	cx
+        add     cx,63           ;cx = длина строки-1
+
+        sub	cl,cs:sublth	;Определяем диапазон поиска
+        js	done		;Прекращаем обработку, если длина
+                                ;строки меньше длины имени директории
+
+	inc	cx		;cx > 0
+        mov     si,dx           ;Смещение ASCIIZ строки
+repeat:        
+	call	upsmb		;Загружаем символ из ds:si в al
+                                ;и переводим его в верхний регистр
+
+boderr:
+        cmp	al,cs:protect	;Проверяем первый символ сигнатуры
+        je	body		;Если совпадает, то проверяем 
+        			;следующие символы
+	loop	repeat		;Если нет, то вновь проверяем первый
+
+	inc	cx		;Сигнатура не найдена. Сбрасываем ZF
+	jmp	short done	;и передаем управление дальше
+
+body:				;Проверяем следующие символы
+        mov	ah,cl		;Сохраняем cx
+        mov	cl,cs:sublth	;Загружаем длину имени директории
+                                ;без первого символа
+        lea     di,protect      ;и ее смещение
+bodyfar:
+        jcxz	done		;Сигнатура обнаружена.
+        			;Блокируем доступ и выходим
+                                ;из прерывания
+	dec	cx
+	inc	di
+	call	upsmb
+        cmp     al,cs:[di]      ;Символ совпадает?
+        je	bodyfar		;Да - проверяем следующий
+	mov	cl,ah		;Нет - восстанавливаем cx 
+        jmp     boderr          ;и повторяем все сначала
+done:	
+	pop 	es di si cx ax	;Восстанавливаем регистры
+	jnz	continue	;Если ZF сброшен, то передаем
+                                ;управление дальше; если нет -
+return:                         ;выходим из прерывания
+	stc			;Устанавливаем флаг переноса
+        mov     ax,05           ;и код ошибки "Отказ доступа"
+	retf	2		;Выходим из прерывания
+
+
+continue:			;Если все в порядке, то передаем 
+                                ;управление по адресу старого
+                                ;обработчика int 21h
+		db 	0EAh	;jmp far
+old_21h_off  	dw 	0	;old_21h_entry
+old_21h_seg  	dw 	0
+
+main	endp
+
+;-------------------------
+
+upsmb	proc	near
+        lodsb			;Загружаем очередной символ в al
+	cmp	al,'a'		;Символы 'a'...'z' переводим
+        jb      us1             ;в верхний регистр
+	cmp	al,'z'
+	ja	us1
+	sub	al,20h
+us1:	
+	ret
+upsmb	endp
+
+;-------------------------------------
+; Транзитная часть программы DirProt
+;-------------------------------------
+
+install:
+	mov	ax,3521h
+	int	21h			;Получаем адрес обработчика
+        mov     word ptr old_21h_seg,es ;int21h и сохраняем его в
+        mov     word ptr old_21h_off,bx ;резидентной части программы
+
+	cld
+	lea	si,presence		;Определяем присутствие
+        mov     cx,4                    ;резидентной части программы
+        mov     di,bx                   ;в памяти
+	sub	di,cx
+	repe	cmpsb
+	je	already			;Программа обнаружена
+
+	push	cs			;Программа не обнаружена
+	pop	es
+	mov	si,80h			;Загружаем длину командной
+        lodsb                           ;строки в al
+	lea	dx,msg_inv_parm
+	cmp	al,2			;Если параметр отсутствует,
+        jb      message                 ;или его длина превышает
+        cmp     al,13                   ;допустимую длину для имени
+        ja      message                 ;директории, то выдаем
+                                        ;информацию о пользовании
+                                        ;программой
+	dec	al
+	dec	al
+	mov	sublth,al		;Сохраняем длину-1 блокируемой
+                                        ;директории в резидентной
+                                        ;части программы
+	inc	al
+	mov	cl,al			;Полная длина параметра
+	inc	si			;Первый символ
+	lea	di,protect		;Адрес буфера
+next:
+	call	upsmb			;Переводим параметр в верхний
+        stosb                           ;регистр и сохраняем его
+        loop    next                    ;в буфере 'protect'
+
+	lea	dx,msg_not_found
+	cmp	word ptr protect,'R/'	;Запрос на выгрузку ?
+	je	message			;Выходим с сообщением
+                                        ;об ошибке
+	lea	dx,msg_not_inst
+	cmp	word ptr protect,'C/'	;Запрос на проверку наличия ?
+	je	message			;Сообщаем, что программа
+                                        ;не установлена
+
+load:					;Иначе считаем параметр именем
+                                        ;директории и устанавливаем
+                                        ;резидентную часть
+	push	ds
+	lea	dx,main			;Устанавливаем вектор int 21h
+        mov     ax,2521h                ;на наш обработчик
+	int	21h
+	pop	ds
+
+	lea	dx,msg_inst_ok		;Выдаем сообщение об успешной
+        mov     ah,09h                  ;установке программы
+	int	21h
+
+        mov     dx,19h                  ;Длина TSR-части в параграфах
+	mov	ax,3100h		;Функция 'TSR'
+	int	21h			;Оставляем программу в памяти
+
+
+already:
+	mov	si,80h			;Ищем в командной строке
+        lodsb                           ;ключи выгрузки или проверки
+        cmp     al,3                    ;наличия программы в памяти
+	jb	bue
+	inc	si
+	lodsw
+	lea	dx,msg_in_mem
+        cmp     ax,'c/'                 ;Проверить наличие?
+	je	message			;Сообщаем, что программа
+                                        ;установлена
+        cmp     ax,'r/'                 ;Выгрузить из памяти?
+	jne	bue			;Если нет, то завершаем
+                                        ;программу без сообщений
+unload:					;Если да, то выгружаем
+        push    ds                      ;из памяти
+	lds	dx,dword ptr es:old_21h_off  ;Восстанавливаем старый
+	mov	ax,2521h		     ; вектор int 21h
+	int	21h
+	pop	ds
+
+	mov	ah,49h			;Освобождаем память,
+        int     21h                     ;занятую TSR-программой
+
+	mov	es,word ptr es:[002Ch]	;Загружаем из TSR PSP сегмент
+        mov     ah,49h                  ;окружения DOS
+	int	21h			;Освобождаем память,
+                                        ;занятую окружением DOS
+	lea	dx,msg_remove_ok
+
+message:
+	mov	ah,09h			;Сообщаем об успешной
+        int     21h                     ;выгрузке из памяти
+
+bue:
+	mov	ax,4C00h		;Возвращаемся в DOS
+	int	21h
+	
+;-------------------------------------------------------------------------
+msg_in_mem    db  'DirProt is installed.',0Dh,0Ah,'$'
+msg_not_inst  db  'DirProt isn''t installed.',0Dh,0Ah,'$'
+msg_inst_ok   db  'DirProt installed O.K.',0Dh,0Ah,'$'
+msg_remove_ok db  'DirProt removed O.K.',0Dh,0Ah,'$'
+msg_not_found db  'DirProt couldn''t be found.',0Dh,0Ah,'$'
+msg_inv_parm  db  'Usage: DirProt [dirname|/c|/r]',0Dh,0Ah
+	      db  '  /r - remove from memory',0Dh,0Ah
+	      db  '  /c - check presence',0Dh,0Ah,'$'
+;-------------------------------------------------------------------------
+
+codesg	ends
+	end	begin

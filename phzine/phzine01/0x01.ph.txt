@@ -1,0 +1,1060 @@
+                                
+                            ...................
+                      ...::: phearless zine #1 :::...                       
+
+......................>---[ The Art of Sniffing ]---<.......................
+
+.........................>---[ by BaCkSpAcE ]---<...........................
+                                                   sinisa86[at]gmail[dot]com			 
+
+SADRZAJ:
+
+    [0]  Uvod - Sta je to sniffer?
+    [1]  Osnovne funkcije za rad sa socketima
+      <1.1>  socket()
+      <1.2>  bind()
+      <1.3>  recvfrom()
+      <1.4>  htons(), htonl(), ntohs(), ntohl()
+    [2]  Struktura jednog kompletnog paketa
+    [3]  Osnovni elementi konstrukcije
+      <3.1>  I faza
+      <3.2>  II faza
+      <3.3>  III faza
+      <3.4>  IV faza
+    [4]  Primitivna verzija sniffera
+    [5]  Nadogradnja
+      <5.1>  I faza
+      <5.2>  II faza
+      <5.3>  III faza
+      <5.4>  IV faza
+    [6]  Konacna verzija sniffera
+    [7]  Zastita od sniffinga
+    [8]  Literatura
+    [9]  Odvod
+
+
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 0. Uvod: Sta je to sniffer? 
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    Ah, ti snifferi (u prevodu njuskalo)... Bilo je reci i tekstova o njima 
+i funkionisanju istih, ali je malo bilo kvalitetnih i potpunih. Zato sam se 
+ja potrudio da napisem jedan dooobar tekst sa malo detaljnijom analizom 
+konstrukcije sniffera, i uopste socket programiranja. Jos jedan od razloga 
+nastanka ovog teksta jeste omogucivanje ostalim znatizeljnicima brzeg uvoda 
+u reverse engineering mreznog saobracaja (al' sam mu dao naziv).
+    Izrada i testiranje (delova) source kodova koji su korisceni u ovom 
+tekstu radjena je u linux okruzenju (tacnije kernel 2.4.22). Sama teorija 
+ovog teksta moze da se primeni u bilo kom okruzenju i programskom jeziku, a
+primeri i biblioteke koje su ovde upotrebljene mogu se koristiti samo u 
+linux okruzenju. Tekst je namenjen naprednijim korisnicima i programerima,
+tako da je potrebno odredjeno predznanje (osnove linuxa, programiranje u C,
+tcp/ip protokol, osnove socket programiranja).
+    Snifferi sluze za posmatranje mreznog saobracaja u kojem vi direktno
+ucestvujete, ili se nalazite u neposrednoj blizini (npr. lokalne mreze). To
+je analogno drumskom saobracaju, gde vi posmatrate vozila sa nekog mesta,
+npr. obliznje pivnice. Nasa uloga bi tu bila da pribelezimo svaki automobil
+i informacije o tome odakle je krenuo, gde ide i sta nosi.
+    Upotreba... mogu se upotrebiti za debug neke client/server aplikacije,
+za proveru filtera koje smo postavili, odnosno da li pravilno funkcionisu... 
+Kao sto vecina "alata" moze pametno da se iskoristi, isto tako mogu da se
+upotrebe za "prljave" poslove. Najvise se koriste za prikupljanje passworda
+koji mogu biti iskorisceni za veoma lagan upad u neki racunar. "Crne kape" 
+vec dobro znaju za sta mogu upotrebiti sniffere, i gde ih je pogodno 
+namestiti.
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 1. Osnovne funkcije za rad sa socketima
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    Kao sto sam naveo na pocetku, da bi mogli da pratite tekst nadalje,
+potrebno vam je bar neko osnovno znanje i iskustvo u socket programiranju.
+Osnovne i neophodne funkcije koje se koriste pri pravljenju jednog sniffera
+su socket(), bind() i recvfrom(). Takodje, tu su i nezaobilazne ntohs, 
+ntohl, htons i htonl. Od dodatnih funkcija koje "dobro dodju" mozemo navesti
+setsockopt() i ioctl().
+
+    
+---< 1.1 socket() 
+
+int socket(int domain, int type, int protocol)
+    Pod parametrom domain podrazumevamo izbor familije protokola koji ce 
+biti upotrebljen u komunikaciji, u zavisnosti od tipa mreze. Tu se nalaze: 
+PF_PACKET, PF_INET, PF_INET6, PF_UNIX, PF_IPX... ali nama je od navedenih 
+najzanimljiviji i najkorisniji PF_PACKET jer nam je on, ustvari, low-level 
+interfejs ka celokupnom mreznom saobracaju. Moze koristiti i neki drugi 
+izbor protokola, ali svi drugi nam daju manje mogucnosti i veca ogranicenja 
+za snimanje mreznog saobracaja. Da bi ga koristili, potrebno je da imamo uid 
+0 ili da imamo CAP_NET_RAW mogucnost. Protocol Family (PF) i Adress Family 
+(AF) su, u sustini, iste stvari, tako da slobodno mozemo pisati AF_PACKET 
+umesto PF_PACKET. Ali prema sintaksi socket() funkcije, prvi argument mora 
+biti neki skup protokola. 
+    Sto se tice tipa socketa u zavisnosti od komunikacione semantike, imamo
+SOCK_STREAM, SOCK_DGRAM, SOCK_RAW, SOCK_PACKET... Necu se zadrzavati na 
+objasnjavanju ostalih tipova socketa, vec samo onih koji nam mogu zatrebati.
+    Posto smo izabrali domen protokola PF_PACKET koji prima/salje pakete na 
+drugom OSI (Open System Interconnection) nivou, onda mozemo da koristimo: 
+SOCK_DGRAM i SOCK_RAW. Razlike izmedju ova dva tipa socketa su minimalne. 
+SOCK_RAW se koristi za raw pakete sa link level headerom, dok SOCK_DGRAM se 
+koristi za raw pakete bez link level headera. Prema tome, moze se reci da je
+SOCK_DGRAM na nesto visem nivou od SOCK_RAW socketa. Link Level header je u 
+sockaddr_ll formatu, odnosno strukturi, o kojoj ce kasnije biti reci. 
+    Parametar protokol predstavlja protokol koji ce se koristiti u 
+komunikaciji. To moze biti IPPROTO_TCP, IPPROTO_UDP... U normalnom slucaju
+se stavlja obicno vrednost 0, jer ako smo izabrali npr. SOCK_DGRAM socket,
+onda sigurno primamo samo UDP pakete (IPPROTO_UDP)... A ako bi hteli da
+radimo samo sa TCP paketima, onda cemo navesti IPPROTO_TCP. Znaci sistem je 
+u mogucnosti sam da odluci sta prima/odbacuje. 
+    
+
+---< 1.2 bind() 
+
+int bind(int s, struct sockaddr *name, int size)
+    Ova funkcija nam sluzi da pomocu vec popunjene sockaddr strukture
+isfiltriramo mrezni saobracaj koji zelimo da primamo/saljemo. Da bi to
+uradili, moramo navesti tri parametra: naziv postojeceg socketa, struktura 
+sa kojom cemo da povezemo socket i velicina te strukture.
+
+
+---< 1.3 recvfrom() 
+
+ssize_t recvfrom(int s, void *buf, size_t len, int flags, struct sockaddr 
+*from, socklen_t *fromlen);
+    Sintaksa izgleda komplikovano, ali u sustini nije ;) recv() i recvfrom() 
+su relativno slicne funkcije, i obe se koriste za prihvatanje podataka. 
+Razlika je sto se recv() koristi za sockete koji su connection-oriented, a 
+recvfrom() moze da se koristi u svakom slucaju.
+    Prvi parametar predstavlja socket iz kojeg nam dolazi mrezni saobracaj.
+Drugi parametar je pokazivac na buffer, odnosno na mesto u koje ce biti
+zapisani svi procitani podaci.Kao treci parametar se prosledjuje velicina
+navedenog buffera, odnosno memorijskog prostora alociranog za smestaj 
+podataka. U cetvrtom parametru se navodi kako ce se podaci iz socketa
+iscitavati, kako ce sistem reagovati ako nam dolazi veca kolicina podataka
+od ocekivane... Peti parametar je struktura sockaddr koja nam kazuje odakle
+se ocekuje poruka, a sesti parametar predstavlja duzinu strukture sockaddr.
+Poslednja tri parametra nam nisu toliko bitni za pravilno funkcionisanje
+sniffera koji nameravamo da napravimo. Kome trebaju detalji, man recvfrom.
+    Jedna vazna napomena u vezi sa recvfrom(): pri prvom pozivanju 
+recvfrom(), bitno je da sesti parametar bude postavljen na neku memorijsku
+lokaciju sa inicijalnom vrednoscu sizeof(struktura_petog_parametra), a
+kasnije se taj parametar menja u zavisnosti od vracene vrednosti. Znaci
+potrebno je da pri programiranju napisemo nesto tipa:
+received = recvfrom(........, &received);
+Ali, jos jednom da napomenem, bitno je na samom pocetku podesiti vrednost
+received na velicinu petog prosledjenog parametra. Shvaticete ovo kasnije
+kroz kod. Ovo je primer blokirajuce I/O funkcije, odnosno funkcije koja ce 
+da stoji i da ceka sve dok nesto ne dodje. Takodje moguce je namestiti i 
+neblokirajucu recvfrom() funkciju, ali nam to trenutno nije od velikog 
+znacaja.
+
+
+---< 1.4 htons(), htonl(), ntohs(), ntohl() 
+
+uint16_t htons(uint16_t hostshort)
+uint32_t htonl(uint32_t hostlong)
+uint16_t ntohs(uint16_t netshort)
+uint32_t ntohl(uint32_t netlong)
+    Funkcije za prevodjenje adresa iz network byte redosleda u host byte
+redosled, i obrnuto. Na 80x86 arhitekturi pri host byte redosledu, bajt 
+najmanje vaznosti, odnosno vrednosti je na prvom mestu, dok je pri network
+byte redosledu bajt najvece vrednosti na prvom mestu.
+
+
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 2. Struktura jednog kompletnog paketa
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+    Svaki paket koji putuje kroz mrezu se sastoji od niza headera i podataka
+koje nosi. Jedan tipican paket koji putuje od jednog do drugog hosta sadrzi 
+u sebi ethernet header, ip header i jos jedan header u zavisnosti od tipa 
+paketa (tcp header, udp header, icmp header...). Ovako bi izgledao jedan 
+tipican paket koji mi hvatamo:
+
+
+   ---------------------------------------------------------------------
+   |> eth header <|> ip header <|> {tcp, udp, icmp} header <|> podaci <|
+   ---------------------------------------------------------------------
+
+
+------------------------------
+naziv      : ethernet header 
+velicina   : 14 bajtova
+strukutura : bajt | naziv
+           +------+---------------------------
+	   | 1-6  | MAC adresa onog ko salje 
+	   | 7-12 | MAC adresa onog ko prima 
+	   |13-14 | o kom se protokolu radi  
+	   +------+---------------------------
+napomena   : Poslednja dva bajta 13. i 14. su nam uglavnom 08 00 (hex) jer 
+             uglavnom svi radimo sa IPv4 (PF_INET) protokolom. Neke od
+	     mogucih vrednosti su:
+	     08 00	IPv4
+	     86 DD	IPv6
+	     08 06	ARP (Adress Resolution Protocol)
+	     ...
+
+-------------------------------
+naziv     : ip header 
+biblioteka: #include <netinet/ip.h>, struct iphdr;
+velicina  : 20 bajtova (tipicno)
+struktura : bajt | naziv
+          +-----------------------------------------------------------------
+          | __u8  ihl:4;	// velicina ip headera
+	  | __u8  version:4;    // 0100 za IPv4, 0110 za IPv6 (ver. prot.)
+	  | __u8  tos;          // type of service
+	  | __u16 tot_len;      // ukupna duzina ip datagrama
+	  | __u16 id;           // id broj fragmenta ip datagrama
+	  | __u16 frag_off;     // koristi se za fragmentaciju (dod. bajt)
+	  | __u8  ttl;	        // Time To Live
+	  | __u8  protocol;     // koji protokol viseg nivoa nosi ovaj paket
+	  | __u16 check;        // checksum (za integritet paketa)
+          | __u32 saddr;        // source address (adresa posiljaoca)
+	  | __u32 daddr;        // destination address (adresa primaoca)
+          +-----------------------------------------------------------------
+napomena  : Za nas su ovde veoma vazna polja 'protocol', 'saddr' i 'daddr'. 
+            Polje 'protocol' nam govori, u stvari, o kojem se paketu radi,
+	    tj. da li je to TCP, UDP, ICMP, IGMP... Prema tome, ovo polje
+	    moze da ima sledece vrednosti:
+	       - TCP  : 06
+	       - UDP  : 11
+	       - ICMP : 01
+	       - ...
+
+    Strukture headera paketa viseg nivoa od eth&ip dela moramo imati takodje
+u vidu, jer je to ono zbog cega smo ovde ;) ustvari, nama od podataka su jos
+samo bitno brojevi portova izmedju kojih se vodi komunikacija ili tacno
+znacenje poslate poruke (ako se radi o kontrolnim ICMP i slicnim porukama). 
+Ti podaci se nalaze unutar sledeceg dela paketa, koji se nalazi posle eth i 
+ip headera. Znaci, ako hocemo npr. da pratimo saobracaj tcp paketa, onda 
+moramo poznavati strukturu tcp headera. U sustini najbitnije je znati duzinu
+headera, jer onda znamo da posle headera dolazi stvarni podaci, tj. oni
+podaci zbog kojih svi ti headeri postoje. 
+    Sada cu prikazati strukturu udp headera, posto je on najmanji:
+[netinet/udp.h]
+struct udphdr {
+    __u16 source;    // port sa kojeg posiljalac salje podatke
+    __u16 dest;      // port na koji ce primalac da primi podatke
+    __u16 len;       // ukupna duzina podataka koji se salju
+    __u16 check;     // checksum udp paketa
+};
+
+    Kao sto vidimo, velicina udp headera je 2+2+2+2=8 bajtova, sto znaci da
+bi dosli do pravih podataka, moramo se pomeriti za jos 8 bajtova unapred.
+Sve ovo ce vam biti mnogo jasnije kada predjemo na konstrukciju programa.
+
+
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 3. Osnovni elementi konstrukcije
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    Kada pokrenete jedan sniffer, on prolazi kroz vise faza pre nego sto
+pocne da vam izbacuje podatke na ekran. Napravio sam neku moju podelu po
+slobodnom izboru, i nadam se da ce vam ona dobro-doci da stvorite sliku o
+tome sta sniffer zapravo radi.
+
+
+---< I faza: otvaranje socketa
+
+    U ovoj fazi je bitno da otvorimo jedan socket preko kojeg cemo primati
+podatke. Ali pre toga bi trebalo da ste odlucili koji tip socketa koristite
+i koji skup protokola zelite snimati. Ja vam preporucujem PF_PACKET u
+kombinaciji sa SOCK_RAW, jer vam je jedan od najnizih mogucih nivoa za
+hvatanje paketa.
+
+sock = socket(PF_PACKET, SOCK_RAW, 0);
+
+    Pored otvaranja socketa, bilo bi pozeljno proveriti da li se nije
+dogodila neka greska prilikom otvaranja socketa. Za to koristimo <errno.h>
+i funkciju perror(). Znaci ako socket() vrati -1, odnosno bilo sta manje od
+0, onda pozivamo perror("socket") da bi bili dobro obavesteni o radu naseg
+sniffera.
+
+
+---< II faza: hvatanje paketa u bafer
+
+    Posto smo usmerili nase oci, odnosno socket na mrezni saobracaj koji
+zelimo da posmatramo, onda je vreme za funkciju recvfrom(), kako bi pomocu
+nje pohvatali sav saobracaj u buffer. Kao sto smo rekli pri opisu sintakse
+recvfrom(), potrebno je prvo inicijalizovati vrednost promenljive (objekta)
+u koji ce recvfrom() da vrati neku vrednost (return).
+
+received = sizeof(from);
+
+    Sad kad smo sve spremili, potrebno je recvfrom() ubaciti u neku petlju
+jer smo verovatno tu da bi primili vise paketa, a ne samo jedan.
+
+while(1) {
+  received = recvfrom(sock, buffer, sizeof(buffer), 0, 
+                    (struct sockaddr *)(&from), &received)
+  ...
+}
+
+    Napomena: bafer za prihvatanje podataka (u ovom slucaju buffer) ne sme
+biti premali. U zavisnosti od flag parametra (4-ti parametar), sistem ce
+odluciti da li da odbije podatak, ili da ga prenosi deo po deo u bafer,
+tzv. fragmentacija paketa. Zato slobodno stavite veci bafer, sta vam znaci
+npr. 64k memorije???
+
+
+---< III faza: parsiranje paketa
+
+    Podatke koje smo prihvatili u bafer mozemo prikazivati u raw modu, tj.
+bas onako kako ih primamo. Medjutim, u tom slucaju ne bi imali bas neke
+koristi od sniffera. Zato je bitno odvojiti header-e od stvarnih podataka.
+    Rekli smo da se na pocetku paketa nalazi eth header, pa ip header, pa
+onda jos jedan header u zavisnosti od tipa konekcije i sl. Za pocetak cemo
+da izdvojimo eth header.
+
+ip = (struct iphdr *) (buffer + sizeof(struct ethhdr));
+
+    Struktura iphdr nam pomaze da identifikujemo polja ip headera u paketu
+koji smo pokupili. Za sada nam je najvaznije polje 'protocol' da bi mogli
+pravilno da rasporedimo sve pakete, odnosno da mozemo da razlikujemo tcp,
+udp, icmp i druge pakete.
+    Znaci, ako hocemo tcp pakete, onda prihvatamo samo one koji u polju 
+ip->protocol imaju vrednost 6. A ako nam treba vise azlicitih vrsta paketa, 
+onda je najbolje da se za to koristi switch().
+
+switch (ip->protocol) {
+      case  6: {tcp protokol} break;
+      case 11: {udp protokol} break;
+      default: {unknown protokol}
+}
+
+
+---< IV faza: prikaz pohvatanih paketa 
+
+    Naravno, kada napokon dodjemo do zeljenih paketa, jedina preostala stvar
+u vezi njih jeste prikaz istih. Potrebno je odabrati podatke koje cemo da
+logujemo i koji su bitni za nas. 
+    Prva stvar koja je bitna je adresa sa koje je paket poslat i adresa 
+kojoj je paket namenjen. Te informacije se nalaze u poljima saddr i daddr, 
+kao sto smo prikazali u poglavlju 0x02 o strukturi paketa. Posto je taj 
+podatak napisan po network byte redosledu, onda moramo koristiti i funkciju 
+inet_ntoa kako bi preveli taj podatak u string. Sintaksa:
+
+char * inet_ntoa(struct in_addr in);
+
+    Kao sto vidimo ocekuje se objekat tipa in_addr, a ip broj se cuva u
+objektu tipa iphdr. Zato je bitno da taj ip broj prvo prebacimo u neki
+objekat tipa in_addr, pa onda da pozovemo inet_ntoa():
+
+struct in_addr ipsource, ipdest;
+ipsource.s_addr = ip->saddr;
+ipdest.s_addr = ip->daddr;
+
+    Tek sada mozemo pozvati inet_ntoa(). Primer pozivanja inet_ntoa()
+printf ("Source IP: %s\n", inet_ntoa(ipsource));
+printf ("Destination IP: %s\n", inet_ntoa(ipdest));
+
+    Posto je mene licno nervirao ovaj 'casting', napisao sam funkciju koja
+odradjuje sama to: 
+
+char * my_ntoa(unsigned long adress) {
+  char temp[16];
+  char *ret;
+  int a, b, c, d;
+  a = adress / 16777216;
+  adress = adress % 16777216;
+  b = adress / 65536;   
+  adress = adress % 65536;
+  c = adress / 256;
+  adress = adress % 256;
+  d = adress;
+  
+  sprintf (temp, "%d.%d.%d.%d", d, c, b, a);
+  
+  ret = malloc(strlen(temp));
+  memset (ret, '\0', sizeof (temp));
+  strcpy (ret, temp);
+  return ret;
+} 
+
+    Pomocu ove funkcije mozete odmah pozvati my_ntoa(ip->saddr) ili daddr.
+Inace, kao sto se vidi, isao sam d, c, b, a. To je zato sto je to network
+byte redosled, koji se inace koristi na internetu. Inverzna funkcija ovoj
+bi bila: adress = a*256^3 + b*256^2 + c*256 + d. Otisao sam mnogo u sirinu 
+ovog dela poglavlja, ali od viska ne boli glava, valjda. 
+    Posle utvrdjivanja tipa paketa viseg nivoa u odnosu na eth i ip, bitno
+je poznavati svojstva i strukturu predstojeceg dela paketa. Najvaznije od
+svega jeste velicina headera, da bi znali gde se nalaze stvarni podaci koje
+nosi paket.
+    Ako smo utvrdili da se radi o TCP paketu, onda je za nas bitan port
+racunara sa kojeg je paket poslat i port primaoca paketa, odnosno racunara
+kojem je paket upucen. Ti podaci se nalaze u poljima 'source' i 'dest'. Vise
+informacija o strukturi tcp paketa mozete naci u <netinet/tcp.h>. TCP paket
+cemo dobiti tako sto cemo se pomeriti za velicinu eth i ip headera:
+
+tcp = (struct tcphdr *)(buffer + sizeof(struct ethhdr) +
+      sizeof(struct iphdr));
+      
+    Podaci koje smo trazili jesu portovi. Posto su i oni smesteni po network
+byte redosledu, potrebno je i njih prebaciti u host byte redosled pomocu
+funkcije ntohs():
+
+printf ("Source Port: %d", ntohs(tcp->source));
+printf ("Destination Port: %d", ntohs(tcp->dest));
+
+
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 4. Primitivna verzija sniffera
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <net/ethernet.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
+
+int main () {
+  struct sockaddr_in from;
+  struct ethhdr *eth;
+  struct iphdr *ip;
+  struct tcphdr *tcp;
+  struct udphdr *udp;
+  struct in_addr srchost;
+  struct in_addr desthost;
+
+  char buffer[2048];
+  int received;
+  int sock;
+
+  // otvaramo socket za prihvatanje mreznog saobracaja
+  sock = socket (PF_PACKET, SOCK_RAW, htons(ETHERTYPE_IP)); 
+
+  // u slucaju greske pri pozivanju socket()
+  if (sock < 0) {                          
+    perror ("socket");                     
+    exit (-1); 
+  }
+
+  // inicijalizujemo received
+  received = sizeof (from);  
+
+  // ulazimo u petlju za hvatanje paketa
+  while (1) {
+    // cistimo bafer
+    memset (buffer, '\0', sizeof (buffer));
+    
+    // cekamo neki paket i smestamo ga u bafer
+    received = recvfrom (sock, buffer, sizeof (buffer), 0, 
+               (struct sockaddr *)(&from), &received); 
+
+    // vrsimo prepoznavanje ip headera u baferu
+    ip = (struct iphdr *) (buffer + sizeof(struct ethhdr));
+
+    // popunjavamo dve in_addr strukture da bi mogli da pretvorimo ip adrese
+    // u string pomocu inet_ntoa() funkcije
+    srchost.s_addr = ip->saddr;
+    desthost.s_addr = ip->daddr;
+    
+    // razvrstavanje paketa
+    switch (ip->protocol) {
+          case 6 : // prepoznajemo tcp header u preostalom baferu
+	           tcp = (struct tcphdr *) (buffer + sizeof(struct ethhdr) 
+	               + sizeof(struct iphdr));
+	           // prikaz uhvacenih podataka na ekran
+		   printf ("TCP:> [%s:%d]>[%s:%d]\n", 
+		           inet_ntoa(srchost), 
+		           ntohs(tcp->source), 
+			   inet_ntoa(desthost), 
+			   ntohs(tcp->dest));  
+                   break;
+
+          case 17: // prepoznajemo udp header u preostalom baferu
+	           udp = (struct udphdr *) (buffer + sizeof(struct ethhdr) 
+	               + sizeof(struct iphdr));
+	           // prikaz uhvacenih podataka na ekran
+		   printf ("UDP:> [%s:%d]>[%s:%d]\n", 
+		           inet_ntoa(srchost), 
+		           ntohs(udp->source), 
+			   inet_ntoa(desthost), 
+			   ntohs(udp->dest));  
+		   break;
+
+         default : // u slucaju da se radi o protokolu koji nam ne treba
+	            printf ("UNKNOWN TYPE OF PACKET\n");
+    }
+  }
+
+  exit(0);
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 5. Nadogradnja
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    U poglavlju 0x04 je prikazan izvorni kod najjednostavnijeg sniffera sa
+najskromnijim mogucnostima. Tu sada ima mnogo mesta za poboljsanja. U ovom
+poglavlju cemo obraditi dosta "features"-a koje mozete dodati snifferu kroz
+one cetiri navedene faze.
+
+
+---< I faza : filtriranje odredjenog interfejsa 
+
+    Verovatno vam je potrebno da sniffate pakete sa odredjenog interfejsa,
+a ne sa svih... Na primer, ako su vam bitni samo podaci u lokalnoj mrezi,
+i to samo oni koji dolaze sa npr. eth1 interfejsa... Posto jedan red koda
+vredi vise od hiljadu reci ;), predjimo na kod:
+
+#include <net/if.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+...
+struct ifreq ifr;
+struct sockaddrll sockll;
+...
+// pronadji interfejs
+memset (&ifr, '\0', sizeof(ifr)));
+strncpy(ifr.ifr_name, INTERFACE, sizeof(ifr.ifr_name)));
+if (ioctl(sock, SIOCGIFINDEX, &ifr) < 0) {
+  perror ("ioctl(SIOCGIFINDEX)");
+  exit (-1);
+}
+
+// popuni sockll(sockaddrll) strukturu
+memset (&sockll, '\0', sizeof(sockll));
+sockll.sll_family = PF_PACKET;
+sockll.sll_ifindex = ifr.ifr_ifindex;
+sockll.sll_protocol = htons(ETH_P_ALL);
+
+// binduj socket na INTERFACE
+if (bind(sock, (struct sockaddr *) &sockll, sizeof(sockll)) < 0) {
+  perror ("bind");
+  exit (-1);
+}
+
+
+---< I faza : ukljucivanje promiscuous moda 
+
+    Mmmmm, strcmp("promisc mod", "mothfucka mod") == 0... Promiscuous mod je
+nacin rada nekog interfejsa takav da ne odbacuje one pakete koji mu ne
+pripadaju... Najbolji primer toga je neki LAN gde hub salje sve pakete svima
+a na vama je odbacujete one pakete koji nisu vama upuceni. Takva je, inace,
+situacija po defaultu... Ali zato kada bi ukljucili ovaj mod, onda bi mogli
+da sniffamo celu mrezu. Meni to bas dobro zvuci...
+    Pitanje: Kako ukljuciti 'promiscuous mode'? Postoje dva nacina: prvi
+nacin je da otkucate iz konzole:
+
+backspace@bitbyterz# ifconfig <interface> promisc
+
+Sada smo aktivirali promisc mod na <interface> interfejsu. Medjutim, ovo i 
+nije bas zgodno, pogotovo zato sto vas "oci zla" uvek posmatraju ;) Ovo je,
+naravno moguce uraditi i iz samog sniffera, ubacivanjem sledeceg koda:
+
+#include <net/if.h>
+#include <sys/ioctl.h>
+...
+struct ifreq ifr;
+...
+if (ioctl(sock, SIOCGIFFLAGS, &ifr) < 0) {
+  perror ("ioctl(SIOCGIFFLAGS)");
+  exit (-1);
+}
+
+ifr.ifr_flags |= IFF_PROMISC;
+
+if (ioctl(sock, SIOCSIFFLAGS, &ifr) < 0) {
+  perror ("ioctl(SIOCSIFFLAGS)");
+  exit (-1);
+}
+
+
+---< I faza : signal handler 
+
+    Pri radu sniffera moze da se desi da ostane "repova" prilikom gasenja 
+istog. Na primer, niste zatvorili socket ili niste zatvorili fajl u koji ste 
+upisivali sniffovane podatke, ili niste iskljucili promisc mod koji ste bili
+prethodno ukljucili... To sve treba uraditi da bi sakrili tragove iza vas...
+Uostalom, valjda uvek iza sebe treba pocistiti ;) Da bi sve ovo mogli da 
+odradimo, moramo koristiti signal handler koji ce da obradjuje signale koje
+nas program primi.
+
+#include <signal.h>
+...
+signal (SIGSEGV, func);
+signal (SIGTERM, func);
+signal (SIGQUIT, func);
+...
+
+    Umetanjem ovih par redova u sniffer, napravili smo signal handler koji
+ce pri SIGSEGV, SIGTERM i SIGQUIT signalima da pozove funkciju func(). Sada
+nam ostaje jos da napisemu tu funkciju:
+
+void func() {
+  // ovde treba dodati funkcije za zatvaranje svega sto ste otvorili ;)
+  
+  // iskljucivanje promisc moda
+  if (ioctl(sock, SIOCGIFFLAGS, &ifr) < 0)
+    exit(-1);
+  
+  if (ifr.ifr_flags & IFF_PROMISC)
+    ifr.ifr_flags ^= IFF_PROMISC;
+
+  if (ioctl(sock, SIOCSIFFLAGS, &ifr) < 0)
+    exit(-1);
+
+  // zatvaramo sock
+  close (sock);
+
+  // izlaz
+  exit (0);
+}
+
+
+---< II faza : stavljanje procesa u background sa fork() 
+
+    fork()-ovanjem mozemo staviti neki proces ta se odvija u pozadini... ako
+bi sniffer trebao da bude sakriven na sistemu, onda vam je fork() neizbezan.
+Mada, slican efekat moze da se dobije tako sto cemo sniffer pokrenuti sa:
+
+backspace@bitbyterz# ./sniffer &
+[1] 7262
+backspace@bitbyterz#
+
+    Sada je upravo pokrenut program sniffer i dodeljen mu je pid 7262 i sada
+korisnik moze nastaviti i dalje nesmetano sa radom. Da bi stavili u pozadinu
+neki proces ili neku funkciju, potrebno je stavimo deo koda sniffera koji
+sluzi za hvatanje paketa u neku posebnu funkciju, radi preglednosti koda.
+Mogli bi i bez toga, ali bi bilo mnogo gadno za pregled. 
+    Znaci napravicemo funkciju catchpackets() koja ce da se bavi samo 
+hvatanjem paketa, sto i jeste sustina sniffera, i onda cemo dodati ovaj deo
+koda:
+
+if (!fork())
+  catchpackets();
+  
+    Mada mogli bi i da ostavimo mogucnost da moze i da se izabere da li da
+proces bude u backgrounu ili ne. To mozete uraditi na vise nacina, da ne
+nabrajam.
+
+
+---< II faza : detekcija eth headera 
+
+    Prilikom koriscenja prvog source-a, odnosno primitivnog sniffera,
+primeticete da on lepo sniffuje, ali samo na loopback (lo) i eth interfejsu,
+dok na ppp ne radi bas najbolje, odnosno ne prepoznaje dobro sve headere.
+To je zato sto u uhvacenim paketima nema eth headera kod ppp interfejsa.
+Zato treba, u odnosu na izabrani interfejs, da uzimamo u obzir duzinu eth
+headera ili ne. Znaci, ako se radi o 'lo' ili 'eth' interfejsu onda cemo
+ethlen da postavimo na sizeof(struct ethhdr), a ako nije onda ethlen=0.
+
+if (INTERFACE == "lo" || !strcmp("eth", INTERFACE))
+  ethlen = sizeof(struct ethhdr);
+else
+  ethlen = 0;
+  
+
+---< II faza : filtriranje dupliranih paketa na loopback interfejsu 
+
+    Ovde nema sta narocito da se kaze, sem toga da se paketi koji dolaze iz
+loopback interfejsa dupliraju. Da bi sprecili prikaz "duplih" paketa, treba
+da ispitamo da li se radi o odlazecem paketu (outgoing), jer pomalo je i
+glupo govoriti o outgoing paketima na loopback interfejsu:
+
+if (from.sll_pkttype == PACKET_OUTGOING && !strcmp(INTERFACE, "lo")) {
+  continue;
+}
+
+
+---< III faza : prepoznavanje icmp paketa 
+
+    Posto smo ugradili prepoznavanje i prikaz dve najkoriscenije vrste 
+paketa (tcp i udp), mogli bi i da dodamo icmp pakete (internet control
+message protocol). Dva najvaznija parametra icmp paketa su tip i kod.
+Prema tome mi mozemo da zakljucimo koja je svrha neke ICMP kontrolne
+poruke, kao sto su ICMP_ECHO, ICMP_ECHOREPLY, ICMP_REDIRECT...
+
+#include <netinet/ip_icmp.h>
+...
+struct icmphdr *icmp;
+...
+switch (ip->protocol) {
+     ...
+      case 1: icmp = (struct icmphdr *) (buffer + ethlen
+                   + sizeof(struct iphdr));
+	      printf ("ICMP:> [%s>-<%s] --> TYPE: %d, CODE: %d\n",
+	              my_ntoa(ip->saddr),
+		      my_ntoa(ip->daddr),
+		      icmp->type,
+		      icmp->code);
+	      break;
+}
+
+
+---< III faza : uzimanje detalja od paketa nepoznatog tipa 
+
+    Desice nam se ponekad da nam prodje paket nekog tipa koji nas sniffer ne
+prepoznaje. U tom slucaju bi bilo najbolje da uhvatimo koji je to protokol,
+odnosno njegov identifikacioni broj, kako bi znali koju strukturu paketa 
+treba da u ugradimo u nas sniffer da bi mogli da uzimamo informacije i iz
+te nove vrste. 
+    Ono sto odavde mozemo dobiti, a da je od znacaja, jeste ip->protocol.
+Sem toga, mozemo uzeti i ostale podatke koje nosi paket u raw modu, ali to
+cu tek opisati u IV fazi.
+
+...
+switch (ip->protocol) {
+      ...
+      default: printf ("UNKNOWN:> [%s>-<%s] --> PROTOCOL: %d\n",
+                       my_ntoa(ip->saddr),
+		       my_ntoa(ip->daddr),
+		       ip->protocol);
+}           
+
+
+---< IV faza : prikaz "pravih" podataka 
+
+    Pravi podaci, odnosno podaci zbog koji paket uopste postoji nalaze se na
+kraju svih headera. Znaci potrebno je znati prvo koji se headeri nalaze pre
+podataka i koja je njihova velicina, da bi znali koja je pozicija podataka u
+buffer-u.
+
+data_len = ntohs(ip->tot_len) - (zbir_svih_headera_od_ip_headera_pa_nadalje);
+buff = (buffer + ethlen + zbir_svih_headera_od_ip_headera_pa_nadalje);
+
+    Sada cu kroz primer da odstampam podatke koje nosi tcp paket:
+    
+data_len = ntohs(ip->tot_len) - sizeof(struct iphdr) - sizeof(struct tcphdr);
+buff = (buffer + ethlen + sizeof(struct iphdr) + sizeof(struct tcphdr);
+for (i=0; i<data_len; i++) {
+  printf ("%c ", *buff);
+  buff++;
+}
+
+    Iste ove podatke mozemo ispisati u hex obliku, tako sto cemo umesto reda
+printf... napisati: printf ("%02x ", (unsigned int) *buff);
+
+
+---< IV faza : prikaz vremena prijema paketa 
+
+    Da bi znali kad je primljen paket, moramo ukljuciti biblioteku time.h,
+i moramo definisati dva objekta (strukture) tipa 'tm' i 'time_tt'. Evo kako
+je to implementirano u konacnoj verziji sniffera:
+
+#include <time.h>
+...
+struct tm *lt;
+time_t tt;
+...
+// odmah posle prijema paketa
+tt = time(0)
+lt = localtime(&tt);
+...
+// lt->tm_mday, lt->tm_mon, lt->tm_year, lt->tm_hour, lt->tm_min, lt->tm_sec
+printf ("%d", lt->...);
+
+
+---< Mesto za dalje improvizacije 
+
+    Pored svega opisanog i svih ovih dodataka, uvek ima mesta za dalje
+napredovanje. Na primer, direktno sto se tice sniffera koji je napisan u 
+okviru ovog texta:
+
+ - obojiti pojedine segmente pri prikazu uhvacenih podataka radi lakseg
+   raspoznavanja i snalazenja
+ - koriscenje fajlova za pamcenje i sortiranje uhvacenih podataka umesto
+   stdout-a koji je ovde koriscen
+ - prikaz MAC adrese, koja se nalazi u eth headeru, prvih 12 bajtova
+   (1-6 source mac, 7-12 destination mac)
+ - arp spoofing (da bi mogli da hvatate podatke uprkos switch-u)
+ - podrska nekim drugim vrstama protokola
+ - ... 
+
+
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 6. Konacna verzija sniffera
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+begin 644 bbsniff.c
+M+RH@(&)B<VYI9F8@=C`N,2!B>2!"84-K4W!!8T4*("`@($)I=$)Y=&5R>B!,
+M86)S+"`R,#`U"B`@("!H='1P.B\O=W=W+F)I=&)Y=&5R>BYC;RYS<@H*("`@
+M($-O;7!I;&4Z(&=C8R!B8G-N:69F+F,@+5=A;&P@+4\S("UO(&)B<VYI9F8*
+M("`@($5X96-U=&4Z("XO8F)S;FEF9@HJ+R`*"@HC9&5F:6YE($E.5$521D%#
+M12`B;&\B"B-D969I;F4@4%)/34E30R`P"B-D969I;F4@1D]22R`P"B-D969I
+M;F4@1$%402`P"B-D969I;F4@2$58(#`*(V1E9FEN92!-5%4@-C4U,S8*(V1E
+M9FEN92!40U!?4%)/5$]#3TP@-@HC9&5F:6YE(%5$4%]04D]43T-/3"`Q,0HC
+M9&5F:6YE($E#35!?4%)/5$]#3TP@,0H*(VEN8VQU9&4@/'-T9&EO+F@^"B-I
+M;F-L=61E(#QS=')I;F<N:#X*(VEN8VQU9&4@/'-I9VYA;"YH/@HC:6YC;'5D
+M92`\97)R;F\N:#X*(VEN8VQU9&4@/'1I;64N:#X*(VEN8VQU9&4@/&UA;&QO
+M8RYH/@HC:6YC;'5D92`\<WES+VEO8W1L+F@^"B-I;F-L=61E(#QS>7,O='EP
+M97,N:#X*(VEN8VQU9&4@/'-Y<R]S;V-K970N:#X*(VEN8VQU9&4@/&YE="]E
+M=&AE<FYE="YH/@HC:6YC;'5D92`\;F5T+VEF+F@^"B-I;F-L=61E(#QN971I
+M;F5T+VEP+F@^"B-I;F-L=61E(#QN971I;F5T+W1C<"YH/@HC:6YC;'5D92`\
+M;F5T:6YE="]U9'`N:#X*(VEN8VQU9&4@/&YE=&EN970O:7!?:6-M<"YH/@HC
+M:6YC;'5D92`\;F5T<&%C:V5T+W!A8VME="YH/@H*"FEN="!S;V-K.PIS=')U
+M8W0@:69R97$@:69R.PH*8VAA<B`J(&UY7VYT;V$H=6YS:6=N960@;&]N9R!A
+M9')E<W,I('L*("!C:&%R('1E;7!;,39=.PH@(&-H87(@*G)E=#L*("!I;G0@
+M82P@8BP@8RP@9#L*("!A(#T@861R97-S("\@,38W-S<R,38["B`@861R97-S
+M(#T@861R97-S("4@,38W-S<R,38["B`@8B`](&%D<F5S<R`O(#8U-3,V.R`@
+M(`H@(&%D<F5S<R`](&%D<F5S<R`E(#8U-3,V.PH@(&,@/2!A9')E<W,@+R`R
+M-38["B`@861R97-S(#T@861R97-S("4@,C4V.PH@(&0@/2!A9')E<W,["B`@
+M"B`@<W!R:6YT9B`H=&5M<"P@(B5D+B5D+B5D+B5D(BP@9"P@8RP@8BP@82D[
+M"B`@"B`@<F5T(#T@;6%L;&]C*#$V*3L*("!M96US970H<F5T+"`G7#`G+"!S
+M:7IE;V8@*'1E;7`I*3L*("!S=')C<'D@*')E="P@=&5M<"D["B`@<F5T=7)N
+M(')E=#L*?2`*"G9O:60@97AI=&EN9R@I('L*("`O+R!I<VML:G5C:2!P<F]M
+M:7-C"B`@:68@*%!23TU)4T,I('L*("`@(&EF("AI;V-T;"AS;V-K+"!324]#
+M1TE&1DQ!1U,L("9I9G(I(#P@,"D@"B`@("`@(&5X:70@*"TQ*3L*(`H@("`@
+M:68@*&EF<BYI9G)?9FQA9W,@)B!)1D9?4%)/34E30RD*("`@("`@:69R+FEF
+M<E]F;&%G<R!>/2!)1D9?4%)/34E30SL*("`*("`@(&EF("AI;V-T;"AS;V-K
+M+"!324]#4TE&1DQ!1U,L("9I9G(I(#P@,"D@"B`@("`@(&5X:70@*"TQ*3L*
+M("!]"B`@"B`@+R\@>F%T=F]R:2!S;V-K970*("!C;&]S92`H<V]C:RD["B`@
+M"B`@97AI="`H,"D["GT*"G9O:60@8V%T8VAP86-K971S*"D@>PH@('-T<G5C
+M="!S;V-K861D<E]L;"!F<F]M.PH@('-T<G5C="!E=&AH9'(@*F5T:#L*("!S
+M=')U8W0@:7!H9'(@*FEP.PH@('-T<G5C="!T8W!H9'(@*G1C<#L*("!S=')U
+M8W0@=61P:&1R("IU9'`["B`@<W1R=6-T(&EC;7!H9'(@*FEC;7`["@H@('-T
+M<G5C="!T;2`J;'0["B`@=&EM95]T('1T.PH*("!C:&%R(&)U9F9E<EM-5%5=
+M.PH@(&-H87(@*F)U9F8["@H@(&EN="!R96-E:79E9#L*("!I;G0@971H;&5N
+M.PH*("!I;G0@9&%T85]L96X["B`@:6YT(&D["@H@("\O(&1A(&QI('1R96)A
+M(&1A(&=L961A;6\@:2!E=&@@:&5A9&5R"B`@:68@*$E.5$521D%#12`]/2`B
+M;&\B('Q\("%S=')C;7`H(F5T:"(L($E.5$521D%#12DI"B`@("!E=&AL96X@
+M/2!S:7IE;V8H<W1R=6-T(&5T:&AD<BD[(`H@(&5L<V4@"B`@("!E=&AL96X@
+M/2`P.PH*("`O+R!I;FEC:6IA;&EZ=6IE;6\@<F5C96EV960*("!R96-E:79E
+M9"`]('-I>F5O9B`H9G)O;2D[("`*"B`@+R\@=6QA>FEM;R!U('!E=&QJ=2!Z
+M82!H=F%T86YJ92!P86ME=&$*("!W:&EL92`H,2D@>PH@("`@+R\@8VES=&EM
+M;R!B869E<@H@("`@;65M<V5T("AB=69F97(L("=<,"<L('-I>F5O9B`H8G5F
+M9F5R*2D["@H@("`@+R\@8V5K86UO(&YE:VD@<&%K970@:2!S;65S=&%M;R!G
+M82!U(&)A9F5R"B`@("!R96-E:79E9"`](')E8W9F<F]M("AS;V-K+"!B=69F
+M97(L('-I>F5O9B`H8G5F9F5R*2P@,"P@"B`@("`@("`@("`@("`@("AS=')U
+M8W0@<V]C:V%D9'(@*BDH)F9R;VTI+"`F<F5C96EV960I.R`*"B`@("`O+R!P
+M86UT:6UO('9R96UE(&MA9"!S;6\@=6AV871I;&D@<&%K970*("`@('1T(#T@
+M=&EM92@P*3L*("`@(&QT(#T@;&]C86QT:6UE*"9T="D["@H@("`@+R\@9FEL
+M=')I<F%M;R!D=7!L:7)A;F4@<&%K971E"B`@("!I9B`H9G)O;2YS;&Q?<&MT
+M='EP92`]/2!004-+151?3U541T])3D<@)B8@(7-T<F-M<"A)3E1%4D9!0T4L
+M(")L;R(I*2!["B`@("`@(&-O;G1I;G5E.PH@("`@?0H*("`@("\O('!R:6MA
+M>G5J96UO('9R96UE(&AV871A;FIA('!A:V5T80H@("`@<')I;G1F("@B)3`R
+M9"TE,#)D+24T9"`E,#)D.B4P,F0Z)3`R9"`B+"`@;'0M/G1M7VUD87DL(&QT
+M+3YT;5]M;VX@*R`Q+"`*("`@("`@("`@("`@;'0M/G1M7WEE87(@*R`Q.3`P
+M+"!L="T^=&U?:&]U<BP@;'0M/G1M7VUI;BP@;'0M/G1M7W-E8RD["@H@("`@
+M+R\@=G)S:6UO('!R97!O>FYA=F%N:F4@:7`@:&5A9&5R82!U(&)A9F5R=0H@
+M("`@:7`@/2`H<W1R=6-T(&EP:&1R("HI("AB=69F97(@*R!E=&AL96XI.PH*
+M("`@("\O(')A>G9R<W1A=F%N:F4@<&%K971A"B`@("!S=VET8V@@*&EP+3YP
+M<F]T;V-O;"D@>PH@("`@("`@("`@8V%S92!40U!?4%)/5$]#3TPZ("\O('!R
+M97!O>FYA:F5M;R!T8W`@:&5A9&5R('4@<')E;W-T86QO;2!B869E<G4*"2`@
+M("`@("`@("`@=&-P(#T@*'-T<G5C="!T8W!H9'(@*BD@*&)U9F9E<B`K(&5T
+M:&QE;B`*"0D@("`@("`@("`@*R!S:7IE;V8H<W1R=6-T(&EP:&1R*2D["@D@
+M("`@("`@("`@("\O('!R:6MA>B!U:'9A8V5N:6@@<&]D871A:V$@;F$@96MR
+M86X*"0D@("!P<FEN=&8@*")40U`Z/B!;)7,Z)60^+3PE<SHE9%T@(BP@"@D)
+M("`@("`@("`@("!M>5]N=&]A*&EP+3YS861D<BDL(`H)"2`@("`@("`@("`@
+M;G1O:',H=&-P+3YS;W5R8V4I+"`*"0D)("`@;7E?;G1O82AI<"T^9&%D9'(I
+M+"`*"0D)("`@;G1O:',H=&-P+3YD97-T*2D[("`*"0D@("`O+R!P<FEK87H@
+M(G!R879I:"(@<&]D871A:V$)"2`@(`H)"2`@(&EF("A$051!*2!["@D)("`@
+M("!P<FEN=&8@*"(Z.CH@(BD["@D)("`@("!D871A7VQE;B`](&YT;VAS*&EP
+M+3YT;W1?;&5N*2`M('-I>F5O9BAS=')U8W0@:7!H9'(I(`H)"2`@("`@("`@
+M("`@("`@+2!S:7IE;V8H<W1R=6-T('1C<&AD<BD["@D)("`@("!B=69F(#T@
+M*&)U9F9E<B`K(&5T:&QE;B`K('-I>F5O9BAS=')U8W0@:7!H9'(I(`H)"2`@
+M("`@("`@("`K('-I>F5O9BAS=')U8W0@=&-P:&1R*2D["@D)("`@("!F;W(@
+M*&D],#L@:3QD871A7VQE;CL@:2LK("D@>PH)"2`@("`@("!I9B`H2$58*2`*
+M"0D@("`@("`@("!P<FEN=&8@*"(E,#)X("(L("AU;G-I9VYE9"!I;G0I("IB
+M=69F*3L*"0D@("`@("`@96QS90H)"2`@("`@("`@('!R:6YT9B`H(B5C("(L
+M("IB=69F*3L*"0D@("`@("`@8G5F9BLK.PH)"2`@("`@?0H)"2`@('T*"0D@
+M("!P<FEN=&8@*")<;B(I.PH)"2`@(&)R96%K.PH*("`@("`@("`@(&-A<V4@
+M54107U!23U1/0T],.B`O+R!P<F5P;WIN86IE;6\@=61P(&AE861E<B!U('!R
+M96]S=&%L;VT@8F%F97)U"@D@("`@("`@("`@('5D<"`]("AS=')U8W0@=61P
+M:&1R("HI("AB=69F97(@*R!E=&AL96X@"@D@("`@("`@("`@("`@("`K('-I
+M>F5O9BAS=')U8W0@:7!H9'(I*3L*"2`@("`@("`@("`@+R\@<')I:V%Z('5H
+M=F%C96YI:"!P;V1A=&%K82!N82!E:W)A;@H)"2`@('!R:6YT9B`H(E5$4#H^
+M(%LE<SHE9#XM/"5S.B5D72`B+"`*"0D@("`@("`@("`@(&UY7VYT;V$H:7`M
+M/G-A9&1R*2P@"@D)("`@("`@("`@("!N=&]H<RAU9'`M/G-O=7)C92DL(`H)
+M"0D@("!M>5]N=&]A*&EP+3YD861D<BDL(`H)"0D@("!N=&]H<RAU9'`M/F1E
+M<W0I*3L@(`H)"2`@("\O('!R:6MA>B`B<')A=FEH(B!P;V1A=&%K80D)("`@
+M"@D)("`@:68@*$1!5$$I('L*"0D@("`@('!R:6YT9B`H(CHZ.B`B*3L*"0D@
+M("`@(&1A=&%?;&5N(#T@;G1O:',H:7`M/G1O=%]L96XI("T@<VEZ96]F*'-T
+M<G5C="!I<&AD<BD@"@D)("`@("`@("`@("`@("`M('-I>F5O9BAS=')U8W0@
+M=61P:&1R*3L*"0D@("`@(&)U9F8@/2`H8G5F9F5R("L@971H;&5N("L@<VEZ
+M96]F*'-T<G5C="!I<&AD<BD@"@D)("`@("`@("`@("L@<VEZ96]F*'-T<G5C
+M="!U9'!H9'(I*3L*"0D@("`@(&9O<B`H:3TP.R!I/&1A=&%?;&5N.R!I*RL@
+M*2!["@D)("`@("`@(&EF("A(15@I(`H)"2`@("`@("`@('!R:6YT9B`H(B4P
+M,G@@(BP@*'5N<VEG;F5D(&EN="D@*F)U9F8I.PH)"2`@("`@("!E;'-E"@D)
+M("`@("`@("`@<')I;G1F("@B)6,@(BP@*F)U9F8I.PH)"2`@("`@("!B=69F
+M*RL["@D)("`@("!]"@D)("`@?0H)"2`@('!R:6YT9B`H(EQN(BD["@D)("`@
+M8G)E86L["@H)("!C87-E("!)0TU07U!23U1/0T],.B`O+R!P<F5P;WIN86IE
+M;6\@:6-M<"!H96%D97(@=2!P<F5O<W1A;&]M(&)A9F5R=0H)("`@("`@("`@
+M("!I8VUP(#T@*'-T<G5C="!I8VUP:&1R("HI("AB=69F97(@*R!E=&AL96X*
+M"0D@("`@("`@("L@<VEZ96]F*'-T<G5C="!I<&AD<BDI.PH)("`@("`@("`@
+M("`O+R!P<FEK87H@=6AV86-E;FEH('!O9&%T86MA(&YA(&5K<F%N"@D)("`@
+M<')I;G1F("@B24--4#H^(%LE<SXM/"5S72`M+3X@5%E013H@)60L($-/1$4Z
+M("5D("(L"@D)("`@("`@("`@("!M>5]N=&]A*&EP+3YS861D<BDL"@D)"2`@
+M(&UY7VYT;V$H:7`M/F1A9&1R*2P*"0D)("`@:6-M<"T^='EP92P*"0D)("`@
+M:6-M<"T^8V]D92D["@D)("`@+R\@<')I:V%Z(")P<F%V:6@B('!O9&%T86MA
+M"0D@("`*"0D@("!I9B`H1$%402D@>PH)"2`@("`@<')I;G1F("@B.CHZ("(I
+M.PH)"2`@("`@9&%T85]L96X@/2!N=&]H<RAI<"T^=&]T7VQE;BD@+2!S:7IE
+M;V8H<W1R=6-T(&EP:&1R*2`*"0D@("`@("`@("`@("`@("T@<VEZ96]F*'-T
+M<G5C="!I8VUP:&1R*3L*"0D@("`@(&)U9F8@/2`H8G5F9F5R("L@971H;&5N
+M("L@<VEZ96]F*'-T<G5C="!I<&AD<BD@"@D)("`@("`@("`@("L@<VEZ96]F
+M*'-T<G5C="!I8VUP:&1R*2D["@D)("`@("!F;W(@*&D],#L@:3QD871A7VQE
+M;CL@:2LK("D@>PH)"2`@("`@("!I9B`H2$58*2`*"0D@("`@("`@("!P<FEN
+M=&8@*"(E,#)X("(L("AU;G-I9VYE9"!I;G0I("IB=69F*3L*"0D@("`@("`@
+M96QS90H)"2`@("`@("`@('!R:6YT9B`H(B5C("(L("IB=69F*3L*"0D@("`@
+M("`@8G5F9BLK.PH)"2`@("`@?0H)"2`@('T*"0D@("!P<FEN=&8@*")<;B(I
+M.PH)"2`@(&)R96%K.PH*"2!D969A=6QT(#H@+R\@=2!S;'5C86IU(&1A('-E
+M(')A9&D@;R!P<F]T;VMO;'4@:V]J:2!N86T@;F4@=')E8F$*"2`@("`@("`@
+M("`@('!R:6YT9B`H(E5.2TY/5TXZ/B!;)7,^+3PE<UT@+2T^(%!23U1/0T],
+M.B`E9"`B+"`*"0D@("`@("`@("`@("!M>5]N=&]A*&EP+3YS861D<BDL"@D)
+M"2`@("!M>5]N=&]A*&EP+3YD861D<BDL"@D)("`@("`@("`@("`@:7`M/G!R
+M;W1O8V]L*3L*"0D@("`O+R!P<FEK87H@(G!R879I:"(@<&]D871A:V$)"2`@
+M(`H)"2`@(&EF("A$051!*2!["@D)("`@("!P<FEN=&8@*"(Z.CH@(BD["@D)
+M("`@("!D871A7VQE;B`](&YT;VAS*&EP+3YT;W1?;&5N*2`M('-I>F5O9BAS
+M=')U8W0@:7!H9'(I.PH)"2`@("`@8G5F9B`]("AB=69F97(@*R!E=&AL96X@
+M*R!S:7IE;V8H<W1R=6-T(&EP:&1R*2D["@D)("`@("!F;W(@*&D],#L@:3QD
+M871A7VQE;CL@:2LK("D@>PH)"2`@("`@("!I9B`H2$58*2`*"0D@("`@("`@
+M("!P<FEN=&8@*"(E,#)X("(L("AU;G-I9VYE9"!I;G0I("IB=69F*3L*"0D@
+M("`@("`@96QS90H)"2`@("`@("`@('!R:6YT9B`H(B5C("(L("IB=69F*3L*
+M"0D@("`@("`@8G5F9BLK.PH)"2`@("`@?0H)"2`@('T*"0D@("!P<FEN=&8@
+M*")<;B(I.PH@("`@?0H@('T*?0H*:6YT(&UA:6X@*"D@>PH@('-T<G5C="!S
+M;V-K861D<E]L;"!S;V-K;&P["@H@('-I9VYA;"`H4TE'4T5'5BP@97AI=&EN
+M9RD["B`@<VEG;F%L("A324=415)-+"!E>&ET:6YG*3L*("!S:6=N86P@*%-)
+M1U%5250L(&5X:71I;F<I.PH@('-I9VYA;"`H4TE'2TE,3"P@97AI=&EN9RD[
+M"B`@<VEG;F%L("A324=)3E0L(&5X:71I;F<I.PH@('-I9VYA;"`H4TE'2%50
+M+"!E>&ET:6YG*3L*"@H@("\O(&]T=F%R86UO('-O8VME="!Z82!P<FEH=F%T
+M86YJ92!M<F5Z;F]G('-A;V)R86-A:F$*("!S;V-K(#T@<V]C:V5T("A01E]0
+M04-+150L(%-/0TM?4D%7+"!H=&]N<RA%5$A%4E194$5?25`I*3L@"@H@("\O
+M('4@<VQU8V%J=2!G<F5S:V4@<')I('!O>FEV86YJ=2!S;V-K970H*0H@(&EF
+M("AS;V-K(#P@,"D@>R`@("`@("`@("`@("`@("`@("`@("`@("`@"B`@("!P
+M97)R;W(@*")S;V-K970B*3L@("`@("`@("`@("`@("`@("`@("`*("`@(&5X
+M:70@*"TQ*3L@"B`@?0H*("`O+R!P<F]N861J:2!T<F%Z96YI(&EN=&5R9F5J
+M<PH@(&UE;7-E="@F:69R+"`G7#`G+"!S:7IE;V8H:69R*2D["B`@<W1R;F-P
+M>2AI9G(N:69R7VYA;64L($E.5$521D%#12P@<VEZ96]F*&EF<BYI9G)?;F%M
+M92DI.PH@(`H@(&EF("AI;V-T;"AS;V-K+"!324]#1TE&24Y$15@L("9I9G(I
+M(#P@,"D@>PH@("`@<&5R<F]R("@B:6]C=&PH4TE/0T=)1DE.1$58*2(I.PH@
+M("`@97AI="`H+3$I.PH@('T*("`*("`O+R!B:6YD=6H@<V]C:V5T(&YA($E.
+M5$521D%#10H@(&UE;7-E="@F<V]C:VQL+"`G7#`G+"!S:7IE;V8H<V]C:VQL
+M*2D["B`@<V]C:VQL+G-L;%]F86UI;'D@/2!01E]004-+150["B`@<V]C:VQL
+M+G-L;%]I9FEN9&5X(#T@:69R+FEF<E]I9FEN9&5X.PH@('-O8VML;"YS;&Q?
+M<')O=&]C;VP@/2!H=&]N<RA%5$A?4%]!3$PI.PH@(`H@(&EF("AB:6YD*'-O
+M8VLL("AS=')U8W0@<V]C:V%D9'(@*BD@)G-O8VML;"P@<VEZ96]F*'-O8VML
+M;"DI(#P@,"D@>PH@("`@<&5R<F]R("@B8FEN9"(I.PH@("`@97AI="`H+3$I
+M.PH@('T*("`*("`O+R!U:VQJ=6-I('!R;VUI<V-U;W5S(&UO9&4@>F$@;F%V
+M961E;FD@:6YT97)F96IS"B`@:68@*%!23TU)4T,I('L*("`@(&EF("AI;V-T
+M;"AS;V-K+"!324]#1TE&1DQ!1U,L("9I9G(I(#P@,"D@>PH@("`@("!P97)R
+M;W(@*")I;V-T;"A324]#1TE&1DQ!1U,I(BD["B`@("`@(&5X:70@*"TQ*3L*
+M("`@('T*("`*("`@(&EF<BYI9G)?9FQA9W,@?#T@249&7U!23TU)4T,["B`@
+M"B`@("!I9B`H:6]C=&PH<V]C:RP@4TE/0U-)1D9,04=3+"`F:69R*2`\(#`I
+M('L*("`@("`@<&5R<F]R("@B:6]C=&PH4TE/0U-)1D9,04=3*2(I.PH@("`@
+M("!E>&ET("@M,2D["B`@("!]"B`@?0H*("`O+R!D82!L:2!D82!F;W)K*"DM
+M=6IE('!R;V-E<PH@(&EF("A&3U)+*2!["B`@("!I9B`H(69O<FLH*2D@"B`@
+M("`@(&-A=&-H<&%C:V5T<R@I.PH@('T@"B`@96QS92!["B`@("`@(&-A=&-H
+A<&%C:V5T<R@I.PH@('T*("`@(`H@(&5X:70H,"D["GT*
+`
+end
+sum -r/size 33681/7548
+
+
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 7. Zastita od sniffinga
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    Prisluskivanje mreznog saobracaja nekog kompjutera, ili ne daj boze neke
+vece mreze, predstavlja ogroman sigurnosni propust unutar takvog sistema.
+Preko ovakvih programcica, napadac je u mogucnosti da dodje do veoma 
+poverljivih podataka, kao sto su passwordi. 
+    Prvi problem sa kojim se administrator nekog sistema srece jeste kako
+uopste detektovati sniffer? Posto vecina sniffera koja se postavlja prvo
+prebacuje intefejs koji prisluskuje u promiscuous mode, onda cemo prisustvo
+sniffera na nasem sistemu najlakse otkriti tako sto cemo pogledati da li ima
+kod nas takvih interfejsa. Spisak interfejsa koji su podignuti kod nas,
+mozemo videti upotrebom komande netstat:
+
+backspace@bitbyterz# netstat -r
+Destination     Gateway         Genmask         Flags MSS Window  irtt Iface
+192.168.0.0     *               255.255.255.0   U       0 0          0 eth0
+169.254.0.0     *               255.255.0.0     U       0 0          0 eth0
+127.0.0.0       *               255.0.0.0       U       0 0          0 lo
+default         192.168.0.1     0.0.0.0         UG      0 0          0 eth0
+
+Sada mozemo proveriti svaki od ovih interfejsa tako sto cemo otkucati
+ifconfig <interfejs>, npr:
+
+backspace@bitbyterz# ifconfig eth0
+eth0	Link encap:Ethernet  HWaddr 00:11:09:94:A2:3D
+	inet addr:192.168.0.1  Bcast:192.168.0.255  Mask:255.255.255.0
+	UP BROADCAST PROMISC MULTICAST  MTU:1500  Metric:1
+	RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+	TX packets:4 errors:0 dropped:0 overruns:0 carrier:0
+	collisions:0 txqueuelen:1000
+	RX bytes:0 (0.0 b)  TX bytes:240 (240.0 b)
+	Interrupt:5 Base address:0xef00
+								                                                                                                                                   
+U trecem redu vidimo da pise PROMISC, sto znaci da se ovaj interfejs nalazi
+u promiscuous modu, sto znaci da imamo verovatno pokrenut neki sniffer na
+sistemu. Ovaj nacin detekcije promisc moda funkcionise na vecini unixoidnih
+operativnih sistema. Kod bsd-like sistema, sve ovo moze biti zamenjeno samo
+jednom komandom: ifconfig -a
+    Bas zbog ovog nacina detekcije sniffera, vecina napadaca ce pokusati da
+vam zameni vas ifconfig sa "patchovanim" ifconfig-om koji nece prikazati da
+li je neki interfejs u promisc modu. Zato je, takodje, bitno da proverite
+checksum vaseg ifconfig-a.
+    Detektovanje sniffera koji nemaju ukljucen promisc je teze. Medjutim,
+snifferi koji loguju sav mrezni saobracaj u neki fajl ili na bilo koji drugi
+nacin, mogu lako biti otkriveni, pogotovo na racunarima kroz koje prolazi
+velika kolicina podataka. Tada ce sniffer verovatno napraviti veliki load na
+takvom racunaru.
+    Jedan od efikasnijih nacina sprecavanja prisluskivanja lokalnih mreza
+jeste koriscenje aktivnih hub-ova (switch-eva), sto znaci da vam treba bolja
+i kvalitetnija oprema (znaci li vam nesto ime 3COM???). Aktivni hub-ovi rade
+na nesto visem OSI nivou (za razliku od obicnih hubova koji samo kopiraju i
+salju podatke), i oni salju ciljnom racunaru samo one podatke koji su njemu 
+namenjeni. Obicni hub-ovi salju sve podatke svima, tako da ostavljaju 
+racunaru da sam odbacuje tudje pakete. Ni ovaj nacin nije bas 100% savrsen, 
+jer tu dolazi jedna tehnika koja se zove arp spoofing, o kojoj cu mozda 
+pisati sledeci put.
+    Najsigurniji nacin zastite jeste enkripcija, zato sto podaci koji su
+enkriptovani ne znace nesto mnogo napadacu, jer je uglavnom veoma tesko naci
+kljuc po kojem je nesto kodovano (kriptovano). Danas se prave mnogi servisi
+(daemoni) bazirani na SSL (Secure Socket Layers), koji automatski kriptuje
+podatke, dok header i dalje ostaje citljiv. 
+    Koriscenjem one-time password tehnologije mozemo skroz onesposobiti sve
+sniffere, jer kljucevi koje napadac uhvati vaze samo u jednom prolazu, a
+vec u sledecem password se menja.
+    Jos jedna stvar koja je moguca, a to je da vasa mrezna karta ne moze da
+bude u promisc modu. Molite Boga da je tako, ali je mala verovatnoca. HP
+je proizvodio dosta ovakvih mreznih karti. Uglavnom sve mrezne kartice koje
+su bazirane na TROPIC chipsetu ne mogu da budu u promisc modu.
+
+
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 8. Literatura
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+(1)  man pages (socket, htonl, netdevice, raw, perror, packet...)
+(2)  RFC (dosta komada)
+(3)  Sniffers FAQ, How to detect sniffers running
+     Christopher Klaus <cklaus@iss.net> of Internet Security Systems Inc.
+(4)  TCP/IP Illustrated Vol. 1-3
+     Richard Stevens
+(5)  Beej's Guide to Network Programming
+     Beeeej the great 
+
+
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 9. Odvod
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    Podaci su danas skroz nesigurni, tako da bi verovatno najsigurniji nacin
+za prenos podataka bio da vi licno odnesete nekome cd sa podacima, pritom 
+cuvajuci cd da se ne izgrebe, a ujedno cuvajuci se od "zaseda" ;) Uostalom
+zasto uopste brinuti o podacima jer podaci i treba da budu slobodni da moze
+svako da ih procita... ko nesto krije, verovatno ne krije nista dobro...
+    Ako ima prezivelih nakon citanja ovog teksta, i ako se medju prezivelima
+krije neki znatizeljnik, preporucio bi mu dalje da se baci na arp spoofing,
+ili eventualno na pisanje nekih tool-ova za enkripciju (Sizifov posao).
+
+greetz to: d0lphin, **W**, De1Rekt0n, BORG, SSnaVe i svim ostalim clanovima 
+           grupa sa kojima je bilo divno druziti se (Serbian Security Team i 
+	   bSecurity Team)...
+
+
+

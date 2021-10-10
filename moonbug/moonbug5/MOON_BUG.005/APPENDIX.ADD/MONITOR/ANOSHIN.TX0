@@ -1,0 +1,430 @@
+В. Аношин
+
+Что же там, в загрузочном секторе?
+
+Листинг 1
+
+.MODEL TINY
+;              СТРУКТУРА КОРНЕВОГО СЕКТОРА ДИСКА
+boot_sect STRUC
+
+nam      DB      'IBM  5.0'      ; Имя компании и версия системы
+sectsiz  DW      512     ; Число байтов на сектор
+clastsiz DB      1       ; Число секторов на кластер
+ressecs  DW      1       ; Число резервных секторов перед FAT
+fatcnt   DB      2       ; Число FAT
+rootsiz  DW      224     ; Максимальное число 32-байтовых элементов оглавления
+totsecs  DW      2880    ; Общее число секторов на носителе или в разделе DOS
+media    DB      0F0h    ; Дескриптор носителя (1-й байт FAT)
+fatsize  DW      9       ; Число секторов в одной FAT
+trksecs  DW      18      ; Число секторов на дорожку
+headcnt  DW      2       ; Число головок чтения-записи
+hidncnt  DD      0       ; Число спрятанных секторов
+totsecsd DD      0       ; Число секторов на диске, если размер его >32Mбайтов
+drive    DB      0       ;
+res      DB      0
+extBPB   DB      ')'
+ser_nom  DD      0
+vollabel DB      'NEW DOS 0.0'
+sysid    DB      '        '
+
+boot_sect ENDS
+
+.DATA
+_osname DB 'IBMBIO  COM', 0
+_msg1   DB 0Ah, 0Dh, '>', 0
+_msg2   DB 'Error!', 0
+_msg3   DB 'No kernel!', 0
+
+.CODE
+org 100h
+
+LOCAL   _rootcnt,_rootbeg,_clstr,_fat:dword,_sect_l:dword,_buff:dword,_sect:byte,_trk,_head:byte,_mul,_eof=L
+
+main   PROC
+  jmp     SHORT fp
+  nop
+
+_boot   boot_sect <>
+
+fp:
+  ;jmp far 07B0h:b
+  DB 0EAh
+  DW OFFSET b, 07B0h
+b:
+   ;Установка регистров для стека
+  xor ax, ax
+  mov ss, ax
+  mov bp, 7C00h
+  mov sp,(7C00h-L-2)
+  push cs
+  pop ds
+   ;
+   ;  rootcnt=boot.rootsiz/16;
+   ;
+  mov ax, _boot.rootsiz
+  mov cl, 4
+  shr ax, cl
+  mov _rootcnt, ax
+   ;
+   ;  rootbeg=boot.ressecs+boot.fatsize*boot.fatcnt;
+   ;
+  mov al, _boot.fatcnt
+  xor ah, ah
+  mul _boot.fatsize
+  add ax, _boot.ressecs
+  mov _rootbeg, ax
+   ;
+   ;Чтение корневого каталога
+   ;  buff=(void far*)0x00700000;
+   ;
+  xor ax, ax
+  mov WORD PTR _buff+2, 0070h
+  mov WORD PTR _buff, ax
+   ;
+   ;  for (_AX=0; _AX < rootcnt; _AX++){
+   ;
+@6:
+  push ax
+   ;
+   ;    sect_l= _AX + rootbeg;
+   ;
+  add ax, _rootbeg
+  xor dx, dx
+  mov cx, 1
+   ;
+   ;    Чтение очередного сектора корневого каталога
+   ;    read_ls();
+   ;
+  call read_ls
+  sub WORD PTR _buff, 512
+   ;
+   ;    Поиск имени файла ядра
+   ;    for(_AX=0;_AX<512;_AX+=32)
+   ;      if(memcmp(osname, &buff[_AX], 11)==0)goto @8;
+   ;
+  xor ax, ax
+@7:
+  mov cx, 11
+  les di, _buff
+  add di, ax
+  lea si, _osname
+  cld
+  repe
+  cmpsb
+  jcxz @8
+
+  add ax, 32
+  cmp ax, 512
+  jb  @7
+   ;
+   ;  };
+   ;
+  pop ax
+  inc ax
+  cmp ax, _rootcnt
+  jb @6
+   ;
+   ; Не найден в корневом каталоге
+   ;    Перезагрузка системы
+_ex:
+   ;  putstr('No kernel!');
+   ;
+  lea si, _msg3
+  call putstr
+@14:
+  jmp @14
+   ;
+@8:
+  pop bx
+   ;
+   ;      clstr=fn[_AX].clstrno;
+   ;
+  les bx, _buff
+  add bx, ax
+  mov ax, WORD PTR es:[bx+26]
+  mov _clstr, ax
+   ;
+   ;          putstr('>');
+   ;
+  lea si, _msg1
+  call putstr
+   ;
+   ;      Чтение FAT
+   ;      buff=fat=(void far*)0x08000000;
+   ;
+  mov dx, 0800h
+  xor ax, ax
+  mov WORD PTR _fat+2, dx
+  mov WORD PTR _fat,   ax
+  mov WORD PTR _buff+2, dx
+  mov WORD PTR _buff,   ax
+   ;
+   ;  sect_l= boot.ressecs
+   ;
+  mov ax, _boot.ressecs
+  xor dx, dx
+  mov cx, _boot.fatsize
+   ;
+   ;  read_ls();
+   ;
+  call read_ls
+   ;
+   ;  Установка переменных для чтения FAT
+   ;  Для 12-битовой FAT
+   ;  mul=3; eof=0x0FF8;
+   ;
+  mov _mul, 3
+  mov _eof, 0FF8h
+   ;
+   ;  if(boot.totsecs>0x5104||boot.totsecs==0){
+   ;
+  mov ax, _boot.totsecs
+  cmp ax, 5104h
+  ja  @3
+  or  ax, ax
+  jnz @4
+   ;
+   ;    Для 16-битовой FAT
+   ;    mul=4;eof=0xFFF8;
+   ;
+@3:
+  mov _mul, 4
+  mov _eof, 0FFF8h
+   ;
+   ;  };
+   ;
+@4:
+   ;
+   ;Чтение файла ОС
+   ;  buff=0x00700000
+   ;
+  mov WORD PTR _buff+2, 0070h
+  mov WORD PTR _buff,   0
+@9:
+   ;
+   ;  while(clstr<eof){
+   ;
+  mov ax, _clstr
+  cmp ax, _eof
+  jae @13
+   ;
+   ;    read_clstr();
+   ;
+  call read_clstr
+   ;
+   ;    Вычисление номера следующего кластера
+   ;    _AX=fat[ (clstr*mul)/2 ];
+   ;
+  mov ax, _clstr
+  mul _mul
+  shr ax, 1
+  les si, _fat
+  add si, ax
+  mov ax, es:[si]
+   ;
+   ;    if (_mul==3) clstr = (clstr%2) ? (_AX & 0x0FFF) : (_AX>>4);
+   ;
+  cmp _mul, 3
+  jne @12
+  mov cl, 4
+  test _clstr, 1
+  jne @11
+  shl ax, cl
+@11:
+  shr ax, cl
+   ;
+   ;    else clstr=_AX;
+   ;
+@12:
+  mov _clstr, ax
+   ;
+   ;  };
+   ;
+  jmp @9
+@13:
+   ;
+   ;  Передача управления прочитанному ядру
+   ;  goto system;
+   ;
+  DB      0EAh
+  DW      0000h, 0070h
+main   ENDP
+
+; Процедура чтения логического сектора
+; ax:dx - номер логиеского сектора
+read_ls  PROC
+  mov WORD PTR _sect_l,     ax
+  mov WORD PTR _sect_l + 2, dx
+@47:
+  push cx
+   ;
+   ;  _CX=3
+   ;  do{
+   ;
+  mov cx, 3
+@48:
+  push cx
+   ;
+   ;    sect_l+=boot.hidncnt;
+   ;    _BX  = sect_l / boot.trksecs;
+   ;    sect = sect_l % boot.trksecs + 1;
+   ;
+  mov ax, WORD PTR _sect_l
+  mov dx, WORD PTR _sect_l + 2
+  add ax, WORD PTR _boot.hidncnt
+  adc dx, WORD PTR _boot.hidncnt+2
+  div _boot.trksecs
+  mov bx, ax
+  inc dl
+  mov _sect, dl
+   ;
+   ;    trk  = _BX / boot.headcnt;
+   ;
+  xor dx, dx
+  div _boot.headcnt
+  mov _trk, ax
+   ;
+   ;    _CX= trk<<8 + (trk>>2)&0x00C0 + _sect
+   ;
+  mov ch, al
+  shr ax, 1
+  shr ax, 1
+  mov cl, al
+  and cl, 0C0h
+  add cl, _sect
+   ;
+   ;    head = _BX - (trk * boot.headcnt);
+   ;
+  mov ax, _trk
+  mul _boot.headcnt
+  sub bx, ax
+   ;
+   ;    _DH= head
+  mov dh, bl                           ;Головка
+   ;
+   ;    _DL= boot.drive
+  mov dl, _boot.drive                  ;Диск
+   ;
+   ;    _AX=0x0201
+  mov ax, 0201h                        ;Чтение &количество секторов
+   ;
+   ;    _BX=(int)buff
+  les bx, _buff                        ;Буфер
+  int 13h
+   ;
+   ;  }until( (CarryFlag==0)||(--_CX==0) );
+   ;
+  pop cx
+  jnc SHORT @51
+  loop @48
+@49:
+   ; Вывод сообщения об ошибке
+  lea si, _msg2
+  call putstr
+@50:
+  jmp @50
+@51:
+  inc WORD PTR _sect_l
+  adc WORD PTR _sect_l + 2, 0
+  add WORD PTR _buff, 512
+  pop cx
+  loop @47
+  ret
+read_ls ENDP
+
+; Процедура чтения кластера
+; ax - номер кластера
+read_clstr PROC
+   ;
+   ;  sect_l=rootbeg+rootcnt+(clstr-2)*boot.clastsiz;
+   ;
+  sub ax, 2
+  mov dl, _boot.clastsiz
+  xor dh, dh
+  mul dx
+  add ax, _rootbeg
+  adc dx, 0
+  add ax, _rootcnt
+  adc dx, 0
+  mov cl, _boot.clastsiz
+  xor ch, ch
+   ;
+   ;  read_ls();
+   ;
+  call read_ls
+  ret
+read_clstr ENDP
+
+putstr PROC
+  lodsb                ;Загpузка в al выводимого символа
+  cmp al, 00h          ;0 - конец стpоки
+  je  M8
+  mov bx,7
+  mov ah, 0Eh          ;Функция вывода символа на экpан
+  int 10h
+  jmp SHORT putstr
+M8:
+  ret
+putstr ENDP
+
+end main
+Листинг 2
+
+.MODEL TINY
+
+.DATA
+str1 DB 0Ah, 0Dh, "New DOS Version 0.0",0
+
+.CODE
+org 100h
+
+start PROC
+
+  call a
+a:
+  mov bp, sp
+  mov ax, ss:[bp]
+  mov bx, OFFSET a
+  mov cl, 4
+  cmp ax, bx
+  ja @1
+  sub bx, ax
+  shr bx, cl
+  mov ax, cs
+  sub ax, bx
+  jmp @2
+@1:
+  sub ax, bx
+  shr ax, cl
+  mov bx, cs
+  add ax, bx
+@2:
+  push ax
+  mov ax, OFFSET b
+  push ax
+  retf
+b:
+  mov ax, cs
+  mov ds, ax
+  mov es, ax
+  mov si, OFFSET str1
+  call putstr
+@3:
+  jmp @3
+
+start ENDP
+
+putstr PROC
+  lodsb                   ;Загpузка в al выводимого символа
+  cmp     al, 00H         ;0 - конец стpоки
+  je      @4
+  mov     bx, 7
+  mov     ah, 0EH         ;Функция вывода символа на экpан
+  int     10H
+  jmp     SHORT putstr
+@4:
+  ret
+putstr ENDP
+
+end start

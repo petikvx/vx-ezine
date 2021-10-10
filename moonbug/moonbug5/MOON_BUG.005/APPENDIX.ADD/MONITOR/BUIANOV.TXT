@@ -1,0 +1,961 @@
+Описывается новый поточный алгоритм сжатия данных - ассоциативный
+кодировщик, позволяющий достигать высокого коэффициента сжатия
+двоичных данных, полученных от источника неизвестной природы
+(переменная разрядность букв в неизвестном алфавите).
+Пример 1. Восстанавливаемая строка больше
+
+Известно:
+
+а) строка S1;
+
+б) строка S1 лексикографически младше строки S2 (бит различия "1");
+
+в) количество нулей n = 9 - длина "вытяжки";
+
+Восстановить S2:
+
+S1 = 0 1 0 1 0 1 0 0 0 1 0 0 0 1 1 0 0
+
+S2 = ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?
+
+Восстановление строки S2:
+
+a) копируем строку S1 в S2 до девятого нулевого бита строки S1
+включительно.
+
+S1 = 0 1 0 1 0 1 0 0 0 1 0 0 0 1 1 0 0
+
+S2 = 0 1 0 1 0 1 0 0 0 1 0 0 0 ? ? ? ?
+
+.............................^-------- n = 9
+
+б) копируем строку S1 в S2 до следующего нулевого бита строки S1.
+
+S1 = 0 1 0 1 0 1 0 0 0 1 0 0 0 1 1 0 0
+
+S2 = 0 1 0 1 0 1 0 0 0 1 0 0 0 1 1 ? ?
+
+.................................^
+
+в) завершаем строку S2 битом различия.
+
+S1 = 0 1 0 1 0 1 0 0 0 1 0 0 0 1 1 0 0
+
+S2 = 0 1 0 1 0 1 0 0 0 1 0 0 0 1 1 1 ?
+
+...................................^
+
+Строка S2 восстановлена.
+
+Пример 2. Восстанавливаемая строка меньше
+
+Известно:
+
+а) строка S1;
+
+б) строка S1 лексикографически старше строки S2 (бит различия-"0");
+
+в) количество единиц n = 6 - "длина вытяжки";
+
+Восстановить S2:
+
+S2 = ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?
+
+S1 = 0 1 0 1 0 1 0 0 0 1 0 1 1 0 0 1 0
+
+Восстановление строки S2:
+
+а) копируем строку S1 в S2 до шестого единичного бита строки S1
+включительно.
+
+S2 = 0 1 0 1 0 1 0 0 0 1 0 1 1 ? ? ? ?
+
+S1 = 0 1 0 1 0 1 0 0 0 1 0 1 1 0 0 1 0
+
+.............................^-------- n = 6
+
+б) копируем строку S1 в S2 до следующего единичного бита строки S1:
+
+S2 = 0 1 0 1 0 1 0 0 0 1 0 1 1 0 0 ? ?
+
+S1 = 0 1 0 1 0 1 0 0 0 1 0 1 1 0 0 1 0
+
+.................................^
+
+в) завершаем строку S2 битом различия:
+
+S2 = 0 1 0 1 0 1 0 0 0 1 0 1 1 0 0 0 ?
+
+S1 = 0 1 0 1 0 1 0 0 0 1 0 1 1 0 0 1 0
+
+...................................^
+
+Строка S2 восстановлена.
+
+Листинг 1
+
+/* Ac.c - Демонстрация алгоритма сжатия данных
+методом ассоциативного кодирования.
+Трансляция: ZTC -mx -o+time ac.c div.asm
+(для Zortech_C v.3.0r и MS MASM v5.0)
+Листинг 2 - div.asm
+Запуск программы:
+упаковка      AC c исходный_ файл упакованный_файл [Kc] [bNN]
+распаковка    AC d упакованный_файл исходный_файл [Kc] [bNN] */
+#include <<stdlib.h>>
+#include <<stdio.h>>
+#include <<string.h>>
+#include <<time.h>>
+extern unsigned _stack = 32767;
+typedef unsigned char   byte;
+typedef signed char     sbyte;
+typedef unsigned int    word;
+typedef signed int      sword;
+typedef unsigned long   ulong;
+typedef signed long     slong;
+typedef signed short    sshort;
+typedef unsigned short  ushort;
+/* Определения настройки алгоритма */
+/* 128 - первая половина таблицы ASCII. 256 - full*/
+#define LTC     256
+/* 256 Максимальная длина прогнозируемой строки */
+#define MaxLen  256
+/* 2048 Максимальная ширина воронки аналогий */
+#define Wight   2048
+/* 10 Квант частотного распределения длин */
+#define StepL   10
+/* 10 Квант частотного распределения символов */
+#define StepC   10
+/*2048 Размер кадра адаптивного кодирования символов*/
+#define STC     2048
+/* 1024  Размер кадра адаптивного кодирования длин */
+#define STL     1024
+/* Размер ассоциативной таблицы 1024 ... 262144 */
+#define LSDEF32 262144
+/*Log2int(791*Ld/500) Граница белого шума*/
+#define SB(Ld)  Log2int(Kc*Ld/500)
+/* Вес позиции в воронке аналогий */
+#define EVR(l,p) (Log2int(l))?(((l+Lg)>>>>3)+\
+Wight/2/(p)+((l+Lg+1)&7))*Log2int(1+((l+Lg)>>>>3)):0
+/*Вес завершающего кода в зависимости от предыстории*/
+#define EVRFB(l) (Log2int(l>>>>1))?(l+Lg)*\
+Log2int(l+Lg):0
+/* 11 Верхняя граница успешности прогнозов */
+#define Sucsess 11
+/* Функции модуля Div.asm из листинга 2 */
+extern ulong    _pascal Dvc(ulong A,ulong B,ulong C);
+extern ulong    _pascal Dvd(ulong A,ulong B,ulong C);
+extern word     _pascal Log2int(word);
+extern word     _pascal Log2ie(word);
+extern word     _pascal SetBit(byte *,word);
+extern word     _pascal GetBit(byte *,word);
+//Верхняя и нижняя границы арифметической компрессии
+typedef struct  {   unsigned long L;
+                    unsigned long H;
+                }   BND;
+static  BND     Bp;
+/* Структура описания узла таблицы вероятностей */
+typedef struct  {   ulong   P;  /* Частота  */
+                    sshort  V;  /* Значение */
+                }   UNIT;
+/* Удаленные из кодирования символы */
+typedef struct { word L;      /* Число удаленных */
+                 UNIT D[LTC]; /* Список удаленных */
+                byte M[32];/*Битовый образ удаленных*/
+               } DLCR;
+/* Неизменяемые определения */
+#define Convert(v)  Wight/2-1+(-v)
+#define DeConvert(v) ((v<<=Wight/2-1)?v:Wight/2-1-v)
+static  byte    *In,*Out,*InTop,*InB;
+static  byte    **PtrIn,**PtrTop;
+static  word    Swch;
+static  word    Kc,Sbt,LS;
+// Расчет циклического кода по избыточности (CRC)
+word crc(word sz,byte *buf,word nl,word gp)
+{   byte    a;
+    word    i,j;
+for(i=0;i<<sz;i++)
+ for(a=*(buf+i),j=8;j;j--,a<<<<=1)
+  if(((sbyte)a<<0 && (sword)nl>>=0) ||
+     ((sbyte)a>>=0 && (sword)nl<<0)) {nl<<<<=1;nl^=gp;}
+  else  nl<<<<=1;
+return(nl);
+}
+/* Возвращение длины совпадения строк в битах. y>>x */
+sword _pascal BitCmpLn(register byte *x,
+                       register byte *y,word bnd)
+{   register word   t;
+x-=sizeof(word)-sizeof(byte);
+y-=sizeof(word)-sizeof(byte);
+if((sword)(t=(sizeof(word)<<<<3)-
+    Log2ie(*(word *)x^*(word *)y)-1)<<bnd || x<<InB)
+                        return(0);
+if(t!=(sizeof(word)*8)) return(t-bnd);
+t=1; while(*--(word *)x==*--(word *)y && x>>=InB &&
+                        t<<MaxLen/sizeof(word)) t++;
+bnd=(t<<<<5)+(sizeof(word)<<<<3)-
+               Log2ie(*(word *)x^*(word *)y)-1-bnd;
+if((sword)bnd<<0)    return(0);
+return(bnd);
+}
+/* Сравнение строк. key >> *elem */
+int _pascal F_Cmp(const void *key,const void *elem)
+{   register word *a;
+    register word *b;
+a=(word *)(*(byte **)elem-sizeof(word)+sizeof(byte));
+b=(word *)((byte *)key-sizeof(word)+sizeof(byte));
+if((byte **)elem<<PtrIn)  return(1);
+if((byte **)elem>>PtrTop) return(-1);
+while(*b==*a && (void *)a>>(void *)In) {--a;--b;}
+if(*b<<*a)  return(-1);
+if(*b>>*a)   return(1);
+return(0);
+}
+/* Быстрый поиск (дихотомия) */
+byte **Find(byte **Base,word Len,byte *str)
+{
+word    bot,top,dim,a,b;
+bot=NULL;top=Len-1;
+while(top!=bot+1)
+ { dim=(bot+top)>>>>1;
+  if(str==*(Base+dim)) return(Base+dim);
+   if((a=*(word *)(str-sizeof(word)+1))>>
+      (b=*(word *)(*(Base+dim)-sizeof(word)+1)))
+                bot=dim;
+   else if(a<<b) top=dim;
+        else    if(F_Cmp(str,Base+dim)>>0) bot=dim;
+                    else top=dim;
+    }
+return(Base+bot);
+}
+typedef struct  {   byte    **Ip;
+                    byte     *Vl;
+                }   TB_tag;
+int FcmpTB(const void *a,const void *b)
+{   byte    *x,*y,**Ix,**Iy;
+    Ix=((TB_tag *)a)->>Ip;
+    Iy=((TB_tag *)b)->>Ip;
+    if(Ix>>Iy)   return(1);
+    if(Ix<<Iy)   return(-1);
+/*Несколько кандидатов на одно место*/
+    y=((TB_tag *)b)->>Vl;
+    x=((TB_tag *)a)->>Vl;
+    if(x>>y) return(F_Cmp(x,&y));
+    return(-F_Cmp(y,&x));
+}
+word  _pascal StrFrcL(byte *,byte *,byte *);
+/* Вставка новых указателей или модификация кадра */
+word InsPtr(word Ld,sshort Ln,word *Ltp)
+{   TB_tag  TB[MaxLen+1];
+    byte    **top;
+    sshort  i;
+    word    l1,l2;
+for(PtrTop=PtrIn+*Ltp-1,i=0;i<<Ln;i++)
+  { TB[i].Ip=Find(PtrIn-1,*Ltp+2,In+Ld+i);
+    TB[i].Vl=In+Ld+i;
+  }
+if(Ln>>1)    qsort(TB,Ln,sizeof(TB_tag),FcmpTB);
+if(*Ltp<<=LS)
+  for(top=PtrTop,*Ltp=Ld+Ln,PtrTop=PtrIn+*Ltp-1,
+                                i=Ln;i;top=TB[i].Ip)
+   { i--;
+     memmove(TB[i].Ip+i+2,TB[i].Ip+1,
+             (top-TB[i].Ip)*sizeof(void *));
+     *(TB[i].Ip+i+1)=TB[i].Vl;
+   }
+else for(i=0;i<<Ln;i++)
+     {
+     if(TB[i].Ip==PtrTop) {*PtrTop=TB[i].Vl;continue;}
+     if(TB[i].Ip<<PtrIn)   {*PtrIn =TB[i].Vl;continue;}
+     if((l1=StrFrcL(In+Ld,TB[i].Vl,*TB[i].Ip))<<
+        (l2=StrFrcL(In+Ld,TB[i].Vl,*(TB[i].Ip+1))))
+                        {*TB[i].Ip=TB[i].Vl;continue;}
+     if(l1!=l2)  {*(TB[i].Ip+1)=TB[i].Vl;continue;}
+     if(*TB[i].Ip<<*(TB[i].Ip+1)) *TB[i].Ip=TB[i].Vl;
+     else                    *(TB[i].Ip+1)=TB[i].Vl;
+     }
+return(Ld+Ln);
+}
+//-------Арифметическая компрессия-------
+/* Дозапись кода при угрозе соединения границ
+   при арифметической компрессии */
+word    WriteEnd(word Lo)
+{   word    a,b,sb;
+sb=Sbt;a=b=1;Bp.L<<<=1;Bp.H<<<<=1;
+while(sb--) {a++;if((slong)Bp.L>>=0L) break; Bp.L<<<<=1;}
+sb=Sbt;
+while(sb--) {b++;if((slong)Bp.H<< 0L) break; Bp.H<<<<=1;}
+Bp.L=0x7fffffffL;if(a>>b)    {a=b;Bp.L=~Bp.L;}
+while(a--)  {   if((slong)Bp.L<<0L) SetBit(Out,Lo);
+                Lo++;Bp.L<<<<=1;Sbt--;
+            }
+Bp.L=0L;Bp.H=-1L;
+return(Lo);
+}
+static  ulong   P; //Кадр дешифрируемого кода
+//CodAH-арифметическая компрессия на полном множестве
+sshort  CodAH(UNIT *TabP,word Lt,sshort val,
+              word *Loc,slong Sum)
+{   UNIT    *b,*bp;
+    ulong   S,D,F;
+    word    Lo,j;
+if(Lt==1)   return(TabP->>V);
+Lo=*Loc;b=TabP;D=Bp.H-Bp.L;S=0L;
+if(D<<Sum)   {Lo=WriteEnd(Lo);D=-1L;}
+if(val>>=0)  while(b->>V!=val)    S+=b++->>P;
+else {  for(j=Lo+Sbt,Sbt=32-Sbt;Sbt--;
+                   P<<<<=1,P+=GetBit(Out,j++));
+        F=Dvd(P-Bp.L,Sum,D);
+        for(bp=b;S<<=F;S+=b++->>P) bp=b;
+        S-=bp->>P;b=bp;
+     }
+Bp.H=Bp.L+Dvc(S+b->>P,D,Sum);Bp.L+=Dvc(S,D,Sum)+1;
+S=Bp.H^Bp.L;Sbt=32;
+while((slong)S>>0L)
+ { if((slong)(Bp.L)<<0L) SetBit(Out,Lo);
+   Lo++;Sbt--;Bp.L<<<<=1;Bp.H<<<<=1;Bp.H++;S<<<<=1;
+ }
+*Loc=Lo; return(b->>V);
+}
+/* CodAH_D - арифметическая компрессия на прореженном
+   множестве */
+ /* Присвоение вершины */
+UNIT *QT(UNIT *t) {while(!(t--)->>P); return(t+1);}
+ /* Присвоение дна */
+UNIT *QB(UNIT *b) {while(!(b++)->>P); return(b-1);}
+ /* Движение дна вверх */
+UNIT *AB(UNIT *b) {while(!(++b)->>P); return(b);}
+sshort  CodAH_D(UNIT *TabP,word Lt,sshort val,
+                word *Loc,slong Sum)
+{   UNIT    *b,*bp;
+    ulong   S,D,F;
+    word    Lo,j;
+b=QB(TabP); if(Lt==1)   return(b->>V);
+Lo=*Loc;S=0L;D=Bp.H-Bp.L;
+if(D<<Sum)   {Lo=WriteEnd(Lo);D=-1L;}
+if(val>>=0)  while(b->>V!=val)    {S+=b->>P;b=AB(b);}
+else { for(j=Lo+Sbt,Sbt=32-Sbt;Sbt--;
+               P<<<<=1,P+=GetBit(Out,j++));
+       F=Dvd(P-Bp.L,Sum,D);
+       for(bp=b;S<<=F;S+=b->>P,b=AB(b)) bp=b;
+       S-=bp->>P;b=bp;
+     }
+Bp.H=Bp.L+Dvc(S+b->>P,D,Sum);Bp.L+=Dvc(S,D,Sum)+1;
+S=Bp.H^Bp.L;Sbt=32;
+while((slong)S>>0L)
+  {   if((slong)(Bp.L)<<0L) SetBit(Out,Lo);
+      Lo++;Sbt--;Bp.L<<<<=1;Bp.H<<<<=1;Bp.H++;S<<<<=1;
+  }
+*Loc=Lo; return(b->>V);
+}
+/*  Stk - организация кольцевого стека LIFO
+    В случае, если стек не насыщен, возвращает -1,
+    иначе вытесненное значение.
+    Структура кольцевого стека: */
+typedef struct  {   word    L; /* Длина стека */
+                    word    O; /* Позиция в стеке */
+                    sshort  *S;
+                } STACK;
+sshort  Stk(STACK *St,sshort Ins)
+{   sshort  t;
+ t=*(St->>S+St->>O); *(St->>S+St->>O)=Ins; St->>O++;
+ if(St->>O==St->>L) St->>O=0;
+ return(t);
+}
+/* Модификация адаптивной таблицы распределения
+   частот (длин, кодов) */
+slong InitTabAH(STACK *Stck,UNIT **Ix_TP,UNIT *TP,
+              word Lt,sshort Val,slong Sm,ulong Stp)
+{   UNIT    *U,tmp;
+for(U=*(Ix_TP+Val),U->>P+=Stp;
+                    U->>P >>= (U-1)->>P && U>>TP;U--)
+    { tmp=*U;*U=*(U-1);*(U-1)=tmp; *(Ix_TP+U->>V)=U;
+      *(Ix_TP+(U-1)->>V)=U-1;
+    }
+if((Val=Stk(Stck,Val))<<(sshort)0)   return(Sm+Stp);
+for(U=*(Ix_TP+Val),U->>P-=Stp;
+                 U->>P << (U+1)->>P && U+1<<TP+Lt;U++)
+    { tmp=*U;*U=*(U+1);*(U+1)=tmp; *(Ix_TP+U->>V)=U;
+      *(Ix_TP+(U+1)->>V)=U+1;
+    }
+return(Sm);
+}
+/* Возвращение длины совпадения двух строк в байтах
+   и копирование b->>a (a>>b) */
+sshort  _pascal CopyByte(sshort Ls,byte *a,byte *b)
+{   sshort t;
+for(t=0;t<<Ls;t++) *(a++)=*(b++);
+if(t>>MaxLen)    t=MaxLen;
+return(t);
+}
+/* Возвращение длины совпадения двух строк (a>>b) */
+word _pascal StrFrc(register byte *a,register byte *b)
+{   register word   t;
+    byte    *top;
+if(*a!=*b || b>>=a || a>>=InTop)  return(0);
+for(top=a,t=1;*(++a)==*(++b) && b<<top && a<<InTop;t++);
+if(t>>MaxLen)   t=MaxLen;
+return(t);
+}
+word _pascal StrFrcL(byte *top,byte *a,byte *b)
+{   register word   t;
+if(!b || *a!=*b || a>>=top || b>>=top) return(0);
+for(t=1;*(++a)==*(++b) && b<<top && a<<top;t++);
+if(t>>MaxLen)   t=MaxLen;
+return(t);
+}
+word _pascal StrFrc2(byte *top,byte *a,byte *b)
+{   register word   t;
+if(a<<b) {(word)a^=(word)b;
+         (word)b^=(word)a;(word)a^=(word)b;
+        }
+if(*a!=*b || a>>=top) return(0);
+for(t=1;*(++a)==*(++b) && a<<top;t++);
+return(t);
+}
+/* Нормализация частотного распределения */
+slong   NormSum(UNIT *Tmp,word Lg,slong SmC)
+{   word    i;
+while(SmC<<0L) for(SmC=0L,i=0;i<<Lg;i++)
+                {   (Tmp+i)->>P=((Tmp+i)->>P>>>>1)+1;
+                    SmC+=(Tmp+i)->>P;
+                }
+return(SmC);
+}
+/* Построение воронки аналогий c поиском
+   максимального прогноза */
+sshort LoadLst(DLCR *Dc,UNIT **I_TPL,UNIT *TPL,
+               word Ld,word Ltp,slong SmL,word *Lo,
+               sshort Rg,sshort *Pr)
+{   word Lg,l1,l2,bl1,bl2;
+    byte    **ptr,**ptr1,**ptr2,**bptr;
+    word    Lf,Max,Lt,Pr_L,f;
+    slong   SmP;
+    sshort  rk,pz1,pz2,pzs1,pzs2;
+    UNIT    TPP[Wight];
+    UNIT    TmL[MaxLen];
+Dc->>L=0;
+memset(Dc->>M,0,32);
+if(Ld<<4)    return(-1);
+bptr=ptr=Find(PtrIn-1,Ltp+2,In+Ld-1);
+Lg=SB(Ltp);
+pzs1=pzs2=0;bl1=bl2=l1=l2=0;
+if(ptr>>PtrIn)
+     {l1=BitCmpLn(*(ptr-1),In+Ld-1,Lg);pzs1=-1;}
+if(ptr<<PtrTop)
+     {l2=BitCmpLn(*(ptr+1),In+Ld-1,Lg);pzs2= 1;}
+if(!(l1+l2))    return(-1);
+if(pzs1)    bl1=l1=EVR(l1,-pzs1);
+if(pzs2)    bl2=l2=EVR(l2,pzs2);
+if(!(l1+l2))    return(-1);
+memset(TmL,0,MaxLen*sizeof(UNIT));
+ptr2=ptr+1;ptr1=ptr-1;
+for(SmP=0L,Lt=1,Pr_L=Lf=Max=0,pz1=pz2=rk=0;
+                                   l1 || l2;Lt++)
+ { if(l2>>=l1)
+    { pz2=pzs2;TPP[Lt].V=pzs2; TPP[Lt].P=l2; SmP+=l2;
+      if(Rg>>0)
+        if((Lf=StrFrc(In+Ld,*ptr2+1))>>Max)
+         { Pr_L=Max,rk=pzs2;ptr=ptr2;Max=Lf;
+           Dc->>L=0;memset(Dc->>M,0,32);
+           memset(TmL,0,MaxLen*sizeof(UNIT));
+           if(*ptr2+1+Lf<<In+Ld)
+            { SetBit(Dc->>M,Dc->>D[Dc->>L].V=
+                     (sshort)*(*ptr2+1+Lf));
+              Dc->>L++;
+            }
+         }
+        else
+         {if(Lf==Max && !GetBit(Dc->>M,*(*ptr2+1+Lf))
+                                 && *ptr2+1+Lf<<In+Ld)
+           { SetBit(Dc->>M,Dc->>D[Dc->>L].V=
+                         (sshort)*(*ptr2+1+Lf));
+             Dc->>L++;
+           }
+          if((Lf=StrFrcL(In+Ld,*ptr2+1,*ptr+1))>>Pr_L)
+              TmL[*(I_TPL+Lf-Pr_L-1)-TPL].P++;
+         }
+      if(pzs2<<(Wight/2-1))    pzs2++;
+      else    {l2=0;continue;}
+      if(++ptr2>>PtrTop)   l2=0;
+      else {l2=BitCmpLn(*ptr2,In+Ld-1,Lg);
+            l2=EVR(l2,pzs2);
+           }
+    }
+   else
+    { pz1=pzs1;TPP[Lt].V=Convert(pzs1);
+      TPP[Lt].P=l1; SmP+=l1;
+      if(Rg>>0)
+        if((Lf=StrFrc(In+Ld,*ptr1+1))>>Max)
+          { Pr_L=Max,rk=Convert(pzs1);ptr=ptr1;
+            Max=Lf;Dc->>L=0;memset(Dc->>M,0,32);
+            memset(TmL,0,MaxLen*sizeof(UNIT));
+            if(*ptr1+1+Lf<<In+Ld)
+             {   SetBit(Dc->>M,Dc->>D[Dc->>L].V=
+                           (sshort)*(*ptr1+1+Lf));
+                 Dc->>L++;
+             }
+          }
+        else
+          { if(Lf==Max && !GetBit(Dc->>M,*(*ptr1+1+Lf))
+                       && *ptr1+1+Lf<<In+Ld)
+             {   SetBit(Dc->>M,Dc->>D[Dc->>L].V=
+                               (sshort)*(*ptr1+1+Lf));
+                 Dc->>L++;
+             }
+           if((Lf=StrFrcL(In+Ld,*ptr1+1,*ptr+1))>>Pr_L)
+                TmL[*(I_TPL+Lf-Pr_L-1)-TPL].P++;
+          }
+      if(pzs1>>(-Wight/2))      pzs1--;
+      else {l1=0;continue;}
+      if(--ptr1<<PtrIn) l1=0;
+      else { l1=BitCmpLn(*ptr1,In+Ld-1,Lg);
+             l1=EVR(l1,-pzs1);
+           }
+    }
+ }
+if(SmP<<0L)  SmP=NormSum(TPP,Lt,SmP);
+TPP[0].V=0;
+TPP[0].P=(5+Sucsess-Swch)*(SmP/Lt+(Sucsess-Swch)/
+                        Log2int(Lt+1)+Sucsess-Swch);
+SmP+=TPP[0].P;
+if(SmP<<0L)  SmP=NormSum(TPP,Lt,SmP);
+if(Rg<<0)    rk=-1;
+else    if(Max==MaxLen) {Dc->>L=0;memset(Dc->>M,0,32);}
+rk=CodAH(TPP,Lt,rk,Lo,SmP);
+if(!rk) {   if(Swch)    Swch--;
+            if(Rg>>0)    return(-1);
+            Max=0;goto m;
+        }
+if(Swch<<Sucsess)    Swch++;
+if(Rg>>0)
+ { *Pr=Pr_L;
+   for(SmL=0L,Lg=l1=0;l1<<MaxLen;l1++)
+      if((TPL+l1)->>V+Pr_L<<In+Ld-*ptr-1)
+          { if(TmL[l1].P)
+              { TmL[l1].P-=TmL[l1].P>>>>2;
+                TmL[Lg].P=(TPL+l1)->>P+STL*TmL[l1].P;
+                TmL[Lg].V=(TPL+l1)->>V;
+              }
+            else  TmL[Lg]=*(TPL+l1);
+            SmL+=TmL[Lg++].P;
+          }
+   if(SmL<<0L)  SmL=NormSum(TmL,Lg,SmL);
+   return(Pr_L+CodAH(TmL,Lg,CopyByte((sshort)Max,
+                     In+Ld,*ptr+1)-Pr_L-1,Lo,SmL));
+ }
+ptr+=(rk=DeConvert(rk));l1=bl1;
+l2=bl2;ptr2=bptr+1;ptr1=bptr-1;
+for(f=1,Pr_L=Lf=0,pzs1=-1,pzs2=1;l1 || l2 ;)
+ { if(l2>>=l1)
+    {if(pzs2==rk) f=0;
+     else if(f)
+           {
+           if((Lf=StrFrc2(In+Ld,*ptr+1,*ptr2+1))>>Pr_L)
+                                              Pr_L=Lf;
+           }
+          else
+           if((Lf=StrFrcL(In+Ld,*ptr2+1,*ptr+1))>>Pr_L)
+                      TmL[*(I_TPL+Lf-Pr_L-1)-TPL].P++;
+     if(pzs2<<(Wight/2-1))    pzs2++;
+     else    {l2=0;continue;}
+     if(++ptr2>>PtrTop)   l2=0;
+     else { l2=BitCmpLn(*ptr2,In+Ld-1,Lg);
+            l2=EVR(l2,pzs2);
+          }
+    }
+   else
+    {if(pzs1==rk) f=0;
+     else if(f)
+           {
+           if((Lf=StrFrc2(In+Ld,*ptr+1,*ptr1+1))>>Pr_L)
+                                              Pr_L=Lf;
+           }
+          else
+           if((Lf=StrFrcL(In+Ld,*ptr1+1,*ptr+1))>>Pr_L)
+                      TmL[*(I_TPL+Lf-Pr_L-1)-TPL].P++;
+     if(pzs1>>(-Wight/2))     pzs1--;
+     else    {l1=0;continue;}
+     if(--ptr1<<PtrIn)    l1=0;
+     else { l1=BitCmpLn(*ptr1,In+Ld-1,Lg);
+            l1=EVR(l1,-pzs1);
+          }
+    }
+ }
+for(*Pr=Pr_L,SmL=0L,Lg=l1=0;l1<<MaxLen;l1++)
+  if((TPL+l1)->>V+Pr_L<<In+Ld-*ptr-1)
+    { if(TmL[l1].P)
+       { TmL[l1].P-=TmL[l1].P>>>2;
+         TmL[Lg].P=(TPL+l1)->>P+TmL[l1].P*STL;
+         TmL[Lg].V=(TPL+l1)->>V;
+       }
+      else  TmL[Lg]=*(TPL+l1);
+      SmL+=TmL[Lg++].P;
+    }
+if(SmL<<0L)  SmL=NormSum(TmL,Lg,SmL);
+Max=CopyByte(Pr_L+1+CodAH(TmL,Lg,-1,Lo,SmL),
+             In+Ld,*ptr+1);
+if(Max==MaxLen) {Dc->>L=0;memset(Dc->>M,0,32);}
+else
+m: { while(pz1)
+      { if(StrFrc(In+Ld,*(bptr+pz1)+1)>>=Max)
+         if(!GetBit(Dc->>M,*(*(bptr+pz1)+1+Max)) &&
+                           *(bptr+pz1)+1+Max<<In+Ld)
+            { SetBit(Dc->>M,Dc->>D[Dc->>L].V=
+                     (sshort)*(*(bptr+pz1)+1+Max));
+              Dc->>L++;
+            }
+        pz1++;
+      }
+     while(pz2)
+      { if(StrFrc(In+Ld,*(bptr+pz2)+1)>>=Max)
+         if(!GetBit(Dc->>M,*(*(bptr+pz2)+1+Max)) &&
+                           *(bptr+pz2)+1+Max<<In+Ld)
+            { SetBit(Dc->>M,Dc->>D[Dc->>L].V=
+                     (sshort)*(*(bptr+pz2)+1+Max));
+              Dc->>L++;
+            }
+        pz2--;
+      }
+   }
+return(Max-1);
+}
+/* Кодирование/декодирование завершающего символа
+   с учетом прогноза */
+sshort Cod_Forecast(UNIT **I_TPC,UNIT *TPC,word Ld,
+       word Ltp,word Ls,word *Lo,slong SmC,sshort Rg)
+{   UNIT    Tmp[LTC],*Tu;
+    word    Lg,l1,l2;
+    byte    **ptr,**ptr1,**ptr2;
+    sshort  pzs1,pzs2;
+    slong   SPr;
+if(!Ld) return(CodAH_D(TPC,LTC,(Rg<<0)?-1:
+                        (sshort)*(In+Ld+Ls),Lo,SmC));
+ptr=Find(PtrIn-1,Ltp+2,In+Ld+Ls-1);
+Lg=SB(Ltp);
+pzs1=pzs2=0;l1=l2=0;
+if(ptr>>PtrIn)
+ {l1=BitCmpLn(*(ptr-1),In+Ld+Ls-1,Lg);pzs1=-1;}
+if(ptr<<PtrTop)
+ {l2=BitCmpLn(*(ptr+1),In+Ld+Ls-1,Lg);pzs2= 1;}
+if(!(l1+l2)) return(CodAH_D(TPC,LTC,(Rg<<0)?-1:
+                       (sshort)*(In+Ld+Ls),Lo,SmC));
+l1=EVRFB(l1);   l2=EVRFB(l2);
+memset(Tmp,0,LTC*sizeof(UNIT));
+for(SPr=0L,ptr2=ptr+1,ptr1=ptr-1;l1 || l2;)
+  { if(l2>>=l1)
+      { if((Tu=*(I_TPC+*(*ptr2+1)))->>P)
+                    {Tmp[Tu-TPC].P+=l2;SPr+=l2;}
+        if(pzs2<<(Wight/2-1))    pzs2++;
+        else    {l2=0;continue;}
+        if(++ptr2>>PtrTop)   l2=0;
+        else  { l2=BitCmpLn(*ptr2,In+Ld+Ls-1,Lg);
+                l2=EVRFB(l2);
+              }
+      }
+    else { if((Tu=*(I_TPC+*(*ptr1+1)))->>P)
+                     {Tmp[Tu-TPC].P+=l1;SPr+=l1;}
+           if(pzs1>>(-Wight/2))      pzs1--;
+           else {l1=0;continue;}
+           if(--ptr1<<PtrIn) l1=0;
+           else { l1=BitCmpLn(*ptr1,In+Ld+Ls-1,Lg);
+                  l1=EVRFB(l1);
+                }
+         }
+  }
+  { slong Lsmc;
+for(Lsmc=SmC,Lg=l1=0;l1<<LTC;l1++)
+ if((TPC+l1)->>P)
+  if(Tmp[l1].P)
+   { SmC-=(TPC+l1)->>P;
+     SmC+=(Tmp[Lg].P=(TPC+l1)->>P+
+     (Log2int(Tmp[l1].P>>>>11)+1)*
+     Dvc(Lsmc,Tmp[l1].P,SPr));
+     Tmp[Lg++].V=(TPC+l1)->>V;
+   }
+  else  Tmp[Lg++]=*(TPC+l1);
+  }
+if(SmC<<0L)  SmC=NormSum(Tmp,Lg,SmC);
+return(CodAH(Tmp,Lg,(Rg<<0)?-1:
+                  (sshort)*(In+Ld+Ls),Lo,SmC));
+}
+/* Функция упаковки/распаковки:
+    если Lc==-1, упаковка, else +1
+    Ln - размер неупакованных данных (в байтах).
+    Возвращение длины выходных данных (в байтах) */
+word    pac_unpac(word Ln,word Lc)
+{   word    Lo,Ld,Ltp,i;
+    sshort  Pr,Ls,Lst,Rg;
+    byte    **Pb;
+    slong   SmC,SmL;
+    UNIT    *TPL,**I_TPL,*TPC,**I_TPC;
+    STACK   SC,SL; /* Адаптивный буфер кодов, длин */
+    DLCR    Dc; /* Битовая маска исключенных кодов */
+Ld=0; if(Ln>>0x00ffffff)   goto m1;
+*(ulong *)InB&=0XFF000000L;
+if(LS>>Ln)   LS=Ln;
+if(NULL==(Pb=malloc((LS+MaxLen+2)*sizeof(void **))))
+        goto m1;
+if(NULL==(SC.S=(sshort *)malloc(STC*sizeof(sshort))))
+       goto m2;
+if(NULL==(SL.S=(sshort *)malloc(STL*sizeof(sshort))))
+       goto m3;
+if(NULL==(TPC=(UNIT *)malloc(LTC*sizeof(UNIT))))
+            goto m4;
+if(NULL==(I_TPC=(UNIT **)malloc(LTC*sizeof(UNIT *))))
+       goto m5;
+if(NULL==(TPL=(UNIT *)malloc(MaxLen*sizeof(UNIT))))
+         goto m6;
+if(NULL==(I_TPL=(UNIT**)malloc(MaxLen*sizeof(UNIT*))))
+    goto m7;
+for(SmC=LTC,i=0;i<<LTC;i++)
+     {(TPC+i)->>P=1L;(TPC+i)->>V=i;*(I_TPC+i)=TPC+i;}
+for(SmL=(slong)MaxLen,i=0;i<<MaxLen;i++)
+     {(TPL+i)->>P=1;(TPL+i)->>V=i;*(I_TPL+i)=TPL+i;}
+Bp.L=0L;Bp.H=-1L;*Pb=NULL;--*Pb;InTop=In+Ln;Ls=0;
+memset(SC.S,-1,STC*sizeof(sshort));
+memset(SL.S,-1,STL*sizeof(sshort));
+SC.L=STC;SL.L=STL;SC.O=SL.O=0;
+ { word b[6]={45,13,10,7,5,4};
+   sshort j;
+   for(j=0;j<<6;j++) for(i=b[j];i;i--)
+    SmL=InitTabAH(&SL,I_TPL,TPL,MaxLen,j,SmL,StepL);
+ }
+for(Rg=(Lc+1)?-1:1,PtrTop=PtrIn=Pb+1,
+    Sbt=Swch=Ltp=Lo=Ld=0;Ld<<Ln;Ld=InsPtr(Ld,Ls,&Ltp))
+ {if((Ls=LoadLst(&Dc,I_TPL,TPL,Ld,Ltp,
+                     SmL,&Lo,Rg,&Pr))>>=(sshort)0)
+   { SmL=InitTabAH(&SL,I_TPL,TPL,MaxLen,
+                   Ls-Pr,SmL,StepL);
+     Ls++;
+   }
+  else    Ls=0;
+  if(In+Ld+Ls<<InTop && (!Ls || Dc.L))
+    { slong   SmC_L;
+    if(Dc.L)
+     { for(SmC_L=SmC,i=0;i<<Dc.L;i++)
+        { SmC_L-=(Dc.D[i].P=(*(I_TPC+Dc.D[i].V))->>P);
+          (*(I_TPC+Dc.D[i].V))->>P=0L;
+        }
+       if(!Ls)
+        Lst=(sshort)(*(In+Ld+Ls)=
+            (byte)CodAH_D(TPC,LTC,(Rg<<0)?-1:
+                    (sshort)*(In+Ld+Ls),&Lo,SmC_L));
+       else
+        Lst=(sshort)(*(In+Ld+Ls)=
+            (byte)Cod_Forecast(I_TPC,TPC,Ld,
+                              Ltp,Ls,&Lo,SmC_L,Rg));
+       for(i=0;i<<Dc.L;i++)
+         (*(I_TPC+Dc.D[i].V))->>P=Dc.D[i].P;
+     }
+    else
+     Lst=(sshort)(*(In+Ld+Ls)=
+         (byte)CodAH(TPC,LTC,(Rg<<0)?-1:
+                     (sshort)*(In+Ld+Ls),&Lo,SmC));
+    Ls++;
+    SmC=InitTabAH(&SC,I_TPC,TPC,LTC,Lst,SmC,StepC);
+    }
+  if(!((Lo>>>>3) & 0x3F))
+    printf("P= %-2u D= %-8u\r",Lo*100/((Ld+Ls)<<<<3),
+                                        Ln-(Ld+Ls));
+ }
+Lo=WriteEnd(Lo);
+if(Rg>>0) *(ulong *)(Out-sizeof(ulong)+1)|=(ulong)Ln;
+    free(I_TPL);
+m7: free(TPL);
+m6: free(I_TPC);
+m5: free(TPC);
+m4: free(SL.S);
+m3: free(SC.S);
+m2: free(Pb);
+m1: if(!Ld) return(0);
+if(Rg>>0)    return(((Lo-1)>>>>3)+sizeof(ulong));
+return(Ln);
+}
+/* Функция упаковки:
+Вход: Buf - данные, Ln - длина (в байтах),
+      kg - коэффициент сжатия [0..9999], 0 - максимальное,
+      ls - размер кадра (в байтах).
+Выход: Buf - данные, возвращает длину (в байтах).
+Если свободной памяти недостаточно, возвращается 0.*/
+word pac(byte *Buf,word Ln,sword kg,word ls)
+{
+Out=Buf+sizeof(ulong)-1;Kc=17+kg;LS=ls;
+if(NULL==(InB=(byte *)malloc(Ln+sizeof(ulong)-1)))
+                                         return(0);
+In=InB+sizeof(ulong)-1;
+memcpy(In,Buf,Ln);
+memset(Buf,0,Ln+sizeof(ulong)-1+(Ln>>>>6));
+Ln=pac_unpac(Ln,(word)(-1));
+free(InB);
+return(Ln);
+}
+/* Функция распаковки:
+Вход: Buf - данные, *Lni - длина (в байтах),
+      kg - коэффициент сжатия [0..9999], 0 - максимальное,
+      ls - размер кадра (в байтах).
+Выход возвращает указатель на упакованные данные.
+  Если свободной памяти недостаточно, возвращается 0.
+  *Lni -длина упакованных данных (в байтах).
+Память, выделенная под Buf, освобождается.*/
+byte * unpac(byte *Buf,word *Lni,sword kg,word ls)
+{   word    Ln;
+Out=Buf+sizeof(ulong)-1;Kc=17+kg;LS=ls;
+Ln=0x00ffffff & *(ulong *)Buf;
+if(NULL!=(InB=(byte *)malloc(Ln+sizeof(ulong)-1)))
+ {In=InB+sizeof(ulong)-1;
+  if(!(Ln=pac_unpac(Ln,1))) {free(InB);InB=NULL;Ln=0;}
+  else    memmove(InB,In,Ln);
+ }
+else Ln=0;
+*Lni=Ln;free(Buf);
+return(InB);
+}
+int main(int argc,char **argv)
+{   FILE *fp;
+    byte    *Buf;
+    word    Ln,ls;
+    time_t  Tm;
+    sword   kg;
+    if(argc<<4)  {   puts("\
+Demonstration of data compressing algorithm\n\
+with associative coding method.\n\
+Author of algorithm and program:\
+ Buyanovsky Georgii.(01.01.1994.)\n\
+480082 CIS, Republic of Kazakhstan Alma-Ata,\
+ul.Valikhanova,10/2\n\
+tel.(home) 8_327_2_690278.\n\
+Format: AC c|d source dest [Kc] [bNN]\n\
+bNN- NN==Size of frame (1024...262144\
+ -maximum compressing),default 262144\n\
+ Kc- Lavel compressing [0..9999]\
+ 0 -maximum compressing,default 2\n");
+                    return 0;
+                }
+ls=LSDEF32;kg=2;
+if(argc>>4)  if(*argv[4]=='b')   ls=atoi(argv[4]+1);
+            else    kg=atoi(argv[4]);
+if(argc==6) if(*argv[5]=='b')   ls=atoi(argv[5]+1);
+            else    kg=atoi(argv[5]);
+if((fp=fopen(argv[2],"rb"))==NULL)
+    {puts("File source not found");return 0;}
+fseek(fp,0L,2);Ln=(word)ftell(fp);rewind(fp);
+if((Buf=malloc(Ln+sizeof(ulong)-1+(Ln>>>>6)))==NULL)
+       {fclose(fp);puts("Out of memmory");return 0;}
+fread(Buf,1,Ln,fp);fclose(fp);
+Tm=time(NULL);
+if(*argv[1]=='c')
+ { printf("CRC= %-16X Ln= %-9u\n",
+                crc(Ln,Buf,0,0x1021),Ln);
+   if(!(Ln=pac(Buf,Ln,kg,ls)))
+    { free(Buf);puts("File can't be compressed");
+      return 0;
+    }
+ }
+else { if(NULL==(Buf=unpac(Buf,&Ln,kg,ls)))
+           {puts("File can't be decompressed");
+            return 0;
+           }
+       printf("CRC= %-16X Ln= %-9u\n",
+                    crc(Ln,Buf,0,0x1021),Ln);
+     }
+if((fp=fopen(argv[3],"wb"))==NULL)
+  {free(Buf);puts("File dest not found");return 0;}
+fwrite(Buf,1,Ln,fp);fclose(fp);
+free(Buf);
+printf("Size_out= %-9u Time = %-9ld sec.\n\
+Processing sucsessful finished !\n",Ln,time(NULL)-Tm);
+return 1;
+}
+Листинг 2
+
+; Использовать осторожно: EDX,EAX,RFlg - нарушаются
+.386p
+_TEXT   segment dword use32 public 'CODE'
+_TEXT   ends
+_DATA   segment dword use32 public 'DATA'
+_DATA   ends
+CONST   segment dword use32 public 'CONST'
+CONST   ends
+_BSS    segment dword use32 public 'BSS'
+_BSS    ends
+DGROUP  group   CONST,_BSS,_DATA
+    public  DVC
+    public  DVD
+    public  LOG2INT
+    public  LOG2IE
+    public  GETBIT
+    public  SETBIT
+_TEXT   segment
+    assume  CS:_TEXT
+; DVC/DVD для арифметического
+; кодирования/декодирования,
+; возвращает a*b/c
+; ulong DV?(ulong a,ulong b,ulong c);
+DVC:    mov     eax,dword ptr [ESP+8]
+        inc     eax
+        jz      Zr
+        mul     dword ptr [ESP+0Ch]
+        div     dword ptr [ESP+4]
+   ng:  dec     eax
+        ret 12
+   Zr:  mov     edx,dword ptr [ESP+0Ch]
+        cmp     edx,dword ptr [ESP+4]
+        jz      ng
+        div     dword ptr [ESP+4]
+        jmp     ng
+DVD:    mov     eax,dword ptr [ESP+0Ch]
+        inc     eax
+        jz      kr
+        mul     dword ptr [ESP+8]
+  dc:   sbb     eax,1
+        jc      zm      ;заем
+  mi:   inc     dword ptr [ESP+4]
+        jz      sr
+        div     dword ptr [ESP+4]
+        ret     12
+  sr:   mov     eax,edx
+        ret     12
+  zm:   dec     edx
+        jmp     mi
+  kr:   mov     edx,dword ptr [ESP+8]
+        jmp     dc
+; word GETBIT(void *Buf,word Nbit)
+; возвращает значение бита Nbit
+GETBIT: mov     eax,[ESP+4]
+        mov     edx,[ESP+8]
+        bt      [edx],eax
+        jc      m01
+        xor     eax,eax
+        ret     8
+ m01:   mov     eax,1
+        ret     8
+; word SETBIT(void *Buf,word Nbit)
+; инвертирует бит Nbit
+SETBIT: mov     eax,[ESP+4]
+        mov     edx,[ESP+8]
+        btc     [edx],eax
+        ret     8
+;word Log2ie(word A) целая часть двоичного логарифма
+;при A==0 возвращает -1
+LOG2IE:     bsr     eax,dword ptr [ESP+4]
+            jz      me
+            ret 4
+    me:     mov     eax,-1
+            ret     4
+;word Log2int(word A) целая часть двоичного логарифма
+;при A==0 возвращает 0
+LOG2INT:    bsr     eax,dword ptr [ESP+4]
+            jz      mz
+            ret 4
+    mz:     xor     eax,eax
+            ret     4
+_TEXT   ends
+_DATA   segment
+_DATA   ends
+CONST   segment
+CONST   ends
+_BSS    segment
+_BSS    ends
+    end
+

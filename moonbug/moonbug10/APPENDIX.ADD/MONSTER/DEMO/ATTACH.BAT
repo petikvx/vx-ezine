@@ -1,0 +1,1 @@
+@copy /b monster1.com + monster1.asm runme.com

@@ -1,0 +1,249 @@
+А. Аброськин
+
+Игры и как с ними бороться
+
+
+Листинг 1
+
+;----------------------------------------------
+; Резидентный перехватчик игр
+;----------------------------------------------
+; Game$.ASM was written by AVA Soft.
+; Copyright (c) 1992
+; Программа может быть использована
+; в некоммерческих целях
+; Автор: Аброськин Андрей Владимирович
+;----------------------------------------------
+
+  INCLUDE MACRO.REG
+
+  code   segment
+         assume  cs:code, ds:code, es:code
+         org 100h
+
+  start: jmp instal          ; Переходим на установку программы
+                             ;
+  presence dw 670Fh          ; Ключевое слово присутствия
+                             ; программы в памяти
+
+  Game_entry   proc far      ; Точка входа в программу
+                             ; по прерыванию 21h
+  PushAll                    ; Сохраняем регистры (см. MACRO.REG)
+  cmp  ax,4b00h              ; Это функция "Exec"?
+  je   short Exec            ; Да, работаем с ней
+  jmp  return                ; Нет, выходим из обработчика
+;----------------------------;
+  Exec:
+  ; <DS,DX> уже установлены  ; Делаем попытку
+  ; на то, что нам нужно     ; открыть файл, запущенный
+  mov  ax,3d00h              ; на выполнение
+  pushf                      ;
+  call dword ptr cs:[old21o] ; В случае ошибки
+  jc   return                ; передаем ее старому вектору
+  mov  cs:handl,ax
+  mov  bx,cs:handl           ; В случае успеха заносим file
+  mov  cx,0                  ; handle в BX и устанавливаем
+  mov  dx,0                  ; указатель файла на начало
+  mov  ax,4200h              ;
+  pushf                      ;
+  call dword ptr cs:[old21o] ; Инструкция int 21h
+  jc   return
+  mov  bx,cs:handl           ;
+  mov  cx,cs                 ;
+  mov  ds,cx                 ; Устанавливаем буфер
+  lea  dx,buffer             ; и считываем в него
+  mov  cx,10                 ; первые 10 байтов
+  mov  ah,3Fh                ; исследуемой программы
+  pushf                      ;
+  call dword ptr cs:[old21o] ; Инструкция int 21h
+  jc   return
+  mov  bx,cs:handl
+  mov  ah,3Eh                ; Закрываем файл
+  pushf                      ;
+  call dword ptr cs:[old21o] ; Инструкция int 21h
+  jc   return
+;----------------------------; Устанавливаем в BX число
+  mov  bx,24                 ; строк таблицы сигнатур
+  mov  cx,cs                 ;
+  mov  es,cx                 ; Настраиваем ES и DS
+  mov  ds,cx                 ;
+  lea  di,cs:[signat]        ; Загружаем смещение сигнатур
+  mov  dx,di                 ; и запоминаем его в DX
+  lea  si,cs:[buffer]        ; [SI] указывает на сигнатуру
+                             ; исследуемой программы
+  cld                        ; Сбрасываем флаг направления
+  loop$:
+       mov  cx,10            ; Сканируем 10 элементов таблицы
+       repe cmpsb            ; сигнатур на предмет совпадения,
+       je   found            ; если нашли - выходим из цикла
+       add  dx,10            ;
+       mov  di,dx            ; Корректируем смещение в таблице
+       mov  ax,cs            ; Устанавливаем указатель buffer
+       mov  ds,ax            ; на начало
+       lea  si,cs:[buffer]   ;
+       dec  bx               ; Повторяем цикл, пока в BX
+       jne  loop$            ; еще что-то есть, если ничего
+;----------------------------; хорошего не нашли, то
+return:
+  PopAll                     ; восстанавливаем регистры и
+                             ; передаем управление на
+           db  0EAh          ; инструкцию far jump по
+  old21o   dw  0             ; старому адресу обработчика int 21H
+  old21s   dw  0             ;
+                             ;
+found:                       ;
+  PopAll                     ; Восстанавливаем регистры,
+  stc                        ; выставляем флаг и код
+  mov  ax,10h                ; ошибки ("Cannot execute file")
+  ret 2                      ;
+                             ;
+ Game_entry    endp          ;
+;----------------------------;
+ handl  dw (?)               ; handle файла
+ buffer db 10 dup (?)        ; Буфер для временного хранения
+                             ; сигнатуры вызываемой программы
+ INCLUDE GAMELIB.LBL         ; Таблица сигнатур
+;---------------------------------------------
+;  Транзитная часть программы Game$.COM
+;---------------------------------------------
+install:                     ;
+         mov  ax,3521h       ; Получаем адрес обработчика
+         int  21h            ; прерывания 21H
+         mov  ax,es:[bx-2]   ; Проверяем ключевое слово
+         cmp  ax,cs:presence ; Если не обнаружено, то
+         jnz  load           ; загружаем в память,
+         jmp  already        ; иначе игнорируем вызов
+
+load:
+         push es                ; Сохраняем регистры для
+         push ds                ; светлого будущего
+                                ;
+         mov  ax,3521h          ; Получаем адрес вектора 21H,
+         int  21h               ; сегмент и смещение
+         mov  word ptr old21s,es
+         mov  word ptr old21o,bx
+                                ;
+                                ;
+         lea  dx,Game_entry     ; Устанавливаем вектор 21H
+         mov  ax,2521h          ; на наш обработчик
+         int  21h               ; прерывания
+                                ;
+         pop  ds                ; Восстанавливаем регистры,
+         pop  es                ;
+                                ; "терминируем" и говорим,
+         mov  dx,offset instal  ; что программа будет резидентной
+         int  27h               ;
+
+already:
+         mov  al,ds:[082h]      ; Проверяем командную строку
+         cmp  al,'/'            ; и ищем ключ для выгрузки
+         je   key_1             ; программы из памяти
+         jmp  bad_key
+  key_1:
+         mov  al,ds:[083h]
+         and  al,11011111b      ; Переводим символ в верхний
+         cmp  al,'E'            ; регистр
+         je   key_2
+         jmp  bad_key
+  key_2:
+         mov  al,ds:[084h]
+         cmp  al,'$'
+         je   key_3
+         jmp  bad_key
+  key_3:
+         mov  al,ds:[085h]
+         cmp  al,'$'
+         je   unload
+         jmp  bad_key
+
+unload:
+         mov  ax,word ptr es:old21o ; Получаем адрес для
+         mov  dx,word ptr es:old21s ; восстановление вектора INT21H
+         mov  cx,es                 ; Сохраняем резидентную
+                                    ; CS часть программы в CX,
+         cli                        ; запрещаем прерывания
+         xor  bx,bx                 ;
+         mov  es,bx                 ; Заносим в ES нулевой
+         mov  bx,21h*4              ; сегмент и записываем в
+         mov  es:[bx],ax            ; таблицу векторов украденный
+         mov  es:[bx+2],dx          ; адрес вектора  INT21H,
+         sti                        ; разрешаем прерывания
+                                    ;
+         mov  ah,49h                ;
+         mov  es,cx                 ; Восстанавливаем ES
+         int   21h                  ; и освобождаем память,
+                                    ; занятую нашей программой
+bad_key:                            ;
+         mov  ax,4C00h              ; Выходим в DOS
+         int  21h                   ;
+  code   ends                       ;
+         end  start                 ;
+;-----------------------------------;
+Листинг 2
+
+;----------------------------------------
+; Файл GAMELIB.LBL для программы Load$$.ASM
+; Таблица сигнатур
+; Copyright (c) 1992 by AVA Soft
+;----------------------------------------
+
+signat db  4Dh, 5Ah, 02h, 01h, 03h, 00h, 00h, 00h, 02h, 00h ; golf.exe
+       db  4Dh, 5Ah,0DBh, 01h, 5Dh, 01h, 00h, 00h, 02h, 00h ; lhx.exe
+       db  4Dh, 5Ah,0FDh, 00h, 9Bh, 00h, 00h, 00h, 20h, 00h ; cfs.exe
+       db  4Dh, 5Ah, 21h, 00h,0D3h, 00h, 00h, 00h, 20h, 00h ; gpega.exe
+       db  4Dh, 5Ah,0E1h, 00h, 1Ah, 00h, 02h, 00h, 20h, 00h ; poker.exe
+       db  4Dh, 5Ah,0D0h, 00h, 3Dh, 00h, 1Bh, 02h, 89h, 00h ; tenis.exe
+       db 0E9h, 79h, 2Ch, 90h, 90h,0CDh,0ABh, 43h, 6Fh, 70h ; tet.com
+       db 0BCh 0B8h, 07h,0BBh, 7Ch, 00h,0B4h, 4Ah,0CDh, 21h ; f-117.com
+       db  4Dh, 5Ah, 44h, 01h, 29h, 00h, 00h, 00h, 02h, 00h ; another.exe
+       db  4Dh, 5Ah, 62h, 00h, 54h, 00h, 3Bh, 00h, 20h, 00h ; columns.exe
+       db  4Dh, 5Ah, 06h, 00h, 8Ah, 00h, 1Dh, 00h, 20h, 00h ; 3d_tetri\bl.exe
+       db  4Dh, 5Ah,0D7h, 01h,0A3h, 00h, 00h, 00h, 20h, 00h ; chess.exe
+       db  4Dh, 5Ah,0FDh, 00h, 9Bh, 00h, 00h, 00h, 20h, 00h ; girls\a.exe
+       db  4Dh, 5Ah, 04h, 00h, 9Fh, 00h, 00h, 00h, 02h, 00h ; goroskop\diceclnd.exe
+       db  4Dh, 5Ah, 78h, 01h,0C1h, 00h,0E5h, 05h, 80h, 01h ; pref\pc.exe
+       db  4Dh, 5Ah,0C7h, 01h,0F1h, 00h, 00h, 00h, 20h, 00h ; prince.exe
+       db  4Dh, 5Ah, 2Fh, 01h, 02h, 00h, 01h, 00h, 20h, 00h ; rockford\crazy.exe
+       db  4Dh, 5Ah,0DBh, 01h, 38h, 00h, 00h, 00h, 20h, 00h ; rockford.exe
+       db  4Dh, 5Ah, 30h, 01h, 09h, 00h, 1Fh, 00h, 0Ah, 00h ; rockf.exe
+       db  4Dh, 5Ah, 2Fh, 01h, 02h, 00h, 01h, 00h, 20h, 00h ; crazy.exe
+       db 0E9h, 14h  05h, 06h, 1Fh,0B9h, 70h, 0Dh,0BFh, 00h ; snake.com
+       db  4Dh, 5Ah, 90h, 00h, 42h, 00h, 51h, 01h, 60h, 00h ; tetrill.exe
+       db  4Dh, 5Ah,0ACh, 00h,0F1h, 00h, 00h, 00h, 20h, 00h ; tower.exe
+       db  4Dh, 5Ah,0A0h, 00h, 64h, 00h, 95h, 00h, 40h, 00h ; welltr.exe
+
+
+Листинг 3
+
+;---------------------------------------
+;
+;       MACRO.REG для Game$.ASM
+;
+;---------------------------------------
+PushAll MACRO
+        pushf
+        push  ax
+        push  bx
+        push  cx
+        push  dx
+        push  di
+        push  si
+        push  bp
+        push  es
+        push  ds
+        ENDM
+;---------------------------------------
+PopAll  MACRO
+        pop   ds
+        pop   es
+        pop   bp
+        pop   si
+        pop   di
+        pop   dx
+        pop   cx
+        pop   bx
+        pop   ax
+        popf
+        ENDM
+
+

@@ -1,0 +1,376 @@
+Д. Правиков, К. Фролов
+
+Реализация пристыковочного модуля
+
+Листинг
+
+;
+;   Вторичный загрузчик пристыковочного модуля
+;
+        .286
+stack   segment para    stack   'Stack'
+        db      "(C)opyright Konstantin V. Frolov, 1993"
+        dw      17 dup(?)
+stack   ends
+
+code    segment para    public  'Code'
+main    proc    far
+        assume  cs:code,ds:code,ss:stack
+start:
+        jmp     sss
+pspbuf  dw      100h dup (0)
+file    dw      0
+load_len dw     2363
+len     dw      0,0
+sseg    dw      0
+s_bx    dw      0
+s_dx    dw      0
+comflag dw      0
+sss:
+        pushf
+        push    cx 
+        push    di
+        push    si
+        push    cs
+        pop     ds
+        push    ds
+        push    es
+        pop     ds
+        pop     es
+        mov     s_bx,bx
+        mov     s_dx,dx
+        push    es
+        push    ds
+;+----------------------------------------------------+
+;|      Устанавливаем свой обработчик 21h прерывания  |
+;+----------------------------------------------------+
+        cli
+        mov     ax,3521h
+        int     21h
+        sti
+        mov     i21off,bx
+        mov     i21seg,es
+        push    cs
+        pop     ds
+        cli
+        mov     dx,offset int_21h
+        mov     ax,2521h
+        pushf
+        call    dword ptr cs:[i21off]
+        sti
+        pop     ds
+        pop     es
+;+----------------------------------------------------+
+;|      Сохраняем PSP программы в буфере              |
+;+----------------------------------------------------+
+        mov     cx,100h
+        xor     si,si
+        mov     di,offset pspbuf
+        rep     movsb
+        push    ds
+        push    es
+        pop     ds
+        pop     es
+;+----------------------------------------------------+
+;|      Получаем имя пути программы                   |
+;+----------------------------------------------------+
+        push    es
+        mov     cx,es:[2ch]
+        mov     es,cx
+        xor     di,di
+        mov     cx,-1
+m1:
+        xor     al,al
+        repne   scasb
+        cmp     byte ptr es:[di],0
+        jne     m1
+;+----------------------------------------------------+
+;|      Открываем защищаемую программу                |
+;+----------------------------------------------------+
+        add     di,2
+        push    ds
+        mov     ax,es
+        mov     ds,ax
+        lea     dx,[di+1]
+        xor     al,al
+        mov     ah,3dh
+        push    di
+        push    si
+        xor     ch,ch
+        mov     si,dx
+        mov     di,offset defname
+lab02:
+        cmp     byte ptr ds:[si],ch     ; Сдвиг на
+        je      lab01                   ;   конец
+        inc     di                      ;     имени
+        inc     si                      ;     |
+        jmp     short lab02             ;_____/
+lab01:
+        mov     ch,"\"
+lab04:
+        cmp     byte ptr ds:[si],ch
+        je      lab03                   ; ─┐
+        mov     cl,ds:[si]              ;  │
+        mov     byte ptr cs:[di],cl     ;  │
+        dec     si                      ;  │
+        dec     di                      ;  │
+        jmp     short lab04             ;  │
+lab03:                                  ;  
+        pop     si                      ; ds:si указывает на имя защищаемой
+        pop     di                      ;   программы ...
+        int     21h
+        jc      error
+;+----------------------------------------------------+
+;|      Смещаем указатель чтения-записи на код        |
+;|      защищаемого модуля                            |
+;+----------------------------------------------------+
+        pop     ds
+        mov     file,ax
+        pop     es
+        mov     ah,42h
+        xor     cx,cx
+        mov     dx,load_len             ; Длина пристыковочного модуля
+        mov     bx,file
+        xor     al,al
+        int     21h
+        jnc     m2
+;+----------------------------------------------------+
+;|      Аварийное завершение загрузки                 |
+;+----------------------------------------------------+
+error:
+        mov     dx,offset abort         ; Выдаем
+        mov     ah,9h                   ;   доброе
+        int     21h                     ;     пожелание
+        mov     ax,4c00h                ;       при ошибках
+        int     21h                     ;         в работе
+                                        ;
+abort   db      10,13,"Да приколется обломившийся, да обломится приколовшийся!",10,13,"$"
+;+----------------------------------------------------+
+;|      Читаем заголовок защищенного файла            |
+;+----------------------------------------------------+
+m2:
+        mov     ah,3fh
+        mov     cx,1ch
+        mov     dx,offset buf
+        int     21h
+        jc      error
+        cmp     buf[0000h],"ZM"         ; Это EXE файл ?
+        jne     comload                 ; - Нет
+        jmp     short exeload           ; - Да
+comload:
+        mov     ah,42h                  ; COM файл :
+        mov     al,2                    ;   вычисляем
+        xor     cx,cx                   ;     длину
+        xor     dx,dx                   ;       защищаемой
+        int     21h                     ;         программы
+        jc      error
+        sub     ax,load_len
+        mov     len,ax                  ; Сохраняем
+        mov     len+2,0                 ;   длину
+        mov     comflag,-1              ; Устанавливаем флаг COM программы
+        mov     si,1ch
+        mov     ah,42h
+        xor     al,al
+        xor     cx,cx
+        mov     dx,load_len             ; Указатель на начало
+        int     21h                     ;   основной программы ...
+        jnc     nnnerror
+        jmp     error
+nnnerror:
+        jmp     ldpp
+;+----------------------------------------------------+
+;|      Читаем таблицу перемещаемых элементов         |
+;+----------------------------------------------------+
+exeload:
+        mov     dx,buf[8h]              ; EXE файл:
+        mov     cl,4h                   ; вычисляем длину таблицы ...
+        shl     dx,cl                   ; |
+        push    dx                      ; |
+        sub     dx,1ch                  ;_/
+        mov     cx,dx
+        mov     ah,3fh
+        mov     dx,offset buf[1ch]
+        int     21h                     ; Читаем таблицу ...
+        jnc     bnerror
+        jmp     error
+;+----------------------------------------------------+
+;|      Вычисляем загрузочную информацию              |
+;+----------------------------------------------------+
+bnerror:
+        xor     bx,bx
+        mov     dx,buf[4h]
+        dec     dx
+        mov     cx,9
+lp1:
+        rcl     dx,1                    ; Вычисляем
+        rcl     bx,1                    ;   длину
+        and     dx,0fffeh               ;     EXE программы
+        loop    lp1                     ;     |
+        add     dx,buf[2h]              ;     |
+        adc     bx,0000h                ;     |
+        pop     cx                      ;     |
+        sub     dx,cx                   ;     |
+        sbb     bx,0000h                ;_____/
+        mov     len,dx                  ; ... запоминаем ...
+        mov     len+2,bx                ;_____/
+        mov     si,cx
+;+----------------------------------------------------+
+;|      Перераспределяем память                       |
+;+----------------------------------------------------+
+ldpp:
+        mov     bx,offset buf
+        add     bx,si
+        inc     bx
+        mov     cl,4                    ; Освобождаем
+        shr     bx,cl                   ;   "лишнюю"
+        add     bx,21                   ;     память
+        mov     ah,4ah                  ;     |
+        int     21h                     ;_____/
+        jnc     n_error
+        jmp     error
+;+----------------------------------------------------+
+;|      Создаем PSP защищаемой программы              |
+;+----------------------------------------------------+
+n_error:
+        mov     bx,-1                   ; Захватываем
+        mov     ah,48h                  ;   максимально
+        int     21h                     ;     большой
+        jnc     m3                      ;       объем
+        mov     ah,48h                  ;         памяти
+        int     21h                     ;_________/
+m3:
+        mov     dx,ax                   ;
+        mov     sseg,ax                 ;
+        mov     ah,26h                  ; Создаем PSP
+        int     21h                     ;   для защищаемой программы
+        mov     si,offset pspbuf
+        mov     dx,sseg
+        mov     es,dx
+        xor     di,di
+        mov     cx,100h                 ; Восстанавливаем
+        rep     movsb                   ;   старый PSP
+;+----------------------------------------------------+
+;|      Загружаем защищаемую программу                |
+;+----------------------------------------------------+
+        mov     ah,3fh
+        mov     bx,file
+        push    ds
+        mov     si,len
+        mov     di,len+2
+        mov     dx,es
+        add     dx,10h
+        or      di,di                   ; Загружать меньше 64 K ?
+        jz      ld1                     ; - Да
+ld2:
+        mov ah,3fh                      ; - Нет : грузим "порциями" по 64 K
+        mov     ds,dx
+        xor     dx,dx
+        mov     cx,1000h
+        int     21h
+        jnc     ld4
+        jmp     error
+ld4:
+        mov     dx,ds
+        add     dx,100h
+        sub     si,1000h
+        sbb     di,0000h
+        or      di,di                   ; Осталось меньше 64 K ?
+        jnz     ld2                     ; - Нет: переход к очередной "порции"
+ld1:
+        mov     ah,3fh                  ; - Да: подгружаем последнюю
+        mov     ds,dx                   ;          "порцию"
+        xor     dx,dx                   ;          |
+        mov     cx,si                   ;          |
+        int     21h                     ;__________/
+        pop     ds
+        jnc     m_error
+        jmp     error
+m_error:
+        mov     ah,3eh
+        int     21h
+        jnc     ccc
+        jmp     error
+;+----------------------------------------------------+
+;|      Обрабатываем перемещаемые элементы            |
+;+----------------------------------------------------+
+ccc:
+        cmp     comflag,-1
+        jne     ghj1
+        jmp     short mm4
+ghj1:
+        mov     ax,sseg
+        add     ax,10h
+        mov     cx,buf[6h]
+        mov     si,buf[18h]
+        jcxz    mm4                     ; ... это пустая таблица ...
+m4:
+        mov     bx,buf[si+2]
+        add     bx,ax
+        mov     es,bx
+        mov     bx,buf[si]
+        add     word ptr es:[bx],ax     ; Настраиваем очередной перемещаемый
+        add     si,4                    ;   элемент
+        loop    m4                      ; Следующий элемент ...
+;+----------------------------------------------------+
+;|      Установка регистров и передача управления     |
+;|      защищаемой программе                          |
+;+----------------------------------------------------+
+mm4:
+        mov     ax,sseg                 ; Для EXE и COM файлов ...
+        mov     es,ax                   ; ES = PSP
+        cmp     comflag,-1
+        jne     gfd1
+        jmp     short clcom
+gfd1:
+        add     ax,10h                  ; ... для EXE файла ...
+        mov     bx,buf[0eh]
+        add     bx,ax
+        pop     si
+        pop     di
+        pop     cx
+        pop     dx
+        mov     ss,bx                   ; SS = START_SEG + ReloSS
+        mov     bx,buf[10h]
+        mov     sp,bx                   ; SP = ExeSP
+        push    dx
+        mov     bx,buf[16h]
+        add     bx,ax
+        mov     ax,buf[14h]
+        push    bx
+        push    ax
+        mov     dx,s_dx
+        mov     bx,s_bx
+        mov     ax,sseg
+        mov     ds,ax                   ; DS = PSP
+        xor     ax,ax
+        jmp     short go_load
+clcom:
+        pop     si                      ; ... для COM файла ...
+        pop     di
+        pop     cx
+        pop     dx
+        mov     ss,ax                   ; SS = PSP
+        mov     bx,0fffeh
+        mov     sp,bx                   ; SP = 0fffeh
+        xor     bx,bx
+        push    bx
+        add     bx,100h                 ; IP = 100h
+        push    dx
+        push    ax
+        push    bx
+        mov     dx,s_dx
+        mov     bx,s_bx
+        mov     ds,ax                   ; DS = PSP
+        xor     ax,ax
+go_load:
+        iret                            ; Передаем управление на основную
+                                        ;   программу !
+;+----------------------------------------------------+
+;|      Обработчик 21h прерывания                     |
+;+----------------------------------------------------+
+int_21h:...
+
+buf     label   word
+main    endp
+code    ends
+        end     main

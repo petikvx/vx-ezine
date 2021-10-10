@@ -1,0 +1,817 @@
+М. Потанин
+
+Что умеют отладчики, и чему их можно научить
+
+Статья посвящена сравнительному анализу наиболее распространенных
+отладчиков программ в операционной системе MS-DOS. Описываются
+особенности реализации отладчиков, использующих аппаратные особенности
+старших моделей процессоров семейства 80x86.
+
+Листинг 1
+;-------------------------------------------------------------
+;       EXDEB.ASM
+;-------------------------------------------------------------
+;Разработана М. Потаниным.
+include comh.inc
+
+TurboDebug = 1
+SysShell = 0
+SoftIce = 0
+
+MEBP	label	word
+	jmp	inst
+	org	10eh
+ss_sp	dw	0,0
+entry_p	dw	0,0
+if SoftIce
+dpsp	dw	0
+endif
+flag	db	0,0
+No_Activ:
+No_Exec:
+	popf
+	db	0eah
+old	label	dword
+old_off	dw	0
+old_seg	dw	0
+int21:
+	pushf
+	cmp	cs:flag,0
+	jz	No_Activ
+	cmp	ax,4b00h
+	jnz	No_Exec
+	mov	cs:flag,0
+	popf
+	cld
+	mov	si,bx
+	mov	di,offset MEBP
+	mov	bx,di
+	push	ds
+	push	es
+	pop	ds
+	push	cs
+	pop	es
+	mov	cx,7
+	rep movsw
+	pop	ds
+	mov	al,1
+	push	cs
+	pop	es
+	pushf
+	call	cs:old
+	jnc	Ok
+	retf	2
+Ok:
+	mov	ah,62h		;Get PSP
+	pushf
+	call	cs:old
+if	SoftIce
+	mov	cs:[dpsp],bx
+endif
+	mov	ds,bx
+	pop	term_off
+        pop     term_seg        ;Скорректировать адрес возврата
+	add	sp,2
+	mov	sssp_off,sp
+	mov	sssp_seg,ss
+if 1-SoftIce 
+	mov	word ptr ss,cs:[offset ss_sp+2]
+	mov	word ptr sp,cs:[offset ss_sp]
+if TurboDebug
+	push	cs:[offset entry_p+2]
+	push	cs:[offset entry_p]
+	pushf
+	pop	cx
+	or	ch,1
+	push	cx
+elseif SysShell
+	pushf
+ 	push	cs:[offset entry_p+2]
+ 	mov	cx,cs:[offset entry_p]
+ 	inc	cx
+	push	cx
+	xor	cx,cx
+ 	mov	ds,cx
+ 	push	ds:[0eh]
+ 	push	ds:[0ch]
+endif
+	mov	ds,bx
+	mov	es,bx
+if TurboDebug
+	push	cs
+	push	offset RunProg
+        iret                    ;С установленным T-флагом
+RunProg:
+endif
+	retf
+else
+	push	cs
+	pop	ds
+	mov	bx,offset ss_sp
+	mov	ax,902h
+	mov	si,'FG'
+	mov	di,'JM'
+        int     3       ; Задний вход в S-ICE
+	jmp	$
+endif
+int15:
+	cmp	ax,4f01h
+	jnz	next
+	push	ds
+	push	ax
+	xor	ax,ax
+	mov	ds,ax
+	test	byte ptr ds:[417h],8
+	pop	ax
+	pop	ds
+	jz	next
+	mov	cs:flag,1
+	mov	al,0
+	stc
+NoIceI3:
+	retf	2
+next:
+	db	0eah
+old15_o	dw	0
+old15_s	dw	0
+inst:
+if SoftIce
+	push	ds
+	xor	ax,ax
+	mov	ds,ax
+	push	ds:[0ch]
+	push	ds:[0eh]
+	mov	ds:[0ch],offset NoIceI3
+	mov	ds:[0eh],cs
+	mov	si,'FG'
+	mov	di,'JM'
+        int     3       ; Задний вход в S-ICE
+	pop	ds:[0eh]
+	pop	ds:[0ch]
+	pop	ds
+	cmp	si,'FG'
+	jz	InErr
+endif
+	mov	ax,3521h
+	int	21h
+	mov	old_off,bx
+	mov	old_seg,es
+	mov	ax,3515h
+	int	21h
+	mov	old15_o,bx
+	mov	old15_s,es
+	mov	ax,2515h
+	mov	dx,offset int15
+	int	21h
+	mov	ax,2521h
+	mov	dx,offset int21
+	int	21h
+	mov	dx,offset inst
+	int	27h
+if SoftIce
+InErr:
+	mov	ah,9
+	mov	dx,offset Msg
+	int	21h
+	mov	ax,4c01h
+	int	21h
+Msg	db	'S-ICE not instaled$'
+endif
+endc
+Листинг 2
+;-------------------------------------------------------------
+;       DHELP286.ASM 
+;-------------------------------------------------------------
+	.286p
+text	segment byte public 'CODE'
+	assume	cs:text
+	org 100h
+start:
+Wb	label	word
+Dwb	label	dword
+	jmp install
+	org 108h
+IntEmul:        ; Эмуляция прерывания
+	cli
+	mov	cs:[Wb],di
+	mov	cs:[Wb+2],ds
+	xor	di,di
+	mov	ds,di
+	pop	di
+	lds	di,[di+start-install-100h]
+	push	ds
+	push	di
+	lds	di,cs:[Dwb]
+	iret
+
+LockFlag db	0
+Trace:
+	pushf
+	cli
+	mov	cs:[Wb],di
+	mov	cs:[Wb+2],ds
+	mov	di,sp
+	lds	di,ss:[di+2]
+	cmp	byte ptr[di-1],9ch
+	jnz	TrExit
+	mov	di,sp
+	push	ax
+	mov	ax,ss:[di+6]
+	cmp	ss:[di+8],ax
+	jnz	TrExit1
+	and	ss:[di+8],0feffh
+TrExit1:
+	pop	ax
+TrExit:
+	cmp	byte ptr LockFlag,0
+	jnz	Locked
+	xor	di,di
+	mov	ds,di
+	lds	di,ds:[Dwb-100h+4]
+	push	ds
+	push	di
+	lds	di,cs:[Dwb]
+	iret
+Locked:
+	lds	di,cs:[Dwb]
+	popf
+	db	0eah	; Команда jmp
+int1off	dw	0
+int1seg	dw	0
+;****************************************
+INT_15:
+	pushf
+	cmp	ax,4f52h
+	jz	Fn
+last:
+	db	09ah	; Команда call
+off15	dw	0
+seg15	dw	0
+rtt:
+	pushf
+	push	ax
+	smsw	ax
+	test	al,1
+	pop	ax
+	jnz	pmod
+	lidt	cs:[IDT]
+pmod:
+	popf
+	retf	2
+Fn:
+	push	ax
+	xor	ax,ax
+	push	ds
+	mov	ds,ax
+	test	byte ptr ds:[417h],4
+	jnz	LockOff
+	test	byte ptr ds:[417h],8
+	jnz	LockOn
+	pop	ds
+	pop	ax
+	jmp	last
+LockOff:
+	mov	cs:LockFlag,0
+exii:
+	pop	ds
+	pop	ax
+	popf
+	stc
+	mov	al,0
+	jmp	rtt
+LockOn:
+	mov	cs:LockFlag,1
+	mov	ax,ds:[4]
+	mov	cs:int1off,ax
+	mov	ax,ds:[6]
+	mov	cs:int1seg,ax
+	jmp	exii
+IDT	label qword
+	dw	0ffffh
+IDTlo	dw	0
+IDThi	dw	0
+	even
+Inter:
+	pushf
+	call	IntEmul
+IntEnd:
+;*****************************************
+install:
+
+        push    sp      ;Проверка типа CPU
+	pop	ax
+	cmp	ax,sp
+	jz	_Okc
+	mov	dx,offset Mess
+	mov	ah,9
+	int	21h
+	mov	ax,4c01h
+	int 21h
+_Okc:
+	cld
+	smsw	ax
+	test	al,1
+	jz	_Okp
+	mov	di,81h
+	mov	ax,920h
+	mov	cx,40h
+	repz	scasb
+	dec	di
+	cmp	byte ptr [di],'v'
+	jz	ign
+	cmp	byte ptr [di],'V'
+	jz	ign
+	mov	dx,offset Mess1
+	int	21h
+	mov	ax,4c00h
+	int	21h
+ign:	mov	dx,offset Mess3
+	int	21h
+_Okp:
+	mov	si,offset InitCode
+	mov	di,8000h
+	mov	cx,offset EndInit - offset InitCode
+	rep movsb
+	mov ax,8000h
+	push	ax
+	retn		;jmp 8000h
+InitCode:
+	mov	si,offset Inter
+	mov	di,offset IntEnd
+	mov	cx,1feh
+	rep movsw
+;*********Init IDT************
+
+	mov	cx,100h
+	xor	bp,bp
+	mov	ax,offset Inter
+	mov	bx,cs
+Loop1:
+	stosw		;Load offset
+	xchg	bx,ax
+	stosw		;Load segment
+	sub	word ptr[bx+2],bp
+	lea	bp,[bp+4]
+	xchg	bx,ax
+	add	ax,4
+	loop	Loop1
+
+	mov	word ptr[si+8],offset Trace
+	push	di
+                                ; Вычислить абсолютный адрес idt
+	lea	si,[si+4]
+	mov	bx,ds
+	mov	ax,bx
+	shr	bx,0ch
+	shl	ax,4
+	add	ax,si
+	adc	bx,0
+	mov	[IDTlo],ax
+	mov	[IDThi],bx
+	lidt	[IDT]
+	mov	ax,3515h
+	int	21h
+	mov	[off15],bx
+	mov	[seg15],es
+	mov	ax,2515h
+	mov	dx,offset INT_15
+	int	21h
+	pop	dx
+	int	27h
+EndInit:
+Mess	label byte
+	db	'There is too old proceser.',0ah,0dh
+	db	'You take it in museum.',24h
+Mess3	db	'Warning - V86 ignored.',24h
+Mess1	label	byte
+	db	'Sory: V86.',24h
+
+text	ends
+	end start
+Листинг 3
+;-------------------------------------------------------------
+;       DHELP386.ASM 
+;-------------------------------------------------------------
+.radix 10h
+text	segment byte public 'CODE'
+
+        ; Макрос для преобразования сегментированного адреса из
+        ; двойного слова с меткой DBREGx в линейный адрес с последующей
+        ; загрузкой его в соответствующий отладочный регистр
+        mov2dreg  macro   XX
+                   xor     eax, eax
+                   mov     ax, word ptr dbreg&XX+2   ;Получить сегмент
+                   shl     eax, 4
+                   mov     bx, word ptr dbreg&XX     ;Получить смещение
+                   add     eax, ebx                  ;Преобразовать в
+                                                     ;линейный адрес и
+                   mov     dr&XX, eax                ;записать его в
+                                                     ;отладочный регистр
+                   endm
+        ; Макрос для конкатенации битов отладочного управляющего регистра
+        ; DR7. Биты R/W и LEN заносятся в AX, биты L/П - в BX
+        
+        setdr7     macro   xx
+                   mov     dx, word ptr rw&xx   ;LEN в DH, R/W в DL
+                   and     dx, 303h        ;Из всех битов выбрать по два
+                                           ; младших
+                   shl     ax, 2           ;Переслать предыдущие биты
+                   or      al, dh          ;Вставить биты длины
+                   shl     ax, 2
+                   or      al, dl
+                   mov     dx, word ptr loc&xx  ;Глобальный флаг в DH,
+                                                ;локальный - в DL
+                   and     dx, 101h             ;Сохранить только младшие
+                                                ;биты
+                   shl     bx, 1                ;Вставить в регистр
+                   or      bl, dh
+                   shl     bx, 1
+                   or      bl, dl
+                   endm
+
+	assume	cs:text,ds:text
+	org	100h
+        dbreg0     label   dword      ;Данные перекрывают точку входа
+        start:     jmp     install
+                   org     104h
+        dbreg1     dd      0
+        dbreg2     dd      0
+        dbreg3     dd      0
+                   db      'R/W&&LEN'
+        rw0        db      0
+        len0       db      0
+        rw1        db      0
+        len1       db      0
+        rw2        db      0
+        len2       db      0
+        rw3        db      0
+        len3       db      0
+                   db      'LOC/GLOB'
+        loc0       db      0
+        glob0      db      0
+        loc1       db      0
+        glob1      db      0
+        loc2       db      0
+        glob2      db      0
+        loc3       db      0
+        glob3      db      0
+                   db      'L/G EXAC'
+        loce       db      0
+        globe      db      0,0,0,0,0,0,0
+        
+                   db      'BRKX,WHY'
+        statN      db      0
+        why1       db      0,0,0,0,0,0,0
+
+LockFlag db 0
+        
+Wb	label	word
+Dwb	label	dword
+	dd	0
+saveeax dd	0
+	.386p
+IntEmul:        ; Эмуляция прерывания
+	mov	cs:[Dwb],edi
+	xor	di,di
+	mov	ds,di
+	pop	di
+	mov	edi,[di+start-install-100h]
+	pop	ds
+	push	edi
+	mov	edi,cs:[Dwb]
+	retf
+Trace:
+	pushf
+	mov	cs:[Wb],di
+	mov	cs:[Wb+2],ds
+	mov	di,sp
+	lds	di,ss:[di+2]
+	cmp	cs:RunFlag,0
+	jnz	TrExit
+	cmp	byte ptr[di-1],9ch
+	mov	cs:saveeax,eax
+	jnz	short TrExit
+	mov	di,sp
+	mov	ax,ss:[di+6]
+	cmp	ss:[di+8],ax
+	jnz	short TrExit
+	and	word ptr ss:[di+8],0feffh
+TrExit:
+	cmp	cs:LockFlag,0
+	jnz	short NoLock
+	xor	di,di
+	mov	ds,di
+	mov	eax,ds:[4]
+	push	eax
+NoLock:
+        ;*******************************************************************
+           ; Новый обработчик прерывания INT 1 записывает содержимое
+           ; отладочного регистра состояния DR6 в поля таблицы данных,
+           ; затем осуществляет вход в обработчик прерывания, принадлежащий
+           ; отладчику
+        ;*******************************************************************
+        
+                   mov     eax, dr6
+                   cmp	   cs:LockFlag,0
+                   jz	   NoTest
+                   cmp	   cs:RunFlag,0
+                   jz	   NoTest
+                   test    ah,40
+                   jnz      IsTrace
+        NoTest:
+		   mov	   dword ptr cs:[statN+4],eax
+                   and     al, 0fh        ;Загрузить 4 бита: какой из
+                                          ;адресов вызвал прерывание?
+                   mov     cs:statN, al
+                   shr     ah, 5          ;3 старших бита: причина INT 1
+                   mov     cs:why1, ah
+  		   xor	   eax,eax
+  		   mov	   dr6,eax
+  		   mov	   dr7,eax
+                   mov     eax,cs:saveeax
+
+	cmp	cs:LockFlag,0
+	jnz	Locked
+	mov	cs:RunFlag,0
+	lds	di,cs:[Dwb]
+	iret
+IsTrace:
+  		   xor	   eax,eax
+  		   mov	   dr6,eax
+	mov	ds,ax
+	mov	eax,ds:[4]
+	push	eax
+                   mov     eax,cs:saveeax
+	lds	di,cs:[Dwb]
+	iret
+Locked:
+	mov	cs:RunFlag,0
+	lds	di,cs:[Dwb]
+	popf
+	db	0eah
+int1off	dw	0
+int1seg	dw	0
+
+RunFlag	db	0
+;****************************************
+INT_15:
+	pushf
+	cmp	ax,4f43h
+	jnz	short lasto
+	call	setbrp
+	mov	cs:RunFlag,1
+lasto:
+	cmp	ax,4f52h
+	jz	short Fn
+last:
+        db      09ah    ; Команда call
+off15	dw	0
+seg15	dw	0
+rtt:
+	lidt	cs:[IDT]
+	retf	2
+
+Fn:
+	push	ax
+	xor	ax,ax
+	push	ds
+	mov	ds,ax
+	test	byte ptr ds:[417h],4
+	jnz	short LockOff
+	test	byte ptr ds:[417h],8
+	jnz	short LockOn
+	pop	ds
+	pop	ax
+	jmp	short last
+LockOff:
+	mov	cs:LockFlag,0
+exii:
+	pop	ds
+	pop	ax
+	popf
+	stc
+	mov	al,0
+	jmp	short rtt
+LockOn:
+	mov	cs:LockFlag,1
+	mov	ax,ds:[4]
+	mov	cs:int1off,ax
+	mov	ax,ds:[6]
+	mov	cs:int1seg,ax
+	jmp	short exii
+	
+IDT	label qword
+	dw	0ffffh
+IDTlo	dw	0
+IDThi	dw	0
+setbrp	proc near
+                   push    ebx
+                   push    dx
+                   push    ds
+                   push    eax
+                   push    cs
+                   pop     ds
+                   
+                   xor     ebx, ebx
+                   mov2dreg  0         ;Занести адреса в отладочные регистры
+                   mov2dreg  1         ;DB0 - DB3
+                   mov2dreg  2
+                   mov2dreg  3
+                   
+                   xor     eax, eax      ;Заполнить управляющий регистр DR7
+                   mov     ebx, eax
+                   mov     bx, word ptr loce   ;loce->bl,globe->bh
+                   and     bx, 101h            ;Взять только по одному
+                                               ;младшему биту
+                   shl     bl, 7               ;Собрать в bx биты 1 и 2
+                   shr     bx, 7
+                   setdr7  3
+                   setdr7  2
+                   setdr7  1
+                   setdr7  0
+                   shl     eax, 10h     ;Объединить AX, BX в 32 бита
+                   or      eax, ebx
+                   mov     dr7, eax    ;Загрузить управляющий регистр
+                   ;xor     eax, eax
+                   ;mov     dr6, eax    ;Обнулить регистр состояния
+		   pop	   eax
+                   pop     ds
+                   pop     dx
+                   pop     ebx
+	retn
+setbrp	endp
+	even
+Inter:
+	push	ds
+	call	IntEmul
+IntEnd:
+;*****************************************
+install:
+
+        push    sp      ; Проверить тип cpu
+	pop	ax
+	cmp	ax,sp
+	jz	short _Okc
+	mov	dx,offset Mess
+exx:
+	mov	ah,9
+	int	21h
+	mov	ax,4c01h
+	int 21h
+_Okc:
+	smsw	ax
+	test	al,1
+	jz	short _Okp
+	mov	di,81h
+	mov	ax,920h
+	mov	cx,40h
+	repz	scasb
+	dec	di
+	cmp	byte ptr [di],'v'
+	jz	ign
+	cmp	byte ptr [di],'V'
+	jz	ign
+	mov	dx,offset Mess1
+	int	21h
+	mov	ax,4c00h
+	int	21h
+ign:
+	mov	dx,offset Mess3
+	int	21h
+_Okp:
+	push	3000h
+	popf
+	pushf
+	pop	ax
+	and	ah,30h
+	cmp	ah,30h
+	jz	short Ok3
+	mov	dx,offset Mess2
+	jmp	short exx
+Ok3:
+	cld
+	mov	si,offset InitCode
+	mov	di,8000h
+	mov	cx,offset EndInit - offset InitCode
+	rep movsb
+	mov ax,8000h
+	push	ax
+        retn            ; Перейти на 8000h
+InitCode:
+	mov	si,offset Inter
+	mov	di,offset IntEnd
+	mov	cx,1feh
+	rep movsw
+;*********Init IDT************
+
+	mov	cx,100h
+	xor	bp,bp
+	mov	ax,offset Inter
+	mov	bx,cs
+Loop1:
+	stosw		; Загрузить offset
+	xchg	bx,ax
+	stosw		; Загрузить segment
+	sub	word ptr[bx+2],bp
+	lea	bp,[bp+4]
+	xchg	bx,ax
+	add	ax,4
+	loop	Loop1
+
+	mov	word ptr[si+8],offset Trace
+	push	di
+				; Вычислить абсолютный адрес IDT
+	lea	si,[si+4]
+	mov	bx,ds
+	mov	ax,bx
+	shr	bx,0ch
+	shl	ax,4
+	add	ax,si
+	adc	bx,0
+	mov	[IDTlo],ax
+	mov	[IDThi],bx
+	lidt	[IDT]
+	mov	ax,3515h
+	int	21h
+	mov	[off15],bx
+	mov	[seg15],es
+	mov	ax,2515h
+	mov	dx,offset INT_15
+	int	21h
+	pop	dx
+	int	27h
+EndInit:
+Mess2	db	'Not 386 CPU.',24h
+Mess	label byte
+	db	'There is too old proceser.',0ah,0dh
+	db	'You take it in museum.',24h
+Mess3	db	'Warning - V86 ignored.',24h
+Mess1	label	byte
+	db	'Sory: V86.',24h
+
+text	ends
+	end start
+	Листинг 4
+;-------------------------------------------------------------
+;       COMH.INC содержит заголовок COM-программы
+;-------------------------------------------------------------
+.radix 10h
+endc	macro
+text	ends
+	end	start
+endm
+
+text	segment
+	assume	cs:text,ds:text,ss:text,es:text
+	org	0
+psp	label	word			; Начало psp
+	org	2
+mem_top	label	word			; Вершина памяти
+	org	5
+cp_ser:					;Call far to dos
+	org	6
+cp_adr	label	dword
+cp_off	label	word
+	org	8
+cp_seg	label	word
+	org	0ah
+term_adr label	dword
+term_off label	word
+	org	0ch
+term_seg label	word
+	org	0eh
+cbrk_adr label	dword
+cbrk_off label	word
+	org	10h
+cbrk_seg label	word
+	org	12h
+crit_adr label	dword
+crit_off label	word
+	org	14h
+crit_seg label	word
+	org	16h
+parn_psp label	word			;PSP родителя.
+	org	18h
+fale_tab label	byte
+	org	2ch
+env_seg	label	word
+	org	2eh
+sssp_adr label	dword
+sssp_off label	word
+	org	30h
+sssp_seg label	word
+	org	32h
+max_open label	word
+	org	34h
+file_tba label	dword
+f_tba_off label	word
+	org	36h
+f_tba_seg label	word
+	org	80h
+len_com	label	byte
+	org	81h
+comline	label	byte
+
+	org	100h
+
+start:

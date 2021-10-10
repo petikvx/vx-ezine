@@ -1,0 +1,264 @@
+Д. Мухин
+
+УДАЛЕНИЕ ЗАЩИТЫ PC-VAULT
+
+Листинг 1. Код шифратора-дешифратора
+
+		MOV 	AX, [SI-01B8H]		; Ключ
+		CMP	BYTE PTR [SI-01BEH], 37H
+		JE	M2
+		MOV	BYTE PTR [SI-01BEH], 37H
+		MOV	CX, 20H			; Размер таблицы
+						; разделов в словах
+M1:
+		ROL	AX, 1
+		ROL	AX, 1
+		ROL	AX, 1
+		ADD 	AX, 5CA3H
+		XOR	[SI], AX
+		INC	SI
+		INC	SI
+		LOOP	M1
+M2:
+		RET
+
+Листинг 2. Программа удаления PC-VAULT version 4.2
+
+		TITLE	Программа удаления PC-VAULT version 4.2
+;
+; *************************** Выдать сообщение ******************* ;
+;
+WR_MES		MACRO	MES, LEN
+		LEA	DX, MES
+		MOV	CX, LEN
+		MOV	AX, 4000H
+		MOV	BX, 0002H
+		INT	21H
+		ENDM
+;
+; **************************************************************** ;
+;
+CSEG		SEGMENT	'Code'
+		ASSUME	CS:CSEG, DS:CSEG, SS:CSEG, ES:CSEG
+		ORG	100H
+BEGIN		PROC
+;
+; Считать таблицу разделов
+;
+		MOV	DX, 0080H	; HDD, сторона 0
+		MOV	CX, 0001H	; Цилиндр 0, сектор 1
+		LEA	BX, OLD_SEC
+		MOV	SI, 0201H	; Считать 1 сектор
+		CALL	RW
+		JNC	M1		; Если нет ошибки
+		WR_MES  ERR1, LEN1	; Выдать сообщение
+		JMP	TERM		; Закончить
+;
+; Проверить наличие защиты
+;
+M1:
+		LEA	SI, OLD_SEC
+		CMP	WORD PTR [SI], 0EB9FH
+		JE	M01		; Защита есть
+		WR_MES	INF, LEN4
+		JMP	TERM		; Закончить
+;
+; Расшифровать таблицу разделов
+;
+M01:
+		LEA	SI, OLD_SEC
+		ADD	SI, 01BEH	; Адрес старой таблицы разделов
+		LEA	DI, OLD_SEC
+		ADD	DI, 0059H
+		MOV	DECOD, DI	; Адрес дешифратора
+		CALL	WORD PTR DECOD
+;
+; Записать таблицу разделов в область нового загрузчика
+;
+		CLD
+		LEA	SI, OLD_SEC
+		ADD	SI, 01BEH
+		LEA	DI, PAT_TAB
+		MOV	CX, 0020H
+		REP	MOVSW		; Переписать дешифрованную таблицу
+;
+; Записать новый загрузчик
+;
+		MOV	DX, 0080H	; HDD, сторона 0
+		MOV	CX, 0001H	; Цилиндр 0, сектор 1
+		LEA	BX, NEW_SEC
+		MOV	SI, 0301H	; Записать 1 сектор
+		CALL	RW
+		JNC	M2		; Если нет ошибки
+		WR_MES  ERR2, LEN2	; Выдать сообщение
+		JMP	TERM		; Закончить
+;
+; Найти активный раздел
+;
+M2:
+		LEA	SI, PAT_TAB     ; Начало таблицы разделов
+M3:
+		CMP	BYTE PTR [SI], 80H
+		JE	M4		; Переход, если активный
+		ADD	SI, 0010H	; Следующий раздел
+		JMP	M3
+;
+; Считать загрузочный сектор активного раздела
+;
+M4:
+		MOV	DX, [SI]	; Диск / головка
+		MOV	CX, [SI+2]	; Дорожка / сектор
+		LEA	BX, OLD_SEC
+		MOV	SI, 0201H	; Читать 1 сектор
+		PUSH	CX
+		PUSH	DX		; Запомнить размещение
+		CALL	RW
+		JNC	M5
+		WR_MES  ERR1, LEN1	; Выдать сообщение
+		JMP	TERM            ; Закончить
+;
+; Восстановить подпись
+;
+M5:
+		LEA	SI, OLD_SEC
+		ADD	SI, 01FEH	; Адрес подписи
+		MOV	WORD PTR [SI], 0AA55H
+;
+; Записать восстановленный сектор
+;
+		POP	DX
+		POP	CX
+		LEA	BX, OLD_SEC
+		MOV	SI, 0301H	; Записать восстановленный сектор
+		CALL	RW
+		JNC	TERM
+		WR_MES  ERR2, LEN2	; Выдать сообщение
+;
+; Закончить программу
+;
+TERM:
+		MOV	AX, 4C00H	; Окончить программу
+		INT 	21H
+BEGIN		ENDP
+;
+; ********************* Считать / записать сектор **************** ;
+;
+RW		PROC
+		MOV	DI, 0005H	; Пять попыток
+MR1:
+		MOV	AX, SI		; Операция
+		INT	13H
+		JNC	MR2		; Переход, если нет ошибки
+		XOR	AX, AX
+		INT	13H		; Сброс дисковода
+		DEC	DI		; Следующая попытка
+		JNE	MR1
+		STC			; Ошибка
+MR2:
+		RET
+RW		ENDP
+;
+; **************************************************************** ;
+; **							        ** ;
+; **	  	          Код загрузчика	 	        ** ;
+; **							        ** ;
+; **************************************************************** ;
+;
+		ORG	300H
+NEW_SEC		LABEL	BYTE
+		CLI			; Запрет прерываний
+		XOR	AX, AX		; Обнулить AX
+		MOV	SS, AX		; SS = 0
+		MOV	SP, 7C00H	; Вершина стека на начало кода
+		MOV	SI, SP		; В SI адрес начала кода
+		PUSH	AX
+		POP	ES		; ES = 0
+		PUSH	AX
+		POP	DS		; DS = 0
+		STI			; Разрешить прерывания
+		CLD			; Обработка строк вперед
+		MOV	DI, 0600H	; Новое место загрузчика
+                MOV     CX, 0100H       ; Переписать 512 байтов
+		REPNZ	MOVSW
+		DB	0EAH
+		DW	061DH, 0000H	; Переход на Z1
+Z1:
+		MOV	SI, 07BEH	; Начало таблицы разделов
+		MOV	BL, 04H		; 4 раздела
+Z01:
+		CMP	BYTE PTR [SI], 80H
+		JE	Z2		; Переход, если активный
+		CMP	BYTE PTR [SI], 00H
+		JNE	Z3		; Переход, если ошибка в таблице
+		ADD	SI, 0010H	; Следующий раздел
+		DEC	BL
+		JNE	Z01
+		INT	18H		; Бейсик
+Z2:
+		MOV	DX, [SI]	; Диск / головка
+		MOV	CX, [SI+2]	; Дорожка / сектор
+		MOV	BP, SI		; Запомнить адрес раздела
+Z02:
+		ADD	SI, 0010H	; Проверить остаток таблицы
+		DEC	BL
+		JE	Z4		; Переход, если таблица правильная
+		CMP	BYTE PTR [SI], 00H
+		JE 	Z02
+Z3:
+		MOV	SI, 068BH	; MES1
+Z03:
+		LODSB
+		CMP	AL, 00H
+		JE	Z5		; Конец строки?
+		PUSH	SI
+		MOV	BX, 0007H	; Черный и белый
+		MOV	AH, 0EH		; Вывод символа
+		INT	10H
+		POP	SI
+		JMP	Z03		; Следующий символ
+Z5:
+		JMP	Z5		; Зациклить
+Z4:
+		MOV	DI, 0005H	; 5 попыток
+Z04:
+		MOV	BX, 7C00H
+		MOV	AX, 0201H	; Читать 1 сектор
+		PUSH	DI
+		INT	13H
+		POP	DI
+		JNB	Z6		; Нет ошибок
+		XOR	AX, AX		; Сброс дисковода
+		INT	13H
+		DEC	DI
+		JNE	Z04
+		MOV	SI, 06A3H	; MES2
+		JMP	Z03		; Выдать сообщение
+Z6:
+		MOV	SI, 06C2H	; MES3
+		MOV	DI, 7DFEH
+		CMP	WORD PTR [DI], 0AA55H
+		JNE	Z03		; Неверная подпись
+		MOV	SI, BP		; Востановить адрес начала раздела
+		DB	0EAH		; Передать управление
+		DW	7C00H, 0000H	; загрузчику
+MES1		DB	'Invalid partition table', 0
+MES2		DB	'Error loading operating system', 0
+MES3		DB	'Missing operating system', 0
+		ORG	4BEH
+PAT_TAB		DB	40H DUP( 0 )
+		DB	55H, 0AAH	; Подпись
+;
+; **************************************************************** ;
+;
+OLD_SEC		DB	512 DUP( 0 )
+ERR1		DB	0DH, 0AH, 'Error reading partition table.'
+LEN1		EQU	$ - ERR1
+ERR2		DB	0DH, 0AH, 'Error writing sector.'
+LEN2		EQU	$ - ERR2
+INF		DB	0DH, 0AH, 'There is no protection on your HDD.'
+LEN4		EQU	$ - INF
+DECOD		DW	0
+;
+CSEG		ENDS
+		END	BEGIN
+

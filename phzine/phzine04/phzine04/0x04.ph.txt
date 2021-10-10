@@ -1,0 +1,497 @@
+                             ...................
+                       ...::: phearless zine #4 :::...
+
+...............>---[ Developing Network Security Tool(s) ]---<...............
+
+.........................>---[ by Shatterhand ]---<..........................
+                                                    shatterh[at]gmail[dot]com
+Table Of Contents:
+
+[1] Intro
+
+[2] Port scanning
+    {2.1} Open scan - connect() based
+    {2.2} Half-open - SYN scan
+    {2.3} Stealth - FIN, X-mas, NULL
+
+[3] Detailed port interrogation
+    {3.1} Names and versions
+
+[4] OS fingerprinting - theory
+    {4.1} Active and passive
+    
+[5] Close up
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 1. Intro
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Kroz svakodnevnu praksu putem vasih terminala pokrecete razne alate poput 
+Fyodorovog nmap-a i slicne a nikad se niste zapitali kako oni zaista rade, 
+sta se krije ispod haube, koje tehnike koriste ili kako napisati nesto svoje
+a da sluzi istoj svrsi. Ovaj tekst govori upravo o tome. On nije pisan u 
+stilu celine, dakle nije u pitanju razvijanje jednog alata, pa da prolazimo
+deo po deo, opciju po opciju, vec se opisuje kako radi recimo obican port
+skener, zatim napredniji itd. tako da na vama ostaje da li cete stecheno
+znanje iskoristiti za razvijanje nekog sitnog, korisnog alatcica ili to sve
+spojiti u celinu za nesto veliko kao sto je nmap (za to vec treba malo vise
+znanja ali shvatate poentu). Fokus u samom tekstu je vise na teoriju jer je
+prateci kod dat u snipetima (celi sourcevi su uz tekst - uuencode).
+
+Zahteva predznanje iz mreznog programiranja (C) i poznavanje TCP/IP protokola.
+Izlozeni materijal odnosi se uglavnom na GNU/Linux ali se u sustini vecina 
+ideja moze preneti i na druge platforme.
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 2. Port scanning
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Vecina vas zna sta jer skeniranje portova i kakvu ulogu ima u napadima na
+sisteme. Cilj ovog poglavlja je da vas nauci kako da napisete port skener.
+Postoji vise metoda i tipova, za one koji su ovde opisani dati su i primeri.
+
+{2.1} - Open scan - connect() based
+
+Prvi i najlaksi tip je otvoreno skeniranje. U pitanju je uspostavljanje pune
+konekcije sa hostom (tipican three-way handshake). Takvo povezivanje mi 
+ostvarujemo prostom connect() funkcijom. Recimo da zelimo da napisemo petlju 
+koja ce skenirati 1-1024 opseg portova i prikazivati koji su otvoreni. 
+Sledecih nekoliko koraka su osnovni princip toga:
+
+ - program otvara socket i ostvaruje konekciju sa hostom na pocetni port 1.
+ - u zavisnosti od vrednosti koju connect() vrati znacemo jeli otvoren ili ne.
+ - u prvom slucaju stampa se njegov broj, zatvara se socket a zatim se petlja 
+   ponovo izvrsava i dalje inkrementira promenljivu (isto vazi i ako je 
+   zatvoren, samo sto se ne stampa).
+ - petlja ponavlja ove korake sve dok ne ispuni uslov tj. dodje do kraja 
+   opsega (1024). 
+
+Prikazimo to isto u primeru (iako je pisan u C-u, ova ideja se moze 
+implementirati u vise razlicitih jezika):
+
+     for(port = 1; port != 1024; port++) 
+     {
+        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        
+        target.sin_family = AF_INET;
+        target.sin_port = htons(port);
+        target.sin_addr.s_addr = inet_addr(argv[1]);
+        
+        /* ako connect() vrati 0 znaci da je uspeo i stampa se broj porta */
+        if(!connect(sockfd, (struct sockaddr *)&target, sizeof(target)))
+             printf("%d\n", port);
+        
+        close(sockfd);
+     }
+
+Ubacite sad ovo program i isprobajmo (pogledaj primer1.c za gotov source):
+
+==------------------[ shell ]------------------==
+shatter@fearless:~$ gcc primer1.c -o primer1
+shatter@fearless:~$ ./primer1 67.18.200.99
+21
+22
+80
+shatter@fearless:~$
+==------------------[/shell ]------------------==
+
+To naravno radi (za radoznale: 67.18.200.99 je krstarica). Prednosti ovakvog 
+skeniranja (videli ste da je lako za pisanje, svega nekoliko redova koda, 
+racunajuci i ostatak programa tj. deklaracije) je to sto je prvenstveno 
+izrazito brzo, u vecini slucajeva prilicno temeljno i ne zahteva neke posebne 
+privilegije. Ali ono sto je lako nije uvek dobro, jer ovaj tip skeniranja ima 
+i svoju manu. Lako se otkriva jer u logovima nije tesko primetiti konekcije 
+koje su uspostavljene pa odmah prekinute, pogotovu kada se radi o vise 
+skeniranih portova. Takodje ga mogu otkriti i blokirati firewallovi i IDS.
+
+Predlozi: 
+         Kada budete pisali svoj port skener, radio on klasicno otvoreno
+         skeniranje ili naprednije, razmislite o sledecim opcijama u njemu:
+         - skeniranje opsega (od porta do porta), switchevi tipa -ft (tako
+         sam ja stavljao u mojim, oznacava from-to), primer: -ft 20-1000
+         - provera samo odredjenih portova kao 21, 22, 23, 25, 53, 80 itd.
+         ja sam to smestao u niz tipa ports[4] = {21, 22, 23, 25} i onda to
+         provlacio kroz petlju, zaista ubrza posao ako su nekome potrebne 
+         samo te informacije. Korisno kasnije kod skidanja banera takodje.
+         - skeniranje subnet klasa (nameravao sam i to da opisem al jebiga)
+         - opcija za smestanje rezultata skeniranja u log
+         - u svim primerima u ovom tekstu nije koriscen dns resolving nego
+         je moguce uneti samo ip. Vi cete, naravno, koristiti. Ako neko nije 
+         narocito upucen u to, neka pogleda man gethostbyname.
+         
+{2.2} - Half-open - SYN scan
+
+Ovaj tip skeniranja naziva se polu-otvoreno zbog toga sto se za razliku od
+otvorenog ne uspostavlja puna konekcija sa hostom tj. ne sledimo uobicajenu 
+three-way handshake proceduru vec radimo drugo. Hostu saljemo SYN i cekamo 
+odgovor. Ako odgovori sa SYN|ACK port je otvoren, umesto ACK saljemo mu RST
+(to je ustvari posao kernela) i prekidamo konektovanje. Ako je port zatvoren 
+odgovor ce biti RST. Oni neiskusni medju vama ce se sada pitati "kako za ime
+boga poslati paket sa syn flegom?". Logicno je da se ovde ne mozete osloniti 
+na neke gotove f-je poput connect() vec da je potrebna odredjena manipulacija 
+paketima sto ce se raditi otprilike "rucno". Dakle, treba:
+
+ - napisati funkciju koja ce raditi sledece:
+   * kreiranje i slanje syn paketa
+   * primanje dolazecih paketa tj. analiziranje odgovora
+   * na osnovu rezultata vracati neku vrednost (1 ili 0)
+ - funkciju pozivati u petlji na isti nacin kao connect() kod otvorenog 
+   skeniranja tj. u obliku if(!f()) ...
+
+Za kreiranje paketa koriste se standardne linux strukture koje predstavljaju
+IP, ICMP, TCP i UDP zaglavlja (engl. header) (nije naodmet napisati i svoje).
+Nama su trenutno bitna samo IP i TCP (ip i nije neophodan, videcete u primeru). 
+Mogu se naci u /usr/include/netinet/ip.h i /usr/include/netinet/tcp.h. 
+Pri popunjavanju istih treba:
+
+      tcp.fin  = 0;
+      tcp.syn  = 1;    /* syn postaviti na 1 */
+      tcp.rst  = 0;
+      tcp.psh  = 0;
+      tcp.ack  = 0;
+      tcp.urg  = 0;
+
+Dalje, primanje paketa i analiziranje odgovora je prosto. Proveravamo da li
+je vracen RST, ako jeste f-ja vraca 1, ako ne onda 0 (sto znaci da je port 
+otvoren, i opet idemo na isti princip tj. if(!f())):
+
+            recv(sockfd, (struct recv_tcp *)&recv_tcp, 65535, 0);
+            if(recv_tcp.tcp.dest == SRCPORT)
+            {
+                  close(sockfd);
+                  if(recv_tcp.tcp.rst == 1) return 1;
+                  else return 0;
+            }
+            
+U primer2.c uz tekst nalazi se jedan syn skener koja prati upravo postupak 
+koji je opisan (netestiran, mozda treba malo dorade za koju nisam imao vremena, 
+non-blocking sockete i sl, tako da je to na vama). Nadam se da svi znate da
+ce vam za ovo (i dole opisane stealth tipove) trebati root privilegije, tako 
+da oni koji misle da testiraju  primer na nekom shellu gde imaju obican nalog 
+(>0) mogu da zaborave na to.
+
+{2.3} Stealth - FIN, X-mas, NULL
+
+Posto ni polu-otvoreno skeniranje nije narocito stealth (postoji dosta alata
+koji otkrivaju konekcije tog tipa, cesto zbog syn flooda) postoji i nekoliko
+alternativa. To su fin, x-mas i null skeniranje. Postupak je isti, samo treba
+postaviti odredjen flegove na 1 (osim kod null) a ostale na 0:
+
+Kod fin:
+        tcp.fin = 1;
+
+Kod x-mas:
+        tcp.fin = 1;
+        tcp.psh  = 1;
+        tcp.urg  = 1;
+
+Kod null svi na 0:
+        tcp.fin  = 0;
+        tcp.syn  = 0;
+        tcp.rst  = 0;
+        tcp.psh  = 0;
+        tcp.ack  = 0;
+        tcp.urg  = 0;
+
+Dakle, fin skeniranje ukljucuje FIN (ocigledno iz imena, duh), x-mas FIN, URG 
+i PUSH flegove, a null nijedan. Kada se posalju ovakvi paketi na neki port, 
+ako je otvoren oni su ignorisani, ali ako je zatvoren odgovor ce biti RST. 
+Onda isti princip kao malopre tj. if(recv_tcp.tcp.rst == 1) return 0. Dakle 
+ovim postupkom se na tih i neprimecen nacin mogu skenirati portovi upravo zbog 
+cinjenice da se konekcija uopste i ne otvara. Mozete prepraviti primer2.c u 
+jedan od ovih tipova skeniranja. Ono sto treba napomenuti je to da nijedan od
+opisanih ne radi u slucaju, pogodite cega, - Windows masina. Ne postoji nijedan
+poseban razlog, osim to da Microsoft nije postovao standard prema RFC 793, vec 
+su posao uradili na svoj nacin. Postoje jos neki sistemi koji se ponasaju isto 
+kao Windows a to su Cisco, BSDI, HP/UX, MVS i IRIX.
+
+Predlozi:
+        Poluotvoreno i stealth skeniranje treba smestiti u jednu celinu gde
+        ce se argumentima birati ono sto je potrebno. Ja sam npr radio ovako:
+        
+      switch(argv[1][1]) {
+      case 's': 
+            tcp.syn = 1;
+            break;
+      case 'f': 
+            tcp.fin = 1;
+            break;
+      case 'x': 
+            tcp.fin = 1;
+            tcp.psh = 1;
+            tcp.urg = 1;
+            break;
+      }
+        To je najprakticniji nacin, ako znate bolji onda uradite tako. 
+        - Posto cete u ovakvim tipovima skeniranja koristiti u petljama f-je
+        kao recv, recvfrom i sl. treba misliti o blokiranju i kako ga spreciti. 
+        Ovo je malo vise od obicnog predloga, resice vas nepotrebnih muka.
+        - Analizu odgovora smestiti u zasebnu funkciju
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 3. Detailed port interrogation
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+{3.1} Names and versions
+
+Informacije o otvorenim portovima na nekom hostu su osnovna svrha skenera, 
+ali ponekad te informacije trebaju biti potkrepljene jos necim. Uzmimo za
+primer, vecina vas zna da se iza porta 21 krije ftp, ali recimo ne znate da 
+se iza 137 krije netbios-ns. Iz tog razloga, svaki dobar skener bi trebalo da, 
+pored broja porta, naznaci i ime servisa iza njega (ovde su ukljuceni i sami 
+estetski razlozi, npr kada se radi profil nekog hosta, dobro je imati brojeve + 
+imena, radi lakseg snalazenja i preglednosti). Glup potez bi bio da proveravamo 
+npr sa if(port == 25) printf("smtp")... i tome slicno kad imamo bogom dane 
+servent f-je (linux rulles) :). getservent(), getservbyname() i getservbyport()
+iz netdb.h uzimaju info iz /etc/services (sadrzi imena svih poznatijih servisa 
+za odredjene portove) i vracaju popunjenu servent strukturu (pogledajte man 
+jedne od gore navedenih). F-ja koja nama trenutno najvise odgovara je 
+getservbyport(). Evo primera kako  je koristiti u nasem obicnom skeneru 
+(pogledaj primer2.c za ceo source):
+
+        if(!connect(sockfd, (struct sockaddr *)&target, sizeof(target))) 
+        {
+              if((serv = getservbyport(htons(port), "tcp")) != NULL)
+                    printf("%d (%s)\n", port, serv->s_name);
+              else
+                    printf("%d\n", port);
+        }
+
+Posto /etc/services ne sadrzhi informacije za svaki port u 1-65535 opsegu
+(jer i ne postoji toliko propisanih servisa) ova nasa provera je sasvim
+zgodna (getservbyport() vraca NULL pointer ako ne nadje trazeno). Dakle, ako
+se taj neki otvoreni port nadje u services spisku, bice prikazano ime u
+zagradi, a ako ne, samo port. Hajde da isprobamo:
+
+==------------------[ shell ]------------------==
+shatter@fearless:~$ gcc primer2.c -o primer2
+shatter@fearless:~$ ./primer2 67.18.200.99
+21 (ftp)
+22 (ssh)
+80 (http)
+shatter@fearless:~$
+==------------------[/shell ]------------------==
+
+Brilijantno :). Ne skodi uraditi i svoju listu portova koja ce sadrzati 
+sve iz /etc/services + dodatne (kao npr portove koje otvaraju neki poznati
+trojanci, backdoorovi i dr.) Eventualno mozete preuzeti i listu iz nmap-a, 
+koja je prilicno velika. Ovo naravno znaci i pisanje nove f-je koja bi
+zamenila getservbyport() i izvlacila info iz vase liste.
+
+
+Okej, imamo brojeve portova i imena servisa iza njih. Sta se jos moze izvuci?
+Ako znamo da ima vise razlicitih programa u ulozi recimo ftp servisa kao npr
+pureftpd, wuftpd, proftpd itd. treba se zapitati kako identifikovati njih i 
+njihove verzije. Da li ste primetili sta se desava kada uspostavimo obicnu
+konekciju sa smtp, ftp ili recimo ssh daemonom na nekom hostu? Pogledajmo:
+
+==------------------[ shell ]------------------==
+shatter@fearless:~$ nc www.blackhatz.net 21
+220 ProFTPD 1.2.10 Server (Debian) [69.60.123.16]
+
+shatter@fearless:~$ nc www.blackhatz.net 22
+SSH-1.99-OpenSSH_3.8.1p1 Debian-8.sarge.4
+==------------------[/shell ]------------------==
+
+Dakle, on se identifikuje takozvanim banerom. Iskoriscavanje ovoga u port
+skenerima je sasvim jednostavno, tacnije u tri koraka a to su: uspostavljanje 
+veze sa hostom na odredjen port (obicnim connect()), zatim koristeci recv() 
+"skidamo" baner u pripremljeni bafer i na kraju ga prikazujemo sa printf()
+
+Ova tehnika se moze primenjivati za ftp, telnet, ssh, smtp i slicne daemone
+ali ne i za httpd. Postoje i nacini za identifikovanje verzija web servera a 
+najlakshi je izdvajanje product tokena:
+
+==------------------[ shell ]------------------==
+shatter@fearless:~$ nc www.blackhatz.net 80
+HEAD / HTTP/1.0
+
+HTTP/1.1 200 OK
+Date: Sun, 16 Oct 2005 23:42:49 GMT
+Server: Apache/1.3.33 (Debian GNU/Linux) PHP/4.3.10-16
+Last-Modified: Fri, 17 Jun 2005 12:29:50 GMT
+...
+==------------------[ shell ]------------------==
+
+Deo koji mi treba da izdvojimo je "Apache/1.3.33 (Debian GNU/Linux) PHP/4.3.10-16"
+U sledecem primeru se nalaze obe stvari, dakle skidanje standardnih 
+i http banera (primer3.c za ceo source). Ovo lici na jedan delic nekog 
+projekta koji sam radio unutar zajednice (svi znamo koje ;p).
+
+        if(!connect(sockfd, (struct sockaddr *)&target, sizeof(target)))
+        {
+            /* httpd identifikacija izdvajanjem onoga
+               sto se, po rfc, naziva 'product token' */
+            if(port == 80)
+            {
+                  send(sockfd, "HEAD / HTTP/1.0\n\n", 17, 0);
+                  recv(sockfd, stdbanner, sizeof(stdbanner), 0);
+                        
+                  http_bnr = strstr(stdbanner, "Server:");
+                  for(i = 0; i < strlen(http_bnr); i++) {
+                        if(http_bnr[i] == '\n') break; }
+                  http_bnr[i] = '\0'; http_bnr += 8;
+
+                  printf("80 - %s\n", http_bnr);
+                        
+                  } else {
+                        /* skidanje standardnog banera kod ftpd, sshd, smtp... */
+                        recv(sockfd, stdbanner, sizeof(stdbanner), 0);
+                        printf("%d - %s", port, stdbanner);
+                  }
+        }
+
+Postupak je ocigledan. Ipak, postoje ljudi koji menjaju ili potpuno uklanjaju
+banere nebi li sprecili ovo sto mi radimo ali njihov procenat je veoma mali.
+
+Predlozi:
+         - Uzimanje imena i banera servisa bi takodje trebalo smestiti u jednu 
+         celinu gde ce imena biti defaultna stvar a prikaz banera opciona
+         - Bilo bi kul uraditi uporedjivanje sa nekom vec pripremljenom
+         bazom ranjivosti tako da uz baner dobijemo informaciju da li taj 
+         servis ima poznatih propusta, mozda tu priloziti i BID (Bugtraq Id) 
+         ali to je vec mozda previse posla, ali je dobra ideja, nessus-like ;)
+         - Razmisliti o implementiranju nmap probes identifikovanja servisa
+         
+////////////////////////////////////////////////////////////////////////////
+--==<[ 3. OS fingerprinting - theory
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Jedna od najbitnijih informacija u, kako ja volim da ga zovem, izradi profila 
+potencijalnih meta moze biti operativni sistem na kome rade. Najbolji primer 
+toga je recimo da propust koji zelimo da iskoristimo zavisi bas od OS verzije. 
+Da bi exploitanje uspelo ne moze se koristiti shellcode npr. za linux ako je 
+u pitanju solaris, vec se mora prilagoditi pomenutom. Iako se informacije
+o OS mogu izvuci i na lake nacine tipa kada ih otkriva baner nekog servisa
+kao httpd ili ftpd, usled nedostatka istih (ili u slucaju koji sam naveo na 
+kraju drugog poglavlja) pribegava se nekim sigurnijim nacinima. Oni se 
+baziraju na TCP/IP stacku i dele se na dva tipa: aktivni i pasivni.
+
+{3.1} Active and passive
+
+Aktivni OS fingerprint radi na principu iskoriscavanja osobina (ili bolje
+receno nepravilnosti) TCP/IP stacka nekog operativnog sistema. Naime, svaki
+sistem drugacije odgovara na razlicite zahteve iliti pakete. Znajuci to, 
+treba samo izgraditi bazu potpisa sa kojom ce se uporedjivati odgovori.
+Naravno, ne postoji jedna tehnika za odredjivanje svih operativnih sistema, 
+vec se radi kombinovanje vise njih da bi se dobio sto tacniji rezultat. 
+Ovde su opisane samo tri (opisi su delom preuzeti iz Fyodorovog clanka 
+"Remote OS detection via TCP/IP Stack FingerPrinting"):
+
+FIN probe - Saljemo FIN paket (ili bilo koji paket bez SYN i ACK flega) na
+otvoren port i cekamo odgovor. Po RFC 793 (Transmission Control Protocol ili
+TCP) operativni sistem NE treba da odgovori na njega ali neki kao Windows, 
+CISCO, HP/UX, MV i IRIX vracaju RST paket.
+
+TCP ISN Sampling - Ideja je da se nadju shabloni po kojem se menjaju 
+sekvencijalni brojevi na operativnim sistemima kada odgovaraju na zahtev
+za konekciju. Mogu biti kategorisani u vise grupa kao: tradicionalne 64k 
+(stare unix masine), random inkrementiranje (novije verzije Solarisa, 
+IRIX, FreeBSD...), "time dependent" model inkrementiranja (Windows) i dr.
+
+TCP Initial Window - U pitanju je provera window velicine u paketima.
+Ovo je jedan od faktora primenljivih i u pasivnom fingerprintu (pomenuto 
+kasnije). Naime, pojedini operativni sistemi mogu biti potpuno identifikovani
+po ovoj vrednosti (npr AIX je jedini koji koristi 0x3F25) ili delimicno
+(Windows, OpenBSD i FreeBSD koriste 0x402E i sl.) 
+
+Za josh informacija pogledajte malopre pomenuti clanak.
+
+
+Pasivni fingerprint sledi isti koncept kao aktivni ali je implementacija
+drugacija. Umesto da saljemo specificno oblikovane pakete i analiziramo
+odgovore mi jednostavno hvatamo obicne pakete poslate od strane remote 
+sistema (generisane u obicnom saobracaju) i na osnovu odredjenih polja
+iz tcp/ip zagljavlja zakljucujemo koji je OS u pitanju (dakle razlike od 
+sistema do sistema, isto kao kod aktivnog). Jedini alat koji ja znam da 
+koristi ovu tehniku je p0f od zalewskog (http://lcamtuf.coredump.cx/p0f/) 
+koji je vise nego sjajan. p0f moze da identifikuje operativne sisteme na:
+
+- boxevima koji se konektuju na vas
+- -||- na koje se vi konektujete
+- -||- na koje ne mozete da se konektujete
+- -||- ciju komunikaciju mozete da nadzirete
+
+Prilicno je precizan jer koristi ogromnu bazu fp potpisa. Sta su potpisi?
+To cu najbolje objasniti ako se vratimo na definiciju pasivnog fp iznad.
+Rekli smo da analiziramo neka polja iz tcp/ip zaglavlja, a to su najcesce
+(iako p0f koristi jos neka): TTL (Time To Live), Window size (pomenuto
+kod aktivnog), DF (Don't Fragment Bit) i TOS (Type Of Service). Zasebno
+govore malo, zajedno dosta. Recimo sad da imamo neki paket poslat od 
+strane masine za koju za sigurno znamo koji je OS, i on za ova polja ima 
+naznacene vrednosti ttl=64, win=16384, tos=0 i df=0. Potpis za taj 
+operativni sistem (u numbers-and-colons notaciji koju p0f koristi) bi bio:
+64:16384:0:0 (stim sto na kraju treba da bude naznacen i OS). Na taj nacin
+alat koji bi pisali ima lak pristup uporedjivanju (izdvojimo ta polja, 
+i uporedimo sa potpisom). Skinite p0f i analizirajte ga, bice korisnije
+od sve ove moje price. 
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 4. Close up
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Kada sam dobio ideju za ovaj tekst on je bio potpuno drugacije zamisljen, 
+trebao je biti puniji, zadnje poglavlje je takodje trebalo biti praceno 
+kodom, i jos dosta stvari je trebalo biti opisano. Usled moje velike lenjosti 
+u poslednje vreme, nije ispalo tako. Ali ipak verujem da se za tekst ne 
+moze reci da je los i da se ne moze iz njega nista nauciti...
+
+Ovom prilikom zelim da pozdravim sledece ljude:
+
+Wintermuth, h4z4rd, n00ne (aka DownBload), deroko (steta sto ne pises vise), 
+sunnis (ako si ziv), ap0x, h44rP (ala cemo da razbijemo #5) i sve ostale 
+kvalitetne ljude koje znam i koji me znaju sa nase nazovi scene...
+
+5 bambija za onoga ko nadje ijednu pravopisnu gresku u ovom tekstu.
+
+begin 644 primeri.tar.gz
+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
+=P,#`P,#`P,#`P,#`P,#`P.`O@#\`P\\7O0!0````
+`
+end
+
+

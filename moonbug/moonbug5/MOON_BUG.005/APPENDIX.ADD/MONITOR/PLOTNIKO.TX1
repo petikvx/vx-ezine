@@ -1,0 +1,1335 @@
+Листинг 1. Текст программы очистки удаленных элементов
+директорий логических дисков
+
+	.286
+
+	title	loral
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Программа очистки удаленных элементов директорий
+;		логических дисков 
+;   
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;       Данная версия программы для каждого доступного
+; диска в системе просматривает  все  директории, ищет
+; там записи об удаленных файлах и  обнуляет их.
+;
+;-----------------------------------------------------
+;		(c) 1993 Плотников В.И.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+_stack	segment	stack 'STACK'
+	dw	100	dup(?)
+_stack	ends
+
+
+dan	segment	'DATA'
+vers	db	?	; Номер версии MS-DOS
+disk	db	2	; Относительный номер
+			; логического диска
+dir_siz dw      ?       ; Число секторов в корневой
+			; директории
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+bufsect	label	byte	      ;; Буфер для чтения    ;;
+			      ;; корневого сектора   ;;
+			      ;; диска               ;;
+			      ;;;;;;;;;;;;;;;;;;;;;;;;; 
+	db	11	dup(?)
+sectsiz dw      ?               ; Байтов в секторе
+clstsiz	db	?		; Секторов в кластере
+ressecs	dw	?		; Секторов перед 
+				; первой FAT
+fatcnt	db	?		; Число таблиц FAT
+rootsiz	dw	?		; Максимальное число
+				; элементов корневого
+				; каталога
+	db	3	dup(?)
+fatsize dw	?		; Число секторов в FAT
+	db	15	dup(?)
+xxxx	dd	?	
+	db	469	dup(?)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+buf_int25	dw 5 dup(?)	; Буфер для данных
+				; при работе с дисками
+				; любого размера
+bufio	db	512	dup(?)  ; Буфер для чтения
+				; (записи) секторов
+flag	db	?
+
+teksl	dw	4	dup(?)  ; Текущее слово 
+				; состояния уровня
+;----------------------------------------------\
+;					       ;
+;  Слово состояния предназначено для хранения  ;
+;  информации об анализируемой директории в    ;
+;  формате:                                    ;
+;                                              ;
+;    0    номер уровня  (0 - корневой каталог) ;
+;   +2    число подкаталогов                   ;
+;   +4    номер кластера начала директории     ;
+;         (для корневого - номер сектора)      ;
+;   +6    номер обрабатываемого подкаталога    ;
+;   +8                                         ;
+;                                              ;
+;----------------------------------------------/
+
+
+slsost	dw	4*32	dup(?)	;;;;;;;;;;;;;;;;;;;;;;;;
+				;;;
+				;;;  Слово состояния 
+				;;;  уровня просмотра 
+                                ;;;  директорий
+				;;;
+				;;;;;;;;;;;;;;;;;;;;;;;;
+nachd	dw	?	; Переменная для хранения
+			; номера сектора, c которого
+			; начинается область данных
+			; логического диска
+
+prizn	db	?	; Признак возникновения ошибки
+                        ; при коррекции директорий
+			; (если равен 1)
+copyrgt	db	0Dh,0Ah
+	db	'        (c)    1993     Плотников В.И.'
+	db	0Dh,0Ah,0Dh,0Ah,'$'
+error	db	'  Ошибка      при      чтении      диска   $'
+mes	db	'       Нажмите     клавишу      <Enter>$'
+bk	db	0Dh,0Ah,'$'
+mes1	db	'  Откорректированы     каталоги    диска   $'
+mes2	db	'  Откорректированы не все каталоги диска   $'
+mes3	db	'  Защита    от    записи     на    диске   '
+disk_name	db	'C',0Dh,0Ah,'$'
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+dan	ends
+
+
+code	segment
+
+	assume	cs:code,ss:_stack
+
+loral	proc	far
+
+	mov	ax,dan
+	mov	ds,ax
+	assume	ds:dan
+	push	ds
+	pop	es
+	mov	ah,9
+	lea	dx,copyrgt
+	int	21h
+;
+;	Определяем номер версии MS-DOS
+;
+	mov	ah,30h
+	int	21h
+	mov	vers,al
+;
+;    Проверка на наличие логического диска
+;
+lor_1:
+	mov	dl,disk
+	inc	dl
+	mov	ah,36h
+	int	21h
+	cmp	ax,0FFFFh
+	jnz	lor_26
+
+	jmp	lor_2
+
+;
+;     Проверка на отсутствие защиты диска от
+;                записи (удаления)
+;
+lor_26:
+
+	xor	ah,ah
+	mov	buf_int25,0
+	mov	buf_int25+2,0
+	mov	buf_int25+4,1
+	mov	buf_int25+6,offset bufsect
+	push	ds
+	pop	buf_int25+8
+        call    read_wr_int     ; Чтение boot сектора
+
+	jnc	lor_3
+	mov	ah,9
+	lea	dx,error
+	int	21h
+	lea	dx,disk_name
+	int	21h
+	jmp	lor_4
+lor_3:
+	mov	ah,1
+        call    read_wr_int     ; Запись boot сектора
+
+	jnc	lor_25
+
+	mov	ah,9
+	lea	dx,mes3
+	int	21h
+	jmp	lor_4     ; Диск защищен от записи
+;++++++++++++++++++++++++++++++++++++++++++++++++++++++
+;
+; Коррекция записей об удаленных файлах (каталогах)
+;	во всех каталогах логического диска
+;
+;++++++++++++++++++++++++++++++++++++++++++++++++++++++
+lor_25:
+;
+; Поиск номера сектора, с которого начинается
+;               директория диска
+;
+	mov	dx,ressecs
+	push	dx
+	xor	ah,ah
+	mov	al,fatcnt
+	mul	fatsize
+	pop	dx
+        add     dx,ax   ;  В dx получаем номер сектора,
+			;  с которого начинается каталог
+
+	push	dx
+;
+; Вычисление количества секторов, занимаемых корневым
+;		каталогом
+	mov	ax,rootsiz
+	mov	dir_siz,ax
+	shr	dir_siz,4
+;
+; Определение начала области данных на диске
+;
+	add	dx,dir_siz
+	mov	nachd,dx
+;
+; Инициализация вспомогательных переменных
+;
+	pop	dx
+
+	mov	buf_int25+4,1
+	mov	buf_int25+6,offset bufio
+	push	ds
+	pop	buf_int25+8
+	xor	ax,ax
+	mov	prizn,al
+	cld
+	mov	cx,4
+	lea	di,teksl
+	rep	stosw
+	mov	word ptr teksl+4,dx	
+	mov	cx,4
+	mov	bx,teksl
+	shl	bx,3
+	lea	di,slsost
+	add	di,bx
+	lea	si,teksl
+	cld
+	rep	movsw
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;						;;;;;;
+;;;;;	  Коррекция текущего каталога диска	;;;;;;
+;;;;;						;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+lor_7:
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;  
+; Чистка записей об удаленных файлах и подсчет
+;	числа подкаталогов в директории
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	cmp	teksl,0	; Обрабатываем корневой каталог?
+	jnz	lor_28	; Нет
+	mov	cx,dir_siz
+	jmp	short lor_29
+lor_28:			
+	xor	ch,ch
+	mov	cl,clstsiz
+lor_29:			; В cx получили длину каталога
+			; в секторах
+	xor	dx,dx
+	mov	ax,teksl+4
+	cmp	teksl,0	; Обрабатываем корневой каталог?
+	jz	lor_30	; Да
+	sub	ax,2
+	xor	bh,bh
+	mov	bl,clstsiz
+	mul	bx
+	add	ax,nachd
+	adc	dx,0
+lor_30:
+	mov	buf_int25,ax
+	mov	buf_int25+2,dx
+;
+;   Чтение сектора текущей директории
+;
+lor_10:
+	push	cx
+
+	xor	ah,ah
+        call read_wr_int ; Читаем сектор директории
+
+	jnc	lor_11
+
+	mov	prizn,1
+	pop	cx
+	jmp	lor_8
+
+lor_11:
+	mov	si,0	; Число подкаталогов 
+			; в этом секторе
+	lea	di,bufio
+        mov     cx,16   ; Число элементов директории
+			; в одном секторе
+	mov	flag,0
+;
+; Поиск удаленных из директории записей
+;
+lor_12:
+	push	cx
+
+        cmp     byte ptr [di],0E5h      ; Запись об
+                                        ; удаленном входе?
+	jz	lor_13			; Да
+
+	jmp	short lor_14
+
+lor_13:
+	cmp	word ptr [di+1],0FFFFh
+	jz	lor_14	; Запись была обнулена
+	mov	cx,31
+	cld
+	push	di
+	inc	di
+	mov	al,0FFh
+	rep	stosb	; Чистим запись каталога
+	pop	di
+	mov	flag,1
+;
+;    Поиск записей о подкаталогах
+;
+lor_14:
+	cmp	byte ptr [di+11],10h
+	jnz	lor_15	; Это не подкаталог
+
+	cmp	byte ptr [di],2Eh
+	jz	lor_15
+
+        inc     si      ; Увеличиваем счетчик
+
+lor_15:
+	add	di,32
+
+	pop	cx
+	loop	lor_12
+	add	teksl+2,si
+;
+;  Проверка на необходимость коррекции
+;          сектора директории
+;
+	cmp	flag,0
+	jz	lor_16
+
+	mov	ah,1
+        call read_wr_int ; Пишем сектор директории
+	jnc	lor_16
+
+	mov	prizn,1
+
+lor_16:
+	add	buf_int25,1
+	adc	buf_int25+2,0
+	pop	cx
+	loop	lor_10
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;         Обработка    подкаталогов
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+lor_8:
+	inc	teksl+6
+	mov	ax,teksl+2
+	cmp	ax,teksl+6	; Обработали
+				; все подкаталоги?
+
+	jae	lor_9		; Нет
+;
+;	Заключительные операции по обработке
+;		каталога данного уровня
+;
+lor_24:
+	cmp	teksl,0
+	jnz	lor_23
+
+	jmp	lor_5	; Обработали все каталоги
+			; данного логического диска
+
+lor_23:
+	mov	cx,4
+	mov	bx,teksl
+	dec	bx
+	shl	bx,3
+	lea	si,slsost
+	add	si,bx
+	lea	di,teksl
+	cld
+	rep	movsw	; Восстановили слово состояния 
+			; предыдущего уровня
+	jmp	lor_8
+;
+; Запомним откорректированное слово состояния
+;
+lor_9:
+	mov	cx,4
+	mov	bx,teksl
+	shl	bx,3
+	lea	di,slsost
+	add	di,bx
+	lea	si,teksl
+	cld
+	rep	movsw
+;====================================================
+;	Получение номера начального сектора
+;		для текущего подкаталога
+;====================================================
+	cmp	teksl,0	; Обрабатываем корневой каталог?
+	jnz	lor_32	; Нет
+	mov	cx,dir_siz
+	jmp	short lor_31
+lor_32:			
+	xor	ch,ch
+	mov	cl,clstsiz
+lor_31:			; В cx получили длину каталога
+			; в секторах
+	xor	dx,dx
+	mov	ax,teksl+4
+	cmp	teksl,0	; Обрабатываем корневой каталог?
+	jz	lor_33	; Да
+	sub	ax,2
+	xor	bh,bh
+	mov	bl,clstsiz
+	mul	bx
+	add	ax,nachd
+	adc	dx,0
+lor_33:
+	mov	buf_int25,ax
+	mov	buf_int25+2,dx
+	mov	si,0	; Число подкаталогов 
+;
+;   Чтение сектора текущей директории
+;
+lor_19:
+	push	cx
+
+	xor	ah,ah
+        call read_wr_int ; Читаем сектор директории
+
+	jnc	lor_17
+
+	mov	prizn,1
+	pop	cx
+	jmp	lor_24
+
+lor_17:
+	lea	di,bufio
+	mov	cx,16
+;
+;    Поиск записей о подкаталогах
+;
+lor_20:
+	cmp	byte ptr [di+11],10h
+	jnz	lor_21
+	cmp	byte ptr [di],2Eh
+	jz	lor_21
+        inc     si      ; Увеличиваем счетчик
+	cmp	si,teksl+6
+	pop	cx
+	jz	lor_22 ; Нашли запись о каталоге
+	push	cx
+lor_21:
+	add	di,32
+	loop	lor_20
+
+lor_18:
+	add	buf_int25,1
+	adc	buf_int25+2,0
+	pop	cx
+	loop	lor_19
+
+	jmp	lor_24
+
+;
+; Коррекция слова состояния нового уровня
+;
+lor_22:
+	mov	si,di
+	inc	teksl
+	mov	cx,3
+	lea	di,teksl+2
+	xor	ax,ax
+	cld
+	rep	stosw
+	mov	bx,word ptr [si+26]
+	mov	teksl+4,bx
+	jmp	lor_7
+;++++++++++++++++++++++++++++++++++++++++++++++++++++++
+lor_5:
+	mov	ah,9
+	lea	dx,mes1
+	cmp	prizn,0
+	jz	lor_6
+	lea	dx,mes2
+lor_6:
+	int	21h
+	lea	dx,disk_name
+	int	21h
+lor_4:
+	inc	disk
+	inc	disk_name
+	jmp	lor_1
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;            Завершение работы программы
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+lor_2:
+	mov	ah,9
+	lea	dx,bk
+	int	21h
+	lea	dx,mes
+	int	21h
+	mov	ah,8
+	int	21h
+	mov	ah,9
+	mov	dx,offset bk
+	int	21h
+	mov	ax,4C00h
+	int	21h
+
+loral	endp
+
+
+read_wr_int	proc	near
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Процедура чтения (записи) логического сектора диска
+;
+;------------------------------------------------------
+;
+;	Вход:
+;
+; ah		- признак выполняемой операции 
+;		  (0 - чтение, 1 - запись);
+; buf_int25	- буфер с данными для чтения (записи)
+;		  логического сектора в формате для
+;		  расширенного чтения (для дисков
+;                 размером больше 32 Мб);
+; disk		- относительный номер логического
+;		  диска;
+; ver		- номер версии MS-DOS.
+;
+;
+;	Выход:
+;
+; флаг CF	- признак ошибки, если взведен.
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	pusha
+	mov	al,disk
+;
+; Проверка номера версии MS-DOS для выбора подвида 
+;	программы обслуживания прерывания 
+;		чтения (записи) сектора
+;
+	cmp	vers,3
+	jg	r_w_1	; На операции расширенной
+			; обработки
+;
+; Операции для низших версий операционной системы
+;
+	mov	cx,buf_int25+4
+	mov	dx,buf_int25
+	mov	bx,buf_int25+6
+	mov	si,buf_int25+8
+	push	ds
+	mov	ds,si
+	or	ah,ah
+	jnz	r_w_2
+        int     25h     ; Читаем секторы
+	pop	dx
+	pop	ds
+	jmp	short r_w_4
+r_w_2:
+        int     26h     ; Пишем секторы
+	pop	dx
+	pop	ds
+	jmp	short r_w_4
+;
+;Операции расширенного чтения (записи)
+;
+r_w_1:
+	mov	bx,offset buf_int25
+	mov	cx,0FFFFh
+	or	ah,ah
+	jnz	r_w_3
+        int     25h     ; Читаем секторы
+	pop	dx
+	jmp	short r_w_4
+r_w_3:
+        int     26h     ; Пишем секторы
+	pop	dx
+r_w_4:
+	popa
+	ret
+read_wr_int	endp
+
+
+
+code	ends
+	end	loral
+Листинг 2. Текст программы чистки свободного
+пространства логического диска
+
+	.286
+
+	title	clear
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Программа чистки свободных кластеров конкретного
+;		логического диска
+;   
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;    Данная программа для указанного пользователем
+; диска обнуляет записи свободных  кластеров диска.
+;_________________________________________________
+;		(c) 1993 Плотников В.И.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+_stack	segment	stack 'STACK'
+	dw	100	dup(?)
+_stack	ends
+;
+dan	segment	'DATA'
+
+vers	db	?	; Номер версии MS-DOS
+disk	db	2	; Относительный номер
+			; логического диска
+
+buf_int25	dw 5 dup(?)	; Буфер для данных
+				; при работе с дисками
+				; любого размера
+fat	db	0	; Вид FAT у обрабатываемого
+                        ; диска (0 - 12 битов, 1 - 16
+                        ; битов)
+ad_clst	dw	?	; Число кластеров на диске
+clst_buf dw	?	; Номер сегмента в ОП начала
+			; буфера для чтения кластера
+fat_buf dw	?	; Номер сегмента в ОП начала
+			; буфера для чтения FAT
+beg_clst dw	?	; Текущий номер анализируемого
+			; кластера
+leng_clst dw	?	; Длина кластера в байтах
+numb	dw	1	; Обработанный процент
+text	db	'  0%'	; данных диска
+	db	0Dh,'$'
+nachd	dw	?	; Переменная для хранения
+			; номера сектора, c которого
+			; начинается область данных
+			; логического диска
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+bufsect	label	byte	      ;; Буфер для чтения    ;;
+			      ;; корневого сектора   ;;
+			      ;; диска               ;;
+			      ;;;;;;;;;;;;;;;;;;;;;;;;; 
+	db	11	dup(?)
+sectsiz dw      ?               ; Байтов в секторе
+clstsiz	db	?		; Секторов в кластере
+ressecs	dw	?		; Секторов перед 
+				; первой FAT
+fatcnt	db	?		; Число таблиц FAT
+rootsiz	dw	?		; Максимальное число
+				; элементов корневого
+				; каталога
+totsecs	dw	?		; Число секторов на диске
+                                ; (раздел меньше 32 Мб)
+	db	?
+fatsize dw	?		; Число секторов в FAT
+	db	8	dup(?)	
+disksiz dd	?		; Число секторов на диске
+                                ; (раздел больше 32 Мб)
+	db	7	dup(?)
+	db	469	dup(?)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+copyrgt	db 	15	dup(0),201
+	db	36	dup(205)
+	db	187,0Dh,0Ah
+	db	15	dup(0),186
+	db	'  Чистка свободных кластеров диска  '
+	db	186,0Dh,0Ah
+	db	15	dup(0),186
+	db      '                                    '
+	db	186,0Dh,0Ah
+	db	15	dup(0),186
+symb	db	'    (с)   1993    Плотников В.И.    '
+LENG_SYMB	equ	$-symb
+	db	186,0Dh,0Ah
+	db	15	dup(0),200
+	db	36	dup(205)
+	db	188,0Dh,0Ah,0Dh,0Ah
+	db	'$'
+
+err1	db	' Неправильно указан параметр командной строки'
+        db      ' (надо: clear.exe /диск)'
+	db	0Dh,0Ah,0Dh,0Ah,'$'
+err2	db	'   Задано    имя     несуществующего    диска'
+	db	0Dh,0Ah,0Dh,0Ah,'$'
+err3    db      '  Ошибка   при    чтении   boot сектор  диска'
+	db	0Dh,0Ah,0Dh,0Ah,'$'
+err4	db	'  Ошибка    при     чтении     F A T    диска'
+	db	0Dh,0Ah,0Dh,0Ah,'$'
+mes1	db	'           Диск   защищен   от   записи'
+	db	0Dh,0Ah,0Dh,0Ah,'$'
+mes2	db	12	dup(0)
+	db	'Обработано   дискового   пространства - $'
+mes3	db	12	dup(0)
+        db      'Чистка невозможна: размер FAT '
+        db      'превышает 64 Кб'
+	db	0Dh,0Ah,0Dh,0Ah,'$'
+bk	db	0Dh,0Dh,'$'
+
+dan	ends
+
+code	segment
+
+	assume	cs:code,ss:_stack
+	extrn	razm:far
+
+clear	proc	far
+	mov	ax,dan
+	mov	ds,ax
+	assume	ds:dan
+	mov	dx,offset copyrgt
+	mov	ah,9
+	int	21h
+;
+;	Определяем номер версии MS-DOS
+;
+	mov	ah,30h
+	int	21h
+	mov	vers,al
+;
+; Анализ параметров командной строки
+;
+	call	line
+	or	ah,ah
+	jz	clr_1
+	
+	mov	ah,9
+	lea	dx,err1
+	int	21h
+	jmp	clr_2
+
+clr_1:
+	mov	disk,al
+;
+;    Проверка на наличие логического диска
+;
+	mov	dl,disk
+	inc	dl
+	mov	ah,36h
+	int	21h
+	cmp	ax,0FFFFh
+	jnz	clr_3
+
+	mov	ah,9
+	lea	dx,err2
+	int	21h
+	jmp	clr_2
+
+;
+;     Проверка на отсутствие защиты диска от
+;                записи (удаления)
+;
+clr_3:
+	xor	ah,ah
+	mov	buf_int25,0
+	mov	buf_int25+2,0
+	mov	buf_int25+4,1
+	mov	buf_int25+6,offset bufsect
+	push	ds
+	pop	buf_int25+8
+        call    read_wr_int     ; Чтение boot сектора
+
+	jnc	clr_4
+	mov	ah,9
+	lea	dx,err3
+	int	21h
+	jmp	clr_2
+
+clr_4:
+	mov	ah,1
+        call    read_wr_int     ; Запись boot сектора
+
+	jnc	clr_5
+
+	mov	ah,9
+	lea	dx,mes1
+	int	21h
+	jmp	clr_2     ; Диск защищен от записи
+;
+; Вычисление длины кластера в байтах
+;
+clr_5:
+	mov	ax,512
+	mov	bl,clstsiz
+	xor	bh,bh
+	mul	bx
+	mov	leng_clst,ax
+;
+; Вычисление числа кластеров в области данных
+;		логического диска  
+;
+	mov	dx,ressecs
+	push	dx
+	xor	ah,ah
+	mov	al,fatcnt
+	mul	fatsize
+	pop	nachd
+	add	nachd,ax
+	mov	cx,16
+	mov	ax,rootsiz
+	xor	dx,dx
+	div	cx
+	mov	cx,ax	;  В cx получим число секторов  
+                        ;  в корневой директории диска
+	add	nachd,cx
+	mov	bx,nachd
+	cmp	totsecs,0
+	jz	clr_8
+	mov	ax,totsecs
+	sub	ax,bx
+	xor	dx,dx
+	xor	bh,bh
+	mov	bl,clstsiz
+	div	bx
+	jmp	short clr_9
+clr_8:
+	mov	ax,word ptr disksiz
+	mov	dx,word ptr disksiz+2
+	sub	ax,bx
+	sbb	dx,0
+	mov	bl,clstsiz
+	xor	bh,bh
+	div	bx
+clr_9:
+        mov     ad_clst,ax      ; Вычислим число кластеров
+				; на логическом диске
+;
+;	Определение вида FAT
+;
+	add	ax,2
+	cmp	ax,4086
+	ja	clr_6
+	mov	fat,0	; 12-битная
+	jmp	short clr_7
+clr_6:
+	mov	fat,1	; 16-битная
+	test	ax,8000h
+	jz	clr_7
+
+	mov	ah,9
+	lea	dx,mes3
+	int	21h
+	jmp	clr_2
+;
+; Выделение буферов в оперативной памяти для
+;	чтения FAT и дискового кластера
+;
+clr_7:
+	call	razm
+	mov	bx,es
+	add	ax,bx
+	add	ax,18	; Прибавим число параграфов
+			; PSP и 2 резервных
+	mov	clst_buf,ax
+	mov	bx,ax
+	mov	ax,32	; Число параграфов в
+                        ; 512-байтовом секторе
+	mul	clstsiz
+	add	ax,bx
+	mov	fat_buf,ax
+;
+;		Чтение FAT
+;
+	mov	ax,ressecs
+	mov	buf_int25,ax
+	mov	buf_int25+2,0
+	mov	ax,fatsize
+	mov	buf_int25+4,ax
+	mov	buf_int25+6,0
+	mov	ax,fat_buf
+	mov	buf_int25+8,ax
+	xor	ah,ah
+	call	read_wr_int
+	jnc	clr_10
+
+	mov	ah,9
+	lea	dx,err4
+	int	21h
+	jmp	clr_2
+;
+;	Инициализация переменных
+;
+clr_10:
+	mov	al,clstsiz
+	xor	ah,ah
+	mov	buf_int25+4,ax
+	mov	buf_int25+6,0
+	mov	ax,clst_buf
+	mov	buf_int25+8,ax
+	mov	beg_clst,2
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Чистка свободных кластеров диска
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+clr_11:
+	mov	cx,ad_clst
+clr_12:
+	push	cx
+;
+; Чтение элемента FAT, соответствующего обслуживаемому
+;			кластеру
+;
+	push	es
+	mov	ax,fat_buf
+	mov	es,ax
+	mov	bx,beg_clst
+	cmp	fat,0	; 12-битная FAT?
+	jz	clr_19	; Да
+	shl	bx,1
+	mov	ax,word ptr es:[bx]
+	jmp	short clr_20
+clr_19:
+	mov	ax,3
+	mul	bx
+	push	bx
+	mov	bx,2
+	div	bx
+	pop	bx
+	mov	bx,ax
+	mov	ax,word ptr es:[bx]
+	mov	bx,beg_clst
+	shr	bx,1
+	jc	clr_21	; Номер кластера - нечетный
+	and	ax,0FFFh
+	jmp	short clr_20
+clr_21:
+	shr	ax,4
+clr_20:
+	pop	es
+	or	ax,ax
+	jz	clr_22	; Кластер свободен
+
+	jmp	clr_17
+
+;
+;	Чтение свободного кластера
+;
+clr_22:
+	mov	ax,beg_clst
+	sub	ax,2
+	xor	bh,bh
+	mov	bl,clstsiz
+	mul	bx
+	add	ax,nachd
+	adc	dx,0
+	mov	buf_int25,ax
+	mov	buf_int25+2,dx
+	xor	ah,ah
+	call	read_wr_int
+	jnc	clr_18
+
+	jmp	clr_17
+
+;
+;	Чистка кластера диска
+;
+clr_18:
+	cld
+	xor	ax,ax
+	mov	di,buf_int25+6
+	mov	ax,buf_int25+8
+	push	es
+	mov	si,offset symb
+	mov	es,ax
+	mov	cx,LENG_SYMB
+	push	di
+	push	si
+	repe	cmpsb
+	pop	si
+	pop	di
+	pop	es
+	jcxz	clr_17
+	push	es
+	mov	es,ax
+	mov	cx,LENG_SYMB
+	rep	movsb
+	mov	cx,leng_clst
+	sub	cx,LENG_SYMB
+	mov	al,99h
+	rep	stosb
+	pop	es
+	mov	ah,1
+	call	read_wr_int
+
+clr_17:
+	inc	beg_clst
+
+	pop	cx
+;
+; Вычисление обработанного процента области
+;		данных диска
+;
+	mov	ax,ad_clst
+	sub	ax,cx
+	mov	bx,100
+	mul	bx
+	div	ad_clst
+	inc	ax
+	cmp	numb,ax
+	jz	clr_13
+	mov	numb,ax
+	mov	bl,10
+	div	bl
+	mov	text+2,ah
+	add	text+2,'0'
+	xor	ah,ah
+	div	bl
+	mov	text+1,ah
+	add	text+1,'0'
+	xor	ah,ah
+	div	bl
+	mov	text,ah
+	add	text,'0'
+	cmp	text,'0'
+	jnz	clr_14
+	mov	text,' '
+	cmp	text+1,'0'
+	jnz	clr_14
+	mov	text+1,' '
+clr_14:
+	mov	ah,9
+	mov	dx,offset mes2
+	int	21h
+	mov	ah,9
+	mov	dx,offset text
+	int	21h
+clr_13:
+	jmp	short clr_16
+clr_15:
+	jmp	clr_12
+clr_16:
+	loop	clr_15
+
+	mov	ah,9
+	mov	dx,offset bk
+	int	21h
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;            Завершение работы программы
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+clr_2:
+	mov	ax,4C00h
+	int	21h
+clear	endp
+
+
+
+line	proc	near
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Процедура анализа командной строки
+;
+;------------------------------------------------------
+;
+; Вход:
+;
+;	es - сегмент PSP 
+;	ds - сегмент данных
+;
+; Выход:
+;
+;	ah - код возврата:
+;
+;		0 - в строке содержится идентификатор
+;		    логического диска;
+;		1 - в строке отсутствует идентификатор
+;		    логического диска,
+;
+;	al - относительный   номер  логического  диска
+;            (A - 0, B - 1, C - 2, D - 3 ...).
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	cld
+;
+;	Анализ содержимого командной строки
+;
+	mov	di,0080h
+	mov	cl,byte ptr es:[di]
+	xor	ch,ch
+	cmp	cx,0
+	jnz	lin1
+lin3:
+	mov	ah,1
+	jmp	lin2
+lin1:
+	inc	di
+	mov	al,'/'
+
+	repne	scasb		; Поиск слэша	
+	jcxz	lin3
+	mov	al,es:[di]
+	cmp	al,'A'
+	jb	lin3
+	cmp	al,'z'
+	ja	lin3
+	cmp	al,'Z'
+	jle	lin4
+	cmp	al,'a'
+	jl	lin3
+	sub	al,'a'
+	jmp	short lin5
+lin4:
+	sub	al,'A'
+lin5:
+	xor	ah,ah
+lin2:
+	ret
+line	endp
+
+
+read_wr_int	proc	near
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Процедура чтения (записи) логического сектора диска
+;
+;------------------------------------------------------
+;
+;	Вход:
+;
+; ah		- признак выполняемой операции 
+;		  (0 - чтение, 1 - запись);
+; buf_int25	- буфер с данными для чтения (записи)
+;		  логического сектора в формате для
+;		  расширенного чтения (для дисков
+;                 размером больше 32 Мб);
+; disk		- относительный номер логического
+;		  диска;
+; vers		- номер версии MS-DOS.
+;
+;
+;	Выход:
+;
+; флаг CF	- признак ошибки, если взведен.
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	pusha
+	mov	al,disk
+;
+; Проверка номера версии MS-DOS для выбора подвида 
+;	программы обслуживания прерывания 
+;		чтения (записи) сектора
+;
+	cmp	vers,3
+	jg	r_w_1	; На операции расширенной
+			; обработки
+;
+; Операции для низших версий операционной системы
+;
+	mov	cx,buf_int25+4
+	mov	dx,buf_int25
+	mov	bx,buf_int25+6
+	mov	si,buf_int25+8
+	push	ds
+	mov	ds,si
+	or	ah,ah
+	jnz	r_w_2
+        int     25h     ; Читаем секторы
+	pop	dx
+	pop	ds
+	jmp	short r_w_4
+r_w_2:
+        int     26h     ; Пишем секторы
+	pop	dx
+	pop	ds
+	jmp	short r_w_4
+;
+;Операции расширенного чтения (записи)
+;
+r_w_1:
+	mov	bx,offset buf_int25
+	mov	cx,0FFFFh
+	or	ah,ah
+	jnz	r_w_3
+        int     25h     ; Читаем секторы
+	pop	dx
+	jmp	short r_w_4
+r_w_3:
+        int     26h     ; Пишем секторы
+	pop	dx
+r_w_4:
+	popa
+	ret
+read_wr_int	endp
+
+code	ends
+	end	clear
+Листинг 3. Текст процедуры определения размера памяти,
+занимаемого модулем
+
+	.286
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;       Процедура определения размера памяти,
+;       которую занимает прикладная программа
+;                 (без учета PSP)
+;
+;------------------------------------------------------
+;
+;   Выход:
+;
+;   ax - размер памяти в параграфах, которую занимает
+;        программа пользователя
+;_______________________________________________________
+;		(c) 1993 Плотников В.И.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	assume	cs:qwel
+qwel	segment	para 
+razm	proc	far
+	public	razm
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;               Сохранение регистров 
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	push	bx
+	push	cx
+	push	dx
+	push	di
+	push	si
+	push	ds
+	push	es
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;              Определение адреса PSP
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	mov	ah,62h
+	int	21h
+	mov	es,bx
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;   Определение пути файла исполняемого модуля
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;
+;  Получение адреса сегментного окружения DOS
+;
+	mov	bx,word ptr es:2Ch
+	mov	ds,bx
+;
+;     Поиск конца программной среды
+;
+	xor	di,di
+svp1:
+	cmp	byte ptr ds:[di],0
+	jz	svp2
+	inc	di
+	jmp	short svp1
+svp2:
+	inc	di
+	cmp	byte ptr ds:[di],0
+	jz	svp3
+	inc	di
+	jmp	short svp1		
+		;-------------------------------------
+                ;  Строка, содержащая путь запущенного
+                ;  на выполнение файла, находится по
+		;  адресу ds:[di+3]
+		;-------------------------------------
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;       Вычисление длины загрузочного модуля
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+svp3:
+	mov	bx,ds
+	add	di,3
+	adc	bx,0
+	mov	ds,bx
+;
+;   Открытие файла и чтение его полей
+;
+	mov	ax,3D00h
+	mov	dx,di
+	int	21h
+	mov	bx,ax
+	mov	ax,qwel
+	mov	ds,ax
+	mov	dx,offset ds:buf1
+	mov	cx,1Ah
+	mov	ah,3Fh
+	int	21h
+	mov	ah,3Eh
+	int	21h
+;
+;  Получение длины остатка файла в параграфах
+;
+	mov	cx,word ptr ds:buf1+2
+	shr	cx,4
+        inc     cx      ; Остаток
+;
+;  Вычисление реальной длины файла в параграфах
+;
+        mov     ax,word ptr ds:buf1+4   ; Число страниц
+                                        ; модуля
+	dec	ax
+	xor	dx,dx
+	mov	bx,32
+	mul	bx
+	add	cx,ax	
+	sub	cx,word ptr ds:buf1+8 	; Длина в параграфах
+                                        ; модуля в файле
+
+        mov     ax,word ptr ds:buf1+0Ah ; Длина
+                                        ; неинициализированных
+                                        ; данных
+	inc	ax
+
+	add	ax,cx		; Длина образа задачи в
+				; ОП в параграфах
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;            Восстановление регистров
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	pop	es
+	pop	ds
+	pop	si
+	pop	di
+	pop	dx
+	pop	cx
+	pop	bx
+	ret
+
+buf1	db	32	dup(?)
+
+razm 	endp
+qwel	ends
+	end
+

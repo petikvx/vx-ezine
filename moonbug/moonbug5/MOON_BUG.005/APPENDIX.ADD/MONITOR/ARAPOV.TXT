@@ -1,0 +1,896 @@
+Д. Арапов
+
+Пишем упаковщик
+
+Листинг
+
+{$X+B-}
+unit   Packer;
+  interface
+    uses Objects;
+
+    const MaxSize      = 4090;  {* Число узлов в словаре *}
+    const LogOfBound   = 7;     {* 2**7 - число узлов в малом подсловаре *}
+    const MaxSuperPack = 128;
+    const MaxPack      = 128;
+
+    const MaxLimit     = 0;
+
+    {* Типы функций, с помощью которых читают и записывают исходный
+       и упакованный текст. *}
+
+    type  Inputter     = function( var C : Char ): Boolean;
+          Outputter    = function(     C : Char ): Boolean;
+
+    {* Пара процедур, реализующих упаковку-распаковку по алгоритму
+       Лемпела-Зива.*}
+
+    procedure FastPack  ( IS : Inputter; OS : Outputter );
+    procedure FastUnPack( IS : Inputter; OS : Outputter );
+
+    {* Пара процедур, реализующих упаковку-распаковку с разрешением
+       конфликтов. *}
+
+    procedure SuperPack  ( IS : Inputter; OS : Outputter );
+    procedure SuperUnPack( IS : Inputter; OS : Outputter );
+
+  implementation
+
+    const NullLink = 0;
+
+    type  TLink = 0..MaxSize;
+
+    type  TLong = record Lo : Char; Hi : Byte; Rest : word end;
+
+    type  TChars   = array[ 0..MaxSize ] of char;
+
+    type  TDir  = -1..1;
+
+    const Left  = -1;
+          Down  =  0;
+          Right =  1;
+
+    const InList = $80;
+
+    {* Структура узла дерева. Старший бит поля Flags кодирует, включать
+       ли узел в список кандидатов на удаление. 6 младших битов кодируют
+       номер уровня узла. *}
+
+    type  TNode = record
+                    Sym : Char;
+                    Up  : TLink;
+                    Ref : array[ TDir ] of TLink;
+                    Prev,Next : TLink;
+                    Count: word;
+                    Flags: byte;
+                  end;
+
+    type  PTree = ^TTree;
+          TTree = array[ TLink ] of TNode;
+
+    {* Головы и хвосты двунаправленных списков - кандидатов на удаление. *}
+
+    type  TSubDict = record
+                       First : TLink;
+                       Last  : TLink;
+                     end;
+
+    const Bound = 1 shl LogOfBound; {* Длина меньшего подсловаря. *}
+
+    type  PDict = ^TDict;
+          TDict = object( TObject )
+                    Count       : TLink;
+                    Small,Large : TSubDict;
+                    Swapped     : array[ Boolean ] of TLink;
+                    Buffer      : LongInt;
+                    BufHead     : 0..31;
+                    Tree        : TTree;
+                    constructor Init;
+                    function    Add    ( Prefix : TLink; S : Char ) : TLink;
+                    function    Delete ( Prefix : TLink ) : TLink;
+                    procedure   Promote( var Node   : TLink );
+                    procedure   Correct( var S : TLink );
+                    procedure   PutPosition( OS : Outputter; P : TLink   );
+                    function    GetPosition( IS : Inputter;  var P : TLink ): Boolean;
+                    function    PrefixOf( Node  : TLink ): TLink;
+                    function    UnCode  ( var Buff; MaxStringSize : word; Node : TLink ): word;
+                    procedure   Exclude ( Node  : TLink );
+                    function    Remove( R : TLink ): TLink;
+                    procedure   Glue( R,N : TLink );
+                    procedure   Include ( Node  : TLink; UpLink : TLink; C : Char; Dir : TDir );
+                    function    Search  ( Prefix: TLink; S  : Char ): TLink;
+                    procedure   Renumber( N,R   : TLink );
+                    procedure   ListAdd ( var Part : TSubDict; N : TLink );
+                    procedure   ListDel ( var Part : TSubDict; N : TLink );
+                    procedure   Enq( OS : Outputter; P : word; N : Byte );
+                    function    Deq( IS : Inputter; var P : word; N : Byte ): Boolean;
+                    procedure   Flq( OS : Outputter );
+                  end;
+
+{************************************************************************}
+{*         TDict.Init -  Инициализация словаря.                         *}
+{* Вначале  в словаре 256 однобайтовых строк. Они разбрасываются        *}
+{* "случайным образом", чтобы вид дерева был близок к сбалансированому. *}
+{************************************************************************}
+
+    constructor TDict.Init;
+      const m = 71;
+      var   i : byte;
+      var   S : Char;
+      var   d : TDir;
+      begin   { TDict.Init }
+        TObject.Init;
+        S := #217;
+        for i := 0 to 255 do begin
+          S := Char((Ord(S)+m) mod 256);
+          Add( NullLink,S );
+        end; { for }
+      end;    { TDict.Init }
+
+{************************************************************************}
+{*         TDict.PrefixOf - Вычисление префикса узла.                   *}
+{* Переходим по сслылке UP, пока не перейдем на следующий уровень.      *}
+{************************************************************************}
+
+    function    TDict.PrefixOf;
+      var Temp : TLink;
+      begin   { TDict.PrefixOf }
+        Temp := Node;
+        while Tree[Tree[Temp].Up].Ref[Down] <> Temp do Temp := Tree[Temp].Up;
+        PrefixOf := Tree[Temp].Up;
+      end;    { TDict.PrefixOf }
+
+{***********************************************************************}
+{*  TDict.Glue - Корректировка ссылок Up,Down,Left,Right при удалении  *}
+{*  узла с номером R.                                                  *}
+{***********************************************************************}
+
+    procedure TDict.Glue;
+      var d : TDir;
+      begin { Glue }
+        if N <> NullLink then Tree[N].Up := Tree[R].Up;
+        with Tree[Tree[R].Up] do begin
+          for d := Left to Right do
+            if Ref[d] = R then begin
+              Ref[d] := N;
+              exit
+            end; { if }
+        end; { with }
+      end;  { Glue }
+
+{***********************************************************************}
+{* TDict.Remove - Удаление самого правого узла левого поддерева.       *}
+{***********************************************************************}
+
+    function    TDict.Remove;
+      begin   { TDict.Remove }
+        while (Tree[R].Ref[Right] <> NullLink) do R := Tree[R].Ref[Right];
+        Glue( R,Tree[R].Ref[Left] );
+        Remove := R;
+      end;    { TDict.Remove }
+
+{***********************************************************************}
+{* TDict.Exclude - Исключение выбранного узла из дерева.               *}
+{***********************************************************************}
+
+    procedure   TDict.Exclude;
+      var Temp : TLink;
+      begin   { TDict.Exclude }
+        with Tree[Node] do begin
+          if Ref[Left ] = NullLink then begin Glue( Node,Ref[Right] ); exit end;
+          if Ref[Right] = NullLink then begin Glue( Node,Ref[Left]  ); exit end;
+          Temp := Remove( Ref[Left] );
+          Tree[Temp].Ref[Left]  := Ref[Left];
+          if Ref[Left] <> NullLink then Tree[Ref[Left]].Up := Temp;
+          Tree[Temp].Ref[Right] := Ref[Right];
+          if Ref[Right] <> NullLink then Tree[Ref[Right]].Up := Temp;
+          Glue( Node,Temp );
+        end; { with }
+      end;    { TDict.Exclude }
+
+{***********************************************************************}
+{* TDict.Delete - Удаление узла из словаря.                            *}
+{* В поисках кандидата на удаление просматривается список наиболее     *}
+{* давно не посещаемых узлов большого (Large) подсловаря.              *}
+{* Выбирается кандидат, удовлетворяющий ограничениям на удаляемый узел.*}
+{* Узел исключается из дерева.                                         *}
+{* Если у префикса нет других потомков, он не состоит из одной буквы и *}
+{* не лежит в малом словаре, то включаем его в список кандидатов на    *}
+{* удаление.                                                           *}
+{* Удаляем узел из списка кандидатов на удаление.                      *}
+{***********************************************************************}
+
+    function    TDict.Delete;
+      var Temp   : TLink;
+      var UpLink : TLink;
+      begin   { TDict.Delete }
+        Temp := Large.Last;
+        while (Temp <> NullLink) and ((Temp = Prefix) or (PrefixOf(Temp)=Prefix))
+          do Temp := Tree[Temp].Prev;
+        if Temp <> NullLink then begin
+          Exclude( Temp );
+          UpLink := Tree[Temp].Up;
+          with Tree[UpLink] do
+            if ( Ref[Down] = NullLink) and ((Flags and InList) = 0) and
+               (( Flags and $7F ) > 1 ) then begin
+                 Flags := Flags or InList;
+                 if UpLink >= Bound then ListAdd( Large,UpLink );
+            end; { if }
+            ListDel( Large,Temp );
+        end; { if }
+        Delete := Temp;
+      end;    { TDict.Delete }
+
+{***********************************************************************}
+{* TDict.Search - Поиск строки, заданной префиксом и последней буквой  *}
+{* в словаре.                                                          *}
+{***********************************************************************}
+
+    function    TDict.Search;
+      var Temp : TLink;
+      begin   { TDict.Search }
+        Temp := Tree[Prefix].Ref[Down];
+        while (Temp <> NullLink) and (Tree[Temp].Sym <> S ) do
+          if Ord(Tree[Temp].Sym) < Ord(S)
+            then Temp := Tree[Temp].Ref[Right]
+            else Temp := Tree[Temp].Ref[Left];
+        Search := Temp;
+      end;    { TDict.Search }
+
+{***********************************************************************}
+{* TDict.Include - Включение нового узла в дерево. Префикс узла при    *}
+{* необходимости исключается из списка на удаление.                    *}
+{***********************************************************************}
+
+    procedure   TDict.Include;
+      var d : TDir;
+      begin   { TDict.Include }
+        with Tree[Node] do begin
+          for d := Left to Right do Ref[d] := NullLink;
+          Sym := C;
+          Up  := UpLink;
+        end; { with }
+        Tree[UpLink].Ref[Dir] := Node;
+        Tree[Node].Flags := Tree[Uplink].Flags and $7F;
+        if Dir = Down then Inc( Tree[Node].Flags );
+        if ((Tree[UpLink].Flags and InList) <> 0)  and ( Dir = Down ) then begin
+          Tree[UpLink].Flags := Tree[UpLink].Flags and $7F;
+          if UpLink >= Bound then ListDel( Large,UpLink );
+        end; { if }
+        with Tree[Node] do
+          if (Flags and $7F) <> 1 then Flags := Flags or InList;
+      end;    { TDict.Include }
+
+{***********************************************************************}
+{* TDict.ListAdd - Включение элемента в список первым.                 *}
+{***********************************************************************}
+
+    procedure   TDict.ListAdd( var Part : TSubDict; N : TLink );
+      begin   { TDict.ListAdd }
+        if Part.First <> NullLink
+          then Tree[Part.First].Prev := N
+          else Part.Last := N;
+        Tree[N].Next := Part.First;
+        Tree[N].Prev := NullLink;
+        Part.First := N;
+      end;    { TDict.ListAdd }
+
+{***********************************************************************}
+{* Tdict.ListDel - Исключение элемента из списка.                      *}
+{***********************************************************************}
+
+    procedure   TDict.ListDel( var Part : TSubDict; N : Tlink );
+      begin   { TDict.ListDel }
+        if N = Part.Last  then Part.Last  := Tree[N].Prev;
+        if N = Part.First then Part.First := Tree[N].Next;
+        if Tree[N].Next <> NullLink then Tree[Tree[N].Next].Prev := Tree[N].Prev;
+        if Tree[N].Prev <> NullLink then Tree[Tree[N].Prev].Next := Tree[N].Next;
+      end;    { TDict.ListDel }
+
+{***********************************************************************}
+{* TDict.Add - Создание и включение узла в словарь. Дается префикс и   *}
+{* последняя буква. Ранее включенные элементы повторно не включаются   *}
+{* При нехватке места в словаре производится исключение.               *}
+{***********************************************************************}
+
+    function    TDict.Add;
+      var UpLink    : TLink;
+      var Temp      : TLink;
+      var d         : TDir;
+      begin   { TDict.Add }
+        if ((Tree[Prefix].Flags and $7F) >= $3F) then Temp := NullLink
+          else begin
+            d := Down;
+            Temp := Tree[Prefix].Ref[Down];
+            UpLink := Prefix;
+            while ( Temp <> NullLink ) and ( Tree[Temp].Sym <> S ) do begin
+              UpLink := Temp;
+              if Ord(Tree[Temp].Sym) < Ord(S)
+                then d :=  1
+                else d := -1;
+              Temp := Tree[Temp].Ref[d];
+            end; { while }
+            if Temp = NullLink then begin
+              if (Count = MaxSize) then Temp := Delete( Prefix )
+                else begin
+                  Inc( Count );
+                  Temp := Count;
+              end; { if }
+              if Temp <> NullLink then begin
+                Include( Temp,UpLink,S,d );
+                if Temp < Bound
+                  then ListAdd( Small,Temp )
+                  else if (Tree[Temp].Flags and InList) <> 0 then ListAdd( Large,Temp );
+                Tree[Temp].Count := 0;
+              end; { if }
+            end; { if }
+        end; { if }
+        Add := Temp;
+      end;    { TDict.Add }
+
+{***********************************************************************}
+{* TDict.Promote - Повышение рейтинга узла. Если рейтинг узла из       *}
+{* большего подсловаря превышает рейтинг последнего по списку узла     *}
+{* меньшего  словаря, то они меняются местами. Номера этих узлов       *}
+{* сохраняются в массиве Swapped для последующей коррекции.            *}
+{***********************************************************************}
+
+    procedure   TDict.Promote;
+      var Temp : TLink;
+      begin   { TDict.Promote }
+        Inc(Tree[Node].Count);
+        Swapped[false] := NullLink;
+        Swapped[true] := NullLink;
+        if Node < Bound then begin
+            ListDel( Small,Node );
+            ListAdd( Small,Node );
+          end
+          else begin
+            if Tree[Node].Count > Tree[Small.Last].Count then begin
+                Temp := Small.Last;
+                ListDel( Small,Temp );
+                if (Tree[Node].Flags and InList) <> 0 then ListDel( Large,Node );
+                Renumber( Temp,Node );
+                Swapped[false] := Temp;
+                Swapped[true] := Node;
+                ListAdd( Small,Temp );
+                if (Tree[Node].Flags and InList) <> 0  then ListAdd( Large,Node );
+                Node := Temp;
+              end
+              else begin
+                if (Tree[Node].Flags and InList) <> 0 then begin
+                  ListDel( Large,Node );
+                  ListAdd( Large,Node );
+                end; { if }
+            end { if }
+        end; { if }
+      end;    { TDict.Promote }
+
+{***********************************************************************}
+{* TDict.Correct - Коррекция номеров узлов (вне словаря). Применяется  *}
+{* после перестановки.                                                 *}
+{***********************************************************************}
+
+    procedure   TDict.Correct;
+      var i : Boolean;
+      begin   { TDict.Correct }
+        for i := false to true do
+          if (Swapped[i] = S) then begin
+            S := Swapped[ not i ];
+            exit;
+          end;
+      end;    { TDict.Correct }
+
+{***********************************************************************}
+{* TDict.Renumber - Перестановка узла из большого подсловаря на место  *}
+{* узла из малого. Корректируются все ссылки внутри словаря.           *}
+{***********************************************************************}
+
+    procedure   TDict.Renumber;
+      var Temp : TNode;
+      var d    : TDir;
+      type TSwap = record
+                     U : TLink;
+                     P : array[ TDir ] of TLink;
+                     D : TDir
+                   end;
+
+      var NEnvir,REnvir : TSwap;
+
+      begin   { TDict.Renumber }
+        NEnvir.U := Tree[N].Up;
+        REnvir.U := Tree[R].Up;
+        for d := Left to Right do begin
+          NEnvir.P[d] := Tree[N].Ref[d];
+          REnvir.P[d] := Tree[R].Ref[d];
+          if Tree[Tree[N].Up].Ref[d] = N then NEnvir.D := d;
+          if Tree[Tree[R].Up].Ref[d] = R then REnvir.D := d;
+        end; { for }
+        if Tree[N].Up = R then Tree[N].Up := N;
+        if Tree[R].Up = N then Tree[R].Up := R;
+        for d := Left to Right do begin
+          if Tree[N].Ref[d] = R then Tree[N].Ref[d] := N;
+          if Tree[R].Ref[d] = N then Tree[R].Ref[d] := R;
+        end; { for }
+        Temp := Tree[N];
+        Tree[N] := Tree[R];
+        Tree[R] := Temp;
+        if NEnvir.U <> R then Tree[NEnvir.U].Ref[NEnvir.D] := R;
+        if REnvir.U <> N then Tree[REnvir.U].Ref[REnvir.D] := N;
+        for d := Left to Right do begin
+          if (NEnvir.P[d] <> NullLink) and (NEnvir.P[d] <> R) then Tree[NEnvir.P[d]].Up := R;
+          if (REnvir.P[d] <> NullLink) and (REnvir.P[d] <> N) then Tree[REnvir.P[d]].Up := N;
+        end; { for }
+      end;    { TDict.Renumber }
+
+{***********************************************************************}
+{* TDict.Enq - Помещение N битов в выходной буфер и при необходимости  *}
+{* сброс части буфера Buffer в выходной (упакованный) поток.           *}
+{***********************************************************************}
+
+    procedure   TDict.Enq;
+      var Temp : LongInt;
+      begin   { TDict.Enq }
+        Temp := P;
+        Temp := Temp shl BufHead;
+        Buffer := Temp or Buffer;
+        Inc( BufHead,N );
+        while (BufHead >= 8) do begin
+          OS( TLong( Buffer ).Lo );
+          Buffer := Buffer shr 8;
+          Dec( BufHead,8 );
+        end; { while }
+      end;    { TDict.Enq }
+
+{***********************************************************************}
+{* TDict.Deq - Извлечение N битов из входного потока. Возвращает False,*}
+{* если входной поток пуст.                                            *}
+{***********************************************************************}
+
+    function    TDict.Deq;
+      const Mask : array[1..14] of LongInt =
+        ( $1,$3,$7,$F,$1F,$3F,$7F,$FF,$1FF,$3FF,$7FF,$FFF,$1FFF,$3FFF );
+      var Status : Boolean;
+      var Temp : LongInt;
+      begin   { TDict.Deq }
+        Status := true;
+        while Status and (BufHead < N) do begin
+          Temp := 0;
+          Status := IS( TLong(Temp).Lo );
+          if Status then begin
+            Temp := Temp shl BufHead;
+            Buffer := Buffer or Temp;
+            Inc( BufHead,8 );
+          end { if }
+        end; { while }
+        P := Buffer and Mask[N];
+        Buffer := Buffer shr N;
+        Dec( BufHead,N );
+        Deq := Status;
+      end;    { TDict.Deq }
+
+{***********************************************************************}
+{* TDict.Flq - Принудительный сброс буфера в выходной поток.           *}
+{***********************************************************************}
+
+    procedure   TDict.Flq;
+      begin   { TDict.Flq }
+        if BufHead > 0 then OS( TLong( Buffer ).Lo );
+      end;    { TDict.Flq }
+
+{***********************************************************************}
+{*  TDict.PutPosition - Вывод позиции. Определяет число битов в        *}
+{*  кодировке позиции.                                                 *}
+{***********************************************************************}
+
+    procedure   TDict.PutPosition;
+      begin   { TDict.PutPosition }
+        if P < 128 then Enq(OS,(P*2)+1,8 ) else Enq( OS,P*2,13 );
+      end;    { TDict.PutPosition }
+
+{**********************************************************************}
+{* Tdict.GetPosition - Ввод позиции. Сначала читается бит длины, а    *}
+{* затем номер позиции. Возвращает False, если входной поток пуст.    *}
+{**********************************************************************}
+
+    function    TDict.GetPosition;
+      var Flag : word;
+      var Status : Boolean;
+      var Cmp : TLink;
+      begin   { TDict.GetPosition }
+        Status := Deq( IS,Flag,1 );
+        if Status then begin
+          if (Flag <> 0)
+            then Status := Deq( IS,word(P),7 )
+            else Status := Deq( IS,word(P),12 );
+        end; { if }
+        GetPosition := Status;
+      end;    { TDict.GetPosition }
+
+{***********************************************************************}
+{* TDict.UnCode - Проход дерева снизу вверх и помещение в Buff         *}
+{* соответствующей узлу Node строки.                                   *}
+{***********************************************************************}
+
+    function    TDict.UnCode;
+      var  Head  : word;
+      var  Temp  : TLink;
+      begin   { TDict.UnCode }
+        Head := MaxStringSize;
+        Temp := Node;
+        repeat
+          Dec( Head );
+          TChars(Buff)[Head] := Tree[Temp].Sym;
+          Temp := PrefixOf( Temp );
+        until Temp = NullLink;
+        UnCode := Head;
+      end;    { TDict.UnCode }
+
+{***********************************************************************}
+{* PutBuffer - Вывод в поток расшифрованной строки из Buff.            *}
+{***********************************************************************}
+
+    procedure   PutBuffer( OS : Outputter; var Buff; Head : word; MaxStringSize : word );
+      var i : word;
+      begin   { PutBuffer }
+        for i := Head to MaxStringSize-1 do OS( TChars(Buff)[Head] );
+      end;    { PutBuffer }
+
+{**********************************************************************}
+{* AppendBuffer - Дописывание первого символа строки в ее конец.      *}
+{**********************************************************************}
+
+    procedure   AppendBuffer( var Buff; var Head : word; MaxStringSize : word );
+      var C : char;
+      var i : word;
+      begin   { AppendBuffer }
+        C := TChars(Buff)[Head];
+        for i := Head to MaxStringSize-1 do TChars(Buff)[i-1] := TChars(Buff)[i];
+        TChars(Buff)[MaxStringSize-1] := C;
+        Dec( Head );
+      end;    { AppendBuffer }
+
+{**********************************************************************}
+{* FastPack - Упаковка по методу Лемпела-Зива.                        *}
+{* IS - функция чтения из входного (неупакованного) текста.           *}
+{* OS - процедура записи упаковки байта.                              *}
+{**********************************************************************}
+
+    procedure   FastPack;
+      var Dict   : PDict;
+      var NotEof : Boolean;
+      var S,B    : Char;
+      var Old,Node,Temp : TLink;
+      begin   { FastPack }
+
+        {* Инициализация словаря. *}
+
+        Dict := new( PDict,Init );
+        if Dict = NIL then exit;
+        NotEof := IS( S );
+
+        if NotEof then begin
+          Node := Dict^.Search( NullLink,S );
+          Dict^.PutPosition( OS, Node );
+          Dict^.Promote( Node );
+          NotEof := IS( S );
+
+          {* Цикл выделения и кодирования подстрок.*}
+
+          while NotEof do begin
+            B := S;
+            Old := Node;
+
+            {* Отщепление префикса.*}
+
+            Temp := Dict^.Search( NullLink,S );
+            while NotEof and (Temp <> NullLink) do begin
+               Node := Temp;
+               NotEof := IS( S );
+               if NotEof then Temp := Dict^.Search( Node,S );
+            end; { while }
+
+            {* Запись позиции словаря в поток и обновление словаря.*}
+
+            if Temp <> NullLink then Dict^.PutPosition( OS,Temp )
+              else begin
+                Dict^.PutPosition( OS,Node );
+                Dict^.Promote( Node );
+                if Dict^.Swapped[ false ] <> NullLink then Dict^.Correct( Old );
+                Temp := Dict^.Add( Old,B );
+            end; { if }
+          end; { while }
+
+          {* Очистка буфера битов.*}
+
+          Dict^.Flq( OS );
+        end; { if }
+        dispose( Dict,Done );
+      end;    { FastPack }
+
+{**********************************************************************}
+{* FastUnPack - Распаковка, работает в паре с FastPack.               *}
+{* IS - функция чтения байта из входного (упакованного) вида.         *}
+{* OS - процедура распаковки символа                                  *}
+{**********************************************************************}
+
+    procedure   FastUnPack;
+      var Dict : PDict;
+      var NotEof : Boolean;
+      var Buff : array[0..MaxPack-1] of char;
+      var H : word;
+      var A : Char;
+      var Old,Node,Temp : TLink;
+
+      begin   { FastUnPack }
+
+        {*  Инициализация словаря. *}
+
+        Dict := new( PDict,Init );
+        if Dict = NIL then exit;
+        Old := NullLink;
+        NotEof := Dict^.GetPosition( IS,Node );
+        if NotEof then begin
+          H := Dict^.UnCode( Buff, MaxPack, Node );
+          PutBuffer( OS,Buff,H, MaxPack );
+
+          {* Цикл распаковки. За один виток цикла декодируется одна строка. *}
+
+          repeat
+            Dict^.Promote( Node );
+            if Dict^.Swapped[false] <> NullLink then Dict^.Correct( Old );
+            Temp := Dict^.Add( Old,A );
+            Old := Node;
+            NotEof := Dict^.GetPosition( IS,Node );
+            if NotEof then begin
+              H := Dict^.UnCode( Buff, MaxPack, Node );
+              PutBuffer( OS,Buff,H, MaxPack );
+              A := Buff[H];
+            end; { if }
+          until not NotEof;
+
+        end; { if }
+        dispose( Dict,Done );
+      end;    { FastUnPack }
+
+{**********************************************************************}
+{* SuperPack - Процедура упаковки с разрешением конфликтов.           *}
+{* Параметры те же, что и у FastPack.                                 *}
+{**********************************************************************}
+
+
+    procedure   SuperPack;
+      type TLine     = 0..MaxSuperPack-1;
+      type PConflict = ^TConflict;
+           TConflict = array[TLine,TLine] of TLink;
+      var  Dict      : PDict;
+      var  ConfSizes : array[TLine] of integer;
+      var  Conf      : PConflict;
+      var  TopLine   : TLine;
+      var  S         : Char;
+      var  NotEof    : Boolean;
+      var  ToJump    : Boolean;
+      var  NextLines : TLine;
+      var  TotalLines: TLine;
+      var  Sym       : array[TLine] of Char;
+      var  i         : TLine;
+      var  Line,Col  : TLine;
+      var  Temp      : TLink;
+      var  NewLine   : TLine;
+      var  MaxSize   : word;
+      var  P         : TLink;
+      var  OldLine   : TLink;
+
+{**********************************************************************}
+{* Progress - Выбор префикса оптимальной длины, кодирование его и     *}
+{* сдвиг текущей строки в таблице разрешения конфликтов.              *}
+{**********************************************************************}
+
+      procedure Progress;
+        var i,j   : TLine;
+        var Local : TLink;
+        var Limit : TLine;
+        begin { Progress }
+
+          {* Выбор оптимальной длины префикса. *}
+
+          NewLine := NextLines;
+          MaxSize := ConfSizes[ (TopLine+NextLines) mod MaxSuperPack ]+NextLines;
+          for i := 1 to NextLines-1 do begin
+            Line := (TopLine+i) mod MaxSuperPack;
+            if MaxSize < ConfSizes[Line]+i then begin
+              MaxSize := ConfSizes[Line]+i;
+              NewLine := i;
+            end; { if }
+          end; { for }
+
+          {* Кодирование выбранного префикса *}
+
+          P := Conf^[ TopLine,NewLine-1 ];
+          Dict^.PutPosition( OS,P );
+
+          {* Модификация словаря и корректировка значений в таблице *}
+          {* разрешения конфликтов.                                 *}
+
+          Dict^.Promote( P );
+          if Dict^.Swapped[false] <> NullLink then begin
+            for i := 0 to TotalLines do begin
+              Line := (TopLine+i) mod MaxSuperPack;
+              for j := 0 to ConfSizes[Line]-1 do Dict^.Correct( Conf^[Line,j] )
+            end; { for }
+            if OldLine <> NullLink then Dict^.Correct( OldLine );
+          end; { if }
+          if OldLine <> NullLink then begin
+            Temp := OldLine;
+
+            {* Выбор максимального числа строк, заносимого за один     *}
+            {* раз в словарь.                                          *}
+
+            if (NewLine-1 < MaxLimit)
+              then Limit := NewLine-1
+              else Limit := MaxLimit;
+            for j := 0 to Limit do begin
+              S := Sym[ (TopLine+j) mod MaxSuperPack ];
+              Local := Dict^.Search( Temp,S );
+              if Local <> NullLink then Temp := Local
+                else begin
+                Temp := Dict^.Add( Temp,S );
+                if Temp <> NullLink then begin
+                  for i := 1 to TotalLines do begin
+                    Line := (TopLine+i) mod MaxSuperPack;
+                    if Temp = Conf^[Line,ConfSizes[Line]-1] then begin
+                      Conf^[Line,ConfSizes[Line]-1] := NullLink;
+                      Dec( ConfSizes[Line] );
+                    end; { if }
+                  end; { for }
+                end; { if }
+              end; { if }
+            end; { for }
+          end; { if }
+
+          OldLine := Conf^[TopLine,NewLine-1];
+
+          {* Продвижение текущей строки (TopLine) *}
+
+          TopLine := (TopLine+NewLine) mod MaxSuperPack;
+          NextLines := ConfSizes[ TopLine ];
+          Dec(TotalLines,NewLine);
+        end;  { Progress }
+
+      begin   { SuperPack }
+
+        {* Инициализация словаря *}
+
+        Dict := new( PDict,Init );
+        if Dict = NIL then exit;
+
+        {* Инициализация таблицы разрешения конфликтов *}
+
+        new( Conf );
+        if Conf = NIL then begin
+          dispose( Dict );
+          exit;
+        end; { if }
+        TopLine := 0;
+        FillChar( ConfSizes,SizeOf( ConfSizes ),#0 );
+        FillChar( Sym,SizeOf( Sym ),#0 );
+        NotEof := IS( Sym[TopLine] );
+        if NotEof then begin
+          S := Sym[ TopLine ];
+          Conf^[TopLine,0] := Dict^.Search( NullLink,S );
+          Inc( ConfSizes[ TopLine ] );
+          NextLines := 1;
+          TotalLines := 1;
+          OldLine := NullLink;
+          NotEof :=  IS( Sym[ TotalLines ] );
+
+          {* Цикл по всем символам входного текста. *}
+
+          while NotEof do begin
+            ToJump := true;
+
+            {* Прибавление вновь считанного символа ко всем префиксам *}
+
+            for i := 1 to TotalLines do begin
+              Line := (TopLine+i) mod MaxSuperPack;
+              Col  := (TotalLines-i);
+              S := Sym[ (TopLine+TotalLines) mod MaxSuperPack ];
+              if (Col = 0) then begin
+                  ConfSizes[ Line ] := 0;
+                  Temp := Dict^.Search( NullLink,S);
+                end
+                else if Conf^[Line,Col-1] = NullLink
+                  then Temp := NullLink
+                  else Temp := Dict^.Search( Conf^[Line,Col-1],S);
+              if (i <= NextLines ) then ToJump := ToJump and (Temp = NullLink);
+              Conf^[Line,Col] := Temp;
+              if Temp <> NullLink then Inc( ConfSizes[ Line ]);
+            end; { for }
+
+            {* Если длины строк, идущих за префиксом, определились,    *}
+            {* то можно выбрать и закодировать префикс оптимальной     *}
+            {* длины, продвинув текущую позицию в таблице разрешения   *}
+            {* конфликтов.                                             *}
+
+            if ToJump then Progress;
+
+            {* На каждом шаге число возможных префиксов увеличивается  *}
+            {* на единицу.                                             *}
+
+            Inc( TotalLines );
+            NotEof := IS ( Sym[(TopLine+TotalLines) mod MaxSuperPack] );
+          end; { while }
+
+          {* Выталкивание последнего префикса. *}
+
+          Progress;
+          if ConfSizes[ TopLine ] <> 0 then begin
+            Dict^.PutPosition( OS,Conf^[TopLine,ConfSizes[ TopLine ]-1] );
+          end; { if }
+
+          {* Очистка буфера битов *}
+
+          Dict^.Flq( OS );
+        end; { if }
+        dispose( Conf );
+        dispose( Dict,Done );
+      end;    { SuperPack }
+
+{**********************************************************************}
+{* SuperUnPack - Процедура распаковки. Работает в паре с SuperPack.   *}
+{* Параметры имеют тот же смысл, что и у FastUnPack.                  *}
+{**********************************************************************}
+
+    procedure   SuperUnPack;
+      var Dict   : PDict;
+      var NotEof : Boolean;
+      var P      : TLink;
+      var Node   : TLink;
+      var Temp   : TLink;
+      var i      : byte;
+      var B      : Char;
+      var Buff   : array[0..MaxSuperPack-1] of char;
+      var H      : word;
+      var Limit  : word;
+
+      begin   { SuperUnPack }
+
+        {* Инициализация словаря *}
+
+        Dict := new( PDict,Init );
+        if Dict = NIL then exit;
+        NotEof := Dict^.GetPosition( IS,P );
+        if NotEof then begin
+          H := Dict^.UnCode( Buff,MaxSuperPack,P );
+          PutBuffer( OS, Buff, H, MaxSuperPack );
+          Dict^.Promote( P );
+          Node := P;
+          NotEof := Dict^.GetPosition( IS,P );
+
+          {* Цикл распаковки. За один виток цикла декодируется одна строка. *}
+
+          while NotEof do begin
+            H := Dict^.UnCode( Buff,MaxSuperPack,P );
+            PutBuffer( OS, Buff, H, MaxSuperPack );
+            Dict^.Promote( P );
+            if Dict^.Swapped[false] <> NullLink then Dict^.Correct( Node );
+
+            {* Выбор максимального числа строк, заносимого за один     *}
+            {* раз в словарь.                                          *}
+
+            if (MaxSuperPack-1-H < MaxLimit)
+              then Limit := MaxSuperPack-1
+              else Limit := H+MaxLimit;
+            for i := H to Limit do begin
+              B := Buff[i];
+              Node := Dict^.Add( Node,B );
+            end; { for }
+            Node := P;
+            NotEof := Dict^.GetPosition( IS,P );
+          end; { while }
+
+        end; { if }
+        dispose( Dict,Done );
+      end;    { SuperUnPack }
+
+end. { Packer }

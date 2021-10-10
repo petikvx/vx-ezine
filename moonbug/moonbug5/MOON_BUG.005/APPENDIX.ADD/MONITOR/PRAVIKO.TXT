@@ -1,0 +1,196 @@
+Листинг
+
+;
+; Программа, определяющая свое местоположение
+; на диске по цепочке занимаемых кластеров
+;
+	DOSSEG
+	JUMPS
+	.MODEL SMALL
+	.STACK 100h
+	.DATA
+FCB	db	0
+	db	'        '
+	db	'   '
+	db	25 dup (0)
+boot	db	512 dup(?)
+buffer	db	64 dup (?)
+fat	db	8000h dup(?)
+        .CODE
+Start:
+	call	GetChain
+	mov	ax,4C00h
+	int	21h
+;
+        PUBLIC	GetChain
+GetChain	PROC	near
+	mov	ax,@DATA
+	mov	ds,ax		; DS - сегмент собственных данных
+;
+; Получаем доступ к окружению DOS
+;
+	mov	ah,62h
+	int	21h 
+	mov	es,bx
+	mov	ax,es:[02Ch]
+	mov	es,ax		; DS - сегмент окружения DOS
+;
+; Получаем имя программы из окружения
+;
+        xor	di,di
+ 	xor	cx,cx
+	dec	cx		; CX = -1
+	cld
+Env_loop:
+	xor	al,al
+	repne	scasb
+	cmp	byte ptr es:[di],0
+	jne	Env_loop
+	add	di,3		; ES:DI -> диск, путь, имя программы
+;
+; Получаем имя текущего диска
+;
+	mov	ah,19h
+	int	21h
+	add	al,'A'
+	cmp	al,es:[di]
+	je	Set_dir
+;
+; Делаем диск программы текущим
+;
+	mov	ah,0Eh
+	mov	dl,es:[di]
+	sub	dl,'A'
+	int	21h
+Set_dir:
+	mov	dx,di
+;
+; Формируем имя директории программы
+;
+	xor	cx,cx
+	dec	cx
+	xor	al,al
+	cld
+	repne	scasb		; Ищем терминирующий ноль
+	mov	al,'\'
+	std
+	repne	scasb		; Ищем последний backslash
+	inc	di
+	mov	byte ptr es:[di],0
+	mov	bx,di
+	inc	bx		; ES:BX -> имя программы
+;
+; Устанавливаем директорию программы в качестве текущей
+;
+	push	ds
+	push	es
+	pop	ds              ; DS - сегмент среды
+	pop	es		; ES - сегмент данных
+	mov	ah,3Bh
+	int	21h
+	jc	Sub_exit
+;
+; Оформляем FCB
+;
+	mov	di,OFFSET FCB
+	inc	di
+	mov	si,bx
+	mov	cx,8
+	cld
+Name_loop:
+	lodsb
+	cmp	al,'.'
+	je	Ext_set
+	stosb
+	loopnz	Name_loop
+Ext_set:
+	add	di,cx
+Ext_loop:
+	lodsb
+	cmp	al,0
+	je	Open_FCB
+	stosb
+	jmp	short Ext_loop
+;
+; Открываем файл через FCB
+;
+Open_FCB:
+	push	es
+	pop	ds
+	mov	ah,0Fh
+	mov	dx,OFFSET FCB
+	int	21h
+	or	al,al
+	jne	Sub_exit
+;
+; Читаем BOOT
+;
+	mov	al,ds:[FCB]
+	dec	al
+	mov	cx,1
+	xor	dx,dx
+	mov	bx,OFFSET boot
+	int	25h
+	pop	dx		; Очищаем стек
+	jc	Sub_exit
+;
+; Читаем FAT
+;
+	mov	al,ds:[FCB]
+	dec	al
+	mov	cx,word ptr [boot+16h]
+	mov	dx,word ptr [boot+0Eh]
+	mov	bx,OFFSET FAT
+        int 25h
+	pop	dx		; Очищаем стек
+;
+; Готовим вычисление цепочки
+;
+	mov	ax,word ptr [FCB+1Bh]
+	mov	bx,OFFSET FAT
+	mov	di,OFFSET buffer
+	stosw
+;
+; Определяем тип FAT
+;
+	cmp	word ptr [boot+13h],5104h
+	ja	FAT_16bit
+;
+; FAT 12-битовая
+;
+FAT_12bit:
+	mov	cx,ax		; AX - номер кластера
+	mov	dx,ax
+	shr	dx,1		; Номер кластера / 2
+	add	cx,dx		; CX - номер кластера * 1.5
+	add	bx,cx
+	mov	dx,word ptr [bx]
+	test	ax,1		; Номер нечетный?
+	jnz	Odd_num
+	and	dx,0FFFh
+	jmp	short Save_num
+Odd_num:
+	mov	cl,4
+	shr	dx,cl
+Save_num:
+	mov	ax,dx
+	stosw
+	cmp	ax,0FFFh
+	jne	FAT_12bit
+	clc
+Sub_exit:
+   	ret
+;
+; FAT 16-битовая
+;
+FAT_16bit:
+	mov	bx,ax
+	shl	bx,1
+	mov	ax,word ptr [FAT+bx]
+	stosw
+	cmp	ax,0FFFFh
+	jne	FAT_16bit
+	clc
+	jmp	short Sub_exit
+GetChain	ENDP
+   	end	Start

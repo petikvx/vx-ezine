@@ -1,0 +1,814 @@
+Д. Мастрюков
+
+Алгоритмы сжатия информации
+
+Часть 5. Алгоритмы сжатия в драйверах устройств
+
+Описан драйвера диска, сжимающего и распаковывающего информацию при
+доступе к диску "на лету". Алгоритм разработан автором статьи и
+использован в пакете "СуперДиск".
+
+Листинг
+
+/*-----------------------------------------------------------
+   Демонстрационная программа к алгоритму LZM.
+   Программа пытается сжимать все файлы в указанной директории.
+   Содержимое диска не модифицируется.
+   Компиляция
+      bcc -mt test.c
+      tasm /ml test.asm
+   Запуск
+      test <<путь>>
+*/
+
+#ifndef __TINY__
+#error Компиляция только в TINY модели!
+#endif
+
+#include <<stdio.h>>
+#include <<stdlib.h>>
+#include <<string.h>>
+#include <<io.h>>
+#include <<fcntl.h>>
+#include <<mem.h>>
+#include <<dir.h>>
+#include <<dos.h>>
+
+typedef unsigned word;
+typedef unsigned char  byte;
+typedef unsigned long  dword;
+
+/*---------------------------------------------------------------------*/
+/* Интерфейс к коду на ассемблере */
+
+word zip ( byte far *src, byte far *zip, word sz, word limit );
+word unzip ( byte far *src, byte far *zip, word sz, word limit );
+void calc_tseg ( void );
+
+/*---------------------------------------------------------------------*/
+/* Размер буфера (8 Кб) */
+#define BSIZE (512*16)
+
+/*---------------------------------------------------------------------*/
+/* Внутренние буферы */
+byte b1[BSIZE];
+byte b2[BSIZE-1024];
+byte b3[BSIZE];
+
+/* Счетчики */
+long total_uncompressed_size,
+     total_compressed_size,
+     total_files;
+
+/*---------------------------------------------------------------------*/
+/* Обработка файла */
+
+void compress_file ( int input )
+{
+    long s1, s2;
+    long steps;
+    long compressed_size;
+    long i;
+    int postfix;
+
+    s1 = filelength ( input );
+
+    steps = s1 / BSIZE;
+    postfix = (int)(s1 % BSIZE);
+
+    calc_tseg();
+
+    compressed_size = 0l;
+
+    for ( i = 0; i << steps; i++ )
+    {
+       read ( input, b1, BSIZE );
+       s2 = zip ( (byte far *)b1, (byte far *)b2, (unsigned)BSIZE, BSIZE );
+       if ( s2 != 0xFFFF )
+         compressed_size += s2;
+       else
+         compressed_size += BSIZE;
+    }
+
+    read ( input, b1, postfix );
+    s2 = zip ( (byte far *)b1, (byte far *)b2, (unsigned)postfix, postfix );
+    if ( s2 != 0xFFFF )
+       compressed_size += s2;
+    else
+       compressed_size += postfix;
+
+    printf ( "(%d%%)", compressed_size*100l/s1 );
+
+    total_uncompressed_size += s1;
+    total_compressed_size += compressed_size;
+    total_files += 1;
+    close(input);
+}
+
+/*---------------------------------------------------------------------*/
+/* Головная процедура */
+
+void main ( int argc, char *argv[] )
+{
+    int input;
+    struct ffblk ffblk;
+    int done;
+    char buffer[100], buffer1[100], buffer2[100];
+
+    _fmode = O_BINARY;
+
+    if ( argc != 2 )
+    {
+      printf ( "\nИспользование: TEST [путь]\n" );
+      exit(1);
+    }
+
+    strcpy ( buffer, argv[1] );
+    strcpy ( buffer1, argv[1] );
+    strcat ( buffer1, "\\*.*" );
+
+    done = findfirst(buffer1,&ffblk, FA_RDONLY | FA_HIDDEN | FA_SYSTEM | FA_ARCH );
+
+    while (!done)
+    {
+      strcpy ( buffer2, argv[1] );
+      strcat ( buffer2, "\\" );
+      strcat ( buffer2, ffblk.ff_name );
+
+      input = open ( buffer2, O_RDONLY | O_BINARY );
+      printf ( "\n%-13.13s ", ffblk.ff_name );
+      compress_file ( input );
+      close ( input );
+
+      done = findnext(&ffblk);
+    }
+
+    if ( total_files >> 0 )
+    {
+       printf ( "\n\nTotal number of files = %ld\n", total_files );
+       printf ( "Overall compression ( Out/In ) = %d%%\n",
+		 total_compressed_size*100l/total_uncompressed_size );
+    }
+    else
+       printf ( "\nNo files in path %s\n", argv[2] );
+}
+
+/* Конец текста программы на C */
+/*---------------------------------------------------------------------*/
+
+;--------------------------------------------
+; Исходный текст алгоритма LZM.
+; (C) 1992-94 Дмитрий Мастрюков.
+;--------------------------------------------
+
+TABLE_SIZE      equ     02300h
+
+PUBLIC _zip, _unzip, _calc_tseg
+
+.MODEL tiny
+
+.CODE
+
+_t_seg  dw  0
+_table  db  TABLE_SIZE dup (0)
+
+_arc    proc
+
+        push    ds
+        push    es
+        push    bx
+        push    dx
+        push    bp
+        mov     bp,ax
+        cli
+        mov     ax, ss
+        mov     bx, sp
+        mov     sp, 02262h
+        mov     ss, word ptr cs:_t_seg
+        sti
+        push    ax
+        push    bx
+        mov     word ptr ss:[2024h],di
+        mov     word ptr ss:[2060h],dx
+        add     word ptr ss:[2060h],di
+        cmp     bp,1
+        jz      label_1
+        call    decoder
+        jmp     short label_2
+label_1:
+        mov     word ptr ss:[2022h],cx
+        mov     word ptr ss:[2026h],di
+        mov     word ptr ss:[2032h],si
+        mov     word ptr ss:[2034h],ds
+        mov     word ptr ss:[2036h],di
+        mov     word ptr ss:[2038h],es
+        mov     word ptr ss:[203Ah],cx
+        call    coder
+label_2:
+        pop     bx
+        pop     dx
+        cli
+        mov     sp,bx
+        mov     ss,dx
+        sti
+        pop     bp
+        pop     dx
+        pop     bx
+        pop     es
+        pop     ds
+        retn
+
+_arc    endp
+
+;--------------------------------------------
+
+label_3:
+        cmp     ah,al
+        jne     label_7
+        mov     di,si
+        mov     cx,dx
+        repe    scasb
+        jz      label_4
+        inc     cx
+label_4:
+        sub     dx,cx
+        mov     cx,dx
+        call    sub_5
+        jnc     label_6
+        jmp     label_10
+
+;--------------------------------------------
+
+coder   proc    near
+        mov     bp, 0
+        mov     word ptr ss:[203Eh],si
+        cmp     cx,5
+        ja      label_6
+        jmp     short label_11
+label_5:
+        inc     bp
+        inc     si
+        dec     word ptr ss:[203Ah]
+label_6:
+        mov     ax,ds
+        mov     es,ax
+        mov     dx,word ptr ss:[203Ah]
+        cmp     dx,3
+        jb      label_11
+        mov     ax,[si]
+        mov     bx,[si+2]
+        cmp     ax,bx
+        je      label_3
+label_7:
+        xor     ch, ch
+        mov     cl, al
+        shl     cx, 2
+        xor     cl, ah
+        shl     cx, 2
+        xor     cl, bl
+        mov     bx, cx
+        shl     bx, 1
+
+        mov     di,si
+        xchg    di,ss:[bx]
+        cmp     di,si
+        jae     label_5
+        cmp     di,word ptr ss:[2032h]
+        jb      label_5
+        cmp     ax,[di]
+        jne     label_5
+        mov     ax,di
+        mov     cx,si
+        sub     cx,di
+        test    cx,0F000h
+        jnz     label_5
+        cmp     cx,dx
+        jb      label_8
+        mov     cx,dx
+label_8:
+        cmp     cx,3
+        jb      label_5
+        mov     dx,cx
+        mov     bx, si
+        repe    cmpsb
+        jz      label_9
+        inc     cx
+label_9:
+        sub     dx,cx
+        mov     cx,dx
+        mov     si, bx
+        cmp     cx,3
+        jb      label_5
+        call    sub_4
+        jnc     label_6
+label_10:
+        mov     ax,0FFFFh
+        retn
+label_11:
+        mov     ax,word ptr ss:[203Ah]
+        add     bp,ax
+        add     si,ax
+        call    sub_9
+        jc      label_10
+        mov     ax,word ptr ss:[2036h]
+        sub     ax,word ptr ss:[2024h]
+        retn
+coder   endp
+
+;--------------------------------------------
+
+sub_2   proc    near
+        les     di,dword ptr ss:[2036h]
+        mov     ax,di
+        add     ax,bp
+        cmp     ax,word ptr ss:[2060h]
+        jae     label_14
+        push    si
+label_12:
+        mov     ax,bp
+        cmp     ax,3Fh
+        jb      label_13
+        mov     ax,3Fh
+label_13:
+        sub     bp,ax
+        mov     cx,ax
+        shl     ax,1
+        shl     ax,1
+        stosb
+        mov     si,word ptr ss:[203Eh]
+        rep     movsb
+        mov     word ptr ss:[203Eh],si
+        cmp     bp,0
+        jne     label_12
+        pop     si
+        mov     word ptr ss:[203Eh],si
+        mov     word ptr ss:[2036h],di
+        clc
+        retn
+label_14:
+        stc
+        retn
+sub_2   endp
+
+;--------------------------------------------
+
+sub_3   proc    near
+        push    cx
+        mov     ax,bp
+        cmp     ax,3Fh
+        jb      label_15
+        mov     ax,3Fh
+label_15:
+        sub     bp,ax
+        mov     cx,ax
+        shl     ax,1
+        shl     ax,1
+        stosb
+        push    si
+        mov     si,word ptr ss:[203Eh]
+        rep     movsb
+        mov     word ptr ss:[203Eh],si
+        pop     si
+        pop     cx
+        retn
+sub_3   endp
+
+;--------------------------------------------
+
+sub_4   proc    near
+        les     di,dword ptr ss:[2036h]
+        add     di,bp
+        cmp     di,word ptr ss:[2060h]
+        mov     di,word ptr ss:[2036h]
+        jnc     label_19
+        sub     ax,si
+        neg     ax
+        cmp     ax,1FFh
+        ja      label_16
+        cmp     cx,0Ah
+        ja      label_17
+        call    sub_8
+        clc
+        mov     word ptr ss:[2036h],di
+        retn
+label_16:
+        cmp     cx,6
+        ja      label_17
+        call    sub_7
+        clc
+        mov     word ptr ss:[2036h],di
+        retn
+label_17:
+        cmp     cx,3Fh
+        jbe     label_18
+        sub     cx,3Fh
+        push    cx
+        push    ax
+        mov     cx,3Fh
+        call    sub_6
+        pop     ax
+        pop     cx
+        jmp     short label_17
+label_18:
+        call    sub_6
+        clc
+        mov     word ptr ss:[2036h],di
+        retn
+label_19:
+        stc
+        retn
+sub_4   endp
+
+;--------------------------------------------
+
+sub_5   proc    near
+        les     di,dword ptr ss:[2036h]
+        add     di,bp
+        cmp     di,word ptr ss:[2060h]
+        mov     di,word ptr ss:[2036h]
+        jnc     label_23
+        mov     ah,al
+        add     si,cx
+        sub     word ptr ss:[203Ah],cx
+        push    si
+        cmp     bp,0
+        je      label_20
+        push    cx
+        push    ax
+        call    sub_2
+        pop     ax
+        pop     cx
+label_20:
+        cmp     cx,0FFh
+        jb      label_21
+        sub     cx,0FFh
+        push    cx
+        push    ax
+        xor     al,al
+        stosb
+        mov     al,0FFh
+        stosw
+        pop     ax
+        pop     cx
+        jmp     short label_20
+label_21:
+        or      cx,cx
+        jz      label_22
+        xor     al,al
+        stosb
+        mov     al,cl
+        stosw
+label_22:
+        pop     si
+        mov     word ptr ss:[203Eh],si
+        mov     word ptr ss:[2036h],di
+        clc
+        retn
+label_23:
+        stc
+        retn
+sub_5   endp
+
+;--------------------------------------------
+
+sub_6   proc    near
+        add     si,cx
+        sub     word ptr ss:[203Ah],cx
+        push    si
+        mov     dx,ax
+        shl     dx,1
+        shl     dx,1
+        shl     dx,1
+        shl     dx,1
+label_24:
+        mov     ax,bp
+        cmp     ax,0Fh
+        jbe     label_25
+        call    sub_3
+        jmp     short label_24
+label_25:
+        mov     ax,bp
+        shl     ax,1
+        shl     ax,1
+        or      ax,3
+        xor     bx,bx
+        shr     cx,1
+        rcr     bx,1
+        shr     cx,1
+        rcr     bx,1
+        or      al,bh
+        stosb
+        mov     ax,cx
+        or      ax,dx
+        stosw
+        mov     cx,bp
+        mov     si,word ptr ss:[203Eh]
+        rep     movsb
+        mov     bp,0
+        pop     si
+        mov     word ptr ss:[203Eh],si
+        retn
+sub_6   endp
+
+;--------------------------------------------
+
+sub_7   proc    near
+        add     si,cx
+        sub     word ptr ss:[203Ah],cx
+        sub     cx,3
+        push    si
+        mov     dx,ax
+        shl     dx,1
+        shl     dx,1
+        shl     dx,1
+        shl     dx,1
+label_26:
+        mov     ax,bp
+        or      ax,ax
+        jz      label_27
+        call    sub_3
+        jmp     short label_26
+label_27:
+        or      ax,2
+        and     cx,3
+        shl     cx,1
+        shl     cx,1
+        or      ax,dx
+        or      ax,cx
+        stosw
+        pop     si
+        mov     word ptr ss:[203Eh],si
+        retn
+sub_7   endp
+
+;--------------------------------------------
+
+sub_8   proc    near
+        add     si,cx
+        sub     word ptr ss:[203Ah],cx
+        sub     cx,3
+        push    si
+        xor     dx,dx
+        shr     ax,1
+        mov     dh,al
+        rcr     dl,1
+label_28:
+        mov     ax,bp
+        cmp     ax,3
+        jbe     label_29
+        call    sub_3
+        jmp     short label_28
+label_29:
+        shl     ax,1
+        shl     ax,1
+        or      ax,1
+        mov     ch,cl
+        and     cx,700h
+        shr     cx,1
+        shr     cx,1
+        shr     cx,1
+        shr     cx,1
+        or      ax,dx
+        or      ax,cx
+        stosw
+        mov     cx,bp
+        mov     si,word ptr ss:[203Eh]
+        rep     movsb
+        mov     bp,0
+        pop     si
+        mov     word ptr ss:[203Eh],si
+        retn
+sub_8   endp
+
+;--------------------------------------------
+
+sub_9   proc    near
+        cmp     bp,0
+        je      label_34
+        call    sub_2
+        jc      label_35
+label_34:
+        les     di,dword ptr ss:[2036h]
+        xor     ax,ax
+        stosw
+        mov     word ptr ss:[2036h],di
+        clc
+        retn
+label_35:
+        stc
+        retn
+sub_9   endp
+
+;--------------------------------------------
+
+decoder proc    near
+        add     cx,si
+        mov     word ptr ss:[2060h],cx
+label_36:
+        cmp     si,word ptr ss:[2060h]
+        jae     label_38
+        lodsb
+        mov     bl,al
+        and     bx,3
+        shl     bx,1
+        jmp     word ptr cs:prefix[bx]
+label_37:
+        dec     di
+        mov     cx,di
+        sub     cx,word ptr ss:[2024h]
+        inc     cx
+        inc     di
+        xor     ax,ax
+        retn
+label_38:
+        mov     ax,0FFFFh
+        xor     cx,cx
+        retn
+label_39:
+        mov     cl,[si]
+        inc     si
+        or      cl,cl
+        jz      label_37
+        lodsb
+        xor     ch,ch
+        rep     stosb
+        jmp     short label_36
+
+;--------------------------------------------
+
+marker_00:
+        or      al,al
+        jz      label_39
+        mov     cl,al
+        xor     ch,ch
+        shr     cx,1
+        shr     cx,1
+        shr     cx,1
+        rep     movsw
+        adc     cx,0
+        rep     movsb
+        jmp     short label_36
+
+;--------------------------------------------
+
+marker_11:
+        mov     dx,[si]
+        add     si,2
+        mov     cl,al
+        and     cx,3Ch
+        shr     cx,1
+        shr     cx,1
+        rep     movsb
+        mov     cx,dx
+        shl     al,1
+        rcl     cx,1
+        shl     al,1
+        rcl     cx,1
+        and     cx,3Fh
+        shr     dx,1
+        shr     dx,1
+        shr     dx,1
+        shr     dx,1
+        mov     bp,si
+        mov     si,di
+        sub     si,dx
+        push    ds
+        mov     ax,es
+        mov     ds,ax
+        rep     movsb
+        pop     ds
+        mov     si,bp
+        jmp     label_36
+
+;--------------------------------------------
+
+marker_01:
+        mov     ah,[si]
+        inc     si
+        mov     cx,ax
+        shr     cx,1
+        shr     cx,1
+        mov     dx,cx
+        and     cx,3
+        rep     movsb
+        shr     dx,1
+        shr     dx,1
+        and     dx,7
+        add     dl,3
+        mov     cx,dx
+        mov     bp,si
+        mov     si,di
+        mov     dl,al
+        mov     al,ah
+        xor     ah,ah
+        shl     dl,1
+        rcl     ax,1
+        sub     si,ax
+        push    ds
+        mov     ax,es
+        mov     ds,ax
+        rep     movsb
+        pop     ds
+        mov     si,bp
+        jmp     label_36
+
+;--------------------------------------------
+
+marker_10:
+        mov     ah,[si]
+        inc     si
+        shr     ax,1
+        shr     ax,1
+        mov     cl,al
+        and     cx,3
+        add     cl,3
+        mov     bp,si
+        mov     si,di
+        shr     ax,1
+        shr     ax,1
+        sub     si,ax
+        push    ds
+        mov     ax,es
+        mov     ds,ax
+        rep     movsb
+        pop     ds
+        mov     si,bp
+        jmp     label_36
+decoder endp
+
+prefix  dw      offset marker_00
+        dw      offset marker_01
+        dw      offset marker_10
+        dw      offset marker_11
+
+;--------------------------------------------
+; word zip ( byte far *src, byte far *zip,
+;            word sz, word limit )
+;
+        assume  cs:_TEXT
+_zip    proc    near
+        push    bp
+        mov     bp,sp
+        push    si
+        push    di
+        push    ds
+
+        mov     ax, 1
+        mov     cx, WORD PTR [bp+12]
+        mov     dx, WORD PTR [bp+14]
+        les     di, DWORD PTR [bp+8]
+        lds     si, DWORD PTR [bp+4]
+        call    near ptr _arc
+
+        pop     ds
+        pop     di
+        pop     si
+        pop     bp
+        ret
+_zip    endp
+
+;--------------------------------------------
+; word unzip ( byte far *src, byte far *zip,
+;              word sz, word limit )
+;
+_unzip  proc    near
+        push    bp
+        mov     bp,sp
+        push    si
+        push    di
+        push    ds
+
+        mov     ax, 2
+        mov     cx, WORD PTR [bp+12]
+        mov     dx, WORD PTR [bp+14]
+        les     di, DWORD PTR [bp+4]
+        lds     si, DWORD PTR [bp+8]
+        call    near ptr _arc
+
+        pop     ds
+        pop     di
+        pop     si
+        pop     bp
+        ret
+_unzip  endp
+
+;--------------------------------------------
+; void calc_tseg ( void )
+;
+_calc_tseg      proc    near
+        mov     ax, offset _table
+        mov     cl, 4
+        shr     ax, cl
+        inc     ax
+        mov     cx, cs
+        add     ax, cx
+        mov     WORD PTR DGROUP: _t_seg, ax
+        ret
+_calc_tseg      endp
+
+;--------------------------------------------
+
+END
+
+; Конец исходного текста
+;--------------------------------------------

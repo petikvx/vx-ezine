@@ -1,0 +1,2091 @@
+В. Плотников
+
+Использование вирусной технологии для создания демонстрационных
+программ
+
+Листинг 1. Текст демо-модуля
+
+	title	demo
+	assume	cs:code
+
+code	segment
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Процедура организации имитации воздействий оператора на ход
+; выполнения программы через клавиатуру
+;--------------------------------------------------------- ; ;
+;  Процедура сохраняeт необходимые для ее работы регистры, а также
+;  значения флагов при входе в нее. На время эмуляции операций с
+;  клавиатурой подменяет системные векторы прерываний 16h и 28h на
+;  собственные.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+demo proc far
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;          Процедура обслуживания прерывания 28h
+;
+;----------------------------------------------------------
+;
+; Процедура сохраняет значения необходимых для ее выполнения
+; регистров. Если буфер клавиатуры пуст, помещает туда коды
+; эмулируемой клавиши. После посылки в буфер сведений о последней
+; имитации нажатия клавиши происходит восстановление системных
+; векторов прерываний 16h и 28h, а также разблокирование клавиатуры.
+;
+;
+;  Данный обработчик прерывания вызывается из нового обработчика
+; int 16h или порождается ОС при ожидании ввода с клавиатуры,
+; реализованного через функции DOS.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+int28_new   label    near
+
+	push	ax
+	push	si
+	push	bx
+	push	es
+;
+;     Проверяем, пуст ли буфер клавиатуры
+;
+	xor	ax,ax
+	mov	es,ax
+	mov	al,byte ptr es:[41Ah]
+	cmp	al,byte ptr es:[41Ch]
+	jz	int28_1
+
+	jmp	int28_2	; Есть символ в буфере
+
+;
+;       Помещаем символ в буфер клавиатуры
+;
+int28_1:
+	sti
+
+	mov	cx,30
+int28_4:
+	push	cx
+	xor	cx,cx
+int28_3:		;  Временная задержка
+        loop    int28_3 ;  для увеличения
+			;  интервалов времени между
+                        ;  имитацией нажатий клавиш
+
+	pop	cx
+	loop	int28_4
+
+	cli
+	mov	bx,word ptr es:[480h] ; Очистим буфер
+	mov	byte ptr es:[41Ah],bl ; клавиатуры
+	mov	byte ptr es:[41Ch],bl ; компьютера
+
+	mov	ax,40h
+	mov	es,ax
+
+	mov	si,cs:count_key
+	shl	si,1
+	mov	ax,cs:code_key[si]
+        mov     word ptr es:[bx],ax     ; Поместим в буфер
+	add	byte ptr es:[1Ch],2	; клавиатуры коды
+                                        ; имитируемой
+					; клавиши
+
+	inc	cs:count_key
+	mov	ax,cs:count_key
+
+        cmp     ax,cs:add_key           ; В буфер поместили
+					; коды
+					; последней клавиши?
+
+	jnz	int28_2			; Нет
+;
+;      Заключительные операции по окончанию
+;        процесса имитации нажатий клавиш
+;
+	xor        ax,ax
+	mov        es,ax
+
+	mov	ax,cs:int16_old			; Восстановление
+	mov	word ptr es:[16h*4],ax		; системного
+	mov	ax,cs:int16_old+2		; адреса
+	mov	word ptr es:[16h*4+2],ax	; int 16h
+
+	mov	ax,cs:int28_old			; Восстановление
+	mov	word ptr es:[28h*4],ax		; системного
+	mov	ax,cs:int28_old+2		; адреса
+	mov	word ptr es:[28h*4+2],ax	; int 28h
+
+
+	in	al,61h
+	or	al,80h
+	out	61h,al		; Разблокируем клавиатуру
+;
+;     Выход из процедуры
+;
+int28_2:
+
+	pop	es
+	pop	bx
+	pop	si
+	pop	ax
+
+	sti
+
+	iret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;           Процедура обработки прерывания 16h
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+int16_new	label	near
+;
+;      Проверка на вызов данного прерывания
+;    прикладной программой для чтения символа
+;           с ожиданием (функция 00h)
+;
+	or	ah,ah
+	jz	int16_1
+
+;
+;      Проверка на вызов данного прерывания
+;    прикладной программой для чтения символа
+;    с ожиданием для 101-клавишной клавиатуры
+;                (функция 10h)
+;
+	cmp	ah,10h
+	jnz	int16_2
+;
+;  Заполнение буфера клавиатуры информацией об
+;    имитации очередного нажатия клавиши
+;
+int16_1:
+	int	28h
+;
+;  Передача управления системному прерыванию
+;          обслуживания клавиатуры
+;
+int16_2:
+	db	0EAh	; "JMP far" на старый вектор
+			; прерывания 16h
+
+int16_old dw	0	; Область для хранения системного
+	dw	0	; адреса прерывания 16h
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;            Область данных процедуры DEMO
+;
+;----------------------------------------------------------
+;
+int28_old dw	0	; Область для хранения
+	dw	0	; системного адреса прерывания 28h
+count_key dw	?	; Текущее число клавиш, нажатие
+                        ; которых было эмулированно
+
+add_key	dw	1	; Поле определяет число клавиш,
+                        ; нажатие которых будет  имити-
+			; роваться в процессе выполнения
+			; демо-программы
+
+code_key label	word	; Метка определяет смещение для
+			; области данных, в которой 
+                         находятся коды эмулируемых
+			; клавиш
+
+	db	0Dh	; ASCII-код <Enter>
+	db	1Ch	; Скан-код <Enter>
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;		Начало процедуры DEMO
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+dem_1:
+;
+;   Сохранение значений сегментных, рабочих регистров
+;                 и флагов в стеке
+;
+	push	ax
+	push	es
+	pushf
+;
+;  Обнулим счетчик обработанных клавиш
+;
+	mov	cs:count_key,0
+;
+;  Запретим прерывания от клавиатуры
+;
+	in	al,61h	; Здесь происходит блокирование
+	and	al,7Fh	; клавиатуры, поэтому нажатие
+	out	61h,al	; любых клавиш оператором
+			; не будет восприниматься ОС
+;
+;    Сохранение адресов системных
+;        прерываний 16h и 28h
+;
+	xor	ax,ax
+	mov	es,ax
+
+	mov	ax,word ptr es:[16h*4]
+	mov	cs:int16_old,ax
+	mov	ax,word ptr es:[16h*4+2]
+	mov	cs:int16_old+2,ax
+
+	mov	ax,word ptr es:[28h*4]
+	mov	cs:int28_old,ax
+	mov	ax,word ptr es:[28h*4+2]
+	mov	cs:int28_old+2,ax
+;
+;    Подмена системных векторов прерываний
+;    обслуживания  клавиатуры (16h и 28h)
+;
+	cli
+	mov	ax,cs
+
+	mov	word ptr es:[16h*4],offset cs:int16_new
+	mov	word ptr es:[16h*4+2],ax
+
+	mov	word ptr es:[28h*4],offset cs:int28_new
+	mov	word ptr es:[28h*4+2],ax
+
+	sti
+;
+;       Очистим буфер клавиатуры
+;
+	mov	al,byte ptr es:[480h]
+	mov	byte ptr es:[41Ah],al
+	mov	byte ptr es:[41Ch],al
+;
+; Восстановление значений сегментных, рабочих регистров
+;                 и флагов в стеке
+;
+	popf
+	pop	es
+	pop	ax
+;
+;  Передача управления на старую точку
+;  входа (модифицируется в процессе
+;  создания демонстрационного
+;  варианта программы)
+;
+	nop
+	nop
+	nop
+	nop
+	nop
+
+;
+demo	endp
+
+code	ends
+	end	dem_1
+
+	Листинг 2. Текст программы формирования образа
+		демонстрационного варианта задачи
+
+	.286
+	title	virus
+
+stack	segment	stack
+	dw	150	dup(?)
+stack	ends
+
+
+data	segment 'DATA'
+
+nach_par	dw	?
+dop_sap db	5	dup(?)	; Содержимое последних
+                                ; 5 байтов кода демо-модуля
+dl_obr	dw	?
+ostat	dw	?
+
+f_old	db	64	dup(0)	; Имя файла, содержащего
+				; образ реальной задачи
+f_demo	db	64	dup(0)	; Имя файла, содержащего
+				; образ демо-модуля
+f_new	db	64	dup(0)	; Имя файла, содержащего
+				; образ демонстрационного
+				; варианта реальной задачи
+
+hn_o	dw	0	; Область хранения  номеров
+hn_f    dw      0       ; каналов открытых
+hn_n	dw	0	; файлов
+
+tabl_o	db	32	dup(?)
+dl_o	dw	?
+tabl_n	db	32	dup(?)
+dl_n	dw	?
+tabl_f	db	32	dup(?)
+dl_f	dw	?
+
+dop_tab	dw	?	; Число параграфов,
+			; которые надо добавить к
+			; заголовку файла
+
+db_sag	dw	0	; Число байтов от конца 
+			; таблицы перемещений
+			; до конца заголовка
+
+db_prg  dw      0       ; Число байтов, которые
+			; надо добавить после 
+			; конца кода изменяемой
+			; программы до границы
+			; параграфа
+
+buf	db	512	dup(?)
+
+dl_vrpr	dw	0	; Длина образа демо-модуля 
+dl_vrbt	dw	0	; в параграфах и байтах
+
+dl_stpr	dw	0	; Длина образа реальной
+dl_stbt	dw	0	; задачи в параграфах и
+			; байтах
+
+ml_adr	dw	0
+st_adr	dw	0
+
+mes_1	db	' Неправильно заданы параметры'
+	db	' командной строки',0Dh,0Ah,'$'
+mes_2	db	' Ошибка при открытии файла с'
+	db	' образом реальной задачи'
+	db	' (первый параметр)',0Dh,0Ah,'$'
+mes_3	db	' Ошибка при открытии файла с'
+	db	' образом демо-модуля'
+	db	' (второй параметр)',0Dh,0Ah,'$'
+mes_4	db	' Ошибка при создании файла с'
+	db	' образом демо-варианта задачи'
+	db	' (третий параметр)',0Dh,0Ah,'$'
+
+data	ends
+
+  
+code	segment
+
+	assume	cs:code,ss:stack
+
+virus	proc	far
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Программа получения демонстрационого варианта
+; задачи из исполняемых модулей реальной программы
+; и демо-модуля
+;--------------------------------------------------
+;           (C) 1993 Плотников В.И.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+	mov	ax,data
+	mov	ds,ax
+	assume	ds:data
+;
+; Анализ параметров командной строки
+;
+	call	name_file
+	or	ax,ax
+	jz	vir1
+
+	lea	dx,mes_1
+	mov	ah,9
+	int	21h
+	jmp	vir2
+;
+; Открытие и создание файлов
+;
+vir1:
+	mov	ax,3D00h
+	mov	dx,offset f_demo
+	int	21h
+	jnc	vir3
+
+	lea	dx,mes_2
+	mov	ah,9
+	int	21h
+	jmp	vir2
+
+vir3:
+	mov	hn_f,ax
+	mov	ax,3D00h
+	mov	dx,offset f_old
+	int	21h
+	jnc	vir4
+
+	lea	dx,mes_3
+	mov	ah,9
+	int	21h
+	jmp	vir2
+
+vir4:
+	mov	hn_o,ax
+	mov	ah,3Ch
+	mov	dx,offset f_new
+	xor	cx,cx
+	int	21h
+	jnc	vir5
+
+	lea	dx,mes_4
+	mov	ah,9
+	int	21h
+	jmp	vir2
+
+vir5:
+	mov	hn_n,ax
+;
+; Чтение начала заголовка exe-файла
+;	реальной задачи
+;
+	mov	bx,hn_o
+	mov	cx,32
+	mov	dx,offset tabl_o
+	mov	ah,3Fh
+	int	21h
+; 
+; Чтение заголовка exe-файла демо-модуля
+;
+	mov	bx,hn_f
+	mov	cx,32
+	mov	dx,offset tabl_f
+	mov	ah,3Fh
+	int	21h
+;
+; Вычисление номера параграфа, с которого
+; будет начинаться первый сегмент образа
+; реальной задачи в исполняемом модуле
+; демонстрационного варианта
+;
+	mov	bx,word ptr tabl_f+8 ; Число
+				     ; параграфов
+				     ; заголовка
+				     ; демо-модуля
+
+	mov	ax,word ptr tabl_f+4 ; Длина образа
+				     ; демо-модуля
+	
+	dec	ax
+	shl	ax,5
+	sub	ax,bx
+	mov	bx,ax
+	xor	dx,dx
+	mov	cx,16
+	mov	ax,word ptr tabl_f+2
+	div	cx
+	add	ax,bx
+	mov	db_prg,0
+	cmp	dx,0
+	jz	vir6
+	inc	ax
+	mov	cx,16
+	sub	cx,dx
+	mov	db_prg,cx
+vir6:
+        mov     nach_par,ax     ; Запомним
+				; номер начального
+                                ; параграфа, с которого
+				; начинается образ 
+				; реальной задачи в
+				; исполняемом файле
+				; демо-варианта
+;
+; Определим длину образа реальной задачи 
+;	в параграфах и байтах 
+;  
+	mov	ax,word	ptr tabl_o+4
+	mov	bx,word	ptr tabl_o+2
+	dec	ax
+	mov	dl_stbt,bx
+	shl	ax,5
+	sub	ax,word	ptr tabl_o+8
+	mov	dl_stpr,ax
+;
+; Определим длину образа демо-модуля
+;     в параграфах и байтах
+;  
+	mov	ax,word	ptr tabl_f+4
+	mov	bx,word	ptr tabl_f+2
+	dec	ax
+	mov	dl_vrbt,bx
+	shl	ax,5
+	sub	ax,word	ptr tabl_f+8
+	mov	dl_vrpr,ax
+;
+; Сформируем последние 5 байтов кодов демо-модуля
+;
+	mov	dop_sap,0EAh
+	mov	ax,word ptr tabl_o+14h
+	mov	word ptr dop_sap+1,ax
+	mov	ax,word ptr tabl_o+16h
+	add	ax,nach_par
+	mov	word ptr dop_sap+3,ax
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Формирование начала заголовка exe-файла
+;	демонстрационноного варианта задачи          
+;  
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	mov	di,offset tabl_n
+	mov	si,offset tabl_o
+	mov	cx,1Bh
+vir7:
+	mov	bl,byte ptr [si]
+	mov	byte ptr [di],bl
+	inc	si
+	inc	di
+	loop	vir7
+
+;
+; Определим число элементов в таблице 
+; перемещений нового exe-файла
+;
+	mov 	ax,word ptr tabl_f+6
+	inc	ax
+	add	word ptr tabl_n+6,ax
+	mov	cx,word ptr tabl_n+6
+	shl	cx,2	; В cx длина таблицы
+			; перемещений в байтах
+;
+; Вычислим длину заголовка exe-файла демонстрационного 
+; варианта и определим число байтов, которое необходимо
+; дописать в заголовок за последним элементом таблицы
+; перемещений
+;
+	mov	ax,word	ptr tabl_o+18h
+
+        add     ax,cx   ; Получим длину в байтах
+			; информационной части нового
+			; заголовка
+
+	mov	db_sag,0
+	xor	dx,dx
+	mov	cx,512
+	div	cx
+	cmp	dx,0
+	jz	vir8
+	inc	ax
+	sub	cx,dx
+	mov	db_sag,cx
+vir8:
+	shl	ax,5
+	mov	word ptr tabl_n+8,ax
+;
+; Изменим указатели стека в заголовке
+;
+	mov	ax,nach_par
+	add	word ptr tabl_n+0Eh,ax
+;
+;	Изменим точку входа
+;
+	mov	ax,word ptr tabl_f+14h
+	mov	word ptr tabl_n+14h,ax
+	mov	ax,word ptr tabl_f+16h
+	mov	word ptr tabl_n+16h,ax
+;
+; Заполним поля длины файла в заголовке
+; файла образа демонстрационного варианта
+;
+	mov	ax,nach_par
+	add	ax,dl_stpr
+	add	ax,word ptr tabl_n+8
+	xor	dx,dx
+	mov	cx,32
+	div	cx
+	push	ax
+	shl	dx,4
+	add	dx,dl_stbt
+	mov	ax,dx
+	xor	dx,dx
+	mov	cx,512
+	div	cx
+	mov	cx,ax
+	pop	ax
+	add	ax,cx
+	cmp	dx,0
+	jnz	vir9
+	mov	dx,512
+	jmp	short vir10
+vir9:
+	inc	ax
+vir10:
+	mov	word ptr tabl_n+2,dx
+	mov	word ptr tabl_n+4,ax
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Запишем заголовок нового файла
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	mov	ah,40h
+	mov	bx,hn_n
+	mov	cx,1Ah
+	mov	dx,offset tabl_n
+	int	21h
+;
+; Запишем информацию, которая находится до таблицы
+;	перемещений exe-файла реальной задачи
+;
+	mov	cx,word ptr tabl_n+18h
+	sub	cx,001Ah
+	push	cx
+	mov	bx,hn_o
+	mov	ax,4200h
+	xor	cx,cx
+	mov	dx,001Ah
+	int	21h
+	pop	cx
+	mov	dx,offset buf
+vir11:
+	push	cx
+	mov	ah,3Fh
+	mov	cx,1
+	mov	bx,hn_o
+	int	21h
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx
+	loop	vir11
+;
+; Добавим таблицу перемещений демо-модуля
+;
+	mov	cx,word ptr tabl_f+6
+	jcxz	vir13
+	mov	bx,hn_f
+	mov	ax,4200h
+	push	cx
+	xor	cx,cx
+	mov	dx,word ptr tabl_f+18h
+	int	21h
+	pop	cx
+	mov	dx,offset buf
+	
+vir12:
+	push	cx
+	mov	ah,3Fh
+	mov	cx,4
+	mov	bx,hn_f
+	int	21h
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx
+	loop	vir12
+;
+; Добавим элемент к таблице перемещений,
+; который будет описывать команду JMP FAR
+; демо-модуля (передачу управления на точку
+; входа реальной задачи)
+;
+vir13:
+	cmp	dl_vrbt,5
+	jae	vir14
+	dec	dl_vrpr
+	add	dl_vrbt,16
+vir14:
+	sub	dl_vrbt,5
+	mov	ax,dl_vrbt
+	add	ax,3
+	mov	word ptr buf,ax
+	mov	ax,dl_vrpr
+	mov	word ptr buf+2,ax
+	mov	dx,offset buf
+	mov	ah,40h
+	mov	bx,hn_n
+	mov	cx,4
+	int	21h
+;
+; Допишем старую таблицу перемещений реальной
+;		задачи
+;
+	mov	cx,word ptr tabl_o+6
+	jcxz	vir15
+vir16:
+	push	cx
+	mov	ah,3Fh
+	mov	cx,4
+	mov	bx,hn_o
+	int	21h
+	mov	ax,nach_par
+	add	word ptr buf+2,ax
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx
+	loop	vir16
+;
+;  Допишем заголовок нулями
+;
+vir15:
+	mov	cx,db_sag
+	mov	buf,0
+	mov	dx,offset buf
+	jcxz	vir17
+vir18:
+	push	cx
+	mov	cx,1
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx
+	loop	vir18
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Добавление кодов демо-модуля
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+vir17:
+	mov	ax,word ptr tabl_f+8
+	shl	ax,4
+	mov	bx,hn_f
+	xor	cx,cx
+	mov	dx,ax
+	mov	ax,4200h
+	int	21h
+	mov	dx,offset buf
+	mov	cx,dl_vrpr
+	jcxz	vir29
+vir19:
+	push	cx
+	mov	ah,3Fh
+	mov	cx,16
+	mov	bx,hn_f
+	int	21h
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx	
+	loop	vir19
+
+vir29:
+	mov	cx,dl_vrbt
+	jcxz	vir20
+vir21:
+	push	cx
+	mov	ah,3Fh
+	mov	cx,1
+	mov	bx,hn_f
+	int	21h
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx	
+	loop	vir21
+
+vir20:
+	mov	cx,5
+	mov	dx,offset dop_sap
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+;
+; Допишем в конце необходимое число нулей
+;
+	mov	cx,db_prg
+	mov	buf,0
+	mov	dx,offset buf
+	jcxz	vir22
+vir23:
+	push	cx
+	mov	cx,1
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx
+	loop	vir23
+;
+; Запомним положение указателя файла
+;
+	mov	bx,hn_n
+	xor	cx,cx
+	mov	dx,cx
+	mov	ax,4201h
+	int	21h
+	mov	ml_adr,ax
+	mov	st_adr,dx
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Запись содержимого сегментов реальной задачи
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+vir22:
+	mov	ax,word ptr tabl_o+8	; Длина заголовка в
+					; параграфах
+;
+;	Запись образа задачи
+;
+	shl	ax,4
+	mov	bx,hn_o
+	xor	cx,cx
+	mov	dx,ax
+	mov	ax,4200h
+	int	21h
+	mov	dx,offset buf
+	mov	cx,dl_stpr
+	jcxz	vir25
+vir24:
+	push	cx
+	mov	ah,3Fh
+	mov	cx,16
+	mov	bx,hn_o
+	int	21h
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx	
+	loop	vir24
+vir25:
+	mov	cx,dl_stbt
+	jcxz	vir26
+	mov	ah,3Fh
+	mov	bx,hn_o
+	int	21h
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+;
+;  Подкорректируем номера сегментов в командах
+;
+vir26:
+	mov	cx,word ptr tabl_o+6
+	jcxz	vir27
+	push	cx
+	mov	dx,word ptr tabl_o+18h
+	xor	cx,cx
+	mov	ax,4200h
+	mov	bx,hn_o
+	int	21h
+	pop	cx
+	mov	dx,offset buf
+	
+vir28:
+	push	cx
+	mov	bx,hn_o
+	mov	cx,4
+	mov	ah,3Fh
+	int	21h
+	mov	ax,word ptr buf
+	mov	bx,word	ptr buf+2
+	mov	si,bx
+	shl	si,4
+	shr	bh,4
+	xor	bl,bl
+	xchg	bh,bl
+	mov	cx,st_adr
+	add	cx,bx
+	add	ax,ml_adr
+	adc	cx,0
+	add	ax,si
+	adc	cx,0
+
+	push	ax
+	push	cx
+
+	push	dx
+	mov	dx,ax
+	mov	bx,hn_n
+	mov	ax,4200h
+	int	21h
+	pop	dx
+	mov	cx,2
+	mov	ah,3Fh
+	int	21h
+	
+	pop	cx
+	pop	ax
+	
+	mov	di,nach_par
+	add	word ptr buf,di
+	push	dx
+	mov	dx,ax
+	mov	ax,4200h
+	int	21h
+	pop	dx
+	mov	cx,2
+	mov	ah,40h
+	int	21h
+	
+	pop	cx
+	loop	vir28
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Закрытие файлов
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+vir27:
+	mov	bx,hn_f
+	mov	ah,3Eh
+	int	21h	
+	mov	bx,hn_o
+	mov	ah,3Eh
+	int	21h	
+	mov	bx,hn_n
+	mov	ah,3Eh
+	int	21h	
+;
+;	Завершение программы
+;
+vir2:
+	mov	ax,4C00h
+	int	21h
+
+virus	endp
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;         Процедура анализа командной строки
+;
+;------------------------------------------------------
+;
+;   Вход:
+;
+;          es - сегмент PSP;
+;          ds - сегмент данных
+;
+;   Выход:
+;
+;          ax - код возврата:
+;
+;               0 - в строке содержатся все данные;
+;               1 - заданы не все параметры командной
+;                   строки;
+;
+;       f_old - имя файла, содержащего образ реальной
+;               задачи;
+;      f_demo -	имя файла, содержащего образ
+;               демо-модуля;
+;       f_new - имя файла, содержащего образ демонст-
+;               рационного варианта реальной задачи.
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+name_file	proc	near
+	cld
+	mov	cs:sm_f,offset f_old
+	mov	cs:sm_f+2,offset f_demo
+	mov	cs:sm_f+4,offset f_new
+;
+;	Анализ содержимого командной строки
+;
+	mov	di,0080h
+	mov	cl,byte ptr es:[di]
+	xor	ch,ch
+	cmp	cx,0
+	jnz	nmf1
+nmf4:
+	mov	ax,1
+	jmp	nmf2
+nmf1:
+	inc	di
+	mov	al,'/'
+
+	repne	scasb		; Поиск первого слэша	
+	jcxz	nmf4
+	mov	cs:adr,di	; Адрес начала первого
+				; параметра
+
+	mov	bx,cx
+	repne	scasb		; Поиск второго слэша	
+	jcxz	nmf4
+	mov	cs:adr+2,di	; Адрес начала второго
+				; параметра
+	sub	bx,cx
+        dec     bx              ; Получим длину первого
+	mov	cs:dln,bx	; параметра
+
+	mov	bx,cx
+	repne	scasb		; Поиск третьего слэша	
+	jcxz	nmf4
+	mov	cs:adr+4,di	; Адрес начала третьего
+				; параметра
+	sub	bx,cx
+        dec     bx              ; Получим длину второго
+	mov	cs:dln+2,bx	; параметра
+	mov	cs:dln+4,cx	; Длина третьего параметра
+;
+;	Формирование имен файлов
+;
+	push	es
+	push	ds
+	mov	ax,es
+	push	ds
+	pop	es
+	mov	ds,ax
+
+	mov	cx,cs:dln
+	mov	di,cs:sm_f
+	mov	si,cs:adr
+	rep	movsb
+	mov	byte ptr es:[di],0
+
+	mov	cx,cs:dln+2
+	mov	di,cs:sm_f+2
+	mov	si,cs:adr+2
+	rep	movsb
+	mov	byte ptr es:[di],0
+
+	mov	cx,cs:dln+4
+	mov	di,cs:sm_f+4
+	mov	si,cs:adr+4
+	rep	movsb
+	mov	byte ptr es:[di],0
+
+	pop	ds
+	pop	es
+	xor	ax,ax
+nmf2:
+	ret
+;
+;     Область данных процедуры
+;
+sm_f	dw	3	dup(?)
+adr	dw	3	dup(?)
+dln	dw	3	dup(?)
+
+name_file	endp
+
+code	ends
+	end	virus
+Листинг 1. Текст демо-модуля
+
+	title	demo
+	assume	cs:code
+
+code	segment
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Процедура организации имитации воздействий оператора на ход
+; выполнения программы через клавиатуру
+;--------------------------------------------------------- ; ;
+;  Процедура сохраняeт необходимые для ее работы регистры, а также
+;  значения флагов при входе в нее. На время эмуляции операций с
+;  клавиатурой подменяет системные вектора прерываний 16h и 28h на
+;  собственные.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+demo proc far
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;          Процедура обслуживания прерывания 28h
+;
+;----------------------------------------------------------
+;
+; Процедура сохраняет значения необходимых для ее выполнения
+; регистров. Если буфер клавиатуры пуст, помещает туда коды
+; эмулируемой клавиши. После посылки в буфер сведений о последней
+; имитации нажатия клавиши происходит восстановление системных
+; векторов прерываний 16h и 28h, а также разблокирование клавиатуры.
+;
+;
+;  Данный обработчик прерывания вызывается из нового обработчика
+; int 16h или порождается ОС при ожидании ввода с клавиатуры,
+; реализованного через функции DOS.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+int28_new   label    near
+
+	push	ax
+	push	si
+	push	bx
+	push	es
+;
+;     Проверяем, пуст ли буфер клавиатуры
+;
+	xor	ax,ax
+	mov	es,ax
+	mov	al,byte ptr es:[41Ah]
+	cmp	al,byte ptr es:[41Ch]
+	jz	int28_1
+
+	jmp	int28_2	; Есть символ в буфере
+
+;
+;       Помещаем символ в буфер клавиатуры
+;
+int28_1:
+	sti
+
+	mov	cx,30
+int28_4:
+	push	cx
+	xor	cx,cx
+int28_3:		;  Временная задержка
+        loop    int28_3 ;  для увеличения
+			;  интервалов времени между
+                        ;  имитацией нажатий клавиш
+
+	pop	cx
+	loop	int28_4
+
+	cli
+	mov	bx,word ptr es:[480h] ; Очистим буфер
+	mov	byte ptr es:[41Ah],bl ; клавиатуры
+	mov	byte ptr es:[41Ch],bl ; компьютера
+
+	mov	ax,40h
+	mov	es,ax
+
+	mov	si,cs:count_key
+	shl	si,1
+	mov	ax,cs:code_key[si]
+        mov     word ptr es:[bx],ax     ; Поместим в буфер
+	add	byte ptr es:[1Ch],2	; клавиатуры коды
+                                        ; имитируемой
+					; клавиши
+
+	inc	cs:count_key
+	mov	ax,cs:count_key
+
+        cmp     ax,cs:add_key           ; В буфер поместили
+					; коды
+					; последней клавиши?
+
+	jnz	int28_2			; Нет
+;
+;      Заключительные операции по окончанию
+;        процесса имитации нажатий клавиш
+;
+	xor        ax,ax
+	mov        es,ax
+
+	mov	ax,cs:int16_old			; Восстановление
+	mov	word ptr es:[16h*4],ax		; системного
+	mov	ax,cs:int16_old+2		; адреса
+	mov	word ptr es:[16h*4+2],ax	; int 16h
+
+	mov	ax,cs:int28_old			; Восстановление
+	mov	word ptr es:[28h*4],ax		; системного
+	mov	ax,cs:int28_old+2		; адреса
+	mov	word ptr es:[28h*4+2],ax	; int 28h
+
+
+	in	al,61h
+	or	al,80h
+	out	61h,al		; Разблокируем клавиатуру
+;
+;     Выход из процедуры
+;
+int28_2:
+
+	pop	es
+	pop	bx
+	pop	si
+	pop	ax
+
+	sti
+
+	iret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;           Процедура обработки прерывания 16h
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+int16_new	label	near
+;
+;      Проверка на вызов данного прерывания
+;    прикладной программой для чтения символа
+;           с ожиданием (функция 00h)
+;
+	or	ah,ah
+	jz	int16_1
+
+;
+;      Проверка на вызов данного прерывания
+;    прикладной программой для чтения символа
+;    с ожиданием для 101-клавишной клавиатуры
+;                (функция 10h)
+;
+	cmp	ah,10h
+	jnz	int16_2
+;
+;  Заполнение буфера клавиатуры информацией об
+;    имитации очередного нажатия клавиши
+;
+int16_1:
+	int	28h
+;
+;  Передача управления системному прерыванию
+;          обслуживания клавиатуры
+;
+int16_2:
+	db	0EAh	; "JMP far" на старый вектор
+			; прерывания 16h
+
+int16_old dw	0	; Область для хранения системного
+	dw	0	; адреса прерывания 16h
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;            Область данных процедуры DEMO
+;
+;----------------------------------------------------------
+;
+int28_old dw	0	; Область для хранения
+	dw	0	; системного адреса прерывания 28h
+count_key dw	?	; Текущее число клавиш, нажатие
+                        ; которых было эмулированно
+
+add_key	dw	1	; Поле определяет число клавиш,
+                        ; нажатие которых будет  имити-
+			; роваться в процессе выполнения
+			; демо-программы
+
+code_key label	word	; Метка определяет смещение для
+			; области данных, в которой 
+                         находятся коды эмулируемых
+			; клавиш
+
+	db	0Dh	; ASCII-код <Enter>
+	db	1Ch	; Скан-код <Enter>
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;		Начало процедуры DEMO
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+dem_1:
+;
+;   Сохранение значений сегментных, рабочих регистров
+;                 и флагов в стеке
+;
+	push	ax
+	push	es
+	pushf
+;
+;  Обнулим счетчик обработанных клавиш
+;
+	mov	cs:count_key,0
+;
+;  Запретим прерывания от клавиатуры
+;
+	in	al,61h	; Здесь происходит блокирование
+	and	al,7Fh	; клавиатуры, поэтому нажатие
+	out	61h,al	; любых клавиш оператором
+			; не будет восприниматься ОС
+;
+;    Сохранение адресов системных
+;        прерываний 16h и 28h
+;
+	xor	ax,ax
+	mov	es,ax
+
+	mov	ax,word ptr es:[16h*4]
+	mov	cs:int16_old,ax
+	mov	ax,word ptr es:[16h*4+2]
+	mov	cs:int16_old+2,ax
+
+	mov	ax,word ptr es:[28h*4]
+	mov	cs:int28_old,ax
+	mov	ax,word ptr es:[28h*4+2]
+	mov	cs:int28_old+2,ax
+;
+;    Подмена системных векторов прерываний
+;    обслуживания  клавиатуры (16h и 28h)
+;
+	cli
+	mov	ax,cs
+
+	mov	word ptr es:[16h*4],offset cs:int16_new
+	mov	word ptr es:[16h*4+2],ax
+
+	mov	word ptr es:[28h*4],offset cs:int28_new
+	mov	word ptr es:[28h*4+2],ax
+
+	sti
+;
+;       Очистим буфер клавиатуры
+;
+	mov	al,byte ptr es:[480h]
+	mov	byte ptr es:[41Ah],al
+	mov	byte ptr es:[41Ch],al
+;
+; Восстановление значений сегментных, рабочих регистров
+;                 и флагов в стеке
+;
+	popf
+	pop	es
+	pop	ax
+;
+;  Передача управления на старую точку
+;  входа (модифицируется в процессе
+;  создания демонстрационного
+;  варианта программы)
+;
+	nop
+	nop
+	nop
+	nop
+	nop
+
+;
+demo	endp
+
+code	ends
+	end	dem_1
+
+	Листинг 2. Текст программы формирования образа
+		демонстрационного варианта задачи
+
+	.286
+	title	virus
+
+stack	segment	stack
+	dw	150	dup(?)
+stack	ends
+
+
+data	segment 'DATA'
+
+nach_par	dw	?
+dop_sap db	5	dup(?)	; Содержимое последних
+                                ; 5 байтов кода демо-модуля
+dl_obr	dw	?
+ostat	dw	?
+
+f_old	db	64	dup(0)	; Имя файла, содержащего
+				; образ реальной задачи
+f_demo	db	64	dup(0)	; Имя файла, содержащего
+				; образ демо-модуля
+f_new	db	64	dup(0)	; Имя файла, содержащего
+				; образ демонстрационного
+				; варианта реальной задачи
+
+hn_o	dw	0	; Область хранения  номеров
+hn_f    dw      0       ; каналов открытых
+hn_n	dw	0	; файлов
+
+tabl_o	db	32	dup(?)
+dl_o	dw	?
+tabl_n	db	32	dup(?)
+dl_n	dw	?
+tabl_f	db	32	dup(?)
+dl_f	dw	?
+
+dop_tab	dw	?	; Число параграфов,
+			; которые надо добавить к
+			; заголовку файла
+
+db_sag	dw	0	; Число байтов от конца 
+			; таблицы перемещений
+			; до конца заголовка
+
+db_prg  dw      0       ; Число байтов, которые
+			; надо добавить после 
+			; конца кода изменяемой
+			; программы до границы
+			; параграфа
+
+buf	db	512	dup(?)
+
+dl_vrpr	dw	0	; Длина образа демо-модуля 
+dl_vrbt	dw	0	; в параграфах и байтах
+
+dl_stpr	dw	0	; Длина образа реальной
+dl_stbt	dw	0	; задачи в параграфах и
+			; байтах
+
+ml_adr	dw	0
+st_adr	dw	0
+
+mes_1	db	' Неправильно заданы параметры'
+	db	' командной строки',0Dh,0Ah,'$'
+mes_2	db	' Ошибка при открытии файла с'
+	db	' образом реальной задачи'
+	db	' (первый параметр)',0Dh,0Ah,'$'
+mes_3	db	' Ошибка при открытии файла с'
+	db	' образом демо-модуля'
+	db	' (второй параметр)',0Dh,0Ah,'$'
+mes_4	db	' Ошибка при создании файла с'
+	db	' образом демо-варианта задачи'
+	db	' (третий параметр)',0Dh,0Ah,'$'
+
+data	ends
+
+  
+code	segment
+
+	assume	cs:code,ss:stack
+
+virus	proc	far
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Программа получения демонстрационого варианта
+; задачи из исполняемых модулей реальной программы
+; и демо-модуля
+;--------------------------------------------------
+;           (C) 1993 Плотников В.И.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+	mov	ax,data
+	mov	ds,ax
+	assume	ds:data
+;
+; Анализ параметров командной строки
+;
+	call	name_file
+	or	ax,ax
+	jz	vir1
+
+	lea	dx,mes_1
+	mov	ah,9
+	int	21h
+	jmp	vir2
+;
+; Открытие и создание файлов
+;
+vir1:
+	mov	ax,3D00h
+	mov	dx,offset f_demo
+	int	21h
+	jnc	vir3
+
+	lea	dx,mes_2
+	mov	ah,9
+	int	21h
+	jmp	vir2
+
+vir3:
+	mov	hn_f,ax
+	mov	ax,3D00h
+	mov	dx,offset f_old
+	int	21h
+	jnc	vir4
+
+	lea	dx,mes_3
+	mov	ah,9
+	int	21h
+	jmp	vir2
+
+vir4:
+	mov	hn_o,ax
+	mov	ah,3Ch
+	mov	dx,offset f_new
+	xor	cx,cx
+	int	21h
+	jnc	vir5
+
+	lea	dx,mes_4
+	mov	ah,9
+	int	21h
+	jmp	vir2
+
+vir5:
+	mov	hn_n,ax
+;
+; Чтение начала заголовка exe-файла
+;	реальной задачи
+;
+	mov	bx,hn_o
+	mov	cx,32
+	mov	dx,offset tabl_o
+	mov	ah,3Fh
+	int	21h
+; 
+; Чтение заголовка exe-файла демо-модуля
+;
+	mov	bx,hn_f
+	mov	cx,32
+	mov	dx,offset tabl_f
+	mov	ah,3Fh
+	int	21h
+;
+; Вычисление номера параграфа, с которого
+; будет начинаться первый сегмент образа
+; реальной задачи в исполняемом модуле
+; демонстрационного варианта
+;
+	mov	bx,word ptr tabl_f+8 ; Число
+				     ; параграфов
+				     ; заголовка
+				     ; демо-модуля
+
+	mov	ax,word ptr tabl_f+4 ; Длина образа
+				     ; демо-модуля
+	
+	dec	ax
+	shl	ax,5
+	sub	ax,bx
+	mov	bx,ax
+	xor	dx,dx
+	mov	cx,16
+	mov	ax,word ptr tabl_f+2
+	div	cx
+	add	ax,bx
+	mov	db_prg,0
+	cmp	dx,0
+	jz	vir6
+	inc	ax
+	mov	cx,16
+	sub	cx,dx
+	mov	db_prg,cx
+vir6:
+        mov     nach_par,ax     ; Запомним
+				; номер начального
+                                ; параграфа, с которого
+				; начинается образ 
+				; реальной задачи в
+				; исполняемом файле
+				; демо-варианта
+;
+; Определим длину образа реальной задачи 
+;	в параграфах и байтах 
+;  
+	mov	ax,word	ptr tabl_o+4
+	mov	bx,word	ptr tabl_o+2
+	dec	ax
+	mov	dl_stbt,bx
+	shl	ax,5
+	sub	ax,word	ptr tabl_o+8
+	mov	dl_stpr,ax
+;
+; Определим длину образа демо-модуля
+;     в параграфах и байтах
+;  
+	mov	ax,word	ptr tabl_f+4
+	mov	bx,word	ptr tabl_f+2
+	dec	ax
+	mov	dl_vrbt,bx
+	shl	ax,5
+	sub	ax,word	ptr tabl_f+8
+	mov	dl_vrpr,ax
+;
+; Сформируем последние 5 байтов кодов демо-модуля
+;
+	mov	dop_sap,0EAh
+	mov	ax,word ptr tabl_o+14h
+	mov	word ptr dop_sap+1,ax
+	mov	ax,word ptr tabl_o+16h
+	add	ax,nach_par
+	mov	word ptr dop_sap+3,ax
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Формирование начала заголовка exe-файла
+;	демонстрационноного варианта задачи          
+;  
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	mov	di,offset tabl_n
+	mov	si,offset tabl_o
+	mov	cx,1Bh
+vir7:
+	mov	bl,byte ptr [si]
+	mov	byte ptr [di],bl
+	inc	si
+	inc	di
+	loop	vir7
+
+;
+; Определим число элементов в таблице 
+; перемещений нового exe-файла
+;
+	mov 	ax,word ptr tabl_f+6
+	inc	ax
+	add	word ptr tabl_n+6,ax
+	mov	cx,word ptr tabl_n+6
+	shl	cx,2	; В cx длина таблицы
+			; перемещений в байтах
+;
+; Вычислим длину заголовка exe-файла демонстрационного 
+; варианта и определим число байтов, которое необходимо
+; дописать в заголовок за последним элементом таблицы
+; перемещений
+;
+	mov	ax,word	ptr tabl_o+18h
+
+        add     ax,cx   ; Получим длину в байтах
+			; информационной части нового
+			; заголовка
+
+	mov	db_sag,0
+	xor	dx,dx
+	mov	cx,512
+	div	cx
+	cmp	dx,0
+	jz	vir8
+	inc	ax
+	sub	cx,dx
+	mov	db_sag,cx
+vir8:
+	shl	ax,5
+	mov	word ptr tabl_n+8,ax
+;
+; Изменим указатели стека в заголовке
+;
+	mov	ax,nach_par
+	add	word ptr tabl_n+0Eh,ax
+;
+;	Изменим точку входа
+;
+	mov	ax,word ptr tabl_f+14h
+	mov	word ptr tabl_n+14h,ax
+	mov	ax,word ptr tabl_f+16h
+	mov	word ptr tabl_n+16h,ax
+;
+; Заполним поля длины файла в заголовке
+; файла образа демонстрационного варианта
+;
+	mov	ax,nach_par
+	add	ax,dl_stpr
+	add	ax,word ptr tabl_n+8
+	xor	dx,dx
+	mov	cx,32
+	div	cx
+	push	ax
+	shl	dx,4
+	add	dx,dl_stbt
+	mov	ax,dx
+	xor	dx,dx
+	mov	cx,512
+	div	cx
+	mov	cx,ax
+	pop	ax
+	add	ax,cx
+	cmp	dx,0
+	jnz	vir9
+	mov	dx,512
+	jmp	short vir10
+vir9:
+	inc	ax
+vir10:
+	mov	word ptr tabl_n+2,dx
+	mov	word ptr tabl_n+4,ax
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Запишем заголовок нового файла
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	mov	ah,40h
+	mov	bx,hn_n
+	mov	cx,1Ah
+	mov	dx,offset tabl_n
+	int	21h
+;
+; Запишем информацию, которая находится до таблицы
+;	перемещений exe-файла реальной задачи
+;
+	mov	cx,word ptr tabl_n+18h
+	sub	cx,001Ah
+	push	cx
+	mov	bx,hn_o
+	mov	ax,4200h
+	xor	cx,cx
+	mov	dx,001Ah
+	int	21h
+	pop	cx
+	mov	dx,offset buf
+vir11:
+	push	cx
+	mov	ah,3Fh
+	mov	cx,1
+	mov	bx,hn_o
+	int	21h
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx
+	loop	vir11
+;
+; Добавим таблицу перемещений демо-модуля
+;
+	mov	cx,word ptr tabl_f+6
+	jcxz	vir13
+	mov	bx,hn_f
+	mov	ax,4200h
+	push	cx
+	xor	cx,cx
+	mov	dx,word ptr tabl_f+18h
+	int	21h
+	pop	cx
+	mov	dx,offset buf
+	
+vir12:
+	push	cx
+	mov	ah,3Fh
+	mov	cx,4
+	mov	bx,hn_f
+	int	21h
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx
+	loop	vir12
+;
+; Добавим элемент к таблице перемещений,
+; который будет описывать команду JMP FAR
+; демо-модуля (передачу управления на точку
+; входа реальной задачи)
+;
+vir13:
+	cmp	dl_vrbt,5
+	jae	vir14
+	dec	dl_vrpr
+	add	dl_vrbt,16
+vir14:
+	sub	dl_vrbt,5
+	mov	ax,dl_vrbt
+	add	ax,3
+	mov	word ptr buf,ax
+	mov	ax,dl_vrpr
+	mov	word ptr buf+2,ax
+	mov	dx,offset buf
+	mov	ah,40h
+	mov	bx,hn_n
+	mov	cx,4
+	int	21h
+;
+; Допишем старую таблицу перемещений реальной
+;		задачи
+;
+	mov	cx,word ptr tabl_o+6
+	jcxz	vir15
+vir16:
+	push	cx
+	mov	ah,3Fh
+	mov	cx,4
+	mov	bx,hn_o
+	int	21h
+	mov	ax,nach_par
+	add	word ptr buf+2,ax
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx
+	loop	vir16
+;
+;  Допишем заголовок нулями
+;
+vir15:
+	mov	cx,db_sag
+	mov	buf,0
+	mov	dx,offset buf
+	jcxz	vir17
+vir18:
+	push	cx
+	mov	cx,1
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx
+	loop	vir18
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Добавление кодов демо-модуля
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+vir17:
+	mov	ax,word ptr tabl_f+8
+	shl	ax,4
+	mov	bx,hn_f
+	xor	cx,cx
+	mov	dx,ax
+	mov	ax,4200h
+	int	21h
+	mov	dx,offset buf
+	mov	cx,dl_vrpr
+	jcxz	vir29
+vir19:
+	push	cx
+	mov	ah,3Fh
+	mov	cx,16
+	mov	bx,hn_f
+	int	21h
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx	
+	loop	vir19
+
+vir29:
+	mov	cx,dl_vrbt
+	jcxz	vir20
+vir21:
+	push	cx
+	mov	ah,3Fh
+	mov	cx,1
+	mov	bx,hn_f
+	int	21h
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx	
+	loop	vir21
+
+vir20:
+	mov	cx,5
+	mov	dx,offset dop_sap
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+;
+; Допишем в конце необходимое число нулей
+;
+	mov	cx,db_prg
+	mov	buf,0
+	mov	dx,offset buf
+	jcxz	vir22
+vir23:
+	push	cx
+	mov	cx,1
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx
+	loop	vir23
+;
+; Запомним положение указателя файла
+;
+	mov	bx,hn_n
+	xor	cx,cx
+	mov	dx,cx
+	mov	ax,4201h
+	int	21h
+	mov	ml_adr,ax
+	mov	st_adr,dx
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Запись содержимого сегментов реальной задачи
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+vir22:
+	mov	ax,word ptr tabl_o+8	; Длина заголовка в
+					; параграфах
+;
+;	Запись образа задачи
+;
+	shl	ax,4
+	mov	bx,hn_o
+	xor	cx,cx
+	mov	dx,ax
+	mov	ax,4200h
+	int	21h
+	mov	dx,offset buf
+	mov	cx,dl_stpr
+	jcxz	vir25
+vir24:
+	push	cx
+	mov	ah,3Fh
+	mov	cx,16
+	mov	bx,hn_o
+	int	21h
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+	pop	cx	
+	loop	vir24
+vir25:
+	mov	cx,dl_stbt
+	jcxz	vir26
+	mov	ah,3Fh
+	mov	bx,hn_o
+	int	21h
+	mov	ah,40h
+	mov	bx,hn_n
+	int	21h
+;
+;  Подкорректируем номера сегментов в командах
+;
+vir26:
+	mov	cx,word ptr tabl_o+6
+	jcxz	vir27
+	push	cx
+	mov	dx,word ptr tabl_o+18h
+	xor	cx,cx
+	mov	ax,4200h
+	mov	bx,hn_o
+	int	21h
+	pop	cx
+	mov	dx,offset buf
+	
+vir28:
+	push	cx
+	mov	bx,hn_o
+	mov	cx,4
+	mov	ah,3Fh
+	int	21h
+	mov	ax,word ptr buf
+	mov	bx,word	ptr buf+2
+	mov	si,bx
+	shl	si,4
+	shr	bh,4
+	xor	bl,bl
+	xchg	bh,bl
+	mov	cx,st_adr
+	add	cx,bx
+	add	ax,ml_adr
+	adc	cx,0
+	add	ax,si
+	adc	cx,0
+
+	push	ax
+	push	cx
+
+	push	dx
+	mov	dx,ax
+	mov	bx,hn_n
+	mov	ax,4200h
+	int	21h
+	pop	dx
+	mov	cx,2
+	mov	ah,3Fh
+	int	21h
+	
+	pop	cx
+	pop	ax
+	
+	mov	di,nach_par
+	add	word ptr buf,di
+	push	dx
+	mov	dx,ax
+	mov	ax,4200h
+	int	21h
+	pop	dx
+	mov	cx,2
+	mov	ah,40h
+	int	21h
+	
+	pop	cx
+	loop	vir28
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Закрытие файлов
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+vir27:
+	mov	bx,hn_f
+	mov	ah,3Eh
+	int	21h	
+	mov	bx,hn_o
+	mov	ah,3Eh
+	int	21h	
+	mov	bx,hn_n
+	mov	ah,3Eh
+	int	21h	
+;
+;	Завершение программы
+;
+vir2:
+	mov	ax,4C00h
+	int	21h
+
+virus	endp
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;         Процедура анализа командной строки
+;
+;------------------------------------------------------
+;
+;   Вход:
+;
+;          es - сегмент PSP;
+;          ds - сегмент данных
+;
+;   Выход:
+;
+;          ax - код возврата:
+;
+;               0 - в строке содержатся все данные;
+;               1 - заданы не все параметры командной
+;                   строки;
+;
+;       f_old - имя файла, содержащего образ реальной
+;               задачи;
+;      f_demo -	имя файла, содержащего образ
+;               демо-модуля;
+;       f_new - имя файла, содержащего образ демонст-
+;               рационного варианта реальной задачи.
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+name_file	proc	near
+	cld
+	mov	cs:sm_f,offset f_old
+	mov	cs:sm_f+2,offset f_demo
+	mov	cs:sm_f+4,offset f_new
+;
+;	Анализ содержимого командной строки
+;
+	mov	di,0080h
+	mov	cl,byte ptr es:[di]
+	xor	ch,ch
+	cmp	cx,0
+	jnz	nmf1
+nmf4:
+	mov	ax,1
+	jmp	nmf2
+nmf1:
+	inc	di
+	mov	al,'/'
+
+	repne	scasb		; Поиск первого слэша	
+	jcxz	nmf4
+	mov	cs:adr,di	; Адрес начала первого
+				; параметра
+
+	mov	bx,cx
+	repne	scasb		; Поиск второго слэша	
+	jcxz	nmf4
+	mov	cs:adr+2,di	; Адрес начала второго
+				; параметра
+	sub	bx,cx
+        dec     bx              ; Получим длину первого
+	mov	cs:dln,bx	; параметра
+
+	mov	bx,cx
+	repne	scasb		; Поиск третьего слэша	
+	jcxz	nmf4
+	mov	cs:adr+4,di	; Адрес начала третьего
+				; параметра
+	sub	bx,cx
+        dec     bx              ; Получим длину второго
+	mov	cs:dln+2,bx	; параметра
+	mov	cs:dln+4,cx	; Длина третьего параметра
+;
+;	Формирование имен файлов
+;
+	push	es
+	push	ds
+	mov	ax,es
+	push	ds
+	pop	es
+	mov	ds,ax
+
+	mov	cx,cs:dln
+	mov	di,cs:sm_f
+	mov	si,cs:adr
+	rep	movsb
+	mov	byte ptr es:[di],0
+
+	mov	cx,cs:dln+2
+	mov	di,cs:sm_f+2
+	mov	si,cs:adr+2
+	rep	movsb
+	mov	byte ptr es:[di],0
+
+	mov	cx,cs:dln+4
+	mov	di,cs:sm_f+4
+	mov	si,cs:adr+4
+	rep	movsb
+	mov	byte ptr es:[di],0
+
+	pop	ds
+	pop	es
+	xor	ax,ax
+nmf2:
+	ret
+;
+;     Область данных процедуры
+;
+sm_f	dw	3	dup(?)
+adr	dw	3	dup(?)
+dln	dw	3	dup(?)
+
+name_file	endp
+
+code	ends
+	end	virus

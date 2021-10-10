@@ -1,0 +1,262 @@
+
+                              ...................
+                        ...::: phearless zine #3 :::...
+
+.....................>---[ Nanomites And Misc Stuff ]---<.....................
+
+............................>---[ by deroko ]---<.............................
+		                                           deroko[at]gmail[dot]com               
+                     
+                     
+1. Blah
+2. Nanomites
+3. Stack i SEH
+4. Detektovanje step-over
+5. Last words
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 1. Blah
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+   Pa ovaj tutorial predstavlja skup ideja koje ne zasluzuju svoj poseban tekst
+stoga sam ovde nagomilao sve sto mi je u poslednje vreme palo napamet. Za
+razumevanje ovog teksta bice potrebno znanje ASM (ja preferiram TASM, ali ne
+vidim sto ostali asm kompajleri ne bi radili). Pa da ne gnjavim sa ovim da
+pocnemo odmah.
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 2. Nanomites
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+   Jedno vece smo blejali na IRCu LaFarge i ja, i eto pricali nesto o Armadilu
+kako je mnogo zajeban. LaFarge mi rece da Armadilo koristi nanomites, dao mi je
+hint sta bi to trebalo u praksi da znaci i posle toga sam seo da citam o tome.
+   Naime, Armadilo koristi Otac/Sin dekripciju, tako sto matori pazi sta dete
+radi, ali gde tu dolaze nanomites?
+   Uzmimo jedan prost primer koda i zamislimo da je to Sin (son) koga Otac
+debuguje (preko WinAPIja) kako bi znao sta i kad i kako da dekriptuje:
+
+         cmp  eax, ebx
+         jb   __exit
+         mov  eax, ebx
+__exit:
+
+   Ok ovaj deo koda deluje poprilicno jasno i vi se pitate gde padaju ovde
+nanomites i sta je to? Teoretski bi kod trebalo ovako da izgleda kad je pakovan
+sa armadilom ->
+
+         cmp eax, ebx
+         int 3h
+         salc
+         mov eax, ebx
+__exit:
+
+Aha, eto ga nanomit int3h. Sta se sad desava?
+Posto svi exception iz child procesa bivaju poslati father procesu koja ga
+ujedno debuguje ovde ce se desiti jedna fina zavrzlama. Naime, Otac ce primiti
+informaciju o tome da se odigrao int 3h negde (break-point) i reagovace tako
+sto ce u nekoj svojoj tablici proveriti Adresu na kojoj se odigrao int 3h, a
+zatim ce videti koji je jcc/jmp zamenio sa int 3h, proverice EFLAGS register
+kako bi znao da li ce se jmp odigrati ili ne i onda ce promeniti EIP sina na
+odgovarajuce mesto.
+
+Da vidimo tok misli u nasem prethodnom primeru, pretpostavimo da je:
+eax = 1
+ebx = 2
+
+ok ide prvo cmp eax, ebx (setuje se CF aka Carry Flag u ovom slucaju)
+sve je u redu nista se ne desava jos uvek.
+int 3h salje debuggeru (ocu) exception da je u pitanju BreakPoint.
+    - proverava adresu na kojoj se nalazi int 3h
+    - proverava koji je jcc/jmp u pitanju
+    - proverava EFLAGS da vidi da li da prati jcc?
+    - postavlja EIP na sledecu instrukciju u zavisnosti od toga kakva je situ-
+      acija sa EFLAGS
+    - stavlja SetThreadContext/ResumeThread
+Izvrsavanje se nastavlja.
+    - u nasem primeru Debugger (otac) ce videti da je u pitanju jb (zavisi od
+      CF flaga), proverice da li je CF setovan (u nasem slucaju jeste) i skocice
+      na exit.
+
+    Posle malo razmisljanja odlucio sam da nesto ovako implementira na sebi
+svojstven nacin, koji bi bio offset indipendent i normalno morao bi da
+koristim SEH za redirekciju EIPa.
+
+Implementacija je laka. Razmislimo sta SEH mora da zna kad popije int 3h.
+    1. Koja je vrsta jcc u pitanju ili je jmp?
+    2. Gde da skoci?
+
+Ovi problemi se daju nadomestiti jednim prostim makro-om koji sam napravio bas
+za ovu svrhu.
+Ajde da vidimo taj makro i potrebne konstante ->
+jmp_jz          equ     1
+jmp_jnz         equ     2
+jmp_jb          equ     3
+jmp_jnb         equ     4
+jmp_jmp         equ     5
+
+nanojmp         macro   __jmp_t, __xxx
+                local   __nano
+__nano:         int     3h
+                db      __jmp_t
+                dd      offset __xxx - offset __nano
+endm
+
+Ove konstante ce reci nasem SEH koja je vrsta jcc/jmp u pitanju, kako bi SEH
+znao koje flagove u EFLAGS registru da proveri.
+
+Upotreba makro je jednostavna ->
+                 mov     eax, 1
+                 cmp     eax, 1
+                 nanojmp jmp_je, __messageBox
+                 push    0
+                 callW   ExitProcess
+__messageBox:
+                 push    0
+                 push    offset nTitle
+                 push    offset nText
+                 push    0
+                 callW   MessageBoxA
+
+Ako pazljivo pogledamo makro gore, vidimo da iza int 3h ide vrsta jmpa, a odmah
+ispod je mesto gde bi trebali da skocimo (relativno - mesto gde skacemo - mesto
+gde se nalazi int 3h).
+
+Nas SEH bi trebalo u ovom slucaju da proveri sledece:
+    1. o kojoj vrsti jcc/jmp je rec.
+    2. da proveri EFLAGS za taj jmp (ZF, CF, ...)
+    3. ako skacemo na EIP dodajemo vrednost sacuvanu kao relativnu razliku
+    4. ako ne skacemo na EIP dodajemo samo 6, sto je inace duzina makroa
+
+I eto, ubacili smo ideju Armadila u nas kod. Sto da ne? Za detalje pogledajte
+nano.asm kod koji sadrzi samo razradu SEHa.
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 3. Stack i SEH
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+    Ovde se moram zahvaliti liku pod imenom nolimit (neki amer) koji je radio
+na pravljenju Alfanumerickog shellcode za windows preko SEH. Verovatno ste pri-
+metili ako ste probali da exploitujete neki test program na win XP SP1 (mozda
+i stariji) preko stack overflowa-a i prepisivanjem SEH da vam nije uspelo.
+    Zasto?
+    Ako pratimo desavanja posle Exceptiona docicemo dotle da se proverava da
+li je SehHandle ispod StackBase koji je podesen na adresi FS:[4], ako jeste,
+bice pozvan RtlRaiseException i vas SEH nece biti izvrsen. Ovo doduse nema veze
+sa stack overflow-vima ali ima mnoooogo veze ako koristite stack kao mesto gde
+cete smestiti virus.
+    Virus samo po svojoj prirodi mora da koristi SEH za svaki slucaj da ga ne
+pogodi neki Exception koji se mogu, ali i ne moraju, pojaviti u toku rada vaseg
+virusa (ili kakvog drugo programa kod kojeg ocete da otklonite mogucnost da
+isti bude dumpovan)...
+    Resenje je prosto, stavite da FS:[4] pokazuje na Stack ispod vaseg koda.
+
+    Evo primera:
+
+__start:        std
+                mov     esi, offset indip_end - 4
+                mov     ecx, (indip_end-indip)/4
+__push:         lodsd
+                push    eax
+                loop    __push
+                mov     dword ptr FS:[4], esp
+                jmp     esp
+
+Eto, sad mozete na stacku postavljati SEH do mile volje, i koristiti sve
+blagodeti stacka.
+    Prednosti koriscenja stacka su u tome sto vas virus moze biti kriptovan,
+ali sa stanovista emulatora i heuristike to je nista vise do cuvanje podataka
+na stacku, pa cak i kad vrsite dekripciju, jer vi ne cuvate dekriptovane
+podatke na starom mestu vec "izmenjene podatke" cuvate na stacku.
+    Takodje da napomenem da prilikom kopiranja koda na stack, kod mora biti
+dword aligned. Tacnije duzina koda mora biti deljiva sa 4 jer sa push guramo
+4 byte. Ako vam kod nije DWORD aligned desice se da lodsd ucita 2 byte ispravnog
+koda (naseg koda) i 2 byte koji nemaju veze sa nasim kodom, a koji mogu biti
+deo instrukcije koja se nalazi ispred pocetka naseg koda, u tom slucaju ->
+jmp esp ce prvo skociti na 2 byte (za koje ni ne znamo cemu sluze) i nas
+program ce u 99% slucajeva pasti... shodno tome idemo align 4 na sledeci nacin:
+
+
+align   4
+indip:
+      kod
+align   4
+indip_end:
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 4. Detektovanje step-over
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Step-over je termin koji se koristi za prelaz preko funkcije, repe/repne tipa
+instrukcija kako ne biste cekali u debuggeru da se tracuje cela procedura ili 
+da cekate dok se kopira recimo 1000h podataka sa rep movsb/w/d ili slicne 
+kombinacije ovog simpaticnog prefixa.
+
+Sta to step over radi?
+Prosto i jednostavno on postavlja BREAK_POINT (int 3h, 0CCh) iza call ili ovih
+instrukcija. Detektuje je se krajnje jednostavno ->
+
+call  debugger
+....
+....
+debugger:
+      pop edx
+      cmp byte ptr[edx], 0CCh
+      jne _ok
+      push 'fuck'
+      ret
+_ok:  jmp edx
+
+Probajte preko ovog da predjete u Olly-ju sa F8 ako smete =) 
+No ovo se da lako zaobici sa Ollyjem ako imalo znate sta radite ->
+ALT-O -> Debug -> cekirajte "Use hardware breakpoints to step or tace code"
+
+predjite sad sa F8? Nista, kod radi normalno =) hehe
+
+Ajmo dalje da se zezamo? debugger mozemo prosiriti sa generisanjem exceptiona
+i ciscenja Dr0-3 regista iz SEHa, ako je u Ollyju namesteno pass exception to
+debugger bas za nas exception, voila, kod ce se izvrsiti, a tracer nece ni
+znati sta ga je snaslo, manijak ce i dalje da ceka da procedura zavrsi sa radom.
+Evo koda ->
+
+                call    debugge
+                push    0
+                callW   ExitProcess
+
+debugge:
+                push    offset sehhandle
+                push    dword ptr FS:[0]
+                mov     dword ptr FS:[0], esp
+                int     3h
+                pop     dword ptr FS:[0]
+                add     esp, 4
+                ret
+                
+sehhandle       proc    C pException:dword, pFrame:dword, pContext:dword, param:dword
+                mov     ebx, pContext
+                xor     eax, eax
+                mov     [ebx.CONTEXT_Dr0], eax
+                mov     [ebx.CONTEXT_Dr1], eax
+                mov     [ebx.CONTEXT_Dr2], eax
+                mov     [ebx.CONTEXT_Dr3], eax
+                inc     [ebx.CONTEXT_Eip]
+                ret
+sehhandle       endp
+
+Blah i to je to u ovom malom tekstu koji sam pripremio samo usput...
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 5. Last words
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+   Eto dodjosmo i do kraja ovog lakog tutoriala, ako je nekom bilo korisno, nek
+se javi na deroko@gmail.com, uvek volim da cujem sugestije...
+
+Greetz : #blackhat kulovima, nolimit, LaFarge...
+
+Napisano od strane deroko-a tokom jedne dosadne noci negde na Balkanskom 
+poluostrvu 2005 godine...
+
+
+
+

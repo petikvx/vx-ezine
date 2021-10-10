@@ -1,0 +1,150 @@
+А. Карев
+
+Программирование контроллера накопителя на гибких магнитных дисках
+
+Листинг
+
+;-----------
+; Программа записывает один сектор размером 512 байтов на
+; дисковод A:
+;-----------
+
+STACKSG SEGMENT PARA STACK 'STACK'
+        DW 64 DUP(?)
+STACKSG ENDS
+
+DATASG SEGMENT PARA 'DATA'
+;---
+BUF_SEC DB   512 DUP(1EH)     ; буфер данных сектора
+STATUS  DB   7 DUP(?)         ; буфер статуса НГМД
+DATASG ENDS
+;
+CODESG SEGMENT PARA 'CODE'
+BEGIN PROC FAR
+      ASSUME CS:CODESG,DS:DATASG,SS:STACKSG
+      PUSH DS
+      SUB AX,AX
+      PUSH AX
+      MOV AX,DATASG
+      MOV DS,AX
+      CALL SEC_W
+      RET
+BEGIN ENDP
+;
+SEC_W  PROC             ; начало процедуры записи одного сектора
+                                                                                                                                                                                                                                                         
+    
+       STI              ; разрешение прерываний
+       MOV  DX,3F2H     ; адрес DOR
+       MOV  AL,28       ; установка DOR
+       OUT  DX,AL
+       MOV  CX,3500     ; разгон двигателя НГМД (0,5 с)
+MOTOR: LOOP MOTOR
+       MOV  AH,15       ; выполнение команды "Установить"
+       CALL NGMD_O
+       MOV  AH,0        ; номер НГМД
+       CALL NGMD_O
+       MOV  AH,10       ; номер дорожки
+       CALL NGMD_O
+       CALL NGMD_INT    ; ожидание прерывания от НГМД
+       MOV  CX,1750     ; пауза до полной остановки головок (25 мс)
+WAIT_G:LOOP WAIT_G
+       MOV  AL,4AH      ; инициализация DMA
+       OUT  12,AL       ; код записи данных
+       OUT  11,AL
+       MOV  AX,OFFSET BUF_SEC    ; вычисление адреса буфера данных
+       MOV  BX,DS
+       MOV  CL,4
+       ROL  BX,CL
+       MOV  DL,BL
+       AND  DL,0FH
+       AND  BL,0F0H
+       ADD  AX,BX
+       JNC  PER
+       INC  DL
+PER:   OUT  4,AL
+       MOV  AL,AH
+       OUT  4,AL
+       MOV  AL,DL
+       OUT  81H,AL
+       MOV  AX,511      ; установка регистра счетчика DMA
+       OUT  5,AL        ; (размер данных, уменьшенный на 1)
+       MOV  AL,AH
+       OUT  5,AL
+       MOV  AL,2        ; разрешение 2-го канала DMA
+       OUT  10,AL
+       
+                        ; выполнение команды "Запись сектора"
+       MOV  AH,45H      ; код команды
+       CALL NGMD_O
+       MOV  AH,0        ; номер НГМД и головки
+       CALL NGMD_O
+       MOV  AH,10       ; номер цилиндра
+       CALL NGMD_O
+       MOV  AH,0        ; номер головки
+       CALL NGMD_O
+       MOV  AH,1        ; номер сектора
+       CALL NGMD_O
+       MOV  AH,2        ; код длины сектора
+       CALL NGMD_O
+       MOV  AH,9        ; номер последнего сектора на дорожке
+       CALL NGMD_O
+       MOV  AH,2AH      ; длина межсекторного промежутка
+       CALL NGMD_O
+       MOV  AH,0FFH     ; длина передаваемых данных
+       CALL NGMD_O
+       CALL NGMD_INT    ; ожидание прерывания от НГМД
+
+       MOV  CX,7        ; проверка состояния НГМД
+       LEA  BX,STATUS
+NEXT:  CALL NGMD_I
+       MOV  [BX],AL
+       INC  BX
+       LOOP NEXT
+
+       MOV  DX,3F2H
+       MOV  AL,12
+       OUT  DX,AL
+       RET
+SEC_W  ENDP
+
+; процедура обработки прерывания НГМД
+
+NGMD_INT PROC
+       MOV AX,40H
+       MOV ES,AX
+       MOV BX,3EH
+AGAIN: MOV DL,ES:[BX]
+       TEST DL,80H
+       JZ  AGAIN
+       AND DL,01111111B
+       MOV ES:[BX],DL
+       RET
+NGMD_INT ENDP
+
+;процедура пересылки байта НГМД
+
+NGMD_O PROC
+       MOV DX,3F4H         ;адрес MSR
+O_NEXT: IN  AL,DX
+       TEST AL,128         ;проверка 7-го бита
+       JZ  O_NEXT
+       INC DX
+       MOV AL,AH
+       OUT DX,AL
+       RET
+NGMD_O ENDP
+
+;процедура получения байта от НГМД
+
+NGMD_I PROC
+       MOV DX,3F4H
+I_NEXT: IN  AL,DX
+       TEST AL,128
+       JZ I_NEXT
+       INC DX
+       IN AL,DX
+       RET
+NGMD_I ENDP
+CODESG ENDS
+                    

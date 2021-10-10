@@ -1,0 +1,630 @@
+В. Плотников
+
+Алгоритмическая реализация криптографического метода RSA на
+персональном компьютере
+
+Листинг 1. Текст процедуры, реализующей сравнение двух
+целых чисел
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;	Процедура беззнакового сравнения
+;		N-байтовых чисел
+;
+;------------------------------------------------
+;
+; Вход:
+;
+; di - 	смещение области данных, где находится
+;	первый операнд
+; si - 	смещение области данных, где находится
+;       второй операнд
+; cx -  число сравниваемых байтов
+;
+; Выход:
+;
+; ZF -	устанавливается при равенстве операндов
+; CF -  устанавливается, если второй операнд
+;	больше первого
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+compar	proc	near
+	pusha
+;
+; Проверка на равенство операндов
+;
+	mov	ax,cx
+	push	es
+	push	ds
+	pop	es
+	xor	bx,bx
+	push	di
+	push	si
+	repe	cmpsb
+	pop	si
+	pop	di
+	pop	es
+	jz	comp_3	; Операнды равны	
+;
+; Вычитание второго операнда из первого
+;
+	mov	cx,ax
+	mov	bx,di
+	inc	cx
+	shr	cx,1
+	mov	dx,cx
+comp_1:
+	push	word ptr [bx]
+	add	bx,2
+	loop	comp_1
+
+	mov	cx,ax
+	dec	cx
+	jcxz	comp_7
+	lodsb
+	push	di
+	sub	byte ptr [di],al
+
+comp_2:
+	lodsb
+	sbb	byte ptr [di+1],al
+	inc	di
+	loop	comp_2
+	
+comp_7:
+	pop	di
+	sbb	cl,0
+	xor	ax,ax
+	or	ax,1
+	jcxz	comp_4
+	
+	stc	; Второй операнд больше
+	jmp	short comp_5
+
+comp_3:
+	xor	ax,ax
+	clc
+
+	jmp	short comp_8
+
+comp_4:
+	clc	; Первый операнд больше
+
+comp_5:
+	pushf
+	pop	bx
+	mov	cx,dx
+	shl	dx,1
+	add	di,dx
+
+comp_6:
+	sub	di,2
+	pop	word ptr [di]
+	loop	comp_6
+
+	push	bx
+	popf
+comp_8:
+	popa
+	ret
+compar	endp
+Листинг 2. Текст процедуры умножения двух
+восьмибайтовых чисел
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Процедура умножения 8-байтового числа
+;
+;------------------------------------------------
+;
+; Вход:
+;
+; di - 	смещение области данных, где находится
+;	множимое
+; si - 	смещение области данных, где находится
+;	множитель
+; bx - 	смещение области данных, где находится
+;	результат
+;
+; Выход:
+;
+; bx - 	смещение области данных, где находится
+;	результат (16 байт)
+; ZF -  если установлен этот флаг, то результат
+;	умножения равен 0
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+umn	proc	near
+	pusha
+	push	es
+
+	push	cs
+	pop	es
+	cld
+	push	di
+;
+;	Скопируем множитель
+;
+	push	si
+	mov	di,offset cs:variab
+	mov	cx,4
+	rep	movsw
+	pop	si
+;
+;	Обнулим область результата
+;
+	mov	di,bx
+	push	ds
+	pop	es
+	mov	cx,8
+	xor	ax,ax
+	rep	stosw
+	pop	di
+	push	di
+;
+; Проверка на возможность равенства результата нулю 
+;
+	xor	ax,ax
+	mov	cx,4
+	repe	scasw
+	jnz	umn_5
+	
+	pop	di
+	jmp	umn_6
+
+umn_5:
+	mov	cx,4
+	mov	di,si
+	repe	scasw
+	jnz	umn_7
+	
+	pop	di
+	jmp	umn_6
+
+;
+; Проверим последний бит множителя
+;
+umn_7:
+	pop	di
+	test	cs:variab,1
+	jz	umn_1
+
+	push	di
+	mov	si,di
+	mov	di,bx
+	cld
+	mov	cx,4
+	rep	movsw
+	pop	di
+	mov	si,di	; Запомним адрес множимого
+
+umn_1:
+	mov	cx,63
+	mov	dx,8000h
+	mov	bp,offset cs:variab+6
+	push	cs
+	pop	es
+;
+; Анализ текущего бита множителя
+;
+umn_2:
+	test	cs:[bp],dx
+	jz	umn_3
+
+	push	di
+	push	cx
+
+	cld
+	mov	si,di
+	mov	di,offset cs:vsp
+	mov	cx,4
+        rep     movsw   ; Скопируем множимое
+	mov	cx,4
+	xor	ax,ax
+	rep	stosw
+	pop	cx
+	pop	di
+	push	cx
+umn_4:
+	shl	cs:vsp,1
+	rcl	cs:vsp+2,1
+	rcl	cs:vsp+4,1
+	rcl	cs:vsp+6,1
+	rcl	cs:vsp+8,1
+	rcl	cs:vsp+10,1
+	rcl	cs:vsp+12,1
+	rcl	cs:vsp+14,1
+	loop	umn_4
+
+	mov	ax,cs:vsp
+	add	word ptr [bx],ax
+	mov	ax,cs:vsp+2
+	adc	word ptr [bx+2],ax
+	mov	ax,cs:vsp+4
+	adc	word ptr [bx+4],ax
+	mov	ax,cs:vsp+6
+	adc	word ptr [bx+6],ax
+	mov	ax,cs:vsp+8
+	adc	word ptr [bx+8],ax
+	mov	ax,cs:vsp+10
+	adc	word ptr [bx+10],ax
+	mov	ax,cs:vsp+12
+	adc	word ptr [bx+12],ax
+	mov	ax,cs:vsp+14
+	adc	word ptr [bx+14],ax
+
+	pop	cx
+umn_3:
+	ror	dx,1
+	cmp	dx,8000h
+	jnz	umn_9
+	sub	bp,2
+	jmp	short umn_9
+umn_8:
+	jmp	umn_2
+umn_9:
+	loop	umn_8
+	xor	ax,ax
+	or	ax,1
+umn_6:
+	pop	es
+	popa
+	ret
+
+variab	dw	4 dup(?)
+vsp	dw	8 dup(?)
+
+umn	endp
+Листинг 3. Текст процедуры деления шестнадцатибайтового
+числа на восьмибайтовое
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+; Процедура деления 16-байтового числа на
+;               8-байтовое
+;------------------------------------------------
+;
+; Вход:
+;
+; bx - 	смещение области данных, где находится
+;	делимое
+; si - 	смещение области данных, где находится
+;	делитель
+;
+; Выход:
+;
+; bx - 	смещение области данных, где находится
+;       частное (первые 8 байтов) и остаток (сле-
+;       дующие 8 байтов)
+; ZF -  если установлен этот флаг, то результат
+;	деления равен 0
+; CF -  если установлен этот флаг, то остаток
+;	не равен 0
+;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+delen	proc	near
+	pusha
+	push	es
+	
+;
+; Проверка делителя на равенство нулю
+;
+	cld
+	push	ds
+	pop	es
+	mov	di,si
+	xor	ax,ax
+	mov	cx,4
+	repe	scasw
+	jnz	del_1
+
+        div     cx      ; Организуем прерывание по
+			; делению на ноль
+;
+; Проверка делимого на равенство нулю
+;
+del_1:
+	mov	di,bx
+	xor	ax,ax
+	mov	cx,8
+	repe	scasw
+	jnz	del_2
+
+	stc
+	xor	ax,ax
+	jmp	del_3	; Выход по нулевому результату
+;
+; Определение числа ведущих нулей у делителя
+;
+del_2:
+	push	si
+
+	mov	dx,64
+	mov	cx,4
+
+del_6:
+	push	cx
+	mov	cx,16
+
+	mov	ax,word ptr [si+6]
+del_7:
+	shl	ax,1
+	jnc	del_8
+
+	pop	cx
+	jmp	del_9
+
+del_8:
+	inc	dx
+	loop	del_7
+
+	pop	cx
+	sub	si,2
+	loop	del_6
+
+del_9:
+	mov	cs:ved_n,dx
+
+	cld
+	push	cs
+	pop	es
+	mov	di,offset cs:delim
+	mov	si,bx
+	mov	cx,8
+        rep     movsw   ; Скопируем делимое
+
+	push	ds
+	pop	es
+	mov	di,bx
+	xor	ax,ax
+	mov	cx,8
+        rep     stosw   ; Обнулим делимое
+	pop	si
+	
+del_24:
+	push	si
+	push	cs
+	pop	es
+	mov	di,offset cs:delit
+	mov	cx,4
+	rep	movsw
+	mov	cx,4
+	xor	ax,ax
+        rep     stosw   ; Скопируем делитель
+del_14:
+	mov	di,offset cs:delim
+	mov	si,offset cs:delit
+	push	ds
+	push	cs
+	pop	ds
+	mov	cx,16
+	call	compar	; Сравним делимое и делитель
+	pop	ds
+
+	pop	si
+	ja	del_5	; Делимое больше
+			; делителя
+
+	jz	del_4	; Делимое и делитель равны
+
+	push	ds
+	push	ds
+	pop	es
+	push	cs
+	pop	ds
+	mov	si,di
+	mov	di,bx
+	add	di,8
+	cld
+	mov	cx,4
+        rep     movsw   ; Скопируем остаток
+			; в область результата
+	pop	ds
+	mov	di,bx
+	xor	ax,ax
+	mov	cx,4
+	rep	scasw	; Проверка на равенство 0
+			; частного
+	pushf
+	mov	cx,4
+	rep	scasw	; Проверка на равенство 0
+			; остатка
+	jz	del_25
+
+	popf
+	stc
+        jmp     del_3   ; Закончим вычисления
+del_25:
+	popf
+	clc
+        jmp     del_3   ; Закончим вычисления
+
+del_4:
+	add	word ptr [bx],1
+	adc	word ptr [bx+2],0
+	adc	word ptr [bx+4],0
+	adc	word ptr [bx+6],0
+	clc
+	xor	ax,ax
+	or	ax,1
+        jmp     del_3   ; Закончим вычисления
+;
+; Определение числа ведущих нулей у делимого
+;
+del_5:
+	xor	dx,dx
+	mov	cx,16
+	mov	di,offset cs:delim+14
+del_10:
+	push	cx
+	mov	ax,word ptr cs:[di]
+	mov	cx,16
+
+del_12:
+	shl	ax,1
+	jnc	del_11
+
+	pop	cx
+	jmp	del_13
+
+del_11:
+	inc	dx
+	loop	del_12
+
+	pop	cx
+	sub	di,2
+	loop	del_10
+
+del_13:
+	cmp	dx,cs:ved_n
+	jnz	del_15
+
+	add	word ptr [bx],1
+	adc	word ptr [bx+2],0
+	adc	word ptr [bx+4],0
+	adc	word ptr [bx+6],0
+
+	mov	ax,cs:delit
+	sub	cs:delim,ax
+	mov	ax,cs:delit+2
+	sbb	cs:delim+2,ax
+	mov	ax,cs:delit+4
+	sbb	cs:delim+4,ax
+	mov	ax,cs:delit+6
+	sbb	cs:delim+6,ax
+	mov	ax,cs:delit+8
+	sbb	cs:delim+8,ax
+	mov	ax,cs:delit+10
+	sbb	cs:delim+10,ax
+	mov	ax,cs:delit+12
+	sbb	cs:delim+12,ax
+	mov	ax,cs:delit+14
+	sbb	cs:delim+14,ax
+
+	push	si
+	jmp	del_14
+
+del_15:
+        mov     ax,cs:ved_n     ; Определим число
+	sub	ax,dx		; разрядов для сдвига
+	xchg	ax,dx		; делителя
+;
+; Сдвиг делителя и сравнение полученного результата
+;		с делимым
+;
+	mov	cx,dx
+del_17:
+	push	cx
+
+	mov	di,offset cs:delit
+	mov	cx,8
+	xor	ax,ax
+del_18:
+	rcl	word ptr cs:[di],1
+	pushf
+	add	di,2
+	popf
+	loop	del_18
+
+	pop	cx
+	loop	del_17
+
+	push	si
+	mov	di,offset cs:delim
+	mov	si,offset cs:delit
+	push	ds
+	push	cs
+	pop	ds
+	mov	cx,16
+	call	compar	; Сравним делимое и делитель
+	pop	ds
+
+	pop	si
+	jae	del_19	; Делимое больше или равно
+			; делителю
+
+	dec	dx
+	mov	di,offset cs:delit+14
+	mov	cx,8
+	clc
+del_26:
+	rcr	word ptr cs:[di],1
+	pushf
+	sub	di,2
+	popf
+	loop	del_26
+
+del_19:
+	mov	ax,cs:delit
+	sub	cs:delim,ax
+	mov	ax,cs:delit+2
+	sbb	cs:delim+2,ax
+	mov	ax,cs:delit+4
+	sbb	cs:delim+4,ax
+	mov	ax,cs:delit+6
+	sbb	cs:delim+6,ax
+	mov	ax,cs:delit+8
+	sbb	cs:delim+8,ax
+	mov	ax,cs:delit+10
+	sbb	cs:delim+10,ax
+	mov	ax,cs:delit+12
+	sbb	cs:delim+12,ax
+	mov	ax,cs:delit+14
+	sbb	cs:delim+14,ax
+
+	push	cs
+	pop	es
+	cld
+	mov	cx,7
+	xor	ax,ax
+	mov	di,offset cs:delit+2
+	rep	stosw
+
+	mov	cx,dx		; Запомним число разрядов
+				; сдвига делителя
+	mov	cs:delit,1
+	or	dx,dx
+	jnz	del_21
+
+	jmp	short del_22
+
+del_21:
+	push	cx
+
+	mov	di,offset cs:delit
+	mov	cx,4
+	clc
+del_20:
+	rcl	word ptr cs:[di],1
+	pushf
+	add	di,2
+	popf
+	loop	del_20
+
+	pop	cx
+	loop	del_21
+del_22:
+	push	bx
+	mov	di,offset cs:delit
+	mov	cx,3
+	mov	ax,word ptr cs:[di]
+	add	word ptr [bx],ax
+del_23:
+	mov	ax,word ptr cs:[di+2]
+	adc	word ptr [bx+2],ax
+	pushf
+	add	bx,2
+	add	di,2
+	popf
+	loop	del_23
+	pop	bx
+	jmp	del_24
+
+del_3:
+	pop	es
+	popa
+	ret
+delit	dw	8 dup(?)
+delim	dw	8 dup(?)
+ved_n	dw	?
+delen	endp

