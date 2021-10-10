@@ -1,0 +1,196 @@
+- [Duke's Virus Labs #8] - [Page 38] -
+
+Получение доступа к функциям KERNEL32
+(c) by Voodoo/SMF
+
+Данная программа не является вирусом ! Она демонстрирует как получить доступ
+к функциям KERNEL32.dll . Она тестировалась под Win95/Win98/Win NT .
+О результатах тестирования под Win2000 буду рад узнать из ваших писем .
+Ну вот вступительные слова сказал теперь надо бы пару слов о самом алгоритме .
+В самом начале мы определяем так называемую Image Base .  С самого начала
+находим сигнатуру DOS заголовка ("MZ") и по смещению 3Ch взяв Dword пытаемся
+найти сигнатуру PE#0#0 . Если все сходится то мы нашли Image Base. Далее из РЕ
+заголовка найдем наш Import Table (Import RVA offset 80h). Там мы найдем
+таблицу имен в которой будем искать KERNEL32.dll . Затем мы находим таблицу
+адресов функций KERNEL32.dll и берем первую попавшую как начальную точку для
+поиска Image Base KERNEL32.dll(*). Алгоритм поиска не отличается от поиска
+"своего" Image Base . Найдя мы доберемся до Export DirectoryTable . Там мы
+найдем RVA :Name Pointers Table,Ordinal Table,Address Table (подробнее см.
+в приложении 1) .
+Далее мы находим pointer на GetProcAdress и сделав 'параллельный перенос '
+находим Ordinal  этой  функции . Уже по нему мы находим адрес этой функции в
+таблице адресов .
+Самое главное позади . Ну вот теперь и карты в руки !
+Handle кернела у нас есть , функция GetProcAdress  тоже имеется.
+Теперь надо лишь поглядеть win32.hlp как всем этим добром  пользоваться.;-)
+Здесь я лишь вычислил GlobalAlloc GlobalLock.
+
+Приложение 1 ................ (с) Hard Wisdom  Pefmt129.htm
+
+P.S.
+Выражаю благодарность Hard Wisdom`у  за столь "класное" описание PE формата .
+Все вопросы высылайте на voodoo_imishli@mail.ru .
+Желаю удачи !
+           -------------------------------------
+(*) Считалось что адрес указывает на KERNEL32.dll, и следовательно метод
+    должен был работать в любой виндозе.Но как оказалось в Win9x адрес
+    указывает на нечто вроде :
+    push XXXXXX         68h xxh xxh xxh xxh
+    jmp  KERNEL32Entry  e9h xxh xxh xxh xxh
+    т.е. если мы попытаемся найти сигнатуру MZ
+    то скорей всего выскачит эксепшен типа ошибка доступа.
+    Если кто сможет пояснить такой вызов винды то буду
+    очень признателен.
+
+===== Cut here =====
+.386p
+.model flat
+MemSize Equ 2000h
+extrn   ExitProcess:PROC
+.DATA
+GlobalAllocCRC  EQU 0CEB0D8A8h ; CRC функций KERNEL32
+GlobalLockCRC   EQU 0D1BBD8A8h ;
+GlobalUnlockCRC EQU 0D0C4D8A8h ;
+GlobalFreeCRC   EQU 0D4B5D8A8h ;
+.CODE
+CheckSum EQU 80859190h         ; CRC имени KERNEL32
+Voodoo_:
+;  mov ebx,offset   n1  так можно вычислять CRC нужной функции (результат в EAX).
+;  call CRCSum
+;    mov ebx,offset n2
+;  call CRCSum
+;    mov ebx,offset n3
+;  call CRCSum
+;    mov ebx,offset n4
+;  call CRCSum
+;find MZ in memory
+ call _ESI
+_ESI: pop esi
+  call  ScanMZ
+   ; in esi PE header
+   add esi,80h
+   add edi,dword ptr [esi]     ;Import RVA
+   jmp @L1
+NotKERNEL32:
+    MOV EBX,EBP
+    add edi,00014h
+@L1:
+   cmp dword ptr [edi+0ch],000000h
+   je NOtFound
+   add ebx,dword ptr [edi+0ch] ;RVA NAme  of dll
+   call CRCSum
+   cmp eax,CheckSum
+   jne NotKERNEL32
+   push ebp
+   pop esi
+   add ESI,DWORD ptr [edi+10h] ;KERNEL32 proc
+   mov esi,dword ptr [esi]
+   cmp byte ptr [esi+5],0e9h   ; win9Х (*)
+   jne Ok_
+   add esi,dword ptr [esi+6]
+Ok_:call ScanMZ
+   add esi,78h
+   add edi,dword ptr [esi]        ; edi=Export Directory Table RVA
+   mov ecx,dword ptr [edi+18h]    ; Num of Name Pointers
+   mov eax,ebp
+   add eax,dword ptr [edi+1ch]    ; Address Table
+   push eax
+   mov eax,ebp
+   add eax,dword ptr [edi+24h]    ; Ordinal Table
+   push eax
+   push ecx
+   add ebx,dword ptr [edi+20h]    ;ebx=Name Pointers RVA
+   mov Name_Pointers_RVA,ebx
+   mov esi,ebx
+@L2:call ScanNameTable
+    CheckSum2 EQU 91D7D4B9h       ;CRC  GetProcAddress
+    cmp eax,CheckSum2
+    je FoundGetProcAdr
+    inc esi
+    inc esi
+    inc esi
+    inc esi
+    loop @L2
+FoundGetProcAdr:
+    pop eax
+    sub eax,ecx ; #function
+    shl eax,1   ; x2
+    pop ebx     ; Ordinal Table
+    add ebx,eax ;
+    xor eax,eax
+    mov ax,word ptr [ebx] ;Ordinal of GetProcAddress
+    shl eax,2   ;x4
+    pop ebx
+    add ebx,eax
+    mov eax,dword ptr [ebx]
+    add eax,ebp
+    mov GetProcAddress,eax
+    mov KernelHandle,ebp
+
+    mov edx,GlobalAllocCRC       ;Здесь мы вычисляем адреса
+    call  CalkProcAdress         ;GlobalAlloc  и
+    mov GlobalAlloc,eax          ;GlobalLock .
+    mov edx,GlobalLockCRC        ;
+    call  CalkProcAdress         ;
+    mov GlobalLock,eax           ;
+    push MemSize                 ; Вот мы юзаем win32API
+    push 0                       ;
+    call dword ptr [GlobalAlloc] ;
+    push eax                     ;
+    call dword ptr [GlobalLock]  ;
+    mov ebp,eax
+
+NOtFound:
+          push 0
+          call ExitProcess
+CalkProcAdress:
+    mov esi,Name_Pointers_RVA
+fCRC: call ScanNameTable
+    cmp  eax,edx
+    je  foCRC
+    inc esi
+    inc esi
+    inc esi
+    inc esi
+    jmp fCRC
+foCRC:
+  mov eax,dword ptr [esi]
+  add eax,ebp
+  push eax
+  push dword ptr KernelHandle
+  call dword ptr [GetProcAddress]
+   ret
+ScanNameTable:
+    mov ebx,ebp
+    add ebx,dword ptr [esi]
+    call CRCSum
+    ret
+CRCSum: xor eax,eax
+        add eax,dword ptr [ebx]
+        add eax,dword ptr [ebx+4]
+        ret
+ScanMZ:
+   dec esi
+   cmp word ptr [esi],'ZM'
+   jne ScanMZ
+   mov edi,esi
+   mov ebx,esi
+   MOV EBP,ESI
+   push esi
+   cmp dword ptr [esi+3ch],00010000h
+   jg  NextMZ
+   add esi,dword ptr [esi+3ch]
+   cmp dword ptr [esi],004550h
+NextMZ:pop esi
+   jne ScanMZ
+   add esi,dword ptr [esi+3ch]
+   ret
+GetProcAddress    dd 0
+KernelHandle      dd 0
+Name_Pointers_RVA dd 0
+GlobalAlloc       dd 0
+GlobalLock        dd 0
+Voodoo_E:
+Ends
+End Voodoo_
+===== Cut here =====

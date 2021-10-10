@@ -1,0 +1,406 @@
+- [Duke's Virus Labs #9] - [Page 24] -
+
+Прямой доступ к диску в операционных системах Windows95/98/NT
+(c) by SMT/SMF
+
+   Одним из важных факторов защиты windows систем является то, что интерфейс
+прямого доступа к диску не документирован. Я решил восполнить этот пробел.
+Для этого были рассмотрены несколько утилиток (symantecовских и одна
+sysinternalьную).
+   Все примеры я буду приводить на C, хотя всё очень просто перенести на asm.
+
+   Как и следовало ожидать, в 95-й и NT это делается совершенно разными
+способами. В NT всё очень просто:
+   HANDLE hDisk = CreateFile("\\\\.\\C:",
+          GENERIC_READ | GENERIC_WRITE,
+          FILE_SHARE_READ | FILE_SHARE_WRITE,
+          NULL, OPEN_EXISTING, 0, NULL);
+   Вот только с флагом GENERIC_WRITE открыть диск можно только если у
+пользователя, запустившего процесс, есть соответствующие привилегии. Так что -
+ломайте account вашего админа или убедите его запустить вашу программу...
+   Ну а дальше все довольно просто:
+1. Чтение/запись numsectors секторов, начиная со startsector:
+     SetFilePointer(hDisk, startsector*512, NULL, FILE_BEGIN);
+   Ну конечно, если диск большой (более 4gb), то придется поизвращаться:
+     __int64 i = startsector * 512;
+     unsigned high = i >> 32;
+     SetFilePointer(hDisk, (unsigned)i, &high, FILE_BEGIN);
+   Ну и собственно чтение/запись:
+     ReadFile/WriteFile(hDisk, buffer, 512*numsectors, &dummy, NULL);
+2. Потом надо сделать CloseHandle(hDisk)
+
+Теперь посмотрим, что можно сделать в 95-й.
+
+   А в 95-й не все так просто. во-первых, здесь есть так называемвя иерархия
+блокировок. во-вторых, придется
+иметь дело с VxD, и наконец, в третьих, дискетки обрабатываются совсем не так
+как винтики, т.е. по идее всякие дефраги блокируют диск 1 раз и сразу с
+уровнем 0 а затем используют эмуляцию int 13. Неудобство состоит в том, что
+нужно пересчитывать линейный номер сектора в дорожку/сектор (хотя int 13 лучше
+документирован). Но, как выяснилось, с флопповодами можно обращаться так же,
+как и с твердыми дисками - все будет правильно.
+  А иерархия такая: 0 - полный доступ; на диске не должно быть открытых файлов.
+Так как на диске с запущенной виндовс всегда есть такие файлы (хотя бы swap),
+то это подходит только для дискет. 1 - пока никакого прямого доступа,
+но и другие приложение не смогут получить lock1, пока наш процесс не
+разблокирует диск; это что-то вроде средства разделение ресурса. 2 - позволять
+себе другим приложениям читать с диска, но не писать. 3 - другие процессы
+приостанавливаются при попытке чтения-записи, наш процесс может делать и то,
+и другое.
+
+  Как же это сделать. Откроем vxd:
+   HANDLE hDevice = CreateFile("\\\\.\\vwin32", 0,0,0,0,
+              FILE_FLAG_DELETE_ON_CLOSE,0);
+   это виртуальное устройство эмулирует int 21 ax=4400/4401, int 21 ax=730x,
+int 13, int 25 и int 26, то есть все то, что успешно использовалось
+dos-вирусами. Вот его control-коды:
+
+#define VWIN32_DIOC_DOS_DRIVEINFO (6)
+#define VWIN32_DIOC_DOS_INT13 (4)
+#define VWIN32_DIOC_DOS_INT25 (2)
+#define VWIN32_DIOC_DOS_INT26 (3)
+#define VWIN32_DIOC_DOS_IOCTL (1)
+
+в качестве IOBUF нужно передать значения регистров:
+typedef struct _DIOC_REGISTERS {
+    unsigned reg_EBX, reg_EDX, reg_ECX, reg_EAX, reg_ESI, reg_EDI, reg_Flags;
+} DIOC_REGISTERS;
+
+
+   Прежде всего нам нужно залочить диск. Сразу так это сделать не удастся,
+т.е. блокировать диск надо 3 раза подряд, постепенно повышая свой уровень
+доступа (воt она, иерархия!).
+   здесь соотвествующая функция:
+
+char lock(char drvNUM, DWORD level, DWORD lockflags) {
+    DIOC_REGISTERS buf = { 0 };
+    unsigned r;
+    unsigned s = (level << 8) | drvNUM;
+    unsigned d = LOWORD(lockflags);
+    unsigned i = 0x48;
+
+    buf.reg_ECX = (i << 8) | 0x4A;
+    buf.reg_EAX = 0x440d;
+    buf.reg_EBX = s;
+    buf.reg_EDX = d;
+    r = DeviceIoControl(hDevice, VWIN32_DIOC_DOS_IOCTL, &buf,
+                          0x1c, &buf, 0x1c, &level, 0);
+    if (r && !(buf.reg_Flags & 1)) return 1;
+
+    i = 8;
+    buf.reg_ECX = (i << 8) | 0x4A;
+    buf.reg_EAX = 0x440d;
+    buf.reg_EBX = s;
+    buf.reg_EDX = d;
+    r = DeviceIoControl(hDevice, VWIN32_DIOC_DOS_IOCTL, &buf, 0x1c,
+          &buf, 0x1c, &level, 0);
+    if (r && !(buf.reg_Flags & 1)) return 1;
+    return 0;
+}
+
+Tаблица для lockflags:
+┌────────────────────┬───────────────────────┬────────────┬────────────┐
+│ значение lockflags │  Уровень блокировки 1 │ Уровень 2  │  Уровень 3 │
+╞════════════════════╪═══════════════════════╪════════════╪════════════╡
+│             0      │     W- M+ R+          │ W- M+ R+   │  W- M- R-  │
+├────────────────────┼───────────────────────┼────────────┼────────────┤
+│             1      │     W- M- R+          │ W- M- R+   │  W- M- R-  │
+├────────────────────┼───────────────────────┼────────────┼────────────┤
+│             2      │     W+ M+ R+          │ W- M+ R+   │  W- M- R-  │
+├────────────────────┼───────────────────────┼────────────┼────────────┤
+│             3      │     W+ M+ R+          │ W- M- R+   │  W- M- R-  │
+└────────────────────┴───────────────────────┴────────────┴────────────┘
+ Где W+  => другие процессы могут писать
+     R+  => другие процессы могут читать
+     M+  => другие процессы могут создавать новые filemapping'и
+     W-, R-, M-  => соответственно не могут
+
+   Для чтения секторов нам нужно вызвать функцию lock() 2 раза:
+lock(drvNUM, 1, 1); lock(drvNUM, 2, 0), а для записи - 3:
+lock(drvNUM, 1, 1); lock(drvNUM, 2, 0); lock(drvNUM, 3, 0);
+   Здесь drvNUM - номер диска, если считать, начиная с 1, т.е.
+A: -> 1, B: -> 2, C: -> 3 и т.д.
+   Ну а вот функции чтения-записи:
+
+char ReadSectors(char drvNUM, unsigned sector,
+                     unsigned short num, void *buffer) {
+  DIOC_REGISTERS buf = { 0 };
+  unsigned r;
+  #pragma pack(1)
+  struct { unsigned v4; short v8; void *va; } st = { 0 };
+  #pragma pack()
+
+  st.v4 = sector;
+  st.v8 = num;
+  st.va = buffer;
+  buf.reg_EAX = 0x7305;
+  buf.reg_ECX = 0xFFFFFFFF;
+  buf.reg_EDX = drvNUM;
+  buf.reg_EBX = (unsigned)&st;
+  r = DeviceIoControl(hDevice, VWIN32_DIOC_DOS_DRIVEINFO, &buf, 0x1c, &buf,
+                         0x1c, (unsigned*)&num, 0);
+  return (r && !(buf.reg_Flags & 1));
+}
+
+char WriteSectors(char drvNUM, unsigned sector, unsigned short num,
+                      void *buffer, unsigned xx) {
+  DIOC_REGISTERS buf = { 0 };
+  unsigned r;
+  #pragma pack(1)
+  struct { unsigned v4; short v8; void *va; } st = { 0 };
+  #pragma pack()
+
+  st.v4 = sector;
+  st.v8 = num;
+  st.va = buffer;
+  buf.reg_ESI = xx | 1;
+  buf.reg_EAX = 0x7305;
+  buf.reg_ECX = 0xFFFFFFFF;
+  buf.reg_EDX = drvNUM;
+  buf.reg_EBX = (unsigned)&st;
+  r = DeviceIoControl(hDevice, VWIN32_DIOC_DOS_DRIVEINFO, &buf, 0x1c,
+                           &buf, 0x1c, (unsigned*)&num, 0);
+  return (r && !(buf.reg_Flags & 1));
+}
+
+   Смысл всех передаваемых параметров, в общем-то, очевиден, за исключением
+"xx" в функции WriteSectors(). Просто задайте xx=0x6000 и всё.
+   Теперь осталось только разблокировать диск и выгрузить vxd:
+
+char unlock(char drvNUM) {
+    DIOC_REGISTERS buf = { 0 };
+    unsigned r, xx;
+    unsigned i = 0x48;
+
+    buf.reg_ECX = (i << 8) | 0x6A;
+    buf.reg_EAX = 0x440d;
+    buf.reg_EBX = drvNUM;
+    r = DeviceIoControl(hDevice, VWIN32_DIOC_DOS_IOCTL, &buf, 0x1c,
+                         &buf, 0x1c, &xx, 0);
+    if (r && !(buf.reg_Flags & 1)) return 1;
+
+    i = 8;
+    buf.reg_ECX = (i << 8) | 0x6A;
+    buf.reg_EAX = 0x440d;
+    buf.reg_EBX = drvNUM;
+    r = DeviceIoControl(hDevice, VWIN32_DIOC_DOS_IOCTL, &buf,
+                                 0x1c, &buf, 0x1c, &xx, 0);
+    if (r && !(buf.reg_Flags & 1)) return 1;
+    return 0;
+}
+
+   unlock() нужно вызвать столько раз, сколько был вызван lock().
+   и еще нужно вызвать CloseHandle(hDevice).
+
+   Вот собственно, и все. Зачем это может понадобиться ? Ну это или для
+деструкции, или для нового поколения dir-вирусов. Правда, следует учесть, что
+при FAT, FAT32 и NTFS структура диска не совсем одинаковая, но это уже не мои
+проблемы. Ну и самое интересное - небольшие сюрпризы в boot-секторах.
+  Для примера в приложении к журналу приведена консольная прога, которая
+читает или пишет boot-сектор. Юзается она следующим образом:
+       direct d:
+           - записать boot от диска d: в файл oldboot.bin
+       direct d: myboot.bin
+           - то же, что и в предыдущем случае, плюс заменить boot 512-байтным
+             файлом myboot.bin
+P.S. все это хорошо работает, если билд windows больше 1080, или если это
+windows98. на билдах <= 1080 ничего обещать не могу (где б мне такую древнюю
+виндовс достать для тестирования), хотя может и все будет работоспособно...
+
+===== Cut =====
+#include <windows.h>
+#include <stdio.h>
+
+typedef struct _DIOC_REGISTERS {
+    unsigned reg_EBX, reg_EDX, reg_ECX, reg_EAX, reg_ESI, reg_EDI, reg_Flags;
+} DIOC_REGISTERS;
+
+#define VWIN32_DIOC_DOS_DRIVEINFO (6)
+#define VWIN32_DIOC_DOS_INT13 (4)
+#define VWIN32_DIOC_DOS_INT25 (2)
+#define VWIN32_DIOC_DOS_INT26 (3)
+#define VWIN32_DIOC_DOS_IOCTL (1)
+
+HANDLE hDevice;
+char boot = 0;
+#define BUFSIZE 512
+char oldboot[BUFSIZE], newboot[BUFSIZE];
+
+char lock(char drvNUM, DWORD level, DWORD lockflags) {
+    DIOC_REGISTERS buf = { 0 };
+    unsigned r;
+    unsigned s = (level << 8) | drvNUM;
+    unsigned d = LOWORD(lockflags);
+    unsigned i = 0x48;
+
+    buf.reg_ECX = (i << 8) | 0x4A;
+    buf.reg_EAX = 0x440d;
+    buf.reg_EBX = s;
+    buf.reg_EDX = d;
+    r = DeviceIoControl(hDevice, VWIN32_DIOC_DOS_IOCTL, &buf,
+                          0x1c, &buf, 0x1c, &level, 0);
+    if (r && !(buf.reg_Flags & 1)) return 1;
+
+    i = 8;
+    buf.reg_ECX = (i << 8) | 0x4A;
+    buf.reg_EAX = 0x440d;
+    buf.reg_EBX = s;
+    buf.reg_EDX = d;
+    r = DeviceIoControl(hDevice, VWIN32_DIOC_DOS_IOCTL, &buf, 0x1c,
+          &buf, 0x1c, &level, 0);
+    if (r && !(buf.reg_Flags & 1)) return 1;
+    return 0;
+}
+
+char unlock(char drvNUM) {
+    DIOC_REGISTERS buf = { 0 };
+    unsigned r, xx;
+    unsigned i = 0x48;
+
+    buf.reg_ECX = (i << 8) | 0x6A;
+    buf.reg_EAX = 0x440d;
+    buf.reg_EBX = drvNUM;
+    r = DeviceIoControl(hDevice, VWIN32_DIOC_DOS_IOCTL, &buf, 0x1c,
+                         &buf, 0x1c, &xx, 0);
+    if (r && !(buf.reg_Flags & 1)) return 1;
+
+    i = 8;
+    buf.reg_ECX = (i << 8) | 0x6A;
+    buf.reg_EAX = 0x440d;
+    buf.reg_EBX = drvNUM;
+    r = DeviceIoControl(hDevice, VWIN32_DIOC_DOS_IOCTL, &buf,
+                                 0x1c, &buf, 0x1c, &xx, 0);
+    if (r && !(buf.reg_Flags & 1)) return 1;
+    return 0;
+}
+
+char ReadSectors(char drvNUM, unsigned sector,
+                     unsigned short num, void *buffer) {
+  DIOC_REGISTERS buf = { 0 };
+  unsigned r;
+  #pragma pack(1)
+  struct { unsigned v4; short v8; void *va; } st = { 0 };
+  #pragma pack()
+
+  st.v4 = sector;
+  st.v8 = num;
+  st.va = buffer;
+  buf.reg_EAX = 0x7305;
+  buf.reg_ECX = 0xFFFFFFFF;
+  buf.reg_EDX = drvNUM;
+  buf.reg_EBX = (unsigned)&st;
+  r = DeviceIoControl(hDevice, VWIN32_DIOC_DOS_DRIVEINFO, &buf, 0x1c, &buf,
+                         0x1c, (unsigned*)&num, 0);
+  return (r && !(buf.reg_Flags & 1));
+}
+
+char WriteSectors(char drvNUM, unsigned sector, unsigned short num,
+                      void *buffer, unsigned xx) {
+  DIOC_REGISTERS buf = { 0 };
+  unsigned r;
+  #pragma pack(1)
+  struct { unsigned v4; short v8; void *va; } st = { 0 };
+  #pragma pack()
+
+  st.v4 = sector;
+  st.v8 = num;
+  st.va = buffer;
+  buf.reg_ESI = xx | 1;
+  buf.reg_EAX = 0x7305;
+  buf.reg_ECX = 0xFFFFFFFF;
+  buf.reg_EDX = drvNUM;
+  buf.reg_EBX = (unsigned)&st;
+  r = DeviceIoControl(hDevice, VWIN32_DIOC_DOS_DRIVEINFO, &buf, 0x1c,
+                           &buf, 0x1c, (unsigned*)&num, 0);
+  return (r && !(buf.reg_Flags & 1));
+}
+
+void __cdecl main(int argc, char **argv) {
+    char root[] = "x:\\", type, drive, drvNUM;
+    FILE *ff;
+
+    if (argc < 2) {
+        printf("read/write boot sector via direct disk access\n"
+               " Usage: direct d: [newsector.bin]");
+        return;
+    }
+    if (argc == 3) {
+        boot = 1;
+        ff = fopen(argv[2], "rb");
+        if (!ff) {
+            printf("can't read %s", argv[2]);
+            return;
+        }
+        fread(newboot, 1, BUFSIZE, ff);
+        fclose(ff);
+    }
+    drive = *(argv[1]);
+    *root = drive;
+    if ((type = GetDriveType(root)) != DRIVE_REMOVABLE && type != DRIVE_FIXED) {
+        printf("wrong disk %c:! Only floppy and HDD are supported!", drive);
+        return;
+    }
+    if (!(GetVersion() & 0x80000000)) { // windows NT
+        char root1[] = "\\\\.\\x:";
+        HANDLE file; unsigned len, flag;
+        root1[4] = drive;
+        flag = boot ? GENERIC_WRITE : 0;
+        file = CreateFile(root1, GENERIC_READ | flag,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 NULL, OPEN_EXISTING, 0, NULL);
+        if (file == INVALID_HANDLE_VALUE) {
+            printf("no access to drive %c: Contact your system administrator", drive);
+            return;
+        }
+        ReadFile(file, oldboot, BUFSIZE, &len, NULL);
+        SetFilePointer(file, 0, NULL, FILE_BEGIN);
+        if (boot) WriteFile(file, newboot, BUFSIZE, &len, NULL);
+        CloseHandle(file);
+
+        ff = fopen("oldboot.bin", "wb");
+        fwrite(oldboot, 1, BUFSIZE, ff);
+        fclose(ff);
+
+        return;
+    }
+    // now fuck with 95/98
+    hDevice = CreateFile("\\\\.\\vwin32", 0,0,0,0,FILE_FLAG_DELETE_ON_CLOSE,0);
+    if (hDevice == INVALID_HANDLE_VALUE) {
+        printf("can't open device");
+        return;
+    }
+    drvNUM = toupper(drive) - 'A' + 1;
+    if (!lock(drvNUM, 1, 1)) {
+        printf("can't lock drive");
+        return;
+    }
+    if (!lock(drvNUM, 2, 0)) {
+        unlock(drvNUM);
+        printf("can't lock drive for reading");
+        return;
+    }
+    if (!ReadSectors(drvNUM, 0, 1, oldboot)) {
+        unlock(drvNUM);
+        printf("can't read sector");
+        return;
+    }
+    if (boot) {
+        if (!lock(drvNUM, 3, 0)) {
+            unlock(drvNUM);
+            unlock(drvNUM);
+            printf("can't lock drive for writing");
+            return;
+        }
+        if (!WriteSectors(drvNUM, 0, 1, newboot, 0x6000))
+            printf("can't write sector");
+        unlock(drvNUM);
+    }
+    unlock(drvNUM);
+    unlock(drvNUM);
+    CloseHandle(hDevice);
+
+    ff = fopen("oldboot.bin", "wb");
+    fwrite(oldboot, 1, BUFSIZE, ff);
+    fclose(ff);
+}
+===== Cut =====

