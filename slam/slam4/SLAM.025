@@ -1,0 +1,354 @@
+;                    ฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤ
+;                    Finding the DOS kernel entry point
+;                    ฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤ
+;                           by Trigger [SLAM] '97
+;
+;
+; ออออออออออออ
+; INTRODUCTION
+; ออออออออออออ
+;
+;       A good virus should have structures to avoid detection by AV.
+; It still is very easy to patch TBDRIVER in memory with the good old
+; EB05->EB00 trick. I think it is fair to say that this wasn't a
+; stupidity-on-purpose (so Frans could catch a whole bunch of viruses by
+; checking for the patching), 'cause I think it already works too long.
+; Frans really *is* stoopid. And of course let's not forget good old VSAFE,
+; which stands a good chance for winning the "supremacy in stupidity"-award.
+; Well, at least *they* have the brains to disable the calls. :)
+; 
+;       A by far better way to avoid detection by resident monitors is to
+; find the DOS kernel entry point done by eg. tunneling. (For extensive
+; coverage on other forms of tunneling I recommend the excellent tutorials
+; by Methyl.) The advantage of having the kernel entry point is that you can
+; call the kernel *directly* so you avoid being checked by ANY resident monitor
+; that checks DOS API calls, the so called behaviour blockers.
+;
+;
+; อออออออออออออออออออออออออออ
+; HOW TO FIND THE ENTRY POINT
+; อออออออออออออออออออออออออออ
+;
+;       So the question is, how do we find this entry point. There are a lot
+; of possible ways; here I will present you a new one.
+;
+;       Let's start with some DOS basics. I believe everyone with a mind in
+; his head lets DOS try to load itself (i.e. the kernel / API) "high" by using
+; the DOS=HIGH option in CONFIG.SYS. I believe even MEMMAKER makes sure it's
+; included. Now what this option actually does is use the (mostly unused) HMA
+; area (which ranges from FFFF:0010 to FFFF:FFFF) to load the kernel in, which
+; saves some conventional memory. This HMA area is normally not accessible
+; because it's not within the 1 MB memory limit (it's actually eXtended Memory
+; which can be accessed in real mode). As you have seen, it CAN be addressed
+; (FFFF:0010 up to FFFF:FFFF) so the computer people invented a thing called
+; the A20 line. I won't tell you what it exactly is, you can read it in the
+; XMS 3.0 specification (FTPsearch for XMS30.TXT), but it isn't really
+; important. The only thing you really need to know about it is that you have
+; to enable it to get access to the HMA. Of course, DOS knows this too, so it
+; makes sure that this A20 line is enabled before it makes a call to the
+; kernel in HMA. You can check this on your own computer. Set a BPINT 21, and
+; trace into it. (From now on I'm assuming you have DOS=HIGH configured!) At
+; one point you will get to some code which should look like this:
+;
+; 00CB:0FB2  90          NOP
+; 00CB:0FB3  90          NOP
+; 00CB:0FB4  E8CE00      CALL    1085
+; 00CB:0FB7  2EFF2E820F  JMP     FAR CS:[0F82]
+;
+; Of course, many of you guys already recognize this: the famous double NOP
+; construct. What it does: it CALLs a function that makes sure the A20 line
+; is enabled, so that the HMA is accessible. Then it performs a far jump to
+; the kernel located in HMA, which should look something like:
+;
+; FF3B:41E9  FA          CLI
+; FF3B:41EA  80FC??      CMP     AH,??  ;6C for DOS6-, 73 for DOS7+
+; FF3B:41ED  77D2        JA      41C1
+; FF3B:41EF  80FC33      CMP     AH,33
+; FF3B:41F2  7218        JB      420C
+; FF3B:41F4  74A2        JZ      4198
+; (...)
+;
+; So these two structures are interesting. Most tunnelers "tunnel" up to the
+; double NOP construct, which is clever, because they don't have to keep that
+; A20 line in mind anymore. The second structure (the actual kernel entry
+; point) is also interesting. Why? Assuming DOS=HIGH, it's ALWAYS in the
+; HMA! And the beginning of the DOS kernel entry point has been the same for
+; ages (well, ages... :)). So we could search for this piece of code in the
+; HMA!
+;
+;       What will we search for? The string FA80FC??77 seems pretty stable:
+; It includes the CLI, it includes the CMP AH without the compare value (so
+; we trap all DOS versions (at least up to 7), and it includes the conditional
+; jump without the relative offset (for compatibility). Where do we search?
+; In HMA! So set a segment register to FFFF (-1), and start looking! Found it?
+;
+;
+; อออออออออ
+; BUT WAIT!
+; อออออออออ
+;
+;       Now, we have the kernel at, say, FFFF:35A9. Save the location, set a
+; bogus function to test it (say AH=2/DL=7, which will produce a short beep).
+; Call the location. Does it beep? NO!! Well maybe it does, but it won't stop!
+; Big Crash (tm)!! What went wrong?!
+;
+;       Let's first discuss again some basics: I hope you all know that due to
+; the silly 20bit addressing mode, the physical offset of a memory location is
+; calculated with:
+;
+;       Physical Offset = (Segment*10h) + Offset
+;       
+; Let's take the location 1234:5678 as an example. To calculate the physical
+; offset, we multiply the segment by 10h, and add the offset, which gives us:
+;
+; (1234 * 10) + 5678  =  12340 + 5678  =  179B8 as a physical offset.
+;
+;       Now the nice thing about this, is that if we add ONE to CS, and sub
+; 10 from IP, we get the EXACT same physical offset:
+;
+; (1235 * 10) + 5668  =  12350 + 5658  =  179B8 !
+;
+; NOTE: Exactly the same goes when we SUB one from CS, and ADD 10 to IP, it
+; stays the same physical offset!
+;
+;
+; ออออออออออ
+; SO WHAT?!?
+; ออออออออออ
+;
+;       Let's get back to the program. What does this have to do with our
+; crashing? Behold.. The attentive reader may have noticed that (on my
+; computer) when calling the DOS kernel through Int21, we didn't end up in the
+; FFFF segment, but in the FF3B segment! Something fishy going on here? No,
+; not really.. :)
+;
+;       We're just overlooking a big problem. We just saw that two exact same
+; memory locations can be addressed using different segment:offset pairs. (In
+; our example we saw that 1234:5678 gives the same memory location as
+; 1233:5688, and 1235:5668 gives also the same location.)
+;
+;       So we could also call the kernel using different segment:offset pairs,
+; 'cause either way, we're addressing the same location, right? Wrong, we just
+; tried it, and the computer crashed. Why? Watch this:
+;
+; FF3B:4217  2E8E1E273F  MOV DS, CS:[3527]
+;
+; FFFF:35D7  2E8E1E273F  MOV DS, CS:[3527]
+;
+; This is one instruction inside the DOS kernel, addressed using different
+; segment:offset pairs, but they're both addressing EXACTLY the same physical
+; offset. (I hope my digression was clear enough for you to understand WHY :))
+; Now this is the moment you should see something weird: the first instruction
+; loads DS with [FF3B:3527], and the second loads DS with [FFFF:3527] which
+; are two DIFFERENT locations! So what does this mean?
+; You can't just call routines (like a kernel) using different segment:offset
+; pairs, because of hardcoded memory locations! (in this example the 3527 was
+; the hardcoded location). So in spite of the nice CS+1->IP+10 trick, we can't
+; just assume the "official" kernel entry location is in segment FFFF. (Note
+; that they ARE the same physical offsets, so FF3B is in HMA too!) On my
+; computer the "official" location is in segment FF3B, but there's no need for
+; that. So we'll have to find out in another way.
+;
+;
+; ออออออออออ
+; UHM.. HOW?
+; ออออออออออ
+; 
+;       The ideal solution would be to call Int21, and as soon as it RETurns,
+; check where 'it' came from, which would be the correct kernel segment. But,
+; unfortunately, the x86 doesn't have some kind of history table to check
+; where 'it' has been, so we can forget that.
+;
+;       Another solution, which does work is using the CALL instruction:
+; when executing a call, the CPU pushes CS if it's a far call, then it pushes
+; the IP of the instruction to be executed after the call, and then jumps to
+; the call. So what would happen if we would PATCH the first few bytes of the
+; DOS kernel with a FAR call to our code?! When executed, it would PUSH THE
+; CS:IP OF THE KERNEL, and jump to our code!! Yes, read that again, it jumps
+; to our code with the correct segment of the kernel on the stack, ready for
+; us to read!
+;
+; In short, Int21 is called, the Enable_A20_line call is made, it jumps to
+; the kernel in HMA, which is overwritten by our far CALL, which gets
+; executed. It would jump to our code, with the correct kernel segment on the
+; stack. What would our code look like? Something like this:
+;
+;
+;       call_by_patched_kernel:
+;                       pop     ax
+;                       pop     bx
+;                       mov     cs:[kernelIP],ax
+;                       mov     cs:[kernelCS],bx
+;                       (...)
+;
+; Whoomp, there it is! We have the "official" segment:offset pair of the
+; kernel entry point. If we restore the original first bytes of the kernel,
+; noone will notice the difference, and we have our kernel entry point!
+;
+;
+; อออออออออออออออ
+; A FEW SIDENOTES
+; อออออออออออออออ
+;
+;     A few practical problems discussed here:
+;
+; (*) Before you start scanning the HMA for the CLI construct, make sure the
+;     A20 line is enabled! How can we do this? Just call an honest Int21
+;     function with the INT instruction, and make sure it's a call that no
+;     resident monitor will suspect. Something like GetTime or GetVersion..
+; (*) Before patching the kernel, clear (CLI) all interrupts! We definitely
+;     DO NOT want the patched Int21 to be called without us knowing! Your
+;     system will crash! (STI after restoring the 5 bytes)
+; (*) Note the "Patched_Int21_Calls_Here"-routine. We could push the CS and IP
+;     back on the stack, so control would be returned to the kernel, but this
+;     isn't advisable. We fucked the code up. If we do 3 POPs (Remember:
+;     INT xx = PUSHF, CALL [0:4*xx]) we can just continue our program. The 3
+;     values we get are useless, so we can just use ADD SP,6.
+; (*) After catching the PUSHed CS:IP, correct the IP. It then contains the
+;     IP of the instruction to be executed after the call. Since a far call
+;     eats 5 bytes (9A offs seg), just substract it with 5.
+; (*) As said, a normal INT is just a far call PRECEDED by a PUSHF! So calling
+;     the kernel entry point should include a PUSHF!
+; (*) Don't forget to restore the first 5 bytes of the kernel. :)
+;     
+;
+; ออออออออ
+; IN SHORT
+; ออออออออ
+;
+; (1) Check for (or just assume) DOS=HIGH
+; (2) Make sure the A20 line is enabled (call i21 with the INT instruction)
+; (3) Scan the the HMA for: FA 80 FC 73/6C (6C=dos6-) 77 (D2)
+; (4) Clear interrupts (CLI)
+; (5) Replace the first 5 bytes with: 9A (far call) <offset> <seg>
+; (6) Call a bogus Int21 (with the INT instruction!)
+; (7) Return the original 5 first bytes of the kernel
+;
+;
+; อออออออออออออ
+; COMPATIBILITY
+; อออออออออออออ
+;
+;       Patching the kernel under Win95 is not really a clever thing to do.
+; This is because every modification you make to the kernel in a DosBox
+; is permanent. What? Yes, permanent. Instead of saving a fresh copy on
+; startup and copying it in every new DosBox, it *ALWAYS* uses the same
+; copy.
+;
+;       To illustrate: start Win95 and launch two DosBoxes after eachother.
+; Search (in HMA) for the copyright string in the kernel, and d(ump) it.
+; You will see a string something like "DOS Version 7". Make a harmless change
+; in one DosBox, e.g. change "DOS" into "D0S". Now dump the memory location
+; again. It's changed. No miracle. Now jump to the other box, and dump the
+; same memory location: "D0S Version 7". That's right, the modification is
+; counting in every DosBox around. Now the danger in this is that when you or
+; your virus modifies the kernel in one DosBox, other boxes will still blindly
+; rely on it still properly functioning as DOS kernel.
+;
+;       Furthermore, the HMA is the ONLY structure of which the same copy gets
+; used over and over again. So the MCB and UMB chain are properly cleared for
+; each DosBox. If you would leave a far call in the kernel to your virus and
+; you'd close the box and open a new one, the kernel would perform a call to
+; your virus which WAS in some MCB. But in this new box, that chain is
+; cleared, so your CPU will end up executing random code. Not Good...
+;
+;       In short, fiddling around with the kernel in Win95 is not a good idea
+; unless you really know what you're doing. Workaround: call i2F/AH=1600, if
+; it returns anything other than 1600 in AX (Version, Win95 will most probably
+; return version 4), don't patch the kernel.
+;
+;       Almost the same thing goes for most multitasking environments. Most of
+; these multitasking environments utilize DPMI (Dos Protected Mode Interface),
+; which normally isn't used in plain DOS; it *can* be used, but it really
+; isn't used that much, so most users won't have it loaded. There's a nice
+; Int2F call to check for DPMI availability, namely Int2F/AX=1686h. It returns
+; zero in AX if DPMI is enabled, otherwise AX is non-zero. If you want to be
+; sure your virus is multitasking-environment-aware, check for DPMI and use
+; another tunnelling technique instead. I know, this is not really a solution,
+; but better be compatible than crashing someone's system.
+;
+;
+;
+; Anyway, here's an example program. It first calls i21/AH=2 to enable the
+; A20 line, then it does its work, after which it will call i21/AH=2 with
+; DL=ASCII 251 (๛), but this time by calling the fetched kernel entry point.
+; 
+; (Note: if you're not running SoftIce, DL will not be clear when the first
+; i21/AH=2 call is made, so you'll get a sort of random character display)
+  
+Model Tiny                                      
+Radix 16
+.286                                           
+
+code segment
+        assume cs:code, ds:code
+        org 100h
+
+main:
+        mov     ax,1686h                        ;DPMI detect
+        int     2fh
+        or      ax,ax
+        jz      cantfind                        ;quit if DPMI
+
+        mov     ax,1600h                        ;windows check
+        int     2fh
+        cmp     ax,1600h
+        jnz     cantfind                        ;quit if under windows
+
+        mov     ah,2
+        int     21h                             ;bogus call to enable A20 line
+        cld                                     ;always include this...
+        push    -1                              ;seg FFFF
+        pop     ds
+        xor     di,di
+loopje:
+        inc     di
+        cmp     di,0ff00h                       ;near end of segment?
+        ja      cantfind
+        cmp     [di],80fah
+        jnz     loopje
+        cmp     byte ptr [di+2],0fch
+        jnz     loopje
+        cmp     byte ptr [di+4],77h
+        jnz     loopje
+        mov     bl,byte ptr [di+3]              ;save 6C or 73 in BL
+        push    ds
+        pop     es
+        cli                                     ;disable interrupts
+        mov     al,9ah                          ;]
+        stosb                                   ;]
+        mov     ax, offset get21handler         ;] patch kernel with our call
+        stosw                                   ;]
+        mov     ax,cs                           ;]
+        stosw                                   ;]
+        int     21h             ;get kernel entry CS:IP in ES:DI
+get21handler:
+        pop     di      ;kernel entry IP
+        pop     es      ;kernel entry CS
+        sub     di,5    ;correct the IP to the kernel ENTRY point
+        add     sp,+6   ;add out the flags, CS and IP pushed by our INT.
+        push    cs
+        pop     ds
+        mov     [KernelIP],di   ;]save "official" CS:IP pair of kernel
+        mov     [KernelCS],es   ;]
+        mov     ax,80fah
+        stosw
+        mov     al,0fch
+        stosb
+        xchg    ax,bx
+        mov     ah,77
+        stosw
+        sti             ;and the road is clear...
+
+        mov     ah,2
+        mov     dl,"๛"                  
+        pushf                           ;important!
+        db      9ah                     ;far call
+KernelIP        dw      ?
+KernelCS        dw      ?
+
+cantfind:
+        int     20h
+
+code ends
+        end main

