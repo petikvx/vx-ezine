@@ -1,0 +1,385 @@
+CheckPE demo program by Destro Ex 
+Compile with: 
+
+            TASM32 /ml /m9 checkPE,,;
+            TLINK32 -Tpe -c -aa -x checkPE,,,import32.lib
+
+you must copy import32.lib to your TASM32/BIN directory 
+Note: since most import32.lib doesn't include GetOpenFileNameA, I had to locate its address at run-time using GetProcAddress.., 
+
+Description: 
+
+Nah, I dont need to describe this more, since it only demonstrate how you can open a file and seek from it.., by openning a PE-file, this program simply locate an RVA (Relative Virtual Address) value from offset 3ch of the file., it contains a dword value that points you to the PE file header, if there exist a "PE\0\0" marker at that location, then indeed this is a valid PE File., Then to add little flavor to it, I have added a simple comparison on PE Optional-Header for a marker of 010B for PE32 and 020B for PE32+ file. 
+
+Also,for more demonstration purpose, program locate GetOpenFileNameA API and use its address on call instruction, instead of symbols call 
+
+Ok, read the code, I have commented almost all parts of this demo. 
+
+
+--------------------------------------------------------------------------------
+
+	.386
+	.model flat
+
+;==============================
+; APIs needed by this program
+;==============================
+
+extrn	LoadLibraryA:PROC
+extrn	GetProcAddress:PROC
+extrn	FreeLibrary:PROC
+extrn	ExitProcess:PROC
+extrn	MessageBoxA:PROC
+extrn	CloseHandle:PROC
+extrn	CreateFileA:PROC
+extrn	GetFileSize:PROC
+extrn	CreateFileMappingA:PROC
+extrn	MapViewOfFile:PROC
+extrn	UnmapViewOfFile:PROC
+extrn	_wsprintfA:PROC
+
+;=========================================================
+; OPENFILENAME structure is needed by GetOpenFileNameA API
+;=========================================================
+
+OPENFILENAME struc
+	lpStrucSize			dd ?
+	hwndOwner			dd ?
+	hInstance			dd ?
+	lpstrFilter			dd ?
+	lpstrCustomFilter		dd ?
+	nMaxCustFilter			dd ?
+	nFilterIndex			dd ?
+	lpstrFile			dd ?
+	nMaxFile			dd ?
+	lpstrFileTitle			dd ?
+	nMaxFileTitle			dd ?
+	lpstrInitialDir			dd ?
+	lpstrTitle			dd ?
+	Flags				dd ?
+	nFileOffset			dw ?
+	nFileExtention			dw ?
+	lpstrDefExt			dd ?
+	lCustData			dd ?
+	lpfnHook			dd ?
+	lpTemplateName			dd ?
+OPENFILENAME ends
+
+
+;=================
+; Then the Datas
+;=================
+	.data
+appName		db "PE format Identifier by Destro Ex",0
+filterz 	db "Executable Files",0,"*.exe",0
+		db "Virtual Drivers",0,"*.vxd; *.386",0
+		db "Dynamic Link Library",0,"*.dll",0
+		db "All Files",0,"*.*",0,0
+peType0		db "PE32  (Windows 32-Bit Application)",0
+peType1		db "PE32+ (Windows 32-Bit Application, with 64-Bit support)",0
+
+fName		dd ?
+buf	 	db 512 dup (?)
+ofn	 	OPENFILENAME <>
+
+modName		db "comdlg32",0
+apiName		db "GetOpenFileNameA",0
+
+hFile		dd ?
+hMap		dd ?
+pMap		dd ?
+fSize		dd ?
+
+;=====================
+; Error/Good Messages
+;=====================
+
+mznot		db "This File is not a valid Executable File.",0
+peOk		db "This File is a valid PE File Format.",0ah,0dh,0ah,0dh
+		db "Format Type: %s",0
+penot		db "This is not a valid PE executable!",0
+eMap		db "An attempt to Map the file to memory, failed",0
+eOpen		db "An attempt to Open the file for reading, failed",0
+eMapView	db "An attempt to View the file from memory map, failed",0
+
+;=================
+; And., the CODE
+;=================
+
+	.code
+start:	
+
+;==========================================================================
+; Search the GetOpenFileName API and Execute it,
+;==========================================================================
+
+	;------------------------------------------------
+	; Setup properties for our ofn structure
+	;------------------------------------------------
+
+	mov 	ofn.lpStrucSize, SIZE ofn	; The Size of Structure
+	mov	ofn.lpstrFile, offset buf	; File Name string buffer
+	mov	ofn.lpstrFilter, offset filterz	; Wilcard Filters
+	mov	ofn.lpstrTitle, offset appName	; Caption
+	mov	ofn.nMaxFile,512		; MaxFile
+	mov	ofn.Flags, 281804h		; Flags
+
+	;------------------------------------------------
+	; Associate ComDlg32.DLL module with this program
+	;------------------------------------------------
+
+	push	offset modName			; Module Name (comdlg32.dll)
+	call	LoadLibraryA			; Load it!
+
+	;------------------------------------------------
+	; And locate GetOpenFileName from the module
+	;------------------------------------------------
+
+	push	offset apiName			; API name we are searching
+	push	eax				; from what module
+	call	GetProcAddress			; Get the Virtual Address
+						;
+	push	eax				; Save it for later use
+
+	;------------------------------------------------
+	; Release the Library again
+	;------------------------------------------------
+
+	push	eax				; The Module/Proc Address
+	call	FreeLibrary			; Unload it
+						;
+	pop	eax				; Restore GetOpenFileNameA
+						; address
+	;------------------------------------------------
+	; Execute GetOpenFileName, Show Dialog Box
+	;------------------------------------------------
+
+	push	offset ofn			; OPENFILENAME structure
+	call	eax				; Open the Dialog Box
+
+
+;==========================================================================
+; Open the file, Create File Mapping and View it Virtually
+;==========================================================================
+
+	;------------------------------------------------
+	; We have now a Filename choosed by the user from
+	; the dialogbox stored on lpstrFile member of ofn
+	; structure,so we will use it to open an existing
+	; file by invoking CreateFileA
+	;------------------------------------------------
+
+       	push 	0                             	; Handle
+       	push 	0                             	; Normal/Archieve Attribute
+       	push 	3                             	; Open Existing
+       	push 	0                             	; Security
+       	push 	1                             	; Share by Reading
+       	push 	80000000h	        	; Read access
+       	push 	ofn.lpstrFile                   ; The File Name
+       	call 	CreateFileA			; Open It!
+                                          	;
+       	cmp 	eax, -1                        	; Is there an Error?
+       	je 	errorOpen                      	; Yes, File is protected by 
+						; the operating system
+                                          	;
+       	mov 	[hFile], eax             	; No. save its handle, so
+						; we can close it later with
+						; Close Handle
+
+	;------------------------------------------------
+	; We need to determine the file size to allocate
+	; an exact space for the file mapping later, this
+	; is done by GetFileSize API
+	;------------------------------------------------
+
+	push	0				; Fill this if we are
+						; reffering a very big file
+	push	[hFile]				; Handle to File
+	call	GetFileSize			; Get the size
+
+	;------------------------------------------------
+	; Allocate the space needed in File Mapping.,
+	; done by CreateFileMappingA API
+	;------------------------------------------------
+
+	push 	0                             	; The Name, null is better
+       	push 	eax	                   	; Low Order Size
+       	push 	0                             	; High Order (for large files)
+       	push 	2                          	; Read Access to this space
+       	push 	0                             	; Security
+       	push 	[hFile]                       	; File Handle
+       	call 	CreateFileMappingA	     	; Create Mapping Object
+						;
+	cmp	eax,0				; Is there an Error? 
+	je	errorMap			; Yes, Close the file
+						;
+	mov	[hMap],eax			; No, save its handle, so
+						; we can close it later with
+						; Close Handle
+
+	;------------------------------------------------
+	; Lets View the File Like on Memory. done by
+	; MapViewOfFile API
+	;------------------------------------------------
+
+	push	[fSize]				; The Size (in Bytes)
+	push	0				; Low-Order  32-bit File Offset
+	push	0				; High-Order 32-bit File Offset
+	push	4				; Read access
+	push	[hMap]				; Handle of Mapping Object
+	call	MapViewOfFile			; View the File
+
+	cmp	eax,0				; Is there an Error? 
+	je	errorMapView			; Yes, Destroy Mapping Object
+						; and Close the file
+
+	mov	[pMap],eax			; Save the Entry-Point
+
+;==========================================================================
+; If we are here, Now errors have encountered., and if we set to READ/WRITE
+; access, instead of Read-Only I have used here., we can directly modify a
+; file., because whatever we have done (if we have the access) to the File
+; Mapped to Memory reflects to the Physical File by immidiate file-flushing
+; that you dont have to worry about. So,lets do now our part and purpose of
+; this demo-program, since EAX and [pMap] holds the Entry-Point of the file
+; we start checking from it.
+;==========================================================================
+
+	;------------------------------------------------
+	; Does MZ signature present? all true EXE files
+	; must have this marker.
+	;------------------------------------------------
+
+	cmp	word ptr [eax],'ZM'		; Is there an 'MZ' marker
+	jne	notMZ				; Nope, Not an EXE
+
+	;------------------------------------------------
+	; Now, at offset 3ch you can locate a pointer to
+	; the location of PE Header (normally at 1000h),
+	; and then check for PE signature, thats easy ;]
+	;------------------------------------------------
+
+	mov	edx,[eax+3ch]			; EDX = RVA pointer to PE
+						; Header.
+	add	edx,eax				; If we add the Entry-Point
+						; or the Imagebase, then we
+						; have its Virtual Address (VA)
+	cmp	word ptr [edx],'EP'		; PE signature present?
+	jne	notPE				; nope, this is not a PE-file
+						; or it was corrupted!
+
+	;------------------------------------------------
+	; Finally, if we are here then, we have a valid
+	; PE file at hand, and to Identify its type, we
+	; simply go and check for another word marker.,
+	; this time its for optional header, the marker
+	; will tell us the type:
+	;
+	; 010Bh ==> This is a PE32  file.
+	; 020Bh ==> This is a PE32+ file.
+	;
+	; by adding 18h at the PE Header, we can have the
+	; PE-Optional Header.
+	;------------------------------------------------
+
+	add	edx,18h				; EDX =	VA of PE-Optional
+						; Header.
+	cmp	word ptr [edx],010bh		; is it PE32?
+	je	pe32				; Yes
+	mov	edi, offset peType1		; No
+	jmp	formatMsg			;
+pe32:						;
+	mov	edi, offset peType0		;
+formatMsg:					; 
+	push	edi				; The Type
+	push	offset peOk			; The format string
+	push	offset buf			; formatted string
+	call	_wsprintfA			; Format the Message
+
+;==========================================================================
+; And the showing of Message to show our user that this code works!
+;==========================================================================
+
+	push	40h				; Icon
+	push	offset appName			; Caption
+	push	offset buf			; Text (Prompt)
+	push	0				; EXE Handle
+	call	MessageBoxA			; Show Message Box
+	jmp	UnmapView			; Unmap the view of file
+
+notPE:
+	push	10h
+	push	offset appName
+	push	offset penot
+	push	0
+	call	MessageBoxA
+	jmp	UnmapView			; Unmap the view of file
+notMZ:
+	push	10h
+	push	offset appName
+	push	offset mznot
+	push	0
+	call	MessageBoxA
+	jmp	UnmapView			; Unmap the view of file
+	
+errorMapView:
+	push	10h
+	push	offset appName
+	push	offset eMapView
+	push	0
+	call	MessageBoxA
+	jmp	UnMap				; Remove Mapping Object
+
+errorMap:
+	push	10h
+	push	offset appName
+	push	offset eMap
+	push	0
+	call	MessageBoxA
+	jmp	closeFile			; Close the file
+
+errorOpen:
+	push	10h
+	push	offset appName
+	push	offset eOpen
+	push	0
+	call	MessageBoxA
+
+	jmp	closin				; Exit the Program
+
+;==========================================================================
+; Finally we need to destroy Map Object (if any) that we created and close
+; the file so no corruptions will happen.
+;==========================================================================
+
+	;------------------------------------------------
+	; Flush the file properly by removing its link to
+	; the Map Object.
+	;------------------------------------------------
+
+UnmapView:
+	push	[pMap]				; Entry-Point of File	
+	call	UnmapViewOfFile			; Close the link
+
+	;------------------------------------------------
+	; Then, destroy the Map Object
+	;------------------------------------------------
+
+UnMap:
+	push	[hMap]				; Mapping Object
+	call	CloseHandle			; Destroy it
+
+	;------------------------------------------------
+	; And, close the file (no was changes made)
+	;------------------------------------------------
+
+closeFile:
+	push	[hFile]				; The file Handle
+	call	CloseHandle			; Close it
+closin:
+	push	0				; Return code
+	call	ExitProcess			; Exit the program
+
+	end start
+
+
