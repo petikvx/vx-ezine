@@ -1,0 +1,197 @@
+PE Write Enable by Chris Vega [gwapo@models.com]
+August 10, 1998 
+Purpose: Set the Write-Enabled Bit on all sections of a Portable Executable (PE) file. 
+
+Compile: 
+
+	   tasm32 pew,, /ml /m9 /t
+
+Link: 
+
+	   tlink32 pew,,,import32.lib -Tpe -x -c
+
+
+Downloaded from : Chris Vega's Haven [http://trider.8m.com] 
+
+Usage: 
+
+          pew <PE File Path>
+
+
+--------------------------------------------------------------------------------
+
+
+	.386
+	.model flat,stdcall
+
+extrn	GetCommandLineA:PROC
+extrn	GetStdHandle:PROC
+extrn	WriteFile:PROC
+extrn	CreateFileA:PROC
+extrn	GetFileSize:PROC
+extrn	CreateFileMappingA:PROC
+extrn	MapViewOfFile:PROC
+extrn	UnmapViewOfFile:PROC
+extrn	CloseHandle:PROC
+extrn	ExitProcess:PROC
+extrn	_wsprintfA:PROC
+extrn	MessageBoxA:PROC
+
+	.data
+appName	db "Write Enable PE Sections by Chris Vega [gwapo@models.com]",0ah,0dh
+lenName	= $-appName
+appDone db 0ah,0dh,"Success",0ah,0dh
+lenDone = $-appDone
+appErr	db 0ah,0dh,"Failed",0ah,0dh
+lenErr	= $-appErr
+lpBuf	dd 0
+hCon	dd 0
+hFile	dd 0
+fSize	dd 0
+hMap	dd 0
+pefile	db 1024 dup (?)
+fmt	db "Value:%0X",0
+
+	.code
+start:
+	call	GetStdHandle,-11
+	or	eax,eax
+	jz	closin
+	mov	hCon,eax
+
+	call	WriteFile,hCon,offset appName,lenName,offset lpBuf,0
+	call	getInput
+
+openFile:
+	; Open Existing File with Read/Write Access
+	call	CreateFileA,offset pefile,0C0000000h,0,0,3,0,0
+
+	inc	eax			; Invalid Handle?
+	jz	err			; Error
+	dec	eax
+
+	mov	hFile,eax		; Save the Handle
+
+	call	GetFileSize,hFile,0	; Get the Size
+	mov	fSize,eax		; save it
+
+	; Create Mapping Object with Read/Write Page Access
+	call	CreateFileMappingA,hFile,0,4,0,fSize,0
+
+	or	eax,eax			; something went wrong?
+	jz	closefile
+	mov	hMap,eax		; save the handle
+
+	; Map the File	
+	call	MapViewOfFile,hMap,0f001fh,0,0,0
+
+	;======================================================
+	; Disecting PE-File
+	;======================================================
+
+	xchg	esi,eax
+	cmp	word ptr [esi],5a4dh	; MZ marker exist?
+	jnz	err			; nope, not an EXE
+
+	mov	edi,[esi+3ch]		; Go to PE Header
+	add	edi,esi			; Align it
+
+	cmp	word ptr [edi],4550h	; PE marker exist?
+	jnz	err			; nope, not a PE Executable
+
+	movzx	ecx,word ptr [edi+6]	; Number of Sections
+	movzx	edx,word ptr [edi+14h]	; Size of Optional Header
+
+	add	edi,24			; Go to Section Table
+	add	edi,edx
+
+secwrite:
+	push	ecx
+	or	[edi+24h],80000000h	; Set the Write-Enable Bit
+
+	add	edi,28h
+	pop	ecx
+	loop	secwrite
+
+noerr:
+	call	WriteFile,hCon,offset appDone,lenDone,offset lpBuf,0
+
+unmap:
+	call	UnmapViewOfFile,esi
+
+closemap:
+	call	CloseHandle,hMap
+
+closefile:
+	call	CloseHandle,hFile
+	
+closin:
+	call	ExitProcess,0
+
+err:
+	call	WriteFile,hCon,offset appErr,lenErr,offset lpBuf,0
+	jmp	closemap
+
+getInput:
+	call	GetCommandLineA
+	xchg	esi,eax
+	mov	edi, offset pefile
+	call	nextArg
+	mov	edi, offset pefile
+	call	nextArg
+	jecxz	closin
+	ret
+
+nextArg:
+	xor	ecx,ecx
+
+elimBlk:
+	lodsb
+	cmp	al,0
+	jz	doneArg
+	cmp	al,"X"
+	jz	doneArg
+	cmp	al,13h
+	jz	doneArg
+	cmp	al,20h
+	jz	elimBlk
+	cmp	al,09h
+	jz	elimBlk
+
+colArg:
+	cmp	al,22h
+	jz	longArg
+
+shortArg:
+	inc	ecx
+	stosb
+	lodsb
+	cmp	al,0
+	jz	doneArg
+	cmp	al,20h
+	jz	doneArg
+	cmp	al,22h
+	jz	doneArg
+	cmp	al,09h
+	jnz	shortArg
+
+longArg:
+	lodsb
+
+lAx:
+	cmp	al,0
+	jz	doneArg
+	cmp	al,22h
+	jz	doneArg
+	inc	ecx
+	stosb
+	lodsb
+	jmp	lAx
+
+doneArg:
+	xor	eax,eax
+	stosb
+	ret
+
+	end	start
+
