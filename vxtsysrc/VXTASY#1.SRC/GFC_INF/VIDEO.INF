@@ -1,0 +1,238 @@
+; ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+; ³ (c) Lord Julus - 2000		 Vxtasy #1 - Magazine source code ³
+; ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+;===========( Routine to dump the buffer to screen )=========================
+
+video_flush proc near			   ; flush the screen to video memory
+	pusha				   ; save regs
+	push es 			   ;
+					   ;
+	call hide_mouse 		   ;
+					   ;
+	mov dispsmth, 0 		   ;
+	mov ax, count			   ;
+	lea di, thispage		   ;
+	mov word ptr [di], ax		   ;
+					   ;
+again:					   ;
+	mov ax, 0b800h			   ;
+	mov es, ax			   ; ES = video segment
+	mov di, 0			   ; DI = start of video offset
+	mov si, crtpoint		   ; SI = Source start
+	call setcolor			   ; set the color
+	mov crt_line, 0 		   ; reset the current line and
+	mov crt_col, 0			   ; column
+	cld				   ; clear direction
+	mov cx, mlt_above		   ;
+					   ;
+rep_skip_above: 			   ; now skip the number of lines
+	add di, 2			   ; in the upper part of the screen
+	loop rep_skip_above		   ;
+					   ;
+flush_loop:				   ;
+	mov cx, left_intend		   ; now skip the left side intend
+	rep_inc:			   ;
+	add di, 2			   ;
+	loop rep_inc			   ;
+	call setcolor			   ;
+	call check_for_right_movement	   ;
+					   ;
+disp_line:				   ; display line
+	lodsb				   ; take a byte
+	cmp si, maxposition		   ; how much can we ?
+	ja ready_flush			   ;
+	cmp al, 0dh			   ; CR ?
+	je move_to_end_of_line		   ;
+	cmp al, 0ah			   ; LF ?
+	je move_to_end_of_line		   ;
+					   ;
+	cmp al, 20h			   ; small filter for chars < ' '
+	jnb ok_display			   ;
+	mov al,' '			   ;
+ok_display:				   ;
+	stosw				   ; store character and color
+	inc dispsmth			   ;
+					   ;
+	inc crt_line			   ; increment line
+	mov bx, crt_line		   ;
+	cmp bx, (80d-left_intend-right_intend) ; and check for out of
+	jae move_to_end_of_line2	   ; screen...
+	jmp disp_line			   ;
+					   ;
+move_to_end_of_line2:			   ;
+	lodsb				   ; check for the second byte in
+	cmp al, 0dh			   ; the combination CR/LF or LF/CR
+	je move_to_end_of_line		   ;
+	cmp al, 0ah			   ;
+	je move_to_end_of_line		   ;
+	jmp move_to_end_of_line2	   ;
+					   ;
+move_to_end_of_line:			   ;
+	cmp byte ptr [si], 0dh		   ;
+	je _inc 			   ;
+	cmp byte ptr [si], 0ah		   ;
+	je _inc 			   ;
+	jmp no_inc			   ;
+					   ;
+_inc:					   ;
+	inc si				   ;
+					   ;
+no_inc: 				   ; now clear the area left from
+	push ax 			   ; the CR/LF until the end of
+	call setcolor			   ; the line with ' '
+	mov al, 20h			   ;
+	sub word ptr [count], 2 	   ;
+					   ;
+ready_line:				   ;
+	mov bx, crt_line		   ;
+	cmp bx, (80d-left_intend-right_intend)
+	jae ok_carriage 		   ;
+	stosw				   ;
+	inc crt_line			   ;
+	jmp ready_line			   ;
+					   ;
+ok_carriage:				   ; now skip the right side intend
+	mov bx, right_intend		   ;
+	shl bx, 1			   ;
+	add di, bx			   ;
+	pop ax				   ;
+	mov crt_line, 0 		   ;
+	inc crt_col			   ; increment column
+	cmp crt_col, 25d-skip_above-skip_below ; and check or out of screen
+	jb flush_loop			   ;
+	jmp ready_flush 		   ;
+					   ;
+ready_flush:				   ;
+	pop es				   ; restore and return
+	popa				   ;
+	cmp pressedupdn, 0		   ;
+	je no_update			   ;
+	call updatescrollbar		   ;
+					   ;
+no_update:				   ;
+	call show_mouse 		   ;
+	ret				   ;
+video_flush endp			   ;
+					   ;
+check_for_right_movement proc near	   ;
+	push cx 			   ; this is needed to check if
+	cmp rightmove, 0		   ; we can move to the right...
+	je no_right			   ;
+	mov cx, 0			   ;
+	push si 			   ;
+					   ;
+rep_find:				   ;
+	lodsb				   ;
+	cmp al, 0dh			   ;
+	je found_eol			   ;
+	cmp al, 0ah			   ;
+	je found_eol			   ;
+	inc cx				   ;
+	jmp rep_find			   ;
+					   ;
+found_eol:				   ;
+	cmp cx, rightmove		   ; if we are over the rightmove
+	jbe _1				   ; we don't increase unless with CX
+					   ;
+	pop si				   ;
+	add si, rightmove		   ; otherwise we add the rightmove
+	jmp no_right			   ;
+					   ;
+_1:					   ;
+	pop si				   ;
+	add si, cx			   ;
+					   ;
+no_right:				   ;
+	pop cx				   ;
+	ret				   ;
+check_for_right_movement endp		   ;
+
+;=========( Procedure to save the screen and the cursor position )===========
+
+_SaveScreen  proc			   ;
+	 pusha				   ;
+	 push ds			   ;
+	 push es			   ;
+	 mov ah, 03h			   ; save cursor
+	 mov bh, 0			   ;
+	 int 10h			   ;
+	 mov _cursor, dx		   ;
+	 mov ax, 0b800h 		   ; and then all the screen
+	 mov ds, ax			   ;
+	 mov si, 0h			   ;
+	 mov ax, seg _screen		   ;
+	 mov es, ax			   ;
+	 lea di, _screen		   ;
+	 mov cx, 80*25*2		   ;
+	 rep movsb			   ;
+	 pop es 			   ;
+	 pop ds 			   ;
+	 popa				   ;
+	 ret				   ;
+_SaveScreen endp			   ;
+
+;==========( Procedure to restore the screen and cursor position )===========
+
+_RestoreScreen proc			   ;
+	 pusha				   ;
+	 push ds			   ;
+	 push es			   ;
+	 mov ax, 0b800h 		   ;
+	 mov es, ax			   ;
+	 mov di, 0			   ;
+	 mov ax, seg _screen		   ;
+	 mov ds, ax			   ;
+	 lea si, _screen		   ;
+	 mov cx, 80*25*2		   ;
+	 rep movsb			   ;
+	 mov ah, 02h			   ;
+	 mov bh, 0			   ;
+	 mov dx, _cursor		   ;
+	 int 10h			   ;
+	 pop es 			   ;
+	 pop ds 			   ;
+	 popa				   ;
+	 ret				   ;
+_RestoreScreen endp			   ;
+
+
+; This next routine is a customizable routine that allows you to define the
+; screen in which to browse. To make it remain intact while scrolling you
+; need to set the proper values or skip_above, skip_below, left_intend and
+; rigth_intend. In order to use it, you must create your own layout.inc file
+; which should contain the dump of the video memory on a 4000 bytes area.
+
+_makescreen proc near			     ;
+	   pusha			     ;
+	   push es			     ;
+	   push ds			     ;
+					     ;
+	   mov ax, 0b800h		     ; clear video memory
+	   mov es, ax			     ;
+	   mov di, 0			     ;
+	   mov ax, 0			     ;
+	   mov cx, 80*25*2		     ;
+	   rep stosb			     ;
+					     ;
+	   mov si, offset gfc_layout_source  ; move the layout to the
+	   mov di, 0			     ; video memory
+	   mov cx, gfc_layout_length	     ;
+	   rep movsw			     ;
+					     ;
+	   pop ds			     ;
+	   pop es			     ;
+	   popa 			     ;
+	   ret				     ;
+_makescreen endp			     ;
+
+;==========( Procedure to set the color attribute )==========================
+
+setcolor proc near			     ;
+	 mov ah, 0			     ; set the color attribute
+	 mov ah, tb			     ; background
+	 shl ah, 4			     ;
+	 or ah, tc			     ; textground
+	 ret				     ;
+setcolor endp				     ;
+;============================================================================

