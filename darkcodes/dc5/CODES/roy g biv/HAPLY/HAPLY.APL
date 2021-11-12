@@ -1,0 +1,1 @@
+a„b„(Œhost'cmd /c dir/b *.apl'),Œrªc„Ëª–":for d:in e„Œss aŒrªf„1†(Œss aŒr)ªg„(f-1)†aªa„f‡aªf„Œimport g'txt'ªc„c,(0<(1†(Œss f'©hAPLy')))/(1†(Œss fŒr))†fª:endfor"ª–":for d:in eªf„1†(Œss bŒr)ªg„(f-1)†bªb„f‡bªf„Œimport g'txt'ª(((~+/cºf)/c),f)Œexport g'txt'ª:endfor"©hAPLy - roy g biv 20/3/13

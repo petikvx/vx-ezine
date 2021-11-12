@@ -1,0 +1,448 @@
+	
+
+    package main;
+     
+     
+    import(
+            std "fmt";
+            system "os";
+            "io/ioutil";
+            "io";
+            "net/http";
+            logger "log";
+            conv "strconv";
+            //"math/big"; // Just for realy big numbers
+            "strings";
+            . "regexp";
+            "time";
+    );
+     
+    type linkElement struct {
+            url string;
+     
+    }
+     
+    type Grawler struct {
+            /* Target to "attack" */
+            target string;
+     
+            /* Max count of links to crawl */
+            maxcount int64;
+     
+            /* Transport given content trougth different Threads (called Channels in Go) */
+            contentchannel chan string;
+     
+            /* Transport given Vuln-Urls througth different Threads */
+            vulnschannel chan string;
+     
+            /* Get the content of given url in class var namend "target"; returns the html content */
+            // func (g *Grawler)getContentByTarget(url string)
+     
+            /* Get the content of given var namend "url"; returns the html content */
+            // func (g *Grawler)getContentByURL(url string) string
+     
+            /* Starts the whole crawling process; need a channel, it will use it to communicate with the main loop,
+                    it puts true in the channel when the crawling process is finished; returns nothing */
+            // func (g *Grawler)startProcess(output chan bool)
+     
+            /* Save all founded vulns; returns nothing*/
+            // func (g *Grawler)saveVulns()
+     
+     
+    };
+     
+    var linkStorage map[int64] linkElement;
+    var vulnStorage map[int64] linkElement;
+     
+    func NewGrawler(target string, maxcount int64) *Grawler {
+            if(!strings.HasSuffix(target, "/")) {
+                    target += "/";
+                    std.Println(target);
+                    system.Exit(1);
+     
+            }
+            return &Grawler{target, maxcount, make(chan string), make(chan string)};
+     
+    }
+     
+    func (g *Grawler) startProcess(output chan bool) {
+            //std.Println("startProcess called");
+            exitProcess := make(chan bool);
+            go g.processContent(exitProcess);
+     
+            g.contentchannel <- g.getContentByTarget();
+     
+            for {
+                    exit, ok := <- exitProcess;
+                    if(ok && exit) {
+                            close(exitProcess);
+                            output <- true;
+                            break;
+     
+                    }
+     
+            }
+           
+    }
+     
+    func (g *Grawler) getContentByTarget() string {
+            //std.Println("getContentByTarget called");
+            resp, err := http.Get(g.target);
+            if(err != nil) { std.Printf("[1 getContentByTarget ] %s\n", err.Error()); }
+     
+            defer resp.Body.Close();
+     
+            body, err := ioutil.ReadAll(resp.Body);
+            if(err != nil) {  std.Print("[2 getContentByTarget ] %s\n", err.Error()); }
+     
+            return string(body);
+    }
+     
+    func (g *Grawler) getContentByURL(url string) string {
+            //std.Println("getContentByURL called");
+            Start:
+            resp, err := http.Get(url);
+            if(err != nil) {  
+                    std.Print("[1 getContentByURL ] %s\n", err.Error());
+     
+                    url = linkStorage[g.elementID(linkElement{url})+1].url;
+                    goto Start;
+            }
+     
+            defer resp.Body.Close();
+     
+            body, err := ioutil.ReadAll(resp.Body);
+            if(err != nil) {
+                    std.Print("[2 getContentByURL ] %s\n", err.Error());
+     
+                    url = linkStorage[g.elementID(linkElement{url})+1].url;
+                    goto Start;
+            }
+     
+            return string(body);
+    }
+     
+    func (g *Grawler) processContent(exitProcess chan bool) {
+            //std.Println("processContent called");
+     
+            var counter int64;
+            counter = 0;
+     
+            for {
+                    //std.Printf("processContent: Infinite loop count: %d", counter);
+                    if(counter > g.maxcount) {
+                            //std.Println("processContent: break;");
+                            break;
+     
+                    }
+     
+                    content, ok := <- g.contentchannel;
+     
+                    if(ok && counter <= g.maxcount) {
+                            std.Print(".");
+                            if(counter == 0) {
+                                    //std.Println("(1) processContent: counter == 0");
+                                    g.extractLinksFromContent(content);
+                                    //std.Printf("(1) processContent: counter == 0; else = %d != %d --- extractLinksFromContent finished processing", counter, g.maxcount.Int64());
+     
+                                    select {
+                                            case g.contentchannel <- g.getContentByURL(linkStorage[counter].url):
+                                                    //std.Println("Successful written in channel");
+     
+                                            default:
+                                                    //std.Println("LOOOOOOOOOOL somthing is in our channel, but nobody cleant it o,0... Lets look into =>");
+                                                    //std.Println(<-g.contentchannel);
+                                                    //std.Println("fucking error")
+                                    }
+     
+                                    counter++;
+                            } else {
+                                    counter++;
+                                    //std.Printf("(2) processContent: counter == 0; else = %d != %d", counter, g.maxcount.Int64());
+                                    g.extractLinksFromContent(content);
+                                    //std.Printf("(2) processContent: counter == 0; else = %d != %d --- extractLinksFromContent finished processing", counter, g.maxcount.Int64());
+                                   
+                                    g.contentchannel <- g.getContentByURL(linkStorage[counter].url);
+     
+                            }
+     
+                           
+     
+                    } else {
+                            //std.Println("processContent: Nothing in channel: outputchannel");
+     
+                    }
+     
+            }
+            //std.Println("processContent: exitProcess <- true");
+            exitProcess <- true;
+            return;
+    }
+     
+    func (g *Grawler) extractLinksFromContent(content string) {
+            //std.Println("extractLinksFromContent called;");
+            var a string = "(?i)<a([^>]+)>(.+?)</a>";
+            var href string = "\\s*(?i)href\\s*=\\s*(\"([^\"]*\")|'[^']*'|([^'\">\\s]+))";
+           
+            re := MustCompile(a);
+            if re.String() != a {
+                    std.Println("String() = %s; should be %s", re.String(), a);
+     
+            }
+     
+            result := re.FindAll([]byte(content),len([]byte(content)) + 1);
+            //std.Println("extractLinksFromContent: findAll ");
+            for _, links := range result {
+                   
+                    //std.Println(string(links));
+                    re := MustCompile(href);
+                   
+                    if re.String() != href {
+                            std.Println("String() = %s; should be %s", re.String(), href);
+                   
+                    }
+                   
+                    ndresult := re.FindAll(links, len(links)+1);
+     
+                    for _, hrefc := range ndresult {
+                            //std.Println(strings.Replace(strings.Replace(string(hrefc[0:len(hrefc)-1]), "href=\"", "", -1), " ", "", -1));
+                            g.pushLink(strings.Replace(strings.Replace(string(hrefc[0:len(hrefc)-1]), "href=\"", "", -1), " ", "", -1));
+                            //std.Println("extractLinksFromContent: pushLink finished processing");
+                    }
+                    //std.Println("extractLinksFromContent: 2nd loop finished processing");
+     
+            }
+            //std.Println("extractLinksFromContent: All loops finished processing");
+            return;
+            /*if(strings.Index(content, "<a") > -1) {
+                    first_split := strings.Split(content, "href=");
+                    std.Println(first_split[1]);
+     
+            } else { goto Nothing; }
+     
+            Nothing:
+                    return;
+    */
+    }
+     
+    func (g *Grawler) pushLink(link string) {
+            //std.Println("pushLink called;");
+            g.removeDuplicates();
+     
+            if(!g.elementExists(linkElement{link})) {
+                    if(strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://")) {
+                           
+     
+                    } else {
+                            if(strings.HasPrefix(link, "/") && (!strings.HasPrefix(link, "#") || !strings.HasPrefix(link, "/#"))) {
+                                    link = string([]byte(link)[1:]);
+                                    link = g.target + link;
+     
+                            } else if(!strings.HasPrefix(link, "/") && (!strings.HasPrefix(link, "#") || !strings.HasPrefix(link, "/#"))) {
+                                    link = g.target + link;
+                           
+                            } else {
+                                    std.Printf("Wrong Link %s\n", link);
+                                    return;
+                            }
+                            //std.Println("pushLink: linkElement successful pushed to linkStorage");
+                    }
+                    if(len(linkStorage) > 2 && len(system.Args) == 4 || len(system.Args) == 5) {
+                            if(!strings.Contains(link, system.Args[3])) { return; }
+                            if(strings.Contains(link, "&") || strings.Contains(link, ".php?") || strings.Contains(link, ".pl?") || strings.Contains(link, "?")) {
+                                    vulnStorage[int64(len(vulnStorage))] = linkElement{link};
+     
+                                   
+                            }
+                    }
+     
+     
+     
+                    linkStorage[int64(len(linkStorage))] = linkElement{link};
+            } else {
+                    //std.Println("pushLink: linkElement already exists");
+            }
+     
+    }
+     
+    func (g *Grawler) elementExists(element linkElement) bool {
+            //std.Println("elementExists called;");
+            var i int64 = 0;
+     
+            for i = 0; i < int64(len(linkStorage)); i++ {
+                    if(linkStorage[i] == element) {
+                            return true;
+     
+                    }
+           
+            }
+     
+            return false;
+    }
+     
+    func (g *Grawler) elementID(element linkElement) int64 {
+            var i int64 = 0;
+     
+            for i = 0; i < int64(len(linkStorage)); i++ {
+                    if(linkStorage[i] == element) {
+                            return i;
+     
+                    }
+           
+            }
+            logger.Fatalf("[func (g *Grawler) elementID(element linkElement) uint32 ] Run-Time Error: Cant find requested element! >>%d<<", len(linkStorage));
+            return 0;
+    }
+     
+    func (g *Grawler) removeDuplicates() {
+     
+            var i int64 = 0;
+            found := make(map[linkElement]bool)
+            newmap := make(map[int64] linkElement);
+            var j int64 = 0
+            for i = 0; i < int64(len(linkStorage)); i++ {
+                    if !found[linkStorage[i]] {
+                            found[linkStorage[i]] = true
+                            newmap[j] = linkStorage[i];
+                            j++
+                    }
+           
+            }
+            linkStorage = newmap;
+            return;
+    }
+     
+     
+    func main() {
+            exectime := time.Now();
+            exectime_min := exectime.Minute();
+            exectime_sec := exectime.Second();
+     
+     
+            var grawler = &Grawler{"", 0, nil, nil}; // Just bypass some fucking errors :P
+            var rawstring string = `
+            #####################################################
+            #                                                   #
+            #                    Grawler v0.1                   #
+            #                                                   #
+            #                 coded by Know v3.0                #
+            #                     vxnetw0rk                     #
+            #                                                   #
+            #              language: Go (golang.com)            #
+            #                                                   #
+            #####################################################
+            |                                                   |
+            |   usage:      $ ./grawler host max_links_to_crawl |
+            |   example:    $ ./grawler http://google.com/ 1000 |
+            |   max: 18446744073709551615 cuz of unsigned int64 |
+            |___________________________________________________|
+     
+     
+            `; // Raw-String
+     
+            if (len(system.Args) < 2) {
+                    std.Println(rawstring);
+                    system.Exit(1);
+     
+            } else if(len(system.Args) >= 3) {
+                   
+     
+                    /* Normaly Go will convert a string to int32, but we want to bypass this shit and convert it to uint64 <3 */
+     
+                    count1, _ := conv.Atoi(system.Args[2]);
+                    var count int64 = int64(count1);
+                    //std.Printf("count: %d\n", count);
+     
+                    linkStorage = make(map[int64] linkElement);
+                    vulnStorage = make(map[int64] linkElement);
+     
+                    grawler = NewGrawler(system.Args[1], count);
+     
+                    //std.Println(Atoi(system.Args[2]));
+                    //system.Exit(0);
+                    /* Yay! One of the best features in Go <3 */
+                    grawler.contentchannel = make(chan string, count);
+                    grawler.vulnschannel = make(chan string, count);
+                    defer close(grawler.contentchannel); // Close the given channel befor the code block( else if here) is finisched executed
+                    defer close(grawler.vulnschannel); // same here
+     
+                    outputchannel := make(chan bool); // makes a channel to transport bool's between threads
+                    defer close(outputchannel); // Close the given channel befor the code block( else if here) is finisched executed
+     
+                    //std.Println("Start Process!");
+                    go grawler.startProcess(outputchannel); // Starts the function "startProcess" in a new thread
+     
+                    //std.Println("Infinite Loop!");
+                    for { // Infinite loop to check if the crawling process is finished
+                           
+                            isfinished, ok := <- outputchannel;
+                            if(ok && isfinished) {
+                           
+                                    var i int64 = 0;
+                                    fl, flErr := system.OpenFile("result.txt", system.O_RDWR|system.O_CREATE, 0666)
+                                            if flErr != nil {
+                                                    std.Println("File write error:", flErr)
+                                           
+                                            }
+                                    defer fl.Close()
+     
+                                    for i = 0; i < int64(len(linkStorage)); i++ {
+                                            _, wErr := io.WriteString(fl, linkStorage[i].url+"\n\n") // write
+                                            if wErr != nil {
+                                                    std.Println("Write error:", wErr)
+                                            }
+     
+                                            //std.Println(linkStorage[i].url);
+     
+                                    }
+     
+                                    if(len(vulnStorage) > 0) {
+                                            var i int64 = 0;
+                                            fll, flErrl := system.OpenFile("vuln.txt", system.O_RDWR|system.O_CREATE, 0666)
+                                                    if flErrl != nil {
+                                                            std.Println("File write error:", flErrl)
+                                                   
+                                                    }
+                                            defer fll.Close()
+     
+                                            for i = 0; i < int64(len(linkStorage)); i++ {
+                                                    _, wErrl := io.WriteString(fll, vulnStorage[i].url+"\n\n") // write
+                                                    if wErrl != nil {
+                                                            std.Println("Write error:", wErrl)
+                                                    }
+     
+                                                    //std.Println(linkStorage[i].url);
+     
+                                            }
+     
+                                    } else {
+                                            std.Println("Cant find vuln links")
+                                    }
+     
+                                    exectime = time.Now();
+                                    second_min := exectime.Minute();
+                                    second_sec := exectime.Second();
+                                    var speed_sec int;
+                                    var speed_min int;
+                                    if(second_min == exectime_min) {
+                                            speed_min = 0;
+                                            speed_sec = second_sec - exectime_sec;
+     
+                                    } else {
+                                            speed_min = second_min - exectime_min;
+                                            speed_sec = second_sec - exectime_sec;
+     
+                                    }
+                                    std.Printf("Finished in %d minutes and %d seconds and %d links was found! Check current dir => some txt files\n", speed_min, speed_sec, len(linkStorage));
+                                    system.Exit(0);
+     
+                            }
+     
+                    }
+     
+            }
+     
+     
+    }
+
+
